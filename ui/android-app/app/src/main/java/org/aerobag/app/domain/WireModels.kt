@@ -1000,35 +1000,8 @@ object WireTerrainOverlayStatusSerializer : JsonContentPolymorphicSerializer<Wir
     }
 }
 
-@Serializable
-data class WireAirwaySuggestion(
-    val airway_name: String,
-    val nearest_branch_key: String? = null,
-    val nearest_nav_ref: WireNavRef,
-    val nearest_sequence: Int,
-    val distance_from_anchor_nm: Double,
-)
-
 typealias WireWaypointIdentifierSuggestion =
     org.aerobag.app.generated.WaypointIdentifierSuggestion
-
-@Serializable
-data class WireAirwayPresentationPoint(
-    val uid: String,
-    val sequence: Int,
-    val nav_ref: WireNavRef,
-    val label: String,
-    val same_point_exit_disabled_reason: String,
-)
-
-@Serializable
-data class WireAirwayPresentationPlan(
-    val airway_name: String,
-    val branch_key: String,
-    val points: List<WireAirwayPresentationPoint>,
-    val suggested_entry_uid: String,
-    val suggested_exit_uid: String? = null,
-)
 
 @Serializable
 enum class WireProcedureKind {
@@ -1235,6 +1208,7 @@ data class WireNavElementUiView(
 
 @Serializable
 data class WireFlightPlanUiState(
+    val airway_picker: org.aerobag.app.generated.UiAirwayPicker? = null,
     val plan_id: String,
     val plan_version: Long,
     val display_rows: List<WireFlightPlanDisplayRowUiView>,

@@ -8,6 +8,7 @@ mod adsb;
 mod aircraft_library;
 pub mod aircraft_profiles;
 pub mod airport_info;
+mod airway_picker;
 pub mod altitude_planner;
 pub mod chart_page;
 pub mod cloud;
@@ -187,8 +188,8 @@ pub use map_overlay::{
     AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
-    AirwayPresentationPlan, AirwayPresentationPoint, AirwayPresentationSelection, AirwaySuggestion,
-    CifpTppMatch, CifpTppMatchRow, MaterializedProcedure, ProcedureOptions, ProcedureSpecChoice,
+    AirwayPresentationPlan, AirwayPresentationPoint, AirwayPresentationSelection, CifpTppMatch,
+    CifpTppMatchRow, MaterializedProcedure, ProcedureOptions, ProcedureSpecChoice,
     ProcedureSummary, WaypointIdentifierSuggestion,
 };
 #[cfg(debug_assertions)]
@@ -229,20 +230,17 @@ pub use package_management::{
 pub use planning::{
     activate_direct_to, activate_direct_to_row, activate_leg, activate_leg_at_detail_index,
     activate_next_leg, active_guidance_leg, at_fix_requirement, attached_procedure_component_index,
-    basic_terminal_state, change_airway_entry, change_airway_exit,
-    change_procedure_enroute_transition, change_procedure_runway_transition,
+    basic_terminal_state, change_procedure_enroute_transition, change_procedure_runway_transition,
     common_resume_candidate_decision, delete_component, delete_waypoint_component,
     direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
     established_on_course_requirement, first_guidance_detail_index_for_leg,
-    flatten_component_to_waypoints, flight_plan_contains_nav_ref,
-    flight_plan_has_direct_to_overlay, insert_airport_waypoint, insert_airway_after_airway,
+    flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay, insert_airport_waypoint,
     insert_airway_after_waypoint, insert_airway_between_waypoints, insert_departure_after_airport,
     insert_initial_procedure_before_airport, insert_procedure_between_waypoints,
     insert_terminal_procedure_before_airport, insert_waypoint, intercept_course_requirement,
-    materialize_airway_exit_before_component, move_component, procedure_component_index_for_load,
-    project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
-    remove_airway_child_waypoint, remove_all_above, replace_airway_component,
-    replace_procedure_component, restore_direct_to, sequence_active_detail, sequence_active_leg,
+    move_component, procedure_component_index_for_load, project_ui_state, reconcile_handoff,
+    reentry_to_anchor_requirement, remove_all_above, replace_procedure_component,
+    restore_direct_to, sequence_active_detail, sequence_active_leg,
     start_requirement_from_leg_characteristics, stop_navigation, suspend_sequencing,
     terminal_hold_start_detail_index_for_leg, terminal_hold_start_element_index_for_leg,
     terminal_state_with_leg_characteristics, toggle_sequencing_suspension,
@@ -252,11 +250,12 @@ pub use planning::{
     DirectToTargetRow, DirectToUiView, FlightPlan, FlightPlanControlId, FlightPlanControlUiView,
     FlightPlanDisplayRowKind, FlightPlanRowActionDecision, FlightPlanRowActionEffect,
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanRowId, FlightPlanUiState,
-    GuidanceLegId, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
-    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
-    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
-    RouteComponent, RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
+    FlightPlanWaypointId, GuidanceLegId, GuidanceState, GuidanceUiView, HandoffDecision,
+    HoldTerminalState, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef,
+    PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
+    ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg,
+    ResolvedLegSource, RouteComponent, RouteComponentViewKind, SequencingMode, StartRequirement,
+    TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use product_contracts::{AircraftDefinition, AircraftSelection};
@@ -1011,7 +1010,8 @@ pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
     let plan = plan.normalized();
 
-    planning::validate_procedure_attachments(&plan.route_components)?;
+    planning::validate_route_attachments(&plan.route_components, &plan.route_component_uids)?;
+    planning::validate_airway_geometry(&plan)?;
 
     if plan.resolved_legs.is_empty() && plan.route_components.len() > 1 {
         return Err(AppError {
@@ -1160,19 +1160,6 @@ pub(crate) fn airway_presentation_point_uid(
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("airway-point-{hash:016x}")
-}
-
-pub fn sort_airway_suggestions_for_ui(
-    mut suggestions: Vec<AirwaySuggestion>,
-) -> Vec<AirwaySuggestion> {
-    suggestions.sort_by(|left, right| {
-        compare_airway_name_for_ui(&left.airway_name, &right.airway_name).then_with(|| {
-            left.distance_from_anchor_nm
-                .partial_cmp(&right.distance_from_anchor_nm)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    });
-    suggestions
 }
 
 pub fn select_preferred_cifp_tpp_match(rows: Vec<CifpTppMatchRow>) -> Option<CifpTppMatch> {
@@ -1572,31 +1559,6 @@ fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
 
 fn normalize_bearing_degrees(bearing_deg: f64) -> f64 {
     bearing_deg.rem_euclid(360.0)
-}
-
-fn compare_airway_name_for_ui(left: &str, right: &str) -> std::cmp::Ordering {
-    let left_parsed = parse_airway_name_for_ui(left);
-    let right_parsed = parse_airway_name_for_ui(right);
-    left_parsed
-        .0
-        .cmp(&right_parsed.0)
-        .then_with(|| left_parsed.1.cmp(&right_parsed.1))
-        .then_with(|| left.cmp(right))
-}
-
-fn parse_airway_name_for_ui(name: &str) -> (String, i32) {
-    let trimmed = name.trim();
-    let split_at = trimmed
-        .find(|ch: char| ch.is_ascii_digit())
-        .unwrap_or(trimmed.len());
-    let prefix = trimmed[..split_at].to_ascii_uppercase();
-    let number = trimmed[split_at..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .parse::<i32>()
-        .unwrap_or(i32::MAX);
-    (prefix, number)
 }
 
 pub(crate) fn insert_airway_materialized(

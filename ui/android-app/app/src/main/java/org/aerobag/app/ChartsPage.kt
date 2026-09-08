@@ -200,8 +200,6 @@ import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.PlateProcedureNotamBadge
 import org.aerobag.app.domain.PlateProcedureNotamDetail
-import org.aerobag.app.domain.AirwayPresentationPlan
-import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.DerivedChartPageState

@@ -625,6 +625,7 @@ pub struct PlatformCapabilities {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiSessionPageContracts {
+    pub airway_picker: UiAirwayPicker,
     pub navigation: UiNavigationPageState,
     pub chart: UiChartPageState,
     pub map_layers: UiMapLayerState,
@@ -640,6 +641,38 @@ pub struct UiSessionPageContracts {
     pub nav_db: UiNavDbIdentity,
     pub capabilities: PlatformCapabilities,
     pub settings_action: UiSettingsAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayPicker {
+    pub row_uid: String,
+    pub title: String,
+    pub sections: Vec<UiAirwayPickerSection>,
+    pub footer: Vec<UiAirwayPickerButton>,
+    pub dismiss_action_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayPickerSection {
+    pub title: String,
+    pub dense: bool,
+    pub buttons: Vec<UiAirwayPickerButton>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayPickerButton {
+    pub action_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub disabled_reason: Option<String>,
+    pub suggested: bool,
+    pub test_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

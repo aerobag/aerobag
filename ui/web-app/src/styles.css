@@ -4742,6 +4742,12 @@ button {
   animation: spin 0.9s linear infinite;
 }
 
+.airwayPickerSections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--thumb-gap);
+}
+
 .airwaySuggestionGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--thumb), var(--thumb)));

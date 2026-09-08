@@ -1252,7 +1252,7 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
         "performMapSelectionUiAction",
         "insertWaypointAtFlightPlanRow",
         "appendFlightPlanEntry",
-        "insertAirwayAtFlightPlanRow",
+        "performAirwayPickerAction",
         "selectProcedureAtFlightPlanRow",
         "loadPlateProcedure",
         "performFlightPlanRowAction",
@@ -1270,7 +1270,7 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
         "performMapSelectionUiAction",
         "insertWaypointAtFlightPlanRow",
         "appendFlightPlanEntry",
-        "insertAirwayAtFlightPlanRow",
+        "performAirwayPickerAction",
         "selectProcedureAtFlightPlanRow",
         "loadPlateProcedure",
         "performFlightPlanRowAction",
@@ -1573,7 +1573,7 @@ fn flight_plan_platform_boundary_is_uid_based_and_singular() {
     for kind in [
         "insert_waypoint_at_row",
         "append_entry",
-        "insert_airway_at_row",
+        "perform_airway_picker_action",
         "select_procedure_at_row",
         "load_plate_procedure",
         "perform_control",
@@ -1581,7 +1581,6 @@ fn flight_plan_platform_boundary_is_uid_based_and_singular() {
         "chart_page_state",
         "suggest_waypoint_identifiers_at_row",
         "preview_entry",
-        "prepare_airway_presentation_at_row",
         "describe_plate_procedure_loads",
     ] {
         assert!(
@@ -1706,6 +1705,7 @@ fn flight_plan_picker_presentation_is_core_owned() {
     let core = read_repo_file("ui/core-rust/crates/app-core/src/lib.rs");
     let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let had = read_repo_file("ui/core-rust/crates/app-core/src/had_ops.rs");
+    let picker = read_repo_file("ui/core-rust/crates/app-core/src/airway_picker.rs");
     let web = read_repo_file("ui/web-app/src/App.tsx");
     let android =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightPlanPage.kt");
@@ -1718,12 +1718,19 @@ fn flight_plan_picker_presentation_is_core_owned() {
     );
     assert!(
         session.contains("empty_message: match procedure_kind")
-            && session.contains("crate::nav_ref_picker_label"),
+            && picker.contains("crate::nav_ref_picker_label"),
         "core row-action effects must project picker headings and empty states"
     );
     for (platform, source) in [("web", web.as_str()), ("Android", android.as_str())] {
         for duplicated_policy in [
             "procedureChoiceLabel",
+            "suggestAirwaysNear",
+            "prepareAirwayPresentation",
+            "insertAirwayAtFlightPlanRow",
+            "selectedAirwayName",
+            "selectedEntryUid",
+            "branch_key",
+            "AirwayPickerState",
             "noPublishedProceduresLabel",
             "No published routes are available.",
             "That fix is the airway entry; choose an exit.",

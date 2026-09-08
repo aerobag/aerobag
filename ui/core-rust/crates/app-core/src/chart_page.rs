@@ -574,14 +574,7 @@ pub fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
             RouteComponent::Procedure { procedure } => {
                 airport_ids.push(procedure.airport_id.0.clone());
             }
-            RouteComponent::Airway { airway } => {
-                if let Some(code) = airway.entry.airport_code() {
-                    airport_ids.push(code.to_string());
-                }
-                if let Some(code) = airway.exit.airport_code() {
-                    airport_ids.push(code.to_string());
-                }
-            }
+            RouteComponent::Airway { .. } => {}
         }
     }
     airport_ids
@@ -619,14 +612,7 @@ fn append_route_component_airports(airport_ids: &mut Vec<String>, component: &Ro
         RouteComponent::Procedure { procedure } => {
             airport_ids.push(procedure.airport_id.0.clone());
         }
-        RouteComponent::Airway { airway } => {
-            if let Some(code) = airway.entry.airport_code() {
-                airport_ids.push(code.to_string());
-            }
-            if let Some(code) = airway.exit.airport_code() {
-                airport_ids.push(code.to_string());
-            }
-        }
+        RouteComponent::Airway { .. } => {}
     }
 }
 

@@ -305,8 +305,8 @@ mod tests {
                         airway: AirwaySegment {
                             name: "V2".to_string(),
                             branch_key: None,
-                            entry: NavRef::Navaid("SEA".to_string()),
-                            exit: NavRef::Fix("ELN".to_string()),
+                            entry: crate::planning::FlightPlanWaypointId("missing-entry".into()),
+                            exit: crate::planning::FlightPlanWaypointId("missing-exit".into()),
                         },
                     },
                 ],

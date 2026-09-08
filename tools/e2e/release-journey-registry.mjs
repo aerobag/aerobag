@@ -72,7 +72,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "airport-info.tpa-derived", "airport-info.runway-complex", "airport-info.runway-fallback",
   ]),
   journey("shared.flight-plan-airway-estimates", "p1", shared, [
-    "plan.add-airway", "plan.airway-scroll", "plan.estimates-vectors",
+    "plan.add-airway", "plan.airway-scroll", "plan.airway-entry-fixed", "plan.estimates-vectors",
     "plan.ete-scope", "plan.time-mode", "plan.weather-badge", "plan.undo", "plan.redo",
   ]),
   journey("shared.plate-advisories-and-references", "p1", shared, [

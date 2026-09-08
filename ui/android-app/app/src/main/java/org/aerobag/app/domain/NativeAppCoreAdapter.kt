@@ -599,17 +599,6 @@ class NativeAppCoreAdapter(
         }
     }
 
-    fun suggestAirwaysNear(anchor: NavRef, limit: Int = 5): List<AirwaySuggestion> {
-        val result = runHadOperationElement(
-            buildJsonObject {
-                put("kind", "suggest_airways_near_anchor")
-                put("anchor", json.encodeToJsonElement(anchor.toWire()))
-                put("limit", limit)
-            },
-        )
-        return json.decodeFromJsonElement<List<WireAirwaySuggestion>>(result).map { it.toUi() }
-    }
-
     fun resolveNavRefPosition(navRef: NavRef): LatLonPoint {
         val result = runHadOperationElement(
             buildJsonObject {
@@ -1348,19 +1337,12 @@ class NativeUiSession internal constructor(
         )
     }
 
-    fun prepareAirwayPresentationAtFlightPlanRow(
-        rowUid: String,
-        airwayName: String,
-    ): AirwayPresentationPlan {
-        val result = queryFlightPlan(
-            buildJsonObject {
-                put("kind", "prepare_airway_presentation_at_row")
-                put("row_uid", rowUid)
-                put("airway_name", airwayName)
-            },
-        )
-        return json.decodeFromJsonElement<WireAirwayPresentationPlan>(result).toUi()
-    }
+    @RawUiSessionWorkApi
+    fun performAirwayPickerAction(actionId: String): UiSessionSnapshot =
+        performFlightPlanCommand("performAirwayPickerAction", buildJsonObject {
+            put("kind", "perform_airway_picker_action")
+            put("action_id", actionId)
+        })
 
     fun performFlightPlanControl(controlId: FlightPlanControlId): UiSessionSnapshot {
         return performFlightPlanCommand(
@@ -1418,30 +1400,6 @@ class NativeUiSession internal constructor(
             buildJsonObject {
                 put("kind", "append_entry")
                 put("input", input)
-            },
-        )
-    }
-
-    fun insertAirwayAtFlightPlanRow(
-        rowUid: String,
-        presentation: AirwayPresentationPlan,
-        entryPointUid: String,
-        exitPointUid: String,
-    ): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "insertAirwayAtFlightPlanRow",
-            buildJsonObject {
-                put("kind", "insert_airway_at_row")
-                put("row_uid", rowUid)
-                put(
-                    "selection",
-                    buildJsonObject {
-                        put("airway_name", presentation.airwayName)
-                        put("branch_key", presentation.branchKey)
-                        put("entry_point_uid", entryPointUid)
-                        put("exit_point_uid", exitPointUid)
-                    },
-                )
             },
         )
     }
@@ -1691,6 +1649,7 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
     fun performFlightPlanRowAction(rowUid: String, actionUid: String): UiSessionSnapshot {
         return performFlightPlanCommand(
             "performFlightPlanRowAction",
@@ -3941,54 +3900,6 @@ private fun WireNavSymbolFeature.toUi(): NavSymbolFeature = this
 
 private fun NavSymbolFeature.toWire(): WireNavSymbolFeature = this
 
-private fun WireAirwaySuggestion.toUi() = AirwaySuggestion(
-    airwayName = airway_name,
-    nearestBranchKey = nearest_branch_key,
-    nearestNavRef = nearest_nav_ref.toUi(),
-    nearestSequence = nearest_sequence,
-    distanceFromAnchorNm = distance_from_anchor_nm,
-)
-
-private fun AirwaySuggestion.toWire() = WireAirwaySuggestion(
-    airway_name = airwayName,
-    nearest_branch_key = nearestBranchKey,
-    nearest_nav_ref = nearestNavRef.toWire(),
-    nearest_sequence = nearestSequence,
-    distance_from_anchor_nm = distanceFromAnchorNm,
-)
-
-private fun WireAirwayPresentationPlan.toUi() = AirwayPresentationPlan(
-    airwayName = airway_name,
-    branchKey = branch_key,
-    points = points.map { it.toUi() },
-    suggestedEntryUid = suggested_entry_uid,
-    suggestedExitUid = suggested_exit_uid,
-)
-
-private fun AirwayPresentationPlan.toWire() = WireAirwayPresentationPlan(
-    airway_name = airwayName,
-    branch_key = branchKey,
-    points = points.map { it.toWire() },
-    suggested_entry_uid = suggestedEntryUid,
-    suggested_exit_uid = suggestedExitUid,
-)
-
-private fun WireAirwayPresentationPoint.toUi() = AirwayPresentationPoint(
-    uid = uid,
-    sequence = sequence,
-    navRef = nav_ref.toUi(),
-    label = label,
-    samePointExitDisabledReason = same_point_exit_disabled_reason,
-)
-
-private fun AirwayPresentationPoint.toWire() = WireAirwayPresentationPoint(
-    uid = uid,
-    sequence = sequence,
-    nav_ref = navRef.toWire(),
-    label = label,
-    same_point_exit_disabled_reason = samePointExitDisabledReason,
-)
-
 private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
 
 private fun WireLatLon.toUi() = LatLonPoint(lat = lat, lon = lon)
@@ -4166,6 +4077,7 @@ private fun WireRouteSegmentStatus.toUi() = when (this) {
 }
 
 private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
+    airwayPicker = airway_picker,
     planId = plan_id,
     planVersion = plan_version,
     displayRows = display_rows.map { it.toUi() },
@@ -4176,6 +4088,7 @@ private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
 )
 
 private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
+    airway_picker = airwayPicker,
     plan_id = planId,
     plan_version = planVersion,
     display_rows = displayRows.map { it.toWire() },
@@ -4514,12 +4427,6 @@ private fun WireFlightPlanRowActionEffect.toUi(): FlightPlanRowActionEffect = wh
     "open_waypoint_insert" -> FlightPlanRowActionEffect.OpenWaypointInsert(
         rowUid = requireNotNull(row_uid),
         before = requireNotNull(before),
-    )
-    "open_airway_picker" -> FlightPlanRowActionEffect.OpenAirwayPicker(
-        rowUid = requireNotNull(row_uid),
-        header = requireNotNull(header),
-        originAnchor = requireNotNull(origin_anchor).toUi(),
-        destinationAnchor = destination_anchor?.toUi(),
     )
     "open_procedure_picker" -> FlightPlanRowActionEffect.OpenProcedurePicker(
         rowUid = requireNotNull(row_uid),

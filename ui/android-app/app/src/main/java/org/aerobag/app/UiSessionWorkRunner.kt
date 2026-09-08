@@ -110,6 +110,33 @@ class UiSessionWorkRunner(
         bridge.destroyUiSessionWorkScheduler(schedulerHandle)
     }
 
+    fun submitFlightPlanRowAction(
+        rowUid: String,
+        actionUid: String,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "performFlightPlanRowAction",
+            operation = { it.performFlightPlanRowAction(rowUid, actionUid) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
+    fun submitAirwayPickerAction(
+        actionId: String,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "performAirwayPickerAction",
+            operation = { it.performAirwayPickerAction(actionId) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
     fun submitSettingsAction(
         actionId: String,
         valueId: String,

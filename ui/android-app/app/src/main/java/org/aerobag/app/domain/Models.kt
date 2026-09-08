@@ -64,30 +64,6 @@ data class PlanLeg(
     val airway: String? = null,
 )
 
-data class AirwaySuggestion(
-    val airwayName: String,
-    val nearestBranchKey: String?,
-    val nearestNavRef: NavRef,
-    val nearestSequence: Int,
-    val distanceFromAnchorNm: Double,
-)
-
-data class AirwayPresentationPoint(
-    val uid: String,
-    val sequence: Int,
-    val navRef: NavRef,
-    val label: String,
-    val samePointExitDisabledReason: String,
-)
-
-data class AirwayPresentationPlan(
-    val airwayName: String,
-    val branchKey: String,
-    val points: List<AirwayPresentationPoint>,
-    val suggestedEntryUid: String,
-    val suggestedExitUid: String?,
-)
-
 enum class ProcedureKind {
     Sid,
     Star,
@@ -234,6 +210,7 @@ data class NavElementUiView(
 )
 
 data class FlightPlanUiState(
+    val airwayPicker: org.aerobag.app.generated.UiAirwayPicker? = null,
     val planId: String,
     val planVersion: Long,
     val displayRows: List<FlightPlanDisplayRowUiView>,
@@ -366,12 +343,6 @@ sealed interface FlightPlanRowActionEffect {
     data class OpenWaypointInsert(
         val rowUid: String,
         val before: Boolean,
-    ) : FlightPlanRowActionEffect
-    data class OpenAirwayPicker(
-        val rowUid: String,
-        val header: String,
-        val originAnchor: NavRef,
-        val destinationAnchor: NavRef?,
     ) : FlightPlanRowActionEffect
     data class OpenProcedurePicker(
         val rowUid: String,

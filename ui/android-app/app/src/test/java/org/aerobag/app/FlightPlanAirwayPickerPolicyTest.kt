@@ -19,14 +19,23 @@ class FlightPlanAirwayPickerPolicyTest {
             airwayPickerBody.contains(".heightIn(max = waypointTrayMaxHeight)"),
         )
         assertTrue(
-            "Airway suggestions, entry fixes, and exit fixes must each use a scrollable lazy list.",
-            Regex("""LazyColumn\(""").findAll(airwayPickerBody).count() == 3,
+            "Every core-projected picker stage must share the same bounded lazy list.",
+            airwayPickerBody.split("LazyColumn(").size == 2 &&
+                airwayPickerBody.contains(".weight(1f, fill = false)"),
         )
         assertTrue(
-            "The scrollable choice lists must consume only the panel space left by fixed controls.",
-            Regex("""\.weight\(1f,\s*fill = false\)""")
-                .findAll(airwayPickerBody)
-                .count() == 3,
+            "Render core sections with dense rows and the standard gutter.",
+            airwayPickerBody.contains("picker.sections.forEachIndexed") &&
+                airwayPickerBody.contains("section.dense") &&
+                airwayPickerBody.contains("section.buttons.chunked(columns)") &&
+                airwayPickerBody.contains("Spacer(Modifier.height(ThumbGap))"),
+        )
+        assertTrue(
+            "Buttons must deliver core action IDs without constructing selections.",
+            airwayPickerBody.contains("performAirwayPickerAction(button.actionId)") &&
+                !source.contains("selectedEntryUid") &&
+                !source.contains("prepareAirwayPresentation") &&
+                !source.contains("suggestAirwaysNear"),
         )
     }
 

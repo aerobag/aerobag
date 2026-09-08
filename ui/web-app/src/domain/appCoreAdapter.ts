@@ -5,8 +5,6 @@
 import type {
   AltitudeComparisonPanelUiView,
   AppUiState,
-  AirwayPresentationPlan,
-  AirwaySuggestion,
   CifpTppMatch,
   ChartPageData,
   FlightPlanEntryPreview,
@@ -597,13 +595,6 @@ export type FlightPlanRowActionEffect =
   | { kind: "open_plate_target"; airport_id: string; target: string }
   | { kind: "open_waypoint_insert"; row_uid: string; before: boolean }
   | {
-      kind: "open_airway_picker";
-      row_uid: string;
-      header: string;
-      origin_anchor: NavRef;
-      destination_anchor?: NavRef | null;
-    }
-  | {
       kind: "open_procedure_picker";
       row_uid: string;
       airport_id: string;
@@ -849,8 +840,7 @@ export interface UiSession {
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, query: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(input: string): Promise<UiSessionSnapshot>;
-  prepareAirwayPresentationAtFlightPlanRow(rowUid: string, airwayName: string): Promise<AirwayPresentationPlan>;
-  insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryPointUid: string, exitPointUid: string): Promise<UiSessionSnapshot>;
+  performAirwayPickerAction(actionId: string): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   describePlateProcedureLoads(plateId: string): Promise<ProcedureLoadMenu>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
@@ -961,7 +951,6 @@ export interface AppCoreAdapter {
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
   suggestWaypointIdentifiersNear(anchor: LatLon, query: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
-  suggestAirwaysNearAnchor(anchor: NavRef, limit?: number): Promise<AirwaySuggestion[]>;
   listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]>;
   describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions>;
   findProcedurePlateMatch(airportId: string, cifpId: string): Promise<CifpTppMatch | null>;
@@ -1716,24 +1705,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       appendFlightPlanEntry: async (input) => {
         return performFlightPlanCommand({ kind: "append_entry", input });
       },
-      prepareAirwayPresentationAtFlightPlanRow: async (rowUid, airwayName) => {
-        return queryFlightPlan<AirwayPresentationPlan>({
-          kind: "prepare_airway_presentation_at_row",
-          row_uid: rowUid,
-          airway_name: airwayName,
-        });
-      },
-      insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryPointUid, exitPointUid) => {
-        return performFlightPlanCommand({
-          kind: "insert_airway_at_row",
-          row_uid: rowUid,
-          selection: {
-            airway_name: presentation.airway_name,
-            branch_key: presentation.branch_key,
-            entry_point_uid: entryPointUid,
-            exit_point_uid: exitPointUid,
-          },
-        });
+      performAirwayPickerAction: async (actionId) => {
+        return performFlightPlanCommand({ kind: "perform_airway_picker_action", action_id: actionId });
       },
       selectProcedureAtFlightPlanRow: async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
         const trace = { row_uid: rowUid, airport_id: airportId, procedure_id: procedureId, kind, runway_transition: runwayTransition, enroute_transition: enrouteTransition };
@@ -2318,10 +2291,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       query,
       limit,
     });
-  }
-
-  async suggestAirwaysNearAnchor(anchor: NavRef, limit = 30): Promise<AirwaySuggestion[]> {
-    return runCoreHadOperation<AirwaySuggestion[]>({ kind: "suggest_airways_near_anchor", anchor, limit });
   }
 
   async listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]> {

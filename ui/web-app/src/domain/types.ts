@@ -11,7 +11,7 @@ export type {
   WaypointIdentifierSuggestion,
   WaypointSuggestionNavRef,
 } from "../generated/navQueryWire";
-import type { FlightPlanControlUiView } from "../generated/sessionPageWire";
+import type { FlightPlanControlUiView, UiAirwayPicker } from "../generated/sessionPageWire";
 export type {
   FlightPlanControlId,
   FlightPlanControlUiView,
@@ -74,30 +74,6 @@ export type PlanLeg = {
   from: NavRef;
   to: NavRef;
   airway: string | null;
-};
-
-export type AirwaySuggestion = {
-  airway_name: string;
-  nearest_branch_key: string | null;
-  nearest_nav_ref: NavRef;
-  nearest_sequence: number;
-  distance_from_anchor_nm: number;
-};
-
-export type AirwayPresentationPoint = {
-  uid: string;
-  sequence: number;
-  nav_ref: NavRef;
-  label: string;
-  same_point_exit_disabled_reason: string;
-};
-
-export type AirwayPresentationPlan = {
-  airway_name: string;
-  branch_key: string;
-  points: AirwayPresentationPoint[];
-  suggested_entry_uid: string;
-  suggested_exit_uid: string | null;
 };
 
 export type ProcedureKind = "sid" | "star" | "approach";
@@ -227,6 +203,7 @@ export type NavElementUiView = {
 };
 
 export type FlightPlanUiState = {
+  airway_picker: UiAirwayPicker | null;
   plan_id: string;
   plan_version: number;
   data_columns: FlightDataColumn[];

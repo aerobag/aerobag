@@ -640,82 +640,22 @@ mod tests {
     }
 
     fn two_airway_plan() -> FlightPlan {
-        let a = nav(40.0, -120.0);
-        let b = nav(40.0, -119.8);
-        let c = nav(40.0, -119.6);
-        let d = nav(40.0, -117.0);
-        let e = nav(40.0, -116.0);
-        crate::build_flight_plan(FlightPlan {
-            id: "two-airway-plan".to_string(),
-            name: "A V1 C V2 E".to_string(),
-            route_components: vec![
-                RouteComponent::Airway {
-                    airway: crate::AirwaySegment {
-                        name: "V1".to_string(),
-                        branch_key: None,
-                        entry: a.clone(),
-                        exit: c.clone(),
-                    },
-                },
-                RouteComponent::Airway {
-                    airway: crate::AirwaySegment {
-                        name: "V2".to_string(),
-                        branch_key: None,
-                        entry: c.clone(),
-                        exit: e.clone(),
-                    },
-                },
-            ],
-            route_component_uids: vec!["row-v1".to_string(), "row-v2".to_string()],
-            route_component_uid_counter: 2,
-            resolved_legs: vec![
-                ResolvedLeg {
-                    id: "airway--0".to_string(),
-                    from: a,
-                    to: b.clone(),
-                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
-                    procedure_provenance: None,
-                },
-                ResolvedLeg {
-                    id: "airway--1".to_string(),
-                    from: b,
-                    to: c.clone(),
-                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
-                    procedure_provenance: None,
-                },
-                ResolvedLeg {
-                    id: "airway--0".to_string(),
-                    from: c,
-                    to: d.clone(),
-                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
-                    procedure_provenance: None,
-                },
-                ResolvedLeg {
-                    id: "airway--1".to_string(),
-                    from: d,
-                    to: e,
-                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
-                    procedure_provenance: None,
-                },
-            ],
-            guidance: Some(GuidanceState {
-                active_leg_index: 1,
-                active_detail_index: Some(1),
-                sequencing_mode: SequencingMode::FollowPlan,
-                direct_to: None,
-                suspend_reason: None,
-            }),
-            departure: None,
-            destination: None,
-            alternate: None,
-            aircraft: None,
-            cruise_altitude_ft: None,
-            planned_departure_time_epoch_ms: None,
-            notes: None,
-            updated_at_epoch_ms: 0,
-            version: 1,
-        })
-        .expect("valid two-airway plan")
+        use crate::planning::airway_tests::{append_airway, waypoints};
+        let plan = waypoints(&[nav(40.0, -120.0)]);
+        let plan = append_airway(
+            &plan,
+            "V1",
+            &[nav(40.0, -120.0), nav(40.0, -119.8), nav(40.0, -119.6)],
+        );
+        let mut plan = append_airway(
+            &plan,
+            "V2",
+            &[nav(40.0, -119.6), nav(40.0, -117.0), nav(40.0, -116.0)],
+        );
+        for (index, leg) in plan.resolved_legs.iter_mut().enumerate() {
+            leg.id = format!("airway--{}", index % 2);
+        }
+        crate::activate_leg(&plan, 1).unwrap()
     }
 
     fn geometry_map(

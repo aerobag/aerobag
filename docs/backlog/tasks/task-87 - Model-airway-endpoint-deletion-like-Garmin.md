@@ -18,5 +18,8 @@ ordinal: 87000
 Delete first/last of airway
 
 No, delete the waypoint and have the airway represent it. Garmin
-<!-- SECTION:DESCRIPTION:END -->
 
+Superseded by the explicit endpoint model: airways now reference pinned top-level
+waypoint occurrences. Remove Airway retains those endpoints; children no longer offer
+endpoint trimming. See [Airway Endpoint Ownership](../../refactor/airway-endpoint-ownership.md).
+<!-- SECTION:DESCRIPTION:END -->

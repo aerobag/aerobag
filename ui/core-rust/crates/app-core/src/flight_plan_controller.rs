@@ -16,7 +16,7 @@ use crate::{
     FlightPlanControlUiView, FlightPlanDisplayRowKind, FlightPlanRouteProjection,
     FlightPlanRouteSegment, FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState,
     GuidanceState, LatLon, LegDisplayElement, NavKvStore, NavRef, ProcedureDiscontinuity,
-    RouteComponentViewKind, SequencingMode,
+    SequencingMode,
 };
 
 const MAX_FLIGHT_PLAN_UNDO_DEPTH: usize = 1_024;
@@ -161,6 +161,7 @@ impl Default for FlightPlanNavigationController {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 struct FlightPlanModel {
+    airway_picker: crate::airway_picker::AirwayPickerController,
     definition: FlightPlanDefinitionController,
     navigation: FlightPlanNavigationController,
     // Read-only composite cache for planners and projections that consume both domains.
@@ -235,6 +236,17 @@ pub(crate) struct FlightPlanController {
 }
 
 impl FlightPlanController {
+    pub(crate) fn airway_picker(&self) -> &crate::airway_picker::AirwayPickerController {
+        &self.model.airway_picker
+    }
+
+    pub(crate) fn set_airway_picker(
+        &mut self,
+        picker: crate::airway_picker::AirwayPickerController,
+    ) {
+        self.model.airway_picker = picker;
+    }
+
     pub fn new(
         plan: FlightPlan,
         guidance_leg_geometry: Vec<GuidanceLegGeometry>,
@@ -244,6 +256,7 @@ impl FlightPlanController {
         let guidance = active_plan.guidance.clone();
         Ok(Self {
             model: FlightPlanModel {
+                airway_picker: Default::default(),
                 definition: FlightPlanDefinitionController::new(definition),
                 navigation: FlightPlanNavigationController {
                     guidance,
@@ -537,15 +550,7 @@ impl FlightPlanController {
                 &crate::FlightPlanRowId(row.uid.clone()),
             ),
             FlightPlanRowActionId::Remove | FlightPlanRowActionId::RemoveProcedure => {
-                if row.component_kind == Some(RouteComponentViewKind::Airway) && row.depth > 0 {
-                    let nav_ref = row.nav_ref.as_ref().ok_or_else(|| AppError {
-                        kind: AppErrorKind::InvalidFlightPlan,
-                        message: "airway child remove row has no nav reference".to_string(),
-                    })?;
-                    crate::remove_airway_child_waypoint(plan, row_component_index()?, nav_ref)
-                } else {
-                    crate::delete_component(plan, row_component_index()?)
-                }
+                crate::delete_component(plan, row_component_index()?)
             }
             FlightPlanRowActionId::RemoveAllAbove => {
                 crate::remove_all_above(plan, row_component_index()?)
@@ -828,6 +833,7 @@ impl FlightPlanController {
         let geometry = self_contained_guidance_leg_geometry_for_plan(&plan)?.unwrap_or_default();
         self.model.navigation.guidance = plan.guidance.clone();
         self.model.navigation.guidance_leg_geometry = Arc::new(geometry_map(geometry));
+        self.model.airway_picker.close();
         self.model.active_plan = Some(plan);
         Ok(())
     }

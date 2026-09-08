@@ -208,8 +208,6 @@ import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AirwayPresentationPlan
-import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
@@ -663,19 +661,6 @@ internal fun rememberStructuredRowBounds(
         structuredRowBounds[rowId] = coordinates.boundsInWindow()
     }
 }
-
-internal data class AndroidAirwayPickerState(
-    val loading: Boolean,
-    val error: String?,
-    val rowUid: String,
-    val header: String,
-    val originAnchor: NavRef,
-    val destinationAnchor: NavRef?,
-    val suggestions: List<AirwaySuggestion>,
-    val selectedAirwayName: String?,
-    val presentation: AirwayPresentationPlan?,
-    val selectedEntryUid: String?,
-)
 
 internal data class AndroidProcedurePickerState(
     val loading: Boolean,
@@ -3681,6 +3666,7 @@ internal fun AerobagApp(
                     FlightPlanPage(
                         appCore = appCore,
                         uiSession = uiSession,
+                        sessionWorkRunner = uiSessionWorkRunner,
                         page = page,
                         pageHistory = pageHistory,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),

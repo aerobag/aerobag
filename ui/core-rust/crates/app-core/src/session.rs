@@ -85,9 +85,8 @@ use crate::{
     had_ops::{
         chart_page_state, describe_plate_loads, insert_waypoint_best_position,
         materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
-        nav_ref_position, nav_symbol_feature, prepare_airway_presentation_for_anchors,
-        suggest_waypoint_identifiers, CoreResourceRequest, CoreResourceSource, HadOperationOutcome,
-        HadReadError, UiInvalidation,
+        nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
+        CoreResourceSource, HadOperationOutcome, HadReadError, UiInvalidation,
     },
     live_feed_runtime::{
         LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedRuntimeDecision,
@@ -493,6 +492,7 @@ struct RegisteredFlightPlanRowAction {
 #[derive(Clone)]
 enum RegisteredFlightPlanRowActionCommand {
     PerformSessionMutation,
+    OpenAirwayPicker,
     Effect(crate::FlightPlanRowActionEffect),
 }
 
@@ -4036,6 +4036,9 @@ pub fn tick_bad_autopilot_in_session(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlightPlanSessionCommand {
+    PerformAirwayPickerAction {
+        action_id: String,
+    },
     InsertWaypointAtRow {
         row_uid: String,
         before: bool,
@@ -4043,10 +4046,6 @@ pub enum FlightPlanSessionCommand {
     },
     AppendEntry {
         input: String,
-    },
-    InsertAirwayAtRow {
-        row_uid: String,
-        selection: AirwayPresentationSelection,
     },
     SelectProcedureAtRow {
         row_uid: String,
@@ -4092,10 +4091,6 @@ pub enum FlightPlanSessionQuery {
     PreviewEntry {
         input: String,
     },
-    PrepareAirwayPresentationAtRow {
-        row_uid: String,
-        airway_name: String,
-    },
     DescribePlateProcedureLoads {
         plate_id: String,
     },
@@ -4113,6 +4108,9 @@ pub fn perform_flight_plan_command_in_session(
         advance_session_wall_clock(&mut session, now_epoch_ms);
     }
     match command {
+        FlightPlanSessionCommand::PerformAirwayPickerAction { action_id } => {
+            perform_airway_picker_action_in_session(handle, &action_id)
+        }
         FlightPlanSessionCommand::InsertWaypointAtRow {
             row_uid,
             before,
@@ -4120,9 +4118,6 @@ pub fn perform_flight_plan_command_in_session(
         } => insert_waypoint_at_flight_plan_row_in_session(handle, row_uid, before, waypoint),
         FlightPlanSessionCommand::AppendEntry { input } => {
             append_flight_plan_entry_in_session(handle, input)
-        }
-        FlightPlanSessionCommand::InsertAirwayAtRow { row_uid, selection } => {
-            insert_airway_at_flight_plan_row_in_session(handle, row_uid, selection)
         }
         FlightPlanSessionCommand::SelectProcedureAtRow {
             row_uid,
@@ -4195,12 +4190,6 @@ pub fn query_flight_plan_in_session(
         ),
         FlightPlanSessionQuery::PreviewEntry { input } => {
             preview_flight_plan_entry_in_session(handle, input)
-        }
-        FlightPlanSessionQuery::PrepareAirwayPresentationAtRow {
-            row_uid,
-            airway_name,
-        } => {
-            prepare_airway_presentation_at_flight_plan_row_in_session(handle, row_uid, airway_name)
         }
         FlightPlanSessionQuery::DescribePlateProcedureLoads { plate_id } => {
             describe_plate_procedure_loads_in_session(handle, plate_id)
@@ -4956,14 +4945,10 @@ pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     ))
 }
 
-fn prepare_airway_presentation_at_flight_plan_row_in_session(
-    handle: u32,
-    row_uid: String,
-    airway_name: String,
+fn open_airway_picker_in_session(
+    session: &mut UiSession,
+    row_uid: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let session_guard = slot.lock_running()?;
-    let session = &*session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -4974,35 +4959,58 @@ fn prepare_airway_presentation_at_flight_plan_row_in_session(
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("flight-plan airway target is stale: {row_uid}"),
         })?;
-    let origin_anchor = row.origin_anchor.as_ref().ok_or_else(|| AppError {
+    let origin = row.origin_anchor.clone().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
-        message: "airway insert row has no origin anchor".to_string(),
+        message: "airway insert row has no origin anchor".into(),
     })?;
-    let presentation = match prepare_airway_presentation_for_anchors(
-        session_nav_kv_store(session)?,
-        &airway_name,
-        origin_anchor,
-        row.destination_anchor.as_ref(),
-    ) {
-        Ok(presentation) => presentation,
-        Err(HadReadError::NeedPages(pages)) => {
-            return Ok(HadOperationOutcome::NeedResources {
-                resources: nav_kv_page_resources(pages),
-            })
+    let transition = session
+        .flight_plan
+        .airway_picker()
+        .open(
+            session_nav_kv_store(session)?,
+            row_uid.to_owned(),
+            origin,
+            row.destination_anchor.clone(),
+            session.nav_data.epoch(),
+        )
+        .map(crate::airway_picker::Transition::Picker);
+    apply_airway_picker_transition(session, transition)
+}
+
+fn perform_airway_picker_action_in_session(
+    handle: u32,
+    action_id: &str,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session = slot.lock_running()?;
+    let transition = session.flight_plan.airway_picker().advance(
+        session_nav_kv_store(&session)?,
+        action_id,
+        session.nav_data.epoch(),
+    );
+    apply_airway_picker_transition(&mut session, transition)
+}
+
+fn apply_airway_picker_transition(
+    session: &mut UiSession,
+    transition: Result<crate::airway_picker::Transition, HadReadError>,
+) -> AppResult<HadOperationOutcome> {
+    match transition {
+        Ok(crate::airway_picker::Transition::Picker(picker)) => {
+            session.flight_plan.set_airway_picker(picker);
+            changed_session_update_outcome_for_flight_plan(session)
         }
-        Err(HadReadError::Fatal(message)) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message,
-            })
+        Ok(crate::airway_picker::Transition::Insert { row_uid, selection }) => {
+            insert_airway_at_flight_plan_row_in_session(session, row_uid, selection)
         }
-    };
-    Ok(HadOperationOutcome::complete(
-        serde_json::to_value(presentation).map_err(|err| AppError {
-            kind: AppErrorKind::Internal,
-            message: err.to_string(),
-        })?,
-    ))
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
 }
 
 fn describe_plate_procedure_loads_in_session(
@@ -5089,14 +5097,11 @@ pub(crate) fn append_flight_plan_entry_in_session(
     commit_session_flight_plan_edit_with_invalidations_outcome(session, mutation)
 }
 
-pub(crate) fn insert_airway_at_flight_plan_row_in_session(
-    handle: u32,
+fn insert_airway_at_flight_plan_row_in_session(
+    session: &mut UiSession,
     row_uid: String,
     selection: AirwayPresentationSelection,
 ) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -5550,6 +5555,20 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session
+        .runtime
+        .flight_plan_row_actions
+        .get(&action_uid)
+        .is_some_and(|action| {
+            action.row_uid == row_uid
+                && matches!(
+                    action.command,
+                    RegisteredFlightPlanRowActionCommand::OpenAirwayPicker
+                )
+        })
+    {
+        return open_airway_picker_in_session(session, &row_uid);
+    }
     let (next_plan, domain) = session.flight_plan.plan_after_row_action(
         &row_uid,
         &action_uid,
@@ -5583,7 +5602,8 @@ pub fn flight_plan_row_action_decision_in_session(
             message: format!("unknown or stale flight-plan row action: {action_uid}"),
         })?;
     let (perform_session_mutation, effect) = match action.command {
-        RegisteredFlightPlanRowActionCommand::PerformSessionMutation => (true, None),
+        RegisteredFlightPlanRowActionCommand::PerformSessionMutation
+        | RegisteredFlightPlanRowActionCommand::OpenAirwayPicker => (true, None),
         RegisteredFlightPlanRowActionCommand::Effect(effect) => (false, Some(effect)),
     };
     Ok(crate::FlightPlanRowActionDecision {
@@ -13082,6 +13102,10 @@ fn project_session_app_ui_state(
         }
     }
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
+        active_plan.airway_picker = session
+            .flight_plan
+            .airway_picker()
+            .view(session.nav_data.epoch());
         enrich_flight_plan_weather(session, active_plan);
         enrich_altitude_planner_winds_acquisition(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
@@ -13382,24 +13406,11 @@ fn registered_flight_plan_row_action(
             }
         }
         FlightPlanRowActionId::AddAirway => {
-            let origin_anchor = row.origin_anchor.clone().ok_or_else(|| AppError {
-                kind: AppErrorKind::Internal,
-                message: format!("enabled airway action on {} has no origin anchor", row.uid),
-            })?;
-            crate::FlightPlanRowActionEffect::OpenAirwayPicker {
+            return Ok(RegisteredFlightPlanRowAction {
                 row_uid: row.uid.clone(),
-                header: format!(
-                    "AIRWAY {}{}",
-                    crate::nav_ref_picker_label(&origin_anchor),
-                    row.destination_anchor
-                        .as_ref()
-                        .map_or_else(String::new, |anchor| {
-                            format!(" \u{2192} {}", crate::nav_ref_picker_label(anchor))
-                        })
-                ),
-                origin_anchor,
-                destination_anchor: row.destination_anchor.clone(),
-            }
+                dismiss_tray: false,
+                command: RegisteredFlightPlanRowActionCommand::OpenAirwayPicker,
+            });
         }
         FlightPlanRowActionId::SelectDeparture
         | FlightPlanRowActionId::SelectArrival
@@ -26698,9 +26709,12 @@ mod tests {
                     airway: crate::AirwaySegment {
                         name: "V4".to_string(),
                         branch_key: Some("V4-TWF-YKM".to_string()),
-                        entry: NavRef::Fix("ALKAL".to_string()),
-                        exit: NavRef::Navaid("YKM".to_string()),
+                        entry: crate::FlightPlanWaypointId("row-alkal".into()),
+                        exit: crate::FlightPlanWaypointId("row-ykm".into()),
                     },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("YKM".into()),
                 },
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Fix("CHINS".to_string()),
@@ -26713,10 +26727,11 @@ mod tests {
                 "row-twf".to_string(),
                 "row-alkal".to_string(),
                 "row-v4".to_string(),
+                "row-ykm".to_string(),
                 "row-chins".to_string(),
                 "row-kpae".to_string(),
             ],
-            route_component_uid_counter: 5,
+            route_component_uid_counter: 6,
             resolved_legs: vec![
                 ResolvedLeg {
                     id: "leg-twf-alkal".to_string(),
@@ -26757,14 +26772,14 @@ mod tests {
                     id: "leg-ykm-chins".to_string(),
                     from: NavRef::Navaid("YKM".to_string()),
                     to: NavRef::Fix("CHINS".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    source: ResolvedLegSource::RouteComponent { component_index: 3 },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "leg-chins-kpae".to_string(),
                     from: NavRef::Fix("CHINS".to_string()),
                     to: NavRef::Airport("KPAE".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 3 },
+                    source: ResolvedLegSource::RouteComponent { component_index: 4 },
                     procedure_provenance: None,
                 },
             ],
@@ -31143,76 +31158,22 @@ mod tests {
             lat: 40.0,
             lon: -119.6,
         };
-        let plan = FlightPlan {
-            id: "duplicate-airway-leg-id-preview".to_string(),
-            name: "duplicate airway ids".to_string(),
-            route_components: vec![
-                RouteComponent::Airway {
-                    airway: crate::AirwaySegment {
-                        name: "V1".to_string(),
-                        branch_key: None,
-                        entry: NavRef::LatLon(a),
-                        exit: NavRef::LatLon(c),
-                    },
-                },
-                RouteComponent::Airway {
-                    airway: crate::AirwaySegment {
-                        name: "V2".to_string(),
-                        branch_key: None,
-                        entry: NavRef::LatLon(c),
-                        exit: NavRef::LatLon(e),
-                    },
-                },
-            ],
-            route_component_uids: vec!["row-v1".to_string(), "row-v2".to_string()],
-            route_component_uid_counter: 2,
-            resolved_legs: vec![
-                ResolvedLeg {
-                    id: "airway--0".to_string(),
-                    from: NavRef::LatLon(a),
-                    to: NavRef::LatLon(b),
-                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
-                    procedure_provenance: None,
-                },
-                ResolvedLeg {
-                    id: "airway--1".to_string(),
-                    from: NavRef::LatLon(b),
-                    to: NavRef::LatLon(c),
-                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
-                    procedure_provenance: None,
-                },
-                ResolvedLeg {
-                    id: "airway--0".to_string(),
-                    from: NavRef::LatLon(c),
-                    to: NavRef::LatLon(d),
-                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
-                    procedure_provenance: None,
-                },
-                ResolvedLeg {
-                    id: "airway--1".to_string(),
-                    from: NavRef::LatLon(d),
-                    to: NavRef::LatLon(e),
-                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
-                    procedure_provenance: None,
-                },
-            ],
-            guidance: Some(GuidanceState {
-                active_leg_index: 0,
-                active_detail_index: Some(0),
-                sequencing_mode: SequencingMode::FollowPlan,
-                direct_to: None,
-                suspend_reason: None,
-            }),
-            departure: None,
-            destination: None,
-            alternate: None,
-            aircraft: None,
-            cruise_altitude_ft: None,
-            planned_departure_time_epoch_ms: None,
-            notes: None,
-            updated_at_epoch_ms: 0,
-            version: 1,
-        };
+        use crate::planning::airway_tests::{append_airway, waypoints};
+        let plan = waypoints(&[NavRef::LatLon(a)]);
+        let plan = append_airway(
+            &plan,
+            "V1",
+            &[NavRef::LatLon(a), NavRef::LatLon(b), NavRef::LatLon(c)],
+        );
+        let mut plan = append_airway(
+            &plan,
+            "V2",
+            &[NavRef::LatLon(c), NavRef::LatLon(d), NavRef::LatLon(e)],
+        );
+        for (index, leg) in plan.resolved_legs.iter_mut().enumerate() {
+            leg.id = format!("airway--{}", index % 2);
+        }
+        let plan = crate::activate_leg(&plan, 0).unwrap();
 
         let geometry_by_leg_id = self_contained_geometry_map_for_test(&plan);
         let records = plan_preview_legs(&plan, &geometry_by_leg_id);
@@ -31254,86 +31215,25 @@ mod tests {
             lat: 40.0,
             lon: -116.9,
         };
-        let airway = |name: &str, entry: LatLon, exit: LatLon| RouteComponent::Airway {
-            airway: crate::AirwaySegment {
-                name: name.to_string(),
-                branch_key: None,
-                entry: NavRef::LatLon(entry),
-                exit: NavRef::LatLon(exit),
-            },
-        };
-        let leg = |id: &str, from: LatLon, to: LatLon, component_index: usize| ResolvedLeg {
-            id: id.to_string(),
-            from: NavRef::LatLon(from),
-            to: NavRef::LatLon(to),
-            source: ResolvedLegSource::RouteComponent { component_index },
-            procedure_provenance: None,
-        };
-        let original = FlightPlan {
-            id: "stable-airway-preview".to_string(),
-            name: "V1 V2".to_string(),
-            route_components: vec![airway("V1", a, c), airway("V2", c, e)],
-            route_component_uids: vec!["row-v1".to_string(), "row-v2".to_string()],
-            route_component_uid_counter: 2,
-            resolved_legs: vec![
-                leg("airway--0", a, b, 0),
-                leg("airway--1", b, c, 0),
-                leg("airway--0", c, d, 1),
-                leg("airway--1", d, e, 1),
-            ],
-            guidance: Some(GuidanceState {
-                active_leg_index: 2,
-                active_detail_index: Some(2),
-                sequencing_mode: SequencingMode::FollowPlan,
-                direct_to: None,
-                suspend_reason: None,
-            }),
-            ..FlightPlan::empty()
-        };
-        let init = create_ui_session(original, &[], None, None).expect("create session");
+        use crate::planning::airway_tests::{append_airway, waypoints};
+        let plan = waypoints(&[NavRef::LatLon(a)]);
+        let plan = append_airway(
+            &plan,
+            "V1",
+            &[NavRef::LatLon(a), NavRef::LatLon(b), NavRef::LatLon(c)],
+        );
+        let mut plan = append_airway(
+            &plan,
+            "V2",
+            &[NavRef::LatLon(c), NavRef::LatLon(d), NavRef::LatLon(e)],
+        );
+        for (index, leg) in plan.resolved_legs.iter_mut().enumerate() {
+            leg.id = format!("airway--{}", index % 2);
+        }
+        let original = crate::activate_leg(&plan, 2).unwrap();
+        let init = create_ui_session(original.clone(), &[], None, None).expect("create session");
         select_plan_preview(init.handle);
-
-        let with_prefix = FlightPlan {
-            id: "stable-airway-preview".to_string(),
-            name: "X V1 V2".to_string(),
-            route_components: vec![
-                RouteComponent::Waypoint {
-                    waypoint: NavRef::LatLon(x),
-                },
-                airway("V1", a, c),
-                airway("V2", c, e),
-            ],
-            route_component_uids: vec![
-                "row-x".to_string(),
-                "row-v1".to_string(),
-                "row-v2".to_string(),
-            ],
-            route_component_uid_counter: 3,
-            resolved_legs: vec![
-                ResolvedLeg {
-                    id: "component-0-1".to_string(),
-                    from: NavRef::LatLon(x),
-                    to: NavRef::LatLon(a),
-                    source: ResolvedLegSource::SyntheticBridge {
-                        from_component_index: 0,
-                        to_component_index: 1,
-                    },
-                    procedure_provenance: None,
-                },
-                leg("airway--0", a, b, 1),
-                leg("airway--1", b, c, 1),
-                leg("airway--0", c, d, 2),
-                leg("airway--1", d, e, 2),
-            ],
-            guidance: Some(GuidanceState {
-                active_leg_index: 3,
-                active_detail_index: Some(3),
-                sequencing_mode: SequencingMode::FollowPlan,
-                direct_to: None,
-                suspend_reason: None,
-            }),
-            ..FlightPlan::empty()
-        };
+        let with_prefix = crate::insert_waypoint(&original, 0, true, NavRef::LatLon(x)).unwrap();
         replace_flight_plan_in_session(init.handle, with_prefix).expect("insert prefix");
         let snapshot = apply_situation_control_input_in_session(
             init.handle,
@@ -32353,6 +32253,147 @@ mod tests {
             .expect("selected level");
 
         assert_eq!(selected.res, 0);
+    }
+
+    #[test]
+    fn airway_picker_session_commands_publish_each_step_and_commit_the_selected_airway() {
+        fn picker_from_update(
+            result: serde_json::Value,
+        ) -> app_ui_contracts::session::UiAirwayPicker {
+            let update: UiSessionUpdate = serde_json::from_value(result).unwrap();
+            let patch = update.flight_plan.expect("immediate flight-plan update");
+            let assignment = patch
+                .assignments
+                .iter()
+                .find(|a| a.path == ["app_ui_state", "active_plan"])
+                .unwrap();
+            let plan: FlightPlanUiState = serde_json::from_value(assignment.value.clone()).unwrap();
+            plan.airway_picker
+                .expect("picker in the incremental update")
+        }
+        let store = crate::airway_picker::tests::store();
+        let plan = crate::build_flight_plan(FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("ELN".into()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("PSC".into()),
+                },
+            ],
+            ..FlightPlan::empty()
+        })
+        .unwrap();
+        let init = create_ui_session(plan, &[], None, None).unwrap();
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        let row = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .unwrap()
+            .display_rows
+            .iter()
+            .find(|row| row.nav_ref == Some(NavRef::Navaid("ELN".into())))
+            .unwrap();
+        let action = row
+            .action_matrix
+            .iter()
+            .flatten()
+            .find(|action| action.id == crate::FlightPlanRowActionId::AddAirway)
+            .unwrap();
+        assert!(action.enabled);
+        let decision = flight_plan_row_action_decision_in_session(
+            init.handle,
+            row.uid.clone(),
+            action.uid.clone(),
+        )
+        .unwrap();
+        assert!(decision.perform_session_mutation);
+        assert!(decision.effect.is_none());
+        assert!(!decision.dismiss_tray);
+        let outcome = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformRowAction {
+                row_uid: row.uid.clone(),
+                action_uid: action.uid.clone(),
+            },
+            1000,
+        )
+        .unwrap();
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+            ..
+        } = outcome
+        else {
+            panic!("open should complete")
+        };
+        assert!(
+            invalidations.is_empty(),
+            "opening a picker is not a route edit"
+        );
+        let picker = picker_from_update(result);
+        assert_eq!(picker.sections[0].title, "Through ELN");
+        let airway = picker.sections[0]
+            .buttons
+            .iter()
+            .find(|b| b.label == "V187")
+            .unwrap();
+        let outcome = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAirwayPickerAction {
+                action_id: airway.action_id.clone(),
+            },
+            1001,
+        )
+        .unwrap();
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+            ..
+        } = outcome
+        else {
+            panic!("choice should complete")
+        };
+        assert!(invalidations.is_empty());
+        let picker = picker_from_update(result);
+        assert_eq!(picker.title, "V187: Select exit");
+        let exit = picker.sections[0]
+            .buttons
+            .iter()
+            .find(|b| b.label == "PSC")
+            .unwrap();
+        let outcome = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAirwayPickerAction {
+                action_id: exit.action_id.clone(),
+            },
+            1002,
+        )
+        .unwrap();
+        assert!(matches!(outcome, HadOperationOutcome::Complete { .. }));
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        assert!(snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .unwrap()
+            .airway_picker
+            .is_none());
+        let plan = snapshot.app_state.active_plan.as_ref().unwrap();
+        assert_eq!(plan.route_components.len(), 3);
+        let RouteComponent::Airway { airway } = &plan.route_components[1] else {
+            panic!("airway between explicit endpoints")
+        };
+        assert_eq!(airway.name, "V187");
+        assert_eq!(airway.entry.0, plan.route_component_uids[0]);
+        assert_eq!(airway.exit.0, plan.route_component_uids[2]);
+        assert_eq!(
+            plan.resolved_legs.last().unwrap().to,
+            NavRef::Navaid("PSC".into())
+        );
+        destroy_session(init.handle);
     }
 
     #[test]

@@ -46,7 +46,7 @@ const CLOUD_ENVELOPE_VERSION: u32 = 1;
 const CLOUD_PAGE_VERSION: u32 = 1;
 const CLOUD_NODE_VERSION: u32 = 1;
 const FLIGHT_PLAN_RECORD_KEY: &str = "flight_plan/current";
-const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 2;
+const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 3;
 const OFFLINE_PACKAGE_REGION_RECORD_PREFIX: &str = "offline_packages/region/";
 const OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX: &str = "offline_packages/product/";
 const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
@@ -2780,7 +2780,6 @@ fn cloud_record_for_flight_plan(record: &StampedFlightPlan) -> AppResult<CloudRe
 
 fn flight_plan_from_record(record: &CloudRecord) -> AppResult<StampedFlightPlan> {
     let modified_at_epoch_ms = match record.schema_version {
-        1 if record.modified_at_epoch_ms.is_none() => LEGACY_UNKNOWN_MUTATION_EPOCH_MS,
         FLIGHT_PLAN_SCHEMA_VERSION => record.modified_at_epoch_ms.ok_or_else(|| {
             cloud_error("cloud flight-plan record has no user-mutation timestamp")
         })?,
@@ -2793,7 +2792,7 @@ fn flight_plan_from_record(record: &CloudRecord) -> AppResult<StampedFlightPlan>
     let plan: FlightPlan =
         serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
     Ok(StampedFlightPlan {
-        plan: plan.normalized(),
+        plan: crate::build_flight_plan(plan)?,
         modified_at_epoch_ms,
     })
 }
@@ -3070,6 +3069,34 @@ fn unexpected_response(context: &str, response: CloudProviderResponse) -> AppErr
 mod tests {
     use super::*;
     use crate::{planning::RouteComponent, NavRef};
+
+    #[test]
+    fn flight_plan_cloud_schema_requires_occurrence_bound_airways() {
+        use crate::planning::airway_tests::{append_airway, waypoints};
+        let points = [NavRef::Fix("BANDR".into()), NavRef::Fix("ELN".into())];
+        let plan = append_airway(&waypoints(&points[..1]), "V2", &points);
+        let stamped = StampedFlightPlan {
+            plan,
+            modified_at_epoch_ms: 12345,
+        };
+        let record = cloud_record_for_flight_plan(&stamped).unwrap();
+        assert_eq!(record.schema_version, 3);
+        assert_eq!(flight_plan_from_record(&record).unwrap(), stamped);
+        for version in [1, 2] {
+            let mut old = record.clone();
+            old.schema_version = version;
+            assert!(flight_plan_from_record(&old)
+                .unwrap_err()
+                .message
+                .contains("unsupported cloud flight-plan schema"));
+        }
+        let mut invalid = stamped.clone();
+        let RouteComponent::Airway { airway } = &mut invalid.plan.route_components[1] else {
+            panic!("airway")
+        };
+        airway.exit.0 = "missing-waypoint-occurrence".into();
+        assert!(flight_plan_from_record(&cloud_record_for_flight_plan(&invalid).unwrap()).is_err());
+    }
 
     fn bundled_private_aircraft() -> product_contracts::AircraftDefinition {
         serde_json::from_str(include_str!(

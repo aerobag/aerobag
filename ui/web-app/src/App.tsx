@@ -6,8 +6,6 @@ import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEf
 import { createPortal } from "react-dom";
 import type {
   AltitudeComparisonPanelUiView,
-  AirwayPresentationPlan,
-  AirwaySuggestion,
   ChartPageData,
   ChartFamilyId,
   FlightPlanControlId,
@@ -4136,12 +4134,9 @@ function OperationalApp() {
               "flight_plan_row_action",
             );
           }}
-          onInsertAirwayAtRow={async (rowUid, entryPointUid, exitPointUid, presentation) => {
+          onPerformAirwayPickerAction={async (actionId) => {
             if (!uiSession) return;
-            applySessionSnapshot(
-              await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryPointUid, exitPointUid),
-              "insert_airway_at_row",
-            );
+            applySessionSnapshot(await uiSession.performAirwayPickerAction(actionId), "airway_picker_action");
           }}
           onSelectProcedureAtRow={async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
             if (!uiSession) return;
@@ -9472,12 +9467,7 @@ function FlightPlanPage(props: {
   onAppendFlightPlanEntry: (input: string) => void | Promise<void>;
   onPerformFlightPlanControl: (controlId: FlightPlanControlId) => void | Promise<void>;
   onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
-  onInsertAirwayAtRow: (
-    rowUid: string,
-    entryPointUid: string,
-    exitPointUid: string,
-    presentation: AirwayPresentationPlan,
-  ) => void | Promise<void>;
+  onPerformAirwayPickerAction: (actionId: string) => Promise<void>;
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null) => void | Promise<void>;
   onFlightPlanColumnAction: (actionId: string) => Promise<void>;
   onTimeDisplayAction: (actionId: string) => Promise<void>;
@@ -9489,19 +9479,22 @@ function FlightPlanPage(props: {
     detail: AirportInfoUiView | null;
     error: string | null;
   } | null>(null);
-  const [airwayPicker, setAirwayPicker] = useState<{
-    loading: boolean;
-    error: string | null;
-    mode: "insert";
-    rowUid: string | null;
-    header: string;
-    originAnchor: NavRef;
-    destinationAnchor: NavRef | null;
-    suggestions: AirwaySuggestion[];
-    selectedAirwayName: string | null;
-    presentation: AirwayPresentationPlan | null;
-    selectedEntryUid: string | null;
-  } | null>(null);
+  const airwayPicker = props.planUiState?.airway_picker ?? null;
+  const priorAirwayPickerRow = useRef<string | null>(null);
+  useEffect(() => {
+    const previousRow = priorAirwayPickerRow.current;
+    if (!airwayPicker && previousRow !== null) {
+      setSelectedWaypointUid((current) => current === previousRow ? null : current);
+    }
+    priorAirwayPickerRow.current = airwayPicker?.row_uid ?? null;
+  }, [airwayPicker]);
+  const performAirwayPickerAction = async (actionId: string) => {
+    try { await props.onPerformAirwayPickerAction(actionId); }
+    catch (error) { showDisabledAction(errorMessage(error)); }
+  };
+  const dismissAirwayPicker = () => {
+    if (airwayPicker) void performAirwayPickerAction(airwayPicker.dismiss_action_id);
+  };
   const [procedurePicker, setProcedurePicker] = useState<{
     loading: boolean;
     error: string | null;
@@ -9714,7 +9707,7 @@ function FlightPlanPage(props: {
 
     const closeTray = () => {
       setSelectedWaypointUid(null);
-      setAirwayPicker(null);
+      dismissAirwayPicker();
       setProcedurePicker(null);
       setAirportInsert(null);
     };
@@ -9758,39 +9751,6 @@ function FlightPlanPage(props: {
           error: null,
           loading: false,
           suggestions: [],
-        });
-      } else if (effect?.kind === "open_airway_picker") {
-        const adapter = props.appCoreAdapter;
-        if (!adapter) {
-          return;
-        }
-        setAirwayPicker({
-          loading: true,
-          error: null,
-          mode: "insert",
-          rowUid: effect.row_uid,
-          header: effect.header,
-          originAnchor: effect.origin_anchor,
-          destinationAnchor: effect.destination_anchor ?? null,
-          suggestions: [],
-          selectedAirwayName: null,
-          presentation: null,
-          selectedEntryUid: null,
-        });
-        window.requestAnimationFrame(() => {
-          void adapter.suggestAirwaysNearAnchor(effect.origin_anchor).then((suggestions) => {
-            setAirwayPicker((current) => current ? {
-              ...current,
-              loading: false,
-              suggestions,
-            } : current);
-          }).catch((error) => {
-            setAirwayPicker((current) => current ? {
-              ...current,
-              loading: false,
-              error: error instanceof Error ? error.message : String(error),
-            } : current);
-          });
         });
       } else if (effect?.kind === "open_procedure_picker") {
         const adapter = props.appCoreAdapter;
@@ -10071,10 +10031,7 @@ function FlightPlanPage(props: {
   }, [airwayPicker, selectedRow, selectedWaypointAnchor, rowActions.length]);
 
   useEffect(() => {
-    if (!airwayPicker || airwayPicker.loading) {
-      return;
-    }
-    if (!airwayPicker.presentation || airwayPicker.selectedAirwayName === null) {
+    if (!airwayPicker) {
       return;
     }
     const modal = waypointModalRef.current;
@@ -10086,12 +10043,7 @@ function FlightPlanPage(props: {
       suggested?.scrollIntoView({ block: "center", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(handle);
-  }, [
-    airwayPicker?.loading,
-    airwayPicker?.presentation,
-    airwayPicker?.selectedAirwayName,
-    airwayPicker?.selectedEntryUid,
-  ]);
+  }, [airwayPicker?.dismiss_action_id]);
 
   return (
     <section className="appPage planPage" ref={pageRef} data-testid="parity:page:flight_plan">
@@ -10209,7 +10161,7 @@ function FlightPlanPage(props: {
                               });
                             }
                             setSelectedWaypointUid(row.rowUid);
-                            setAirwayPicker(null);
+                            dismissAirwayPicker();
                             setProcedurePicker(null);
                           }}
                         >
@@ -10399,7 +10351,7 @@ function FlightPlanPage(props: {
             onClick={() => {
               setSelectedWaypointUid(null);
               setSelectedWaypointAnchor(null);
-              setAirwayPicker(null);
+              dismissAirwayPicker();
               setProcedurePicker(null);
               setAirportInsert(null);
             }}
@@ -10640,156 +10592,33 @@ function FlightPlanPage(props: {
               </div>
             ) : airwayPicker ? (
               <div className="waypointActionTray" data-testid="plan-airway-picker">
-                <div className="planGuidanceSummary">
-                  {airwayPicker.header}
+                <div className="planGuidanceSummary">{airwayPicker.title}</div>
+                <div className="airwayPickerSections">
+                  {airwayPicker.sections.map((section, index) => (
+                    <section key={index}>
+                      {section.title ? <div className="planGuidanceSummary">{section.title}</div> : null}
+                      <div className={section.dense ? "airwaySuggestionGrid" : "waypointActionTray"}>
+                        {section.buttons.map((button) => (
+                          <button key={button.action_id} type="button"
+                            className={`trayButton${section.dense ? " trayButtonSquare airwaySuggestionButton" : " airwayChoiceButton"}${button.suggested ? " isSuggested" : ""}${!button.enabled ? " isDisabled" : ""}`}
+                            data-testid={button.test_id} aria-disabled={!button.enabled || undefined}
+                            title={button.disabled_reason ?? undefined}
+                            onPointerDown={stopPointer} onPointerUp={stopPointer}
+                            onClick={() => button.enabled
+                              ? void performAirwayPickerAction(button.action_id)
+                              : showDisabledAction(button.disabled_reason ?? "")}>
+                            {button.label}
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
                 </div>
-                {airwayPicker.error ? <div className="planGuidanceSummary">{airwayPicker.error}</div> : null}
-                {airwayPicker.loading ? (
-                  <div className="airwayLoadingPanel" aria-live="polite">
-                    <div className="spinner" aria-hidden="true" />
-                    <div className="planGuidanceSummary">Loading…</div>
-                  </div>
-                ) : airwayPicker.selectedAirwayName === null ? (
-                  <div className="airwaySuggestionGrid">
-                    {airwayPicker.suggestions.map((suggestion) => (
-                        <button
-                          key={`${suggestion.airway_name}:${suggestion.nearest_branch_key ?? ""}`}
-                          type="button"
-                          className="trayButton trayButtonSquare airwaySuggestionButton"
-                          data-testid={`parity:plan-airway-suggestion:${suggestion.airway_name}`}
-                          onPointerDown={stopPointer}
-                          onPointerUp={stopPointer}
-                          onClick={async () => {
-                            const uiSession = props.uiSession;
-                            if (!uiSession || airwayPicker.rowUid === null) {
-                              return;
-                            }
-                            setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
-                            try {
-                              const presentation = await uiSession.prepareAirwayPresentationAtFlightPlanRow(
-                                airwayPicker.rowUid,
-                                suggestion.airway_name,
-                              );
-                              setAirwayPicker((current) => current ? {
-                                ...current,
-                                loading: false,
-                                selectedAirwayName: suggestion.airway_name,
-                                presentation,
-                              } : current);
-                            } catch (error) {
-                              setAirwayPicker((current) => current ? {
-                                ...current,
-                                loading: false,
-                                error: error instanceof Error ? error.message : String(error),
-                              } : current);
-                            }
-                          }}
-                        >
-                          {suggestion.airway_name}
-                        </button>
-                      ))}
-                  </div>
-                ) : airwayPicker.selectedEntryUid === null && airwayPicker.presentation ? (
-                  <>
-                    {airwayPicker.presentation.points.map((point) => (
-                      <button
-                        key={point.uid}
-                        type="button"
-                        className={`trayButton airwayChoiceButton${point.uid === airwayPicker.presentation?.suggested_entry_uid ? " isSuggested" : ""}`}
-                        data-testid={`parity:plan-airway-entry:${point.label}`}
-                        onPointerDown={stopPointer}
-                        onPointerUp={stopPointer}
-                        onClick={() => {
-                          setAirwayPicker((current) => current ? {
-                            ...current,
-                            selectedEntryUid: point.uid,
-                          } : current);
-                        }}
-                      >
-                        {point.uid === airwayPicker.presentation?.suggested_entry_uid ? "▸ " : ""}
-                        {point.label}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      className="trayButton airwayChoiceButton"
-                      onPointerDown={stopPointer}
-                      onPointerUp={stopPointer}
-                      onClick={() => setAirwayPicker((current) => current ? {
-                        ...current,
-                        selectedAirwayName: null,
-                        presentation: null,
-                      } : current)}
-                    >
-                      Back
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {airwayPicker.presentation?.points.map((exit) => {
-                      const isEntry = exit.uid === airwayPicker.selectedEntryUid;
-                      return (
-                      <button
-                        key={exit.uid}
-                        type="button"
-                        className={`trayButton airwayChoiceButton${exit.uid === airwayPicker.presentation?.suggested_exit_uid && !isEntry ? " isSuggested" : ""}${isEntry ? " isDisabled" : ""}`}
-                        data-testid={`parity:plan-airway-exit:${exit.label}`}
-                        aria-disabled={isEntry ? "true" : undefined}
-                        title={isEntry ? exit.same_point_exit_disabled_reason : undefined}
-                        onPointerDown={stopPointer}
-                        onPointerUp={stopPointer}
-                        onClick={async () => {
-                          if (isEntry) {
-                            showDisabledAction(exit.same_point_exit_disabled_reason);
-                            return;
-                          }
-                          const presentation = airwayPicker.presentation;
-                          const selectedEntryUid = airwayPicker.selectedEntryUid;
-                          if (!presentation || selectedEntryUid === null) {
-                            return;
-                          }
-                          setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
-                          try {
-                            if (airwayPicker.rowUid !== null) {
-                              await props.onInsertAirwayAtRow(
-                                airwayPicker.rowUid,
-                                selectedEntryUid,
-                                exit.uid,
-                                presentation,
-                              );
-                            } else {
-                              throw new Error("airway picker missing insertion row");
-                            }
-                            setAirwayPicker(null);
-                            setSelectedWaypointUid(null);
-                          } catch (error) {
-                            setAirwayPicker((current) => current ? {
-                              ...current,
-                              loading: false,
-                              error: error instanceof Error ? error.message : String(error),
-                            } : current);
-                          }
-                        }}
-                      >
-                        {exit.uid === airwayPicker.presentation?.suggested_exit_uid ? "▸ " : ""}
-                        {exit.label}
-                      </button>
-                      );
-                    }) ?? null}
-                    <button
-                      type="button"
-                      className="trayButton airwayChoiceButton"
-                      onPointerDown={stopPointer}
-                      onPointerUp={stopPointer}
-                      onClick={() => setAirwayPicker((current) => current ? {
-                        ...current,
-                        selectedEntryUid: null,
-                      } : current)}
-                    >
-                      Back
-                    </button>
-                  </>
-                )}
+                {airwayPicker.footer.map((button) => (
+                  <button key={button.action_id} className="trayButton airwayChoiceButton" type="button"
+                    data-testid={button.test_id} onPointerDown={stopPointer} onPointerUp={stopPointer}
+                    onClick={() => void performAirwayPickerAction(button.action_id)}>{button.label}</button>
+                ))}
               </div>
             ) : (
               <div className="waypointActionGrid">

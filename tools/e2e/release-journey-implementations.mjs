@@ -2400,19 +2400,14 @@ async function flightPlanAirwayEstimates(runtime) {
   );
   await runtime.action(`select airway ${airway.airway}`, `plan-airway-suggestion:${airway.airway}`, {
     complete: async () => {
-      const entries = await runtime.driver.readProjection("parity:plan-airway-entry:");
-      return entries.length > 0 ? entries : null;
+      const exits = await runtime.driver.readProjection("parity:plan-airway-exit:");
+      return exits.length > 0 ? exits : null;
     },
   });
-  await revealRequiredElement(
-    runtime, `plan-airway-entry:${airway.entry}`, `${airway.entry} airway entry`,
-  );
-  await runtime.action(`select airway entry ${airway.entry}`, `plan-airway-entry:${airway.entry}`, {
-    complete: async () => {
-      const entries = await runtime.driver.readProjection("parity:plan-airway-exit:");
-      return entries.length > 0 ? entries : null;
-    },
-  });
+  // We opened the picker on this airway's entry waypoint. Core fixes that
+  // entry rather than making the pilot choose the same waypoint again.
+  const fixedEntry = await runtime.driver.readElement(`plan-airway-exit:${airway.entry}`);
+  runtime.check("plan.airway-entry-fixed", fixedEntry?.enabled === false, fixedEntry);
   runtime.result.diagnostics.airway_exits = {
     selected: airway.exit,
   };

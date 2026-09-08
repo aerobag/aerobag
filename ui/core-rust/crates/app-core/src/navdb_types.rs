@@ -34,15 +34,6 @@ pub(crate) struct AirwaySpatialPoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwaySuggestion {
-    pub airway_name: String,
-    pub nearest_branch_key: Option<String>,
-    pub nearest_nav_ref: NavRef,
-    pub nearest_sequence: i32,
-    pub distance_from_anchor_nm: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AirwayEntryCandidate {
     pub(crate) airway_name: String,
     pub(crate) branch_key: String,

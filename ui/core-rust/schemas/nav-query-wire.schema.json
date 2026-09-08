@@ -290,7 +290,7 @@
   ],
   "title": "WaypointIdentifierSuggestion",
   "type": "object",
-  "x-contract-version": 11,
+  "x-contract-version": 12,
   "x-export-order": [
     "WaypointSuggestionPosition",
     "WaypointSuggestionNavRef",

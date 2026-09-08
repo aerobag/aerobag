@@ -503,6 +503,97 @@
       ],
       "type": "object"
     },
+    "UiAirwayPicker": {
+      "additionalProperties": false,
+      "properties": {
+        "dismiss_action_id": {
+          "type": "string"
+        },
+        "footer": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayPickerButton"
+          },
+          "type": "array"
+        },
+        "row_uid": {
+          "type": "string"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayPickerSection"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "row_uid",
+        "title",
+        "sections",
+        "footer",
+        "dismiss_action_id"
+      ],
+      "type": "object"
+    },
+    "UiAirwayPickerButton": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "suggested": {
+          "type": "boolean"
+        },
+        "test_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "label",
+        "enabled",
+        "suggested",
+        "test_id"
+      ],
+      "type": "object"
+    },
+    "UiAirwayPickerSection": {
+      "additionalProperties": false,
+      "properties": {
+        "buttons": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayPickerButton"
+          },
+          "type": "array"
+        },
+        "dense": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "dense",
+        "buttons"
+      ],
+      "type": "object"
+    },
     "UiChartPageState": {
       "additionalProperties": false,
       "properties": {
@@ -1354,6 +1445,9 @@
   "additionalProperties": false,
   "description": "Core-owned session page, platform capability, and settings-action wire contract.",
   "properties": {
+    "airway_picker": {
+      "$ref": "#/$defs/UiAirwayPicker"
+    },
     "capabilities": {
       "$ref": "#/$defs/PlatformCapabilities"
     },
@@ -1401,6 +1495,7 @@
     }
   },
   "required": [
+    "airway_picker",
     "navigation",
     "chart",
     "map_layers",
@@ -1419,7 +1514,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 11,
+  "x-contract-version": 12,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -1427,6 +1522,9 @@
     "UiNavigationPageState",
     "FlightPlanControlId",
     "FlightPlanControlUiView",
+    "UiAirwayPickerButton",
+    "UiAirwayPickerSection",
+    "UiAirwayPicker",
     "FlightDataCellTone",
     "FlightEstimateKind",
     "FlightDataCellAction",

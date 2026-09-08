@@ -55,6 +55,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
@@ -190,8 +191,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AirwayPresentationPlan
-import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.toNavRef
 import org.aerobag.app.domain.CoreMapViewport
@@ -367,6 +366,7 @@ internal fun packedFlightPlanControlRowCount(
 internal fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
     uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     mostRecentChartOrPlatePage: AppPage,
@@ -389,7 +389,23 @@ internal fun FlightPlanPage(
     val keyboardController = LocalSoftwareKeyboardController.current
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
-    var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
+    val airwayPicker = planUiState?.airwayPicker
+    var priorAirwayPickerRow by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(airwayPicker) {
+        if (airwayPicker == null && priorAirwayPickerRow != null &&
+            (overlayState as? FlightPlanOverlayState.RowTray)?.rowUid == priorAirwayPickerRow) {
+            onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
+        }
+        priorAirwayPickerRow = airwayPicker?.rowUid
+    }
+    fun performAirwayPickerAction(actionId: String) {
+        sessionWorkRunner.submitAirwayPickerAction(
+            actionId, onResult = onApplySessionSnapshot, onError = onSessionCommandFailure,
+        )
+    }
+    fun dismissAirwayPicker() {
+        airwayPicker?.let { performAirwayPickerAction(it.dismissActionId) }
+    }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
     val airportInfoScope = rememberCoroutineScope()
@@ -496,11 +512,8 @@ internal fun FlightPlanPage(
                         }
                         airwayPicker != null -> {
                             val picker = airwayPicker!!
-                            when {
-                                picker.loading || picker.error != null -> 2
-                                picker.selectedAirwayName == null -> 1 + picker.suggestions.size
-                                picker.selectedEntryUid == null -> 1 + (picker.presentation?.points?.size ?: 0)
-                                else -> 1 + (picker.presentation?.points?.size ?: 0)
+                            1 + picker.footer.size + picker.sections.sumOf { section ->
+                                1 + if (section.dense) (section.buttons.size + 2) / 3 else section.buttons.size
                             }
                         }
                         else -> selectedRowActionMatrix.size
@@ -526,11 +539,8 @@ internal fun FlightPlanPage(
                         }
                         airwayPicker != null -> {
                             val picker = airwayPicker!!
-                            when {
-                                picker.loading || picker.error != null -> 2
-                                picker.selectedAirwayName == null -> 1 + picker.suggestions.size
-                                picker.selectedEntryUid == null -> 1 + (picker.presentation?.points?.size ?: 0)
-                                else -> 1 + (picker.presentation?.points?.size ?: 0)
+                            1 + picker.footer.size + picker.sections.sumOf { section ->
+                                1 + if (section.dense) (section.buttons.size + 2) / 3 else section.buttons.size
                             }
                         }
                         else -> selectedRowActionMatrix.size
@@ -643,7 +653,7 @@ internal fun FlightPlanPage(
     fun closePanels() {
         onOverlayAction(FlightPlanOverlayAction.Dismiss)
         selectedWaypointTrayAnchor = null
-        airwayPicker = null
+        dismissAirwayPicker()
         procedurePicker = null
         airportInsert = null
     }
@@ -651,7 +661,7 @@ internal fun FlightPlanPage(
     fun dismissRowTray() {
         onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
         selectedWaypointTrayAnchor = null
-        airwayPicker = null
+        dismissAirwayPicker()
         procedurePicker = null
         airportInsert = null
     }
@@ -839,7 +849,7 @@ internal fun FlightPlanPage(
                                                     }
                                                 }
                                             onOverlayAction(FlightPlanOverlayAction.SelectRow(block.row.id))
-                                            airwayPicker = null
+                                            dismissAirwayPicker()
                                             procedurePicker = null
                                             airportInsert = null
                                         },
@@ -865,7 +875,7 @@ internal fun FlightPlanPage(
                                                     }
                                                 }
                                             onOverlayAction(FlightPlanOverlayAction.SelectRow(block.header.id))
-                                            airwayPicker = null
+                                            dismissAirwayPicker()
                                             procedurePicker = null
                                             airportInsert = null
                                         },
@@ -884,7 +894,7 @@ internal fun FlightPlanPage(
                                                     }
                                                 }
                                             onOverlayAction(FlightPlanOverlayAction.SelectRow(childRow.id))
-                                            airwayPicker = null
+                                            dismissAirwayPicker()
                                             procedurePicker = null
                                             airportInsert = null
                                         },
@@ -1199,7 +1209,7 @@ internal fun FlightPlanPage(
                     }
                 }
             } else if (airwayPicker != null) {
-                val picker = airwayPicker!!
+                val picker = airwayPicker
                 MenuPanel(
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -1208,113 +1218,43 @@ internal fun FlightPlanPage(
                         .zIndex(5f),
                     width = waypointTrayWidth,
                 ) {
-                    MenuPanelRow(
-                        label = picker.header,
-                        active = false,
-                        enabled = false,
-                        onSelect = {},
-                    )
-                    if (picker.error != null) {
-                        MenuPanelRow(label = picker.error, active = false, enabled = false, onSelect = {})
+                    MenuPanelRow(label = picker.title, active = false, enabled = false, onSelect = {})
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                        verticalArrangement = Arrangement.spacedBy(waypointActionGap),
+                    ) {
+                        picker.sections.forEachIndexed { sectionIndex, section ->
+                            if (sectionIndex > 0) item { Spacer(Modifier.height(ThumbGap)) }
+                            if (section.title.isNotEmpty()) item {
+                                MenuPanelRow(label = section.title, active = false, enabled = false, onSelect = {})
+                            }
+                            val columns = if (section.dense) 3 else 1
+                            section.buttons.chunked(columns).forEach { buttons ->
+                                item(key = buttons.first().actionId) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(waypointActionGap)) {
+                                        buttons.forEach { button ->
+                                            MenuPanelRow(
+                                                label = button.label,
+                                                active = button.suggested,
+                                                enabled = button.enabled,
+                                                disabledReason = button.disabledReason,
+                                                testTag = button.testId,
+                                                modifier = Modifier.weight(1f),
+                                                onSelect = { performAirwayPickerAction(button.actionId) },
+                                            )
+                                        }
+                                        repeat(columns - buttons.size) { Spacer(Modifier.weight(1f)) }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    if (picker.loading) {
-                        MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
-                    } else if (picker.selectedAirwayName == null) {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f, fill = false),
-                            verticalArrangement = Arrangement.spacedBy(waypointActionGap),
-                        ) {
-                            items(picker.suggestions.size) { index ->
-                                val suggestion = picker.suggestions[index]
-                                MenuPanelRow(
-                                    label = suggestion.airwayName,
-                                    active = false,
-                                    enabled = true,
-                                    testTag = "parity:plan-airway-suggestion:${suggestion.airwayName}",
-                                    onSelect = {
-                                        airwayPicker = picker.copy(loading = true, error = null)
-                                        runCatching {
-                                            uiSession.prepareAirwayPresentationAtFlightPlanRow(
-                                                picker.rowUid,
-                                                suggestion.airwayName,
-                                            )
-                                        }.onSuccess { presentation ->
-                                            airwayPicker =
-                                                picker.copy(
-                                                    loading = false,
-                                                    selectedAirwayName = suggestion.airwayName,
-                                                    presentation = presentation,
-                                                    selectedEntryUid = null,
-                                                )
-                                        }.onFailure { error ->
-                                            airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                    } else if (picker.selectedEntryUid == null) {
-                        val presentation = requireNotNull(picker.presentation)
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f, fill = false),
-                            verticalArrangement = Arrangement.spacedBy(waypointActionGap),
-                        ) {
-                            items(presentation.points.size, key = { presentation.points[it].uid }) { index ->
-                                val point = presentation.points[index]
-                                MenuPanelRow(
-                                    label = point.label,
-                                    active = point.uid == presentation.suggestedEntryUid,
-                                    enabled = true,
-                                    testTag = "parity:plan-airway-entry:${point.label}",
-                                    onSelect = {
-                                        airwayPicker = picker.copy(selectedEntryUid = point.uid)
-                                    },
-                                )
-                            }
-                        }
-                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedAirwayName = null, presentation = null) })
-                    } else {
-                        val presentation = requireNotNull(picker.presentation)
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f, fill = false),
-                            verticalArrangement = Arrangement.spacedBy(waypointActionGap),
-                        ) {
-                            items(presentation.points.size, key = { presentation.points[it].uid }) { exitIndex ->
-                                val point = presentation.points[exitIndex]
-                                val isEntry = point.uid == picker.selectedEntryUid
-                                MenuPanelRow(
-                                    label = point.label,
-                                    active = point.uid == presentation.suggestedExitUid,
-                                    enabled = !isEntry,
-                                    disabledReason = if (isEntry) point.samePointExitDisabledReason else null,
-                                    testTag = "parity:plan-airway-exit:${point.label}",
-                                    onSelect = {
-                                        if (isEntry) return@MenuPanelRow
-                                        airwayPicker = picker.copy(loading = true, error = null)
-                                        val snapshot = applySessionCommand("insertAirwayAtFlightPlanRow") {
-                                            uiSession.insertAirwayAtFlightPlanRow(
-                                                picker.rowUid,
-                                                presentation,
-                                                requireNotNull(picker.selectedEntryUid),
-                                                point.uid,
-                                            )
-                                        }
-                                        if (snapshot != null) {
-                                            closePanels()
-                                        } else {
-                                            airwayPicker = picker.copy(loading = false)
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryUid = null) })
+                    picker.footer.forEach { button ->
+                        MenuPanelRow(
+                            label = button.label, active = button.suggested, enabled = button.enabled,
+                            disabledReason = button.disabledReason, testTag = button.testId,
+                            onSelect = { performAirwayPickerAction(button.actionId) },
+                        )
                     }
                 }
             } else {
@@ -1368,12 +1308,15 @@ internal fun FlightPlanPage(
                                             return@MenuPanelRow
                                         }
                                         if (decision.performSessionMutation) {
-                                            val snapshot = applySessionCommand("performFlightPlanRowAction") {
-                                                uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
-                                            }
-                                            if (snapshot == null) {
-                                                return@MenuPanelRow
-                                            }
+                                            sessionWorkRunner.submitFlightPlanRowAction(
+                                                selectedRow.id, action.uid,
+                                                onResult = { snapshot ->
+                                                    onApplySessionSnapshot(snapshot)
+                                                    if (decision.dismissTray) dismissRowTray()
+                                                },
+                                                onError = onSessionCommandFailure,
+                                            )
+                                            return@MenuPanelRow
                                         }
                                         when (val effect = decision.effect) {
                                             is FlightPlanRowActionEffect.ShowWeather -> {
@@ -1425,28 +1368,6 @@ internal fun FlightPlanPage(
                                                         loading = false,
                                                         suggestions = emptyList(),
                                                     )
-                                            }
-                                            is FlightPlanRowActionEffect.OpenAirwayPicker -> {
-                                                airwayPicker =
-                                                    AndroidAirwayPickerState(
-                                                        loading = true,
-                                                        error = null,
-                                                        rowUid = effect.rowUid,
-                                                        header = effect.header,
-                                                        originAnchor = effect.originAnchor,
-                                                        destinationAnchor = effect.destinationAnchor,
-                                                        suggestions = emptyList(),
-                                                        selectedAirwayName = null,
-                                                        presentation = null,
-                                                        selectedEntryUid = null,
-                                                    )
-                                                runCatching {
-                                                    appCore.suggestAirwaysNear(effect.originAnchor)
-                                                }.onSuccess { suggestions ->
-                                                    airwayPicker = airwayPicker?.copy(loading = false, suggestions = suggestions)
-                                                }.onFailure { error ->
-                                                    airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
-                                                }
                                             }
                                             is FlightPlanRowActionEffect.OpenProcedurePicker -> {
                                                 procedurePicker =

@@ -4,11 +4,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  connectToBrowser, launchChrome, stopProcess,
+  chromeProcessDiagnostics, connectToBrowser, launchChrome, stopProcess,
 } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { journeyById } from "./release-journey-registry.mjs";
 import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
@@ -109,10 +109,18 @@ let chrome;
 let browser;
 let transport;
 let page;
+let phase = "chrome.launch";
+let runnerFailure;
+const persistRunnerFailure = async () => {
+  await writeFile(join(artifactDir, "runner-failure.json"), `${JSON.stringify(runnerFailure, null, 2)}\n`)
+    .catch((error) => console.error(`Could not retain runner failure diagnostics: ${error.message}`));
+};
 
 try {
   chrome = await launchChrome({ userDataDir, width: args.width, height: args.height, netLogPath });
+  phase = "chrome.connect";
   browser = await connectToBrowser(chrome.endpoint);
+  phase = "page.configure";
   const configurePage = async (configuredPage) => {
     await configuredPage.send("Page.enable");
     await configuredPage.send("Runtime.enable");
@@ -147,6 +155,7 @@ try {
       recreateWebJourneyPage(browser, previousPage, configurePage, options),
   });
   const driver = new WebSemanticJourneyDriver(transport);
+  phase = "journey.execute";
   const result = await executeReleaseJourney(
     {
       journey,
@@ -164,6 +173,15 @@ try {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   passed = true;
 } catch (error) {
+  // Startup failures precede executeReleaseJourney and have no journeyResult.
+  // Save process evidence before teardown, without masking the initiating error.
+  runnerFailure = {
+    phase,
+    error: { message: error?.message ?? String(error), stack: error?.stack ?? null },
+    chrome: chromeProcessDiagnostics(chrome),
+    net_log: netLogPath,
+  };
+  await persistRunnerFailure();
   if (error?.journeyResult) {
     const snapshot = await transport?.snapshot().catch((snapshotError) => ({ error: snapshotError.message }));
     const fixtureRequests = await fetch(new URL("/__requests", args.fixtureOrigin || args.url))
@@ -187,6 +205,12 @@ try {
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);
+  if (runnerFailure) {
+    // A failed pipe write can precede stderr delivery and the child exit event.
+    // Keep the original snapshot and also retain evidence drained in teardown.
+    runnerFailure.chrome_after_teardown = chromeProcessDiagnostics(chrome);
+    await persistRunnerFailure();
+  }
   // Network evidence includes worker fetches without attaching a debugger to
   // the worker. Retain failures; successful qualification runs need no netlogs.
   if (passed && !retainNetLog) await rm(netLogPath, { force: true });

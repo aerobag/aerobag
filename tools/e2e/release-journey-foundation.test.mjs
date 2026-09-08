@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,7 +76,7 @@ import {
   webWorkspaceDirectory,
 } from "./journey-structure-audit.mjs";
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
-import { CdpBrowser, CdpClient, CdpPage, CdpProtocolError } from "../../ui/web-app/scripts/chrome-cdp.mjs";
+import { CdpBrowser, CdpClient, CdpPage, CdpProtocolError, chromeProcessDiagnostics } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
   androidSemanticTextTargetIsReady,
   androidSemanticReadinessStateMatches,
@@ -85,7 +86,7 @@ import {
   semanticDriverObservationRequest,
   setAndroidWallClockAndWait,
 } from "./android-harness.mjs";
-import { establishChromeRuntime } from "./run-android-chrome-livefeed-e2e.mjs";
+import { establishChromeRuntime, prepareWebApp } from "./run-android-chrome-livefeed-e2e.mjs";
 
 const LAB_METADATA_POISON_CONFIG = join(
   tmpdir(),
@@ -196,6 +197,34 @@ test("web journey failures retain worker network evidence without sensitive capt
   assert.doesNotMatch(chrome, /--net-log-capture-mode=IncludeSensitive/);
 });
 
+test("web runner retains Chrome startup evidence before a journey result exists", () => {
+  assert.deepEqual(chromeProcessDiagnostics(undefined), {
+    pid: null, exit_code: null, signal_code: null, spawn_arguments: [], stderr: "",
+  });
+  const chrome = {
+    process: { pid: 123, exitCode: null, signalCode: null, spawnargs: ["chrome", "--remote-debugging-pipe"] },
+    getStderr: () => "browser startup diagnostic",
+  };
+  const beforeTeardown = chromeProcessDiagnostics(chrome);
+  chrome.process.exitCode = 1;
+  chrome.process.signalCode = "SIGTERM";
+  assert.equal(beforeTeardown.exit_code, null);
+  assert.equal(beforeTeardown.signal_code, null);
+  assert.equal(beforeTeardown.stderr, "browser startup diagnostic");
+  assert.equal(beforeTeardown.pid, 123);
+  assert.deepEqual(beforeTeardown.spawn_arguments, ["chrome", "--remote-debugging-pipe"]);
+  assert.equal(chromeProcessDiagnostics(chrome).exit_code, 1);
+
+  const runner = readFileSync(new URL("./run-release-journey.mjs", import.meta.url), "utf8");
+  const capture = runner.indexOf("runnerFailure = {");
+  assert.ok(capture >= 0 && capture < runner.indexOf("if (error?.journeyResult)"));
+  assert.match(runner, /phase = "chrome\.connect";\s*browser = await connectToBrowser/);
+  assert.match(runner, /chrome: chromeProcessDiagnostics\(chrome\)/);
+  assert.match(runner, /writeFile\(join\(artifactDir, "runner-failure\.json"\)[\s\S]*\.catch\(/);
+  assert.match(runner.slice(capture), /await persistRunnerFailure\(\);[\s\S]*throw error;/);
+  assert.match(runner, /await stopProcess\(chrome\?\.process\);[\s\S]*runnerFailure\.chrome_after_teardown = chromeProcessDiagnostics\(chrome\);\s*await persistRunnerFailure\(\);/);
+});
+
 test("Android fixture clock setup observes the device clock before returning", async () => {
   const targetEpochMs = 1_787_905_620_000;
   const commands = [];
@@ -250,6 +279,43 @@ test("CDP transport rejects late work without writing after pipe shutdown", asyn
   await assert.rejects(client.send("Runtime.enable"), /request Runtime\.enable rejected/);
   pipeRead.write(`${JSON.stringify({ method: "Runtime.event" })}\0`);
   assert.equal(pipeWrite.writableEnded, true);
+});
+
+test("CDP readiness rejects Chrome exit even while descendants hold the pipe open", async () => {
+  for (const [exitCode, signalCode] of [[23, null], [null, "SIGKILL"]]) {
+    const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+    const pipeRead = new PassThrough();
+    const pipeWrite = new PassThrough();
+    pipeWrite.resume();
+    const client = new CdpClient({ pipeWrite, pipeRead, process: child });
+    await client.open();
+    const pending = client.send("Browser.getVersion");
+    child.exitCode = exitCode;
+    child.signalCode = signalCode;
+    child.emit("exit", exitCode, signalCode);
+    await assert.rejects(pending, new RegExp(`Chrome exited: code=${exitCode} signal=${signalCode}`));
+    assert.equal(pipeRead.readableEnded, false, "no pipe EOF was needed to detect process exit");
+    assert.equal(pipeWrite.writableEnded, true);
+    assert.equal(child.listenerCount("exit"), 0);
+  }
+});
+
+test("CDP transport detects Chrome that exited before connection and cleans up normal close", async () => {
+  for (const exitCode of [7, null]) {
+    const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null });
+    const pipeWrite = new PassThrough();
+    pipeWrite.resume();
+    const client = new CdpClient({ pipeWrite, pipeRead: new PassThrough(), process: child });
+    await client.open();
+    if (exitCode !== null) {
+      await assert.rejects(client.send("Browser.getVersion"), /Chrome exited: code=7 signal=null/);
+    } else {
+      assert.equal(child.listenerCount("exit"), 1);
+      client.close();
+    }
+    assert.equal(child.listenerCount("exit"), 0);
+    assert.equal(pipeWrite.writableEnded, true);
+  }
 });
 
 test("CDP protocol failures retain method, code, and detail for narrow classification", async () => {
@@ -1405,6 +1471,45 @@ test("Android Chrome journey uses the shared named timing policy", () => {
   const path = new URL("./run-android-chrome-livefeed-e2e.mjs", import.meta.url);
   const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
   assert.deepEqual(violations, []);
+});
+
+test("Android Chrome builds web inputs before starting the server-readiness clock", () => {
+  const calls = [];
+  prepareWebApp({ cwd: "/explicit/web/workspace", runCommand: (...args) => {
+    calls.push(args);
+    return { status: 0, signal: null };
+  } });
+  assert.deepEqual(calls, [["npm", ["run", "inner:prepare:dev"], {
+    cwd: "/explicit/web/workspace", stdio: "inherit", timeout: 600_000,
+  }]]);
+  const runner = readFileSync(new URL("./run-android-chrome-livefeed-e2e.mjs", import.meta.url), "utf8");
+  const run = runner.slice(runner.indexOf("async function run(args)"));
+  assert.match(run, /if \(!args\.webUrl\) \{[^}]*prepareWebApp\(\);/);
+  assert.ok(run.indexOf("prepareWebApp();") < run.indexOf("await listen("));
+  assert.ok(run.indexOf("prepareWebApp();") < run.indexOf("vite = startVite("));
+  assert.match(runner, /function startVite\([\s\S]*?"inner:serve:dev"/);
+  assert.doesNotMatch(runner, /"inner:dev:fast"/);
+  const { scripts } = JSON.parse(readFileSync(new URL("../../ui/web-app/package.json", import.meta.url), "utf8"));
+  assert.equal(scripts["inner:prepare:dev"], "npm run generate:symbols && npm run generate:wire && npm run build:wasm");
+  assert.equal(scripts["inner:serve:dev"], "vite");
+  for (const script of ["inner:dev", "inner:dev:fast"]) {
+    assert.equal(scripts[script], "npm run inner:prepare:dev && vite",
+      "dev CLI arguments still go directly to Vite rather than an intermediate npm invocation");
+  }
+  assert.match(run, /vite\.exitCode !== null \|\| vite\.signalCode !== null/);
+  assert.match(runner, /import \{[^}]*TerminalObservationError[^}]*\} from "\.\/transition-contract\.mjs"/);
+});
+
+test("Android Chrome web preparation propagates failed builds and finite build timeouts", () => {
+  for (const [result, expected] of [
+    [{ status: 3, signal: null }, /Web build preparation failed: code=3 signal=null/],
+    [{ status: null, signal: "SIGTERM" }, /Web build preparation failed: code=null signal=SIGTERM/],
+    [{ error: new Error("spawn ETIMEDOUT") }, /Web build preparation failed: spawn ETIMEDOUT/],
+  ]) {
+    let calls = 0;
+    assert.throws(() => prepareWebApp({ runCommand: () => { calls += 1; return result; } }), expected);
+    assert.equal(calls, 1, "failed compilation is never retried");
+  }
 });
 
 test("Android Chrome launch recovers when a clean emulator kills its first browser process", async () => {

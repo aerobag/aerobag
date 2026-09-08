@@ -18,7 +18,7 @@ import {
   waitFor,
   wakeAndUnlock,
 } from "./android-harness.mjs";
-import { E2E_TIMING, observeUntil } from "./transition-contract.mjs";
+import { E2E_TIMING, observeUntil, TerminalObservationError } from "./transition-contract.mjs";
 import {
   LIVE_FEED_SCHEMA_VERSION,
   liveFeedPath,
@@ -31,6 +31,8 @@ const DEFAULT_WEB_PORT = 18082;
 const DEFAULT_LIVE_FEED_PORT = 18083;
 const DEFAULT_CDP_PORT = 9222;
 const CDP_COMMAND_TIMEOUT_MS = E2E_TIMING.localReadyMs;
+// Compilation is setup, not server readiness or an application transition.
+const WEB_BUILD_TIMEOUT_MS = 10 * 60_000;
 const CHROME_LAUNCH_ATTEMPTS = 3;
 const CHROME_PACKAGES = [
   "com.android.chrome",
@@ -618,11 +620,25 @@ function defaultWebAppDir() {
   return path.join(REPO_ROOT, "ui/web-app");
 }
 
+export function prepareWebApp({ runCommand = spawnSync, cwd = defaultWebAppDir() } = {}) {
+  const result = runCommand("npm", ["run", "inner:prepare:dev"], {
+    cwd,
+    stdio: "inherit",
+    timeout: WEB_BUILD_TIMEOUT_MS,
+  });
+  if (result.error) {
+    throw new Error(`Web build preparation failed: ${result.error.message}`, { cause: result.error });
+  }
+  if (result.status !== 0) {
+    throw new Error(`Web build preparation failed: code=${result.status} signal=${result.signal}`);
+  }
+}
+
 function startVite(webPort, liveFeedPort) {
   const cwd = defaultWebAppDir();
   const proc = spawn("npm", [
     "run",
-    "inner:dev:fast",
+    "inner:serve:dev",
     "--",
     "--host",
     "127.0.0.1",
@@ -854,6 +870,11 @@ async function run(args) {
     throw new Error("missing --serial or ANDROID_SERIAL");
   }
 
+  if (!args.webUrl) {
+    progress("preparing generated web sources and WASM before server readiness");
+    prepareWebApp();
+  }
+
   const liveFeed = new ScriptedLiveFeedServer();
   const liveFeedHttp = http.createServer((req, res) => liveFeed.handler(req, res));
   const liveFeedPort = await listen(liveFeedHttp, args.liveFeedPort);
@@ -876,8 +897,10 @@ async function run(args) {
       vite = startVite(webPort, liveFeedPort);
       await waitFor(
         () => {
-          if (vite.exitCode !== null) {
-            throw new Error(`Vite exited early with code ${vite.exitCode}`);
+          if (vite.exitCode !== null || vite.signalCode !== null) {
+            throw new TerminalObservationError(
+              "Vite readiness", `Vite exited early: code=${vite.exitCode} signal=${vite.signalCode}`,
+            );
           }
           return httpReady(webUrl);
         },

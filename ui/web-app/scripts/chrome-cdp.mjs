@@ -17,6 +17,16 @@ export class CdpProtocolError extends Error {
   }
 }
 
+export function chromeProcessDiagnostics(chrome) {
+  return {
+    pid: chrome?.process?.pid ?? null,
+    exit_code: chrome?.process?.exitCode ?? null,
+    signal_code: chrome?.process?.signalCode ?? null,
+    spawn_arguments: chrome?.process?.spawnargs ?? [],
+    stderr: chrome?.getStderr?.() ?? "",
+  };
+}
+
 export function launchChrome({
   chromeBin = process.env.CHROME_BIN ?? "google-chrome-stable",
   userDataDir,
@@ -78,6 +88,7 @@ export function launchChrome({
           endpoint: {
             pipeWrite: child.stdio[3],
             pipeRead: child.stdio[4],
+            process: child,
           },
           pipeWrite: child.stdio[3],
           pipeRead: child.stdio[4],
@@ -110,12 +121,17 @@ export function launchChrome({
 
 export async function connectToBrowser(endpoint) {
   const client = new CdpClient(endpoint);
-  await client.open();
-  // Pipe transport is available as soon as Chrome is spawned, before the
-  // browser process has necessarily finished initializing. Make readiness an
-  // explicit CDP operation rather than inferring it from stderr or a port.
-  await client.send("Browser.getVersion", {}, undefined, 30_000);
-  return new CdpBrowser(client);
+  try {
+    await client.open();
+    // Pipe transport is available as soon as Chrome is spawned, before the
+    // browser process has necessarily finished initializing. Make readiness an
+    // explicit CDP operation rather than inferring it from stderr or a port.
+    await client.send("Browser.getVersion", {}, undefined, 30_000);
+    return new CdpBrowser(client);
+  } catch (error) {
+    client.close(error);
+    throw error;
+  }
 }
 
 export class CdpBrowser {
@@ -376,6 +392,18 @@ export class CdpClient {
       this.endpoint.pipeRead.on("error", this.pipeErrorHandler);
       this.endpoint.pipeRead.on("end", this.pipeClosedHandler);
       this.pipeWrite.on("error", this.pipeErrorHandler);
+      if (this.endpoint.process) {
+        // Descendants may still hold pipe descriptors after Chrome exits.
+        // Process liveness is independent of receiving an EOF on the pipe.
+        this.processExitHandler = (code, signal) => this.close(new Error(
+          `Chrome exited: code=${code} signal=${signal}`,
+        ));
+        this.endpoint.process.once("exit", this.processExitHandler);
+        const { exitCode, signalCode } = this.endpoint.process;
+        if (exitCode !== null || signalCode !== null) {
+          this.processExitHandler(exitCode, signalCode);
+        }
+      }
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
@@ -399,6 +427,9 @@ export class CdpClient {
   close(error = undefined) {
     if (this.closedError) return;
     this.closedError = error ?? new Error("CDP connection closed");
+    if (this.processExitHandler) {
+      this.endpoint.process.off("exit", this.processExitHandler);
+    }
     this.listeners.clear();
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeout);

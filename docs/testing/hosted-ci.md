@@ -152,7 +152,9 @@ recovery assertions.
 Desktop Chrome journeys use the DevTools pipe transport. Unlike the ephemeral
 listener, it cannot lose a port race or fail while announcing a websocket URL
 late in a long Android shard. Readiness is still proved by a bounded
-`Browser.getVersion` CDP request.
+`Browser.getVersion` CDP request. The pipe client also watches Chrome's process
+exit, so inherited pipe descriptors cannot hide an early browser exit until
+the readiness deadline.
 
 Release Android jobs install a same-signed instrumentation APK that serves the
 actual rendered accessibility hierarchy over an adb-forwarded localhost port.
@@ -168,6 +170,12 @@ once computed its transition timestamp before generating its publication.
 Generation took longer than the 45-second delay on GitHub, so the browser never
 saw the expected initial cycle. The publication generator now resolves a
 relative delay from the current time only after package materialization.
+
+Chrome-on-Android prepares generated web sources and WASM before starting Vite's
+readiness deadline. Cold compilation has its own bounded build budget; the
+server phase runs only `inner:serve:dev`, with no generation or compilation.
+Do not put `inner:dev:fast` back inside the server-readiness wait. Supplying
+`--web-url` uses an existing server and skips local preparation.
 
 Keep this distinction explicit:
 
@@ -240,6 +248,10 @@ a failure is not permission to retry the candidate into green.
 
 Web journeys automatically retain `chrome-netlog.json` alongside failure
 artifacts, including worker fetch evidence without attaching a worker debugger.
+Failures before the journey starts also retain `runner-failure.json` with the
+startup phase, Chrome process state before and after teardown, launch arguments,
+and drained stderr. Inspect it when browser readiness fails before a
+`result.json` can exist.
 Default capture excludes sensitive payloads. Successful runs discard this log;
 `--net-log` retains it during focused investigations. Use that evidence to
 distinguish transport failures from application failures before changing waits.

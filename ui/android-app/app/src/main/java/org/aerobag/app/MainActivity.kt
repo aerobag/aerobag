@@ -17,6 +17,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
@@ -2137,8 +2138,11 @@ class MainActivity : ComponentActivity() {
             return
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        restoreSystemWindowBrightness()
-        val dimAfterMs = policy.dimAfterMs ?: return
+        val dimAfterMs = policy.dimAfterMs
+        if (dimAfterMs == null) {
+            restoreSystemWindowBrightness()
+            return
+        }
         val remainingMs = remainingDisplayInactivityMs(
             nowElapsedMs = SystemClock.elapsedRealtime(),
             lastActivityElapsedMs = lastDisplayUserActivityElapsedMs,
@@ -2147,6 +2151,7 @@ class MainActivity : ComponentActivity() {
         if (remainingMs == 0L) {
             applyDisplayPolicyDimState()
         } else {
+            restoreSystemWindowBrightness()
             displayPolicyHandler.postDelayed(displayDimRunnable, remainingMs)
         }
     }
@@ -2162,8 +2167,28 @@ class MainActivity : ComponentActivity() {
             return
         }
         val attrs = window.attributes
-        attrs.screenBrightness = policy.dimBrightness.coerceIn(0.0f, 1.0f)
+        // Keep an existing idle override stable across unrelated session updates. Reading it
+        // back as the primary brightness would mistake our own dimming for a dark cockpit.
+        if (attrs.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
+            return
+        }
+        val dimBrightness = idleDisplayBrightnessOverride(
+            currentBrightness = currentPrimaryDisplayBrightness(),
+            configuredIdleBrightness = policy.dimBrightness,
+        ) ?: return
+        attrs.screenBrightness = dimBrightness
         window.attributes = attrs
+    }
+
+    private fun currentPrimaryDisplayBrightness(): Float? {
+        // Automatic brightness also updates this setting on the tested Samsung tablet. Do not
+        // exclude auto mode: it needs the same daytime power-saving dim as manual mode.
+        val brightness = Settings.System.getInt(
+            contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS,
+            -1,
+        )
+        return brightness.takeIf { it >= 0 }?.let { (it / 255.0f).coerceIn(0.0f, 1.0f) }
     }
 
     private fun applyDisplayPolicyAllowScreenOffState() {

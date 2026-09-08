@@ -4,9 +4,10 @@
 
 // Infrastructure diagnostic only: never writes a qualification receipt.
 import { execFileSync, spawnSync } from "node:child_process";
+import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { freemem, loadavg, release, totalmem } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { chromeProcessDiagnostics, connectToBrowser, launchChrome, stopProcess } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 
@@ -14,6 +15,7 @@ const { values } = parseArgs({ options: {
   output: { type: "string" }, iterations: { type: "string", default: "100" },
   transport: { type: "string", default: "pipe" },
   environment: { type: "string", default: "inherited" },
+  "preload-browser-files": { type: "boolean", default: false },
 } });
 const iterations = Number(values.iterations);
 if (!values.output || !Number.isInteger(iterations) || iterations < 1 || iterations > 500 ||
@@ -39,6 +41,23 @@ const identity = {
   session_bus_present: Boolean(environment.DBUS_SESSION_BUS_ADDRESS),
   cpu_max: await read("/sys/fs/cgroup/cpu.max"), memory_max: await read("/sys/fs/cgroup/memory.max"),
 };
+if (values["preload-browser-files"]) {
+  // Diagnostic control only: read the same installed browser's immutable
+  // executable/resources, without starting it or warming a user profile.
+  const binary = execFileSync("which", [chromeBin], { encoding: "utf8" }).trim();
+  const installed = dirname(execFileSync("readlink", ["-f", binary], { encoding: "utf8" }).trim());
+  const started = performance.now();
+  const files = [];
+  for (const name of (await readdir(installed)).sort()) {
+    if (!/^(chrome|chrome_crashpad_handler|icudtl\.dat|.*\.pak|.*\.so|.*snapshot.*\.bin)$/.test(name)) continue;
+    let bytes = 0;
+    for await (const chunk of createReadStream(join(installed, name), { signal: AbortSignal.timeout(60000) })) {
+      bytes += chunk.length;
+    }
+    files.push({ name, bytes });
+  }
+  identity.preload = { elapsed_ms: performance.now() - started, files };
+}
 await save(join(output, "identity.json"), identity);
 
 async function snapshot(pid) {
@@ -94,7 +113,9 @@ for (let index = 1; index <= iterations && performance.now() - suiteStarted < 36
     };
     // Only our fresh, blank browser is traced; syscall counts contain no payloads.
     if (child?.pid && child.exitCode === null && child.signalCode === null) {
-      const trace = spawnSync("timeout", ["5s", "strace", "-f", "-c", "-p", String(child.pid)], {
+      const command = ["timeout", "5s", "strace", "-f", "-c", "-p", String(child.pid)];
+      if (process.env.GITHUB_ACTIONS === "true") command.unshift("sudo", "-n");
+      const trace = spawnSync(command[0], command.slice(1), {
         encoding: "utf8", timeout: 7000, maxBuffer: 1024 * 1024,
       });
       result.syscall_summary = trace.stderr ?? trace.error?.message ?? "unavailable";

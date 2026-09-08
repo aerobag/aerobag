@@ -16,15 +16,15 @@ permissions:
   contents: read
 jobs:
   startup:
-    name: Chrome startup / ${{ matrix.browser }} / ${{ matrix.transport }} / ${{ matrix.environment }}
+    name: Chrome startup / ${{ matrix.browser }} / ${{ matrix.transport }} / replica ${{ matrix.replica }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
-        browser: [system, pinned]
+        browser: [system, system-preloaded, pinned]
         transport: [pipe, websocket]
-        environment: [inherited, no-session-bus]
+        replica: [1, 2]
     env:
       AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
     steps:
@@ -42,11 +42,16 @@ jobs:
         if: matrix.browser == 'pinned'
         run: python3 tools/ci/install_test_browser.py --destination .ci/test-browser
       - name: Exercise blank-browser startup (not release qualification)
-        run: node tools/ci/diagnose_chrome_startup.mjs --output test-results/chrome-startup --iterations 100 --transport '${{ matrix.transport }}' --environment '${{ matrix.environment }}'
+        env:
+          BROWSER_CONTROL: ${{ matrix.browser }}
+        run: |
+          preload=()
+          if [[ "$BROWSER_CONTROL" == system-preloaded ]]; then preload+=(--preload-browser-files); fi
+          node tools/ci/diagnose_chrome_startup.mjs --output test-results/chrome-startup --iterations 100 --transport '${{ matrix.transport }}' "${preload[@]}"
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: chrome-startup-${{ matrix.browser }}-${{ matrix.transport }}-${{ matrix.environment }}
+          name: chrome-startup-${{ matrix.browser }}-${{ matrix.transport }}-${{ matrix.replica }}
           path: test-results/chrome-startup
           retention-days: 14
           if-no-files-found: warn

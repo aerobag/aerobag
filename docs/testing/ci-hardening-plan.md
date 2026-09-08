@@ -114,3 +114,15 @@ production state, weaken assertions, or erase failure artifacts.
   transport passed; installer/release-tool Python tests: 102 passed; actionlint
   1.7.7 and whitespace checks passed. Existing foundation suite: 273/274;
   `find_route` surface coverage remains the previously reported failure.
+- 2026-09-08: Hosted diagnostic [34272782000](https://github.com/aerobag/aerobag/actions/runs/34272782000)
+  reproduced a pre-CDP first-start stall (installed Chrome/websocket): 15-second
+  endpoint timeout, alive process, SIGKILL required. Samples repeatedly show
+  `D (disk sleep)` / `folio_wait_bit_common`, with system I/O PSI `some avg10`
+  reaching 60.63% and `full avg10` 59.86%; CPU/memory pressure remained low.
+  Other installed-browser first launches took 6.9–9.0 seconds; subsequent
+  launches were about 0.2–0.3 seconds. All 400 downloaded/pinned launches passed,
+  with first launches 0.27–0.76 seconds. Runner image versions and installed
+  Chrome patch versions varied across jobs: do not attribute this to a browser
+  patch or D-Bus. The next controlled run preloads only installed executable/
+  resource files to distinguish cold file I/O from browser/profile state.
+  See [Linux PSI semantics](https://docs.kernel.org/accounting/psi.html).

@@ -115,17 +115,40 @@ export async function connectToBrowser(endpoint) {
   // browser process has necessarily finished initializing. Make readiness an
   // explicit CDP operation rather than inferring it from stderr or a port.
   await client.send("Browser.getVersion", {}, undefined, 30_000);
-  return {
-    close: () => client.close(),
-    async createPage() {
-      const created = await client.send("Target.createTarget", { url: "about:blank" });
-      const attached = await client.send("Target.attachToTarget", {
-        targetId: created.targetId,
-        flatten: true,
-      });
-      return new CdpPage(client, attached.sessionId, created.targetId);
-    },
-  };
+  return new CdpBrowser(client);
+}
+
+export class CdpBrowser {
+  constructor(client) {
+    this.client = client;
+  }
+
+  close() {
+    return this.client.close();
+  }
+
+  async createBrowserContext() {
+    const { browserContextId } = await this.client.send("Target.createBrowserContext", {
+      disposeOnDetach: true,
+    });
+    return browserContextId;
+  }
+
+  async disposeBrowserContext(browserContextId) {
+    await this.client.send("Target.disposeBrowserContext", { browserContextId });
+  }
+
+  async createPage({ browserContextId } = {}) {
+    const created = await this.client.send("Target.createTarget", {
+      url: "about:blank",
+      ...(browserContextId ? { browserContextId } : {}),
+    });
+    const attached = await this.client.send("Target.attachToTarget", {
+      targetId: created.targetId,
+      flatten: true,
+    });
+    return new CdpPage(this.client, attached.sessionId, created.targetId, browserContextId);
+  }
 }
 
 export async function stopProcess(child, timeoutMs = 2000) {
@@ -162,10 +185,11 @@ export function sleep(ms) {
 }
 
 export class CdpPage {
-  constructor(client, sessionId, targetId) {
+  constructor(client, sessionId, targetId, browserContextId = undefined) {
     this.client = client;
     this.sessionId = sessionId;
     this.targetId = targetId;
+    this.browserContextId = browserContextId;
     this.diagnostics = [];
     this.networkRequests = new Map();
     this.loadPromise = null;
@@ -251,7 +275,8 @@ export class CdpPage {
     await waitFor(async () => {
       const { targetInfos } = await this.client.send("Target.getTargets");
       const pageExists = targetInfos.some((target) => target.targetId === targetId);
-      const dedicatedWorkersExist = targetInfos.some((target) => target.type === "worker");
+      const dedicatedWorkersExist = targetInfos.some((target) => target.type === "worker" &&
+        (!this.browserContextId || target.browserContextId === this.browserContextId));
       return !pageExists && !dedicatedWorkersExist;
     }, timeoutMs, "old page or dedicated worker survived browser reset", 10);
   }

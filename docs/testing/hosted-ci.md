@@ -249,6 +249,13 @@ is single-shot, including browser-canceled module fetches. Only read-only DOM
 observations interrupted by navigation are transient, within their existing
 deadline; clicks and application failures must never be retried into green.
 
+Web test **reset** replaces the entire browser context, including its storage
+and caches. Clearing origin data inside a reused context left intermittent
+module-loading failures during immediate startup. Use the shared page lifecycle
+helper, not a delay or a startup retry. A **reload** replaces only the page and
+retains its browser context, so saved-state and offline-persistence assertions
+still exercise the same storage. Permissions are scoped to that context.
+
 ### Complete workload
 
 `tools/prod_manage.py --prequalify` first runs the complete workload locally.

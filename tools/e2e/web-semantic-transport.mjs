@@ -49,6 +49,24 @@ const EXPOSED_ELEMENT_POINT = `((element) => {
 
 const ACTIONABLE_ELEMENT_PREDICATE = `((element) => ${EXPOSED_ELEMENT_POINT}(element) !== null)`;
 
+export async function recreateWebJourneyPage(browser, previousPage, configurePage, { resetStorage } = {}) {
+  let browserContextId = previousPage.browserContextId;
+  if (resetStorage) {
+    if (browserContextId) {
+      await browser.disposeBrowserContext(browserContextId);
+    } else {
+      await previousPage.closeForReset(E2E_TIMING.localReadyMs);
+    }
+    // A reset owns a wholly fresh storage/cache partition. Clearing origin
+    // storage in a reused context can race the next document's module loads.
+    browserContextId = await browser.createBrowserContext();
+  } else {
+    // A reload keeps the same partition so persisted state remains testable.
+    await previousPage.closeForReset(E2E_TIMING.localReadyMs);
+  }
+  return configurePage(await browser.createPage({ browserContextId }));
+}
+
 export class WebSemanticTransport {
   constructor(page, { url, origin = new URL(url).origin, recreatePage = null } = {}) {
     this.page = page;
@@ -59,16 +77,16 @@ export class WebSemanticTransport {
 
   async reset() {
     if (this.recreatePage) {
-      this.page = await this.recreatePage(this.page);
+      this.page = await this.recreatePage(this.page, { resetStorage: true });
     } else {
-      // Lightweight transports used by unit tests do not own their page target.
+      // Transports without a page factory cannot replace their browser context.
       await this.page.navigate("about:blank");
       await this.page.waitForLoad();
+      await this.page.send("Storage.clearDataForOrigin", {
+        origin: this.origin,
+        storageTypes: "all",
+      });
     }
-    await this.page.send("Storage.clearDataForOrigin", {
-      origin: this.origin,
-      storageTypes: "all",
-    });
     await this.grantClipboardPermissions();
     await this.page.navigate(this.url);
     await this.page.waitForLoad();
@@ -76,7 +94,7 @@ export class WebSemanticTransport {
 
   async reload() {
     if (this.recreatePage) {
-      this.page = await this.recreatePage(this.page);
+      this.page = await this.recreatePage(this.page, { resetStorage: false });
     }
     await this.grantClipboardPermissions();
     await this.page.navigate(this.url);
@@ -87,6 +105,7 @@ export class WebSemanticTransport {
     await this.page.send("Browser.grantPermissions", {
       origin: this.origin,
       permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+      ...(this.page.browserContextId ? { browserContextId: this.page.browserContextId } : {}),
     });
   }
 

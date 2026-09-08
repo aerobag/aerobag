@@ -19,7 +19,7 @@ import {
 import { WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
 import { E2E_TIMING } from "./transition-contract.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
-import { WebSemanticTransport } from "./web-semantic-transport.mjs";
+import { recreateWebJourneyPage, WebSemanticTransport } from "./web-semantic-transport.mjs";
 
 const workerErrorCaptureScript = String.raw`
 (() => {
@@ -113,8 +113,7 @@ let page;
 try {
   chrome = await launchChrome({ userDataDir, width: args.width, height: args.height, netLogPath });
   browser = await connectToBrowser(chrome.endpoint);
-  const createConfiguredPage = async () => {
-    const configuredPage = await browser.createPage();
+  const configurePage = async (configuredPage) => {
     await configuredPage.send("Page.enable");
     await configuredPage.send("Runtime.enable");
     await configuredPage.send("Log.enable");
@@ -141,13 +140,11 @@ try {
     page = configuredPage;
     return configuredPage;
   };
-  page = await createConfiguredPage();
+  page = await configurePage(await browser.createPage());
   transport = new WebSemanticTransport(page, {
     url: args.url,
-    recreatePage: async (previousPage) => {
-      await previousPage.closeForReset(E2E_TIMING.localReadyMs);
-      return createConfiguredPage();
-    },
+    recreatePage: (previousPage, options) =>
+      recreateWebJourneyPage(browser, previousPage, configurePage, options),
   });
   const driver = new WebSemanticJourneyDriver(transport);
   const result = await executeReleaseJourney(

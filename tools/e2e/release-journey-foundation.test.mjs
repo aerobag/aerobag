@@ -63,7 +63,7 @@ import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import {
   chooseUnobscuredMapPoint, clampDragEndpoint, timelineSeekDeltaX,
 } from "./gesture-geometry.mjs";
-import { WebSemanticTransport } from "./web-semantic-transport.mjs";
+import { recreateWebJourneyPage, WebSemanticTransport } from "./web-semantic-transport.mjs";
 import {
   assertConditionRemains, E2E_TIMING, observeChangedValueUntilStable,
   ObservationTimeoutError, observeUntil, observeValueUntilStable, performTransition,
@@ -75,7 +75,7 @@ import {
   webWorkspaceDirectory,
 } from "./journey-structure-audit.mjs";
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
-import { CdpClient, CdpPage, CdpProtocolError } from "../../ui/web-app/scripts/chrome-cdp.mjs";
+import { CdpBrowser, CdpClient, CdpPage, CdpProtocolError } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
   androidSemanticTextTargetIsReady,
   androidSemanticReadinessStateMatches,
@@ -1794,10 +1794,11 @@ test("failure diagnostics summarize fixture traffic without discarding anomalies
   ]);
 });
 
-test("web reset replaces the old app target before clearing persistent origin state", async () => {
+test("web reset requests fresh storage and grants permissions in its replacement context", async () => {
   const calls = [];
   const oldPage = {};
   const replacementPage = {
+    browserContextId: "fresh-context",
     navigate: async (url) => calls.push(["navigate", url]),
     waitForLoad: async () => calls.push(["waitForLoad"]),
     send: async (method, args) => calls.push(["send", method, args]),
@@ -1805,8 +1806,8 @@ test("web reset replaces the old app target before clearing persistent origin st
   const transport = new WebSemanticTransport(oldPage, {
     url: "http://fixture.test/app",
     origin: "http://fixture.test",
-    recreatePage: async (page) => {
-      calls.push(["recreatePage", page]);
+    recreatePage: async (page, options) => {
+      calls.push(["recreatePage", page, options]);
       return replacementPage;
     },
   });
@@ -1814,18 +1815,92 @@ test("web reset replaces the old app target before clearing persistent origin st
   await transport.reset();
 
   assert.deepEqual(calls, [
-    ["recreatePage", oldPage],
-    ["send", "Storage.clearDataForOrigin", {
-      origin: "http://fixture.test",
-      storageTypes: "all",
-    }],
+    ["recreatePage", oldPage, { resetStorage: true }],
     ["send", "Browser.grantPermissions", {
       origin: "http://fixture.test",
       permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+      browserContextId: "fresh-context",
     }],
     ["navigate", "http://fixture.test/app"],
     ["waitForLoad"],
   ]);
+});
+
+for (const [label, browserContextId, resetStorage, expected] of [
+  ["reset", "old-context", true, [
+    ["dispose-context", "old-context"], ["create-context"], ["create-page", "fresh-context"],
+  ]],
+  ["reload", "old-context", false, [
+    ["close-page", E2E_TIMING.localReadyMs], ["create-page", "old-context"],
+  ]],
+  ["initial reset", undefined, true, [
+    ["close-page", E2E_TIMING.localReadyMs], ["create-context"], ["create-page", "fresh-context"],
+  ]],
+]) {
+  test(`web page lifecycle preserves the reset/reload storage boundary: ${label}`, async () => {
+    const calls = [];
+    const replacement = {};
+    const previous = {
+      browserContextId,
+      closeForReset: async (deadline) => calls.push(["close-page", deadline]),
+    };
+    const browser = {
+      disposeBrowserContext: async (id) => calls.push(["dispose-context", id]),
+      createBrowserContext: async () => { calls.push(["create-context"]); return "fresh-context"; },
+      createPage: async ({ browserContextId: id }) => {
+        calls.push(["create-page", id]);
+        return replacement;
+      },
+    };
+    const configure = async (page) => {
+      assert.equal(page, replacement);
+      calls.push(["configure-page"]);
+      return page;
+    };
+    assert.equal(
+      await recreateWebJourneyPage(browser, previous, configure, { resetStorage }),
+      replacement,
+    );
+    assert.deepEqual(calls, [...expected, ["configure-page"]]);
+  });
+}
+
+test("web context disposal failure stops reset instead of opening another app", async () => {
+  const failure = new Error("context disposal failed");
+  await assert.rejects(recreateWebJourneyPage({
+    disposeBrowserContext: async () => { throw failure; },
+    createBrowserContext: async () => assert.fail("must not continue after disposal failed"),
+  }, { browserContextId: "old-context" }, () => assert.fail("must not configure a page"), {
+    resetStorage: true,
+  }), (error) => error === failure);
+});
+
+test("CDP browser creates scoped pages and disposes their context explicitly", async () => {
+  const calls = [];
+  const browser = new CdpBrowser({
+    onEvent() {},
+    send: async (method, params) => {
+      calls.push([method, params]);
+      if (method === "Target.createBrowserContext") return { browserContextId: "context-1" };
+      if (method === "Target.createTarget") return { targetId: "page-1" };
+      if (method === "Target.attachToTarget") return { sessionId: "session-1" };
+      if (method === "Target.disposeBrowserContext") return {};
+      assert.fail(`unexpected ${method}`);
+    },
+  });
+  const browserContextId = await browser.createBrowserContext();
+  const page = await browser.createPage({ browserContextId });
+  assert.equal(page.browserContextId, "context-1");
+  assert.equal(page.targetId, "page-1");
+  await browser.disposeBrowserContext(browserContextId);
+  assert.deepEqual(calls, [
+    ["Target.createBrowserContext", { disposeOnDetach: true }],
+    ["Target.createTarget", { url: "about:blank", browserContextId: "context-1" }],
+    ["Target.attachToTarget", { targetId: "page-1", flatten: true }],
+    ["Target.disposeBrowserContext", { browserContextId: "context-1" }],
+  ]);
+  const runner = readFileSync(new URL("./run-release-journey.mjs", import.meta.url), "utf8");
+  assert.match(runner, /recreateWebJourneyPage\(browser, previousPage, configurePage, options\)/);
 });
 
 test("web reset observes startup readiness without replaying navigation", async () => {
@@ -1846,6 +1921,20 @@ test("web reset observes startup readiness without replaying navigation", async 
 
   assert.equal(resets, 1);
   assert.equal(reads, 2);
+});
+
+test("web reset without a page factory clears storage only after leaving the app", async () => {
+  const calls = [];
+  const transport = new WebSemanticTransport({
+    navigate: async (url) => calls.push(["navigate", url]),
+    waitForLoad: async () => calls.push(["loaded"]),
+    send: async (method) => calls.push([method]),
+  }, { url: "http://fixture.test/" });
+  await transport.reset();
+  assert.deepEqual(calls, [
+    ["navigate", "about:blank"], ["loaded"], ["Storage.clearDataForOrigin"],
+    ["Browser.grantPermissions"], ["navigate", "http://fixture.test/"], ["loaded"],
+  ]);
 });
 
 test("web reset does not retry browser-canceled startup fetch failures", async () => {
@@ -1912,6 +2001,24 @@ test("closing a web page for reset observes destruction of its dedicated workers
   assert.equal(targetReads, 2);
 });
 
+test("CDP page replacement waits only for workers in its own browser context", async () => {
+  let reads = 0;
+  const page = new CdpPage({
+    onEvent() {},
+    send: async (method) => {
+      if (method === "Target.closeTarget") return { success: true };
+      assert.equal(method, "Target.getTargets");
+      reads += 1;
+      return { targetInfos: [
+        { type: "worker", targetId: "foreign-worker", browserContextId: "other-context" },
+        ...(reads === 1 ? [{ type: "worker", targetId: "own-worker", browserContextId: "context-1" }] : []),
+      ] };
+    },
+  }, "session-1", "page-1", "context-1");
+  await page.closeForReset(E2E_TIMING.localReadyMs);
+  assert.equal(reads, 2);
+});
+
 test("CDP navigation errors fail immediately instead of becoming UI readiness timeouts", async () => {
   const listeners = new Map();
   const client = {
@@ -1954,6 +2061,7 @@ test("web reload replaces its page target without clearing persisted state", asy
   const calls = [];
   const oldPage = {};
   const replacementPage = {
+    browserContextId: "retained-context",
     navigate: async (url) => calls.push(["navigate", url]),
     waitForLoad: async () => calls.push(["waitForLoad"]),
     send: async (method, args) => calls.push(["send", method, args]),
@@ -1961,8 +2069,8 @@ test("web reload replaces its page target without clearing persisted state", asy
   const transport = new WebSemanticTransport(oldPage, {
     url: "http://fixture.test/app",
     origin: "http://fixture.test",
-    recreatePage: async (page) => {
-      calls.push(["recreatePage", page]);
+    recreatePage: async (page, options) => {
+      calls.push(["recreatePage", page, options]);
       return replacementPage;
     },
   });
@@ -1970,10 +2078,11 @@ test("web reload replaces its page target without clearing persisted state", asy
   await transport.reload();
 
   assert.deepEqual(calls, [
-    ["recreatePage", oldPage],
+    ["recreatePage", oldPage, { resetStorage: false }],
     ["send", "Browser.grantPermissions", {
       origin: "http://fixture.test",
       permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+      browserContextId: "retained-context",
     }],
     ["navigate", "http://fixture.test/app"],
     ["waitForLoad"],

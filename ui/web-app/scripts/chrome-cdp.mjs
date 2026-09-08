@@ -34,6 +34,8 @@ export function launchChrome({
   height = 1000,
   headless = true,
   transport = "pipe",
+  env = process.env,
+  onSpawn = null,
   netLogPath = process.env.AEROBAG_CHROME_NET_LOG?.replace(
     "{repeat}",
     process.env.AEROBAG_E2E_REPEAT_INDEX ?? "1",
@@ -71,7 +73,9 @@ export function launchChrome({
       stdio: transport === "pipe"
         ? ["ignore", "ignore", "pipe", "pipe", "pipe"]
         : ["ignore", "ignore", "pipe"],
+      env,
     });
+    onSpawn?.(child);
     let stderr = "";
     const timeout = setTimeout(() => {
       reject(new Error(`timed out waiting for Chrome DevTools endpoint; stderr=${stderr}`));

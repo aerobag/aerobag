@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Chrome startup diagnostic
+run-name: Chrome startup diagnostic ${{ github.sha }}
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/chrome-startup-diagnostic.yml
+      - tools/ci/diagnose_chrome_startup.mjs
+      - tools/ci/test-browser.lock.json
+      - tools/ci/install_test_browser.py
+permissions:
+  contents: read
+jobs:
+  startup:
+    name: Chrome startup / ${{ matrix.browser }} / ${{ matrix.transport }} / ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [system, pinned]
+        transport: [pipe, websocket]
+        environment: [inherited, no-session-bus]
+    env:
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web-app/package-lock.json
+      - name: Install harness dependencies
+        run: npm ci --prefix ui/web-app
+      - name: Install failure tracer
+        run: sudo apt-get install -y strace
+      - name: Install pinned browser
+        if: matrix.browser == 'pinned'
+        run: python3 tools/ci/install_test_browser.py --destination .ci/test-browser
+      - name: Exercise blank-browser startup (not release qualification)
+        run: node tools/ci/diagnose_chrome_startup.mjs --output test-results/chrome-startup --iterations 100 --transport '${{ matrix.transport }}' --environment '${{ matrix.environment }}'
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: chrome-startup-${{ matrix.browser }}-${{ matrix.transport }}-${{ matrix.environment }}
+          path: test-results/chrome-startup
+          retention-days: 14
+          if-no-files-found: warn

@@ -34,9 +34,9 @@ Hosted Chrome failure evidence:
 
 ### 1. Chase down the unexplained hosted Chrome startup stall
 
-- [ ] Add a small, bounded, manually dispatchable hosted diagnostic using the
+- [x] Add a small, bounded, manually dispatchable hosted diagnostic using the
   actual shared Chrome launcher/CDP transport; no app compilation or emulators.
-- [ ] Record browser and runner identity, per-phase elapsed time, process/thread
+- [x] Record browser and runner identity, per-phase elapsed time, process/thread
   state, resource pressure, bounded stderr, and CDP transport progress on failure.
   Do not capture credentials or arbitrary environment dumps.
 - [ ] Compare controlled first-launch/repeated-launch conditions and pipe versus
@@ -106,3 +106,11 @@ production state, weaken assertions, or erase failure artifacts.
 - 2026-09-08: Confirmed release-path policy already implemented in `ea5963f0`.
   Production was promoted separately by the operator; hardening does not change
   that release. Wrote this plan before implementation.
+- 2026-09-08: Added an isolated eight-cell hosted startup diagnostic: installed
+  versus checksum-pinned Chrome 152.0.7977.82, pipe versus websocket, inherited
+  versus absent session-bus environment. Each cell records 100 independent
+  fresh-profile launches, bounded to six minutes, with first failures retained.
+  This workflow cannot qualify a release. Local smoke: three starts per
+  transport passed; installer/release-tool Python tests: 102 passed; actionlint
+  1.7.7 and whitespace checks passed. Existing foundation suite: 273/274;
+  `find_route` surface coverage remains the previously reported failure.

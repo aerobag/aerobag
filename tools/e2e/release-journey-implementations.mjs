@@ -2406,7 +2406,10 @@ async function flightPlanAirwayEstimates(runtime) {
   });
   // We opened the picker on this airway's entry waypoint. Core fixes that
   // entry rather than making the pilot choose the same waypoint again.
-  const fixedEntry = await runtime.driver.readElement(`plan-airway-exit:${airway.entry}`);
+  // Android's lazy list may not compose that row until we explicitly reveal it.
+  const fixedEntry = await revealRequiredElement(
+    runtime, `plan-airway-exit:${airway.entry}`, `${airway.entry} fixed airway entry`,
+  );
   runtime.check("plan.airway-entry-fixed", fixedEntry?.enabled === false, fixedEntry);
   runtime.result.diagnostics.airway_exits = {
     selected: airway.exit,

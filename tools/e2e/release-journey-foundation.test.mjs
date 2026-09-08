@@ -33,6 +33,7 @@ import {
   rasterPlanHasVisiblePaint,
   rasterPlanIsDisplayReady,
   rasterStateFromProjection,
+  releaseJourneyImplementation,
   selectChartSearchSuggestion,
   selectProcedure,
   selectTfrFromPreparedMap,
@@ -5370,6 +5371,57 @@ test("Android offline-package state probes can reach lazy-list rows", () => {
   assert.equal(androidElementMayRequireVerticalScroll("plan-airway-entry:MEDEA"), true);
   assert.equal(androidElementMayRequireVerticalScroll("plan-airway-exit:KPAE"), true);
 });
+
+for (const [label, fixedEntry, expectedFailure] of [
+  ["disabled", { enabled: false }, null],
+  ["enabled", { enabled: true }, /plan\.airway-entry-fixed failed/],
+  ["missing", null, /MEDEA fixed airway entry is not present after explicit traversal/],
+]) {
+  test(`airway journey reveals the fixed entry and rejects invalid state: ${label}`, async () => {
+    const entryId = "plan-airway-exit:MEDEA";
+    const reachedAssertion = new Error("fixed-entry assertion passed; stop focused test");
+    const reveals = [];
+    const row = { id: "parity:plan-row:entry", text: "MEDEA" };
+    const runtime = {
+      platform: "android",
+      capability: (path) => path === "airway"
+        ? { airway: "V4", entry: "MEDEA", exit: "YKM" }
+        : {},
+      reset: async () => {},
+      openPage: async () => {},
+      editText: async () => {},
+      // Setup actions are outside this focused test; execute the actual journey
+      // through its first assertion against an initially uncomposed entry row.
+      transition: async () => {},
+      action: async () => {},
+      eventually: async (_description, observe) => observe(),
+      revealProjectionMatching: async () => row,
+      revealElement: async (id) => {
+        reveals.push(id);
+        return id === entryId ? fixedEntry : { enabled: true };
+      },
+      driver: {
+        readElement: async (id) => id === entryId && reveals.includes(id) ? fixedEntry : null,
+        findProjectionMatching: async () => row,
+        readProjection: async (prefix) => prefix === "parity:startup-state:"
+          ? [{ id: `${prefix}ready:true:disclaimer_required:false` }]
+          : [{ id: `${prefix}V4` }],
+      },
+      check: (id, pass, detail) => {
+        assert.equal(id, "plan.airway-entry-fixed");
+        assert.equal(pass, true, `${id} failed`);
+        assert.equal(detail, fixedEntry);
+        throw reachedAssertion;
+      },
+    };
+    assert.equal(await runtime.driver.readElement(entryId), null);
+    await assert.rejects(
+      releaseJourneyImplementation("shared.flight-plan-airway-estimates")(runtime),
+      expectedFailure ?? ((error) => error === reachedAssertion),
+    );
+    assert.equal(reveals.filter((id) => id === entryId).length, 1);
+  });
+}
 
 test("route append journeys reject an editor that traversal did not reveal", () => {
   const source = readFileSync(

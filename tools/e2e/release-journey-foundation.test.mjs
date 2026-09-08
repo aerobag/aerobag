@@ -220,6 +220,7 @@ test("web runner retains Chrome startup evidence before a journey result exists"
   assert.ok(capture >= 0 && capture < runner.indexOf("if (error?.journeyResult)"));
   assert.match(runner, /phase = "chrome\.connect";\s*browser = await connectToBrowser/);
   assert.match(runner, /chrome: chromeProcessDiagnostics\(chrome\)/);
+  assert.match(runner, /chrome \?\?= error\.chrome/);
   assert.match(runner, /writeFile\(join\(artifactDir, "runner-failure\.json"\)[\s\S]*\.catch\(/);
   assert.match(runner.slice(capture), /await persistRunnerFailure\(\);[\s\S]*throw error;/);
   assert.match(runner, /await stopProcess\(chrome\?\.process\);[\s\S]*runnerFailure\.chrome_after_teardown = chromeProcessDiagnostics\(chrome\);\s*await persistRunnerFailure\(\);/);
@@ -861,7 +862,9 @@ test("a blocked probe cannot report success after its observation budget", async
   assert.match(error?.message ?? "", /blocked probe timed out/);
   assert.equal(error.name, "ObservationTimeoutError");
   assert.equal(error.diagnostics.attempts, 1);
-  assert.equal(error.diagnostics.last_value, true);
+  // The deadline wins while the probe is still blocked; late success is never
+  // recorded as evidence for this observation.
+  assert.equal(error.diagnostics.last_value, null);
 });
 
 test("terminal observation failures abort without consuming the readiness budget", async () => {
@@ -2085,6 +2088,7 @@ test("closing a web page for reset observes destruction of its dedicated workers
   let targetReads = 0;
   const client = {
     onEvent() {},
+    offEvent() {},
     send: async (method, args) => {
       requests.push([method, args]);
       if (method === "Target.closeTarget") return { success: true };
@@ -2110,6 +2114,7 @@ test("CDP page replacement waits only for workers in its own browser context", a
   let reads = 0;
   const page = new CdpPage({
     onEvent() {},
+    offEvent() {},
     send: async (method) => {
       if (method === "Target.closeTarget") return { success: true };
       assert.equal(method, "Target.getTargets");
@@ -2132,6 +2137,7 @@ test("CDP navigation errors fail immediately instead of becoming UI readiness ti
       if (listeners.get(method) === callback) listeners.delete(method);
     },
     send: async (method) => {
+      if (method === "Page.setLifecycleEventsEnabled") return {};
       if (method === "Page.navigate") return { errorText: "net::ERR_CONNECTION_REFUSED" };
       throw new Error(`unexpected ${method}`);
     },
@@ -2142,7 +2148,7 @@ test("CDP navigation errors fail immediately instead of becoming UI readiness ti
     page.navigate("http://fixture.test/"),
     /Page\.navigate failed.*ERR_CONNECTION_REFUSED/,
   );
-  assert.equal(listeners.has("Page.loadEventFired"), false);
+  assert.equal(listeners.has("Page.lifecycleEvent"), false);
   await assert.rejects(page.waitForLoad(), /without a successful navigation/);
 });
 

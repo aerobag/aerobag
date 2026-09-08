@@ -240,6 +240,7 @@ export function createReleaseJourneyFixtureServer(args) {
   const config = fixtureServerConfiguration(args);
   const recentRequests = [];
   const abortedTransportFaults = new Set();
+  let generation = 0;
   const control = {
     publication: "primary",
     artifact_fault: "none",
@@ -247,6 +248,7 @@ export function createReleaseJourneyFixtureServer(args) {
     completed_update_artifact_requests: 0,
   };
   return createServer((request, response) => {
+    const requestGeneration = generation;
     const requestDiagnostic = {
       method: request.method,
       url: request.url,
@@ -293,9 +295,16 @@ export function createReleaseJourneyFixtureServer(args) {
         if (body.length > 16_384) request.destroy();
       });
       request.on("end", () => {
+        if (requestGeneration !== generation) {
+          response.statusCode = 409;
+          response.end("fixture control request crossed a reset boundary\n");
+          return;
+        }
         try {
           const update = JSON.parse(body || "{}");
           if (update.reset === true) {
+            generation += 1;
+            abortedTransportFaults.clear();
             control.publication = "primary";
             control.artifact_fault = "none";
             control.dropped_artifact_requests = 0;

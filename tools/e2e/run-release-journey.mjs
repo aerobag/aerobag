@@ -175,6 +175,7 @@ try {
 } catch (error) {
   // Startup failures precede executeReleaseJourney and have no journeyResult.
   // Save process evidence before teardown, without masking the initiating error.
+  chrome ??= error.chrome;
   runnerFailure = {
     phase,
     error: { message: error?.message ?? String(error), stack: error?.stack ?? null },

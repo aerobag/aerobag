@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { DeadlineExceededError, realScheduler, withinDeadline } from "./deadline.mjs";
+
 export const E2E_TIMING = Object.freeze({
   userResponseTargetMs: 3_000,
   userTransitionDeadlineMs: 6_000,
@@ -73,12 +75,13 @@ export async function observeUntil(
     consecutiveSuccesses = 1,
     consecutiveValueKey = null,
     waitForNextProbe = null,
+    scheduler = realScheduler,
   } = {},
 ) {
   if (!Number.isInteger(consecutiveSuccesses) || consecutiveSuccesses < 1) {
     throw new Error("consecutiveSuccesses must be a positive integer");
   }
-  const startedAt = performance.now();
+  const startedAt = scheduler.now();
   const deadline = startedAt + timeoutMs;
   let lastError = null;
   let successfulSamples = 0;
@@ -86,12 +89,12 @@ export async function observeUntil(
   let successfulKey = null;
   let lastValue = null;
   let attempts = 0;
-  while (performance.now() < deadline) {
+  while (scheduler.now() < deadline) {
     try {
       attempts += 1;
-      const value = await probe();
+      const value = await withinDeadline(description, probe, deadline, scheduler);
       lastValue = diagnosticValue(value);
-      const probeFinishedAt = performance.now();
+      const probeFinishedAt = scheduler.now();
       if (probeFinishedAt >= deadline) break;
       if (value) {
         const currentKey = consecutiveValueKey ? consecutiveValueKey(value) : null;
@@ -111,6 +114,7 @@ export async function observeUntil(
         successfulKey = null;
       }
     } catch (error) {
+      if (error instanceof DeadlineExceededError && error.deadline === deadline) break;
       if (error instanceof TerminalObservationError) throw error;
       if (!(error instanceof TransientObservationError)) {
         throw new TerminalObservationError(description, error.message, { cause: error });
@@ -120,15 +124,21 @@ export async function observeUntil(
       successfulValue = null;
       successfulKey = null;
     }
-    const remainingMs = Math.max(0, deadline - performance.now());
+    const remainingMs = Math.max(0, deadline - scheduler.now());
     if (remainingMs <= 0) break;
     if (waitForNextProbe) {
-      await waitForNextProbe(Math.min(intervalMs, remainingMs));
+      try {
+        await withinDeadline(description,
+          (options) => waitForNextProbe(Math.min(intervalMs, remainingMs), options), deadline, scheduler);
+      } catch (error) {
+        if (error instanceof DeadlineExceededError && error.deadline === deadline) break;
+        throw error;
+      }
     } else {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remainingMs)));
+      await new Promise((resolve) => scheduler.setTimeout(resolve, Math.min(intervalMs, remainingMs)));
     }
   }
-  const elapsedMs = Math.round(performance.now() - startedAt);
+  const elapsedMs = Math.round(scheduler.now() - startedAt);
   throw new ObservationTimeoutError(
     description,
     elapsedMs,
@@ -223,19 +233,25 @@ export async function assertConditionRemains(
   {
     durationMs,
     intervalMs = E2E_TIMING.pollIntervalMs,
+    probeTimeoutMs = E2E_TIMING.localReadyMs,
+    scheduler = realScheduler,
   },
 ) {
-  const startedAt = performance.now();
+  const startedAt = scheduler.now();
+  const deadline = startedAt + durationMs;
   let samples = 0;
-  while (performance.now() - startedAt < durationMs) {
-    const value = await probe();
+  while (scheduler.now() < deadline) {
+    // The sampling window is not a deadline for its final read. A read begun
+    // just before the window ends still gets its own bounded probe budget.
+    const value = await withinDeadline(description, probe, scheduler.now() + probeTimeoutMs, scheduler);
     samples += 1;
     if (!accept(value)) {
-      throw new Error(`${description} failed after ${Math.round(performance.now() - startedAt)}ms`);
+      throw new Error(`${description} failed after ${Math.round(scheduler.now() - startedAt)}ms`);
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    if (scheduler.now() >= deadline) break;
+    await new Promise((resolve) => scheduler.setTimeout(resolve, Math.min(intervalMs, deadline - scheduler.now())));
   }
-  return { durationMs: Math.round(performance.now() - startedAt), samples };
+  return { durationMs: Math.round(scheduler.now() - startedAt), samples };
 }
 
 export async function performTransition(description, {
@@ -251,6 +267,8 @@ export async function performTransition(description, {
   readinessSamples = E2E_TIMING.transitionReadinessSamples,
   completionSamples = E2E_TIMING.transitionCompletionSamples,
   acceptPreexistingCompletion = false,
+  diagnosticTimeoutMs = E2E_TIMING.localReadyMs,
+  scheduler = realScheduler,
   onTiming = null,
 }) {
   if (!Number.isInteger(readinessSamples) || readinessSamples < 1) {
@@ -266,7 +284,7 @@ export async function performTransition(description, {
         "Observe longer resource or temporal work as a separate named phase.",
     );
   }
-  const transitionStartedAt = performance.now();
+  const transitionStartedAt = scheduler.now();
   const timing = {
     description,
     outcome: "fail",
@@ -288,7 +306,8 @@ export async function performTransition(description, {
     timing.failure_phase = phase;
     if (diagnose) {
       try {
-        timing.diagnostic_state = diagnosticValue(await diagnose());
+        timing.diagnostic_state = diagnosticValue(await withinDeadline(
+          `${description} diagnostics`, diagnose, scheduler.now() + diagnosticTimeoutMs, scheduler));
       } catch (diagnosticError) {
         timing.diagnostic_state = { diagnostic_error: diagnosticError.message };
       }
@@ -304,20 +323,32 @@ export async function performTransition(description, {
       consecutiveSuccesses: readinessSamples,
       consecutiveValueKey: transitionReadinessKey,
       waitForNextProbe: waitForObservation,
+      scheduler,
     });
     timing.ready_ms = readyResult.durationMs;
     timing.ready_state = diagnosticValue(readyResult.value);
   } catch (error) {
-    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.total_ms = Math.round(scheduler.now() - transitionStartedAt);
     timing.observation = error.diagnostics ?? null;
     await recordFailure("ready", error);
   }
   let completionBeforeAction = null;
   try {
-    completionBeforeAction = await complete();
-  } catch {
-    // Completion probes use the same absent-state convention as observeUntil:
-    // a missing postcondition may either return null or fail to read.
+    // False/null is an absent postcondition, not an exception. Retry only
+    // explicitly transient reads; a broken driver must never authorize an action.
+    const observed = await observeUntil(`${description} precondition`, async (options) => ({
+      completion: await complete(options),
+    }), {
+      timeoutMs: readyTimeoutMs,
+      intervalMs,
+      waitForNextProbe: waitForObservation,
+      scheduler,
+    });
+    completionBeforeAction = observed.value.completion;
+  } catch (error) {
+    timing.total_ms = Math.round(scheduler.now() - transitionStartedAt);
+    timing.observation = error.diagnostics ?? { error: error.message };
+    await recordFailure("precondition", error);
   }
   if (completionBeforeAction) {
     if (acceptPreexistingCompletion) {
@@ -328,40 +359,41 @@ export async function performTransition(description, {
         completion_ms: 0,
         response_ms: 0,
         response_target_met: true,
-        total_ms: Math.round(performance.now() - transitionStartedAt),
+        total_ms: Math.round(scheduler.now() - transitionStartedAt),
         action_result: { skipped: "already-complete" },
         observation: diagnosticValue(completionBeforeAction),
       });
       onTiming?.(timing);
       return { value: completionBeforeAction, timing };
     }
-    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.total_ms = Math.round(scheduler.now() - transitionStartedAt);
     timing.observation = diagnosticValue(completionBeforeAction);
     await recordFailure(
       "precondition",
       new Error(`${description} completion was already satisfied before the action`),
     );
   }
-  const actionStartedAt = performance.now();
+  const actionStartedAt = scheduler.now();
   let actionResult;
   try {
-    actionResult = await act(readyResult.value);
+    actionResult = await withinDeadline(`${description} action`,
+      (options) => act(readyResult.value, options), actionStartedAt + responseTimeoutMs, scheduler);
     timing.action_result = diagnosticValue(actionResult);
   } catch (error) {
-    timing.action_ms = Math.round(performance.now() - actionStartedAt);
+    timing.action_ms = Math.round(scheduler.now() - actionStartedAt);
     timing.response_ms = timing.action_ms;
     timing.response_target_met = timing.response_ms <= responseTargetMs;
-    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.total_ms = Math.round(scheduler.now() - transitionStartedAt);
     timing.observation = { error: error.message };
     await recordFailure("action", error);
   }
-  const actionDurationMs = Math.round(performance.now() - actionStartedAt);
+  const actionDurationMs = Math.round(scheduler.now() - actionStartedAt);
   timing.action_ms = actionDurationMs;
-  const remainingResponseMs = responseTimeoutMs - (performance.now() - actionStartedAt);
+  const remainingResponseMs = responseTimeoutMs - (scheduler.now() - actionStartedAt);
   if (remainingResponseMs <= 0) {
     timing.response_ms = actionDurationMs;
     timing.response_target_met = timing.response_ms <= responseTargetMs;
-    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.total_ms = Math.round(scheduler.now() - transitionStartedAt);
     await recordFailure(
       "action",
       new Error(`${description} action exceeded the ${responseTimeoutMs}ms functional deadline`),
@@ -374,23 +406,24 @@ export async function performTransition(description, {
       intervalMs,
       consecutiveSuccesses: completionSamples,
       waitForNextProbe: waitForObservation,
+      scheduler,
     });
   } catch (error) {
-    timing.completion_ms = Math.round(performance.now() - actionStartedAt - actionDurationMs);
-    timing.response_ms = Math.round(performance.now() - actionStartedAt);
+    timing.completion_ms = Math.round(scheduler.now() - actionStartedAt - actionDurationMs);
+    timing.response_ms = Math.round(scheduler.now() - actionStartedAt);
     timing.response_target_met = timing.response_ms <= responseTargetMs;
-    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.total_ms = Math.round(scheduler.now() - transitionStartedAt);
     timing.observation = error.diagnostics ?? null;
     await recordFailure("completion", error);
   }
-  const responseDurationMs = Math.round(performance.now() - actionStartedAt);
+  const responseDurationMs = Math.round(scheduler.now() - actionStartedAt);
   Object.assign(timing, {
     outcome: "pass",
     failure_phase: null,
     completion_ms: completion.durationMs,
     response_ms: responseDurationMs,
     response_target_met: responseDurationMs <= responseTargetMs,
-    total_ms: Math.round(performance.now() - transitionStartedAt),
+    total_ms: Math.round(scheduler.now() - transitionStartedAt),
     observation: diagnosticValue(completion.value),
   });
   onTiming?.(timing);

@@ -36,6 +36,7 @@ export function launchChrome({
   transport = "pipe",
   env = process.env,
   onSpawn = null,
+  startupTimeoutMs = 15_000,
   netLogPath = process.env.AEROBAG_CHROME_NET_LOG?.replace(
     "{repeat}",
     process.env.AEROBAG_E2E_REPEAT_INDEX ?? "1",
@@ -75,17 +76,27 @@ export function launchChrome({
         : ["ignore", "ignore", "pipe"],
       env,
     });
-    onSpawn?.(child);
     let stderr = "";
-    const timeout = setTimeout(() => {
-      reject(new Error(`timed out waiting for Chrome DevTools endpoint; stderr=${stderr}`));
-    }, 15000);
-    child.on("error", (error) => {
+    let settled = false;
+    const handle = { process: child, getStderr: () => stderr };
+    const failed = async (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
+      error.chrome = handle;
+      await stopProcess(child);
       reject(error);
+    };
+    const timeout = setTimeout(() => {
+      void failed(new Error(`timed out waiting for Chrome DevTools endpoint; stderr=${stderr}`));
+    }, startupTimeoutMs);
+    child.on("error", (error) => {
+      void failed(error);
     });
     if (transport === "pipe") {
       child.once("spawn", () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         resolve({
           process: child,
@@ -101,10 +112,11 @@ export function launchChrome({
       });
     }
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      stderr = (stderr + chunk.toString("utf8")).slice(-65_536);
       if (transport === "pipe") return;
       const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) {
+      if (match && !settled) {
+        settled = true;
         clearTimeout(timeout);
         resolve({
           process: child,
@@ -115,11 +127,11 @@ export function launchChrome({
       }
     });
     child.on("exit", (code, signal) => {
-      clearTimeout(timeout);
-      reject(new Error(
+      void failed(new Error(
         `Chrome exited before DevTools was ready: code=${code} signal=${signal} stderr=${stderr}`,
       ));
     });
+    try { onSpawn?.(child); } catch (error) { void failed(error); }
   });
 }
 
@@ -172,7 +184,7 @@ export class CdpBrowser {
 }
 
 export async function stopProcess(child, timeoutMs = 2000) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
     return;
   }
   child.kill("SIGTERM");
@@ -213,8 +225,9 @@ export class CdpPage {
     this.diagnostics = [];
     this.networkRequests = new Map();
     this.loadPromise = null;
+    this.ownedEvents = [];
     this.installDiagnosticListeners(sessionId, "page");
-    this.client.onEvent(sessionId, "Target.attachedToTarget", (params) => {
+    this.onEvent(sessionId, "Target.attachedToTarget", (params) => {
       const childSessionId = params.sessionId;
       const target = params.targetInfo?.type ?? "child";
       this.installDiagnosticListeners(childSessionId, target);
@@ -227,20 +240,34 @@ export class CdpPage {
     });
   }
 
+  onEvent(sessionId, method, handler) {
+    this.client.onEvent(sessionId, method, handler);
+    this.ownedEvents.push([sessionId, method, handler]);
+  }
+
+  dispose() {
+    this.cancelLoad?.(new Error("page disposed"));
+    for (const [sessionId, method, handler] of this.ownedEvents) {
+      this.client.offEvent(sessionId, method, handler);
+    }
+    this.ownedEvents = [];
+    this.networkRequests.clear();
+  }
+
   installDiagnosticListeners(sessionId, target) {
-    this.client.onEvent(sessionId, "Log.entryAdded", (params) => {
+    this.onEvent(sessionId, "Log.entryAdded", (params) => {
       if (["error", "warning"].includes(params.entry?.level)) {
         this.diagnostics.push({ method: "Log.entryAdded", target, entry: params.entry });
       }
     });
-    this.client.onEvent(sessionId, "Runtime.exceptionThrown", (params) => {
+    this.onEvent(sessionId, "Runtime.exceptionThrown", (params) => {
       this.diagnostics.push({
         method: "Runtime.exceptionThrown",
         target,
         exception: params.exceptionDetails,
       });
     });
-    this.client.onEvent(sessionId, "Runtime.consoleAPICalled", (params) => {
+    this.onEvent(sessionId, "Runtime.consoleAPICalled", (params) => {
       if (params.type === "error" || params.type === "warning") {
         this.diagnostics.push({
           method: "Runtime.consoleAPICalled",
@@ -250,13 +277,13 @@ export class CdpPage {
         });
       }
     });
-    this.client.onEvent(sessionId, "Network.requestWillBeSent", (params) => {
+    this.onEvent(sessionId, "Network.requestWillBeSent", (params) => {
       this.networkRequests.set(`${sessionId}:${params.requestId}`, {
         url: params.request?.url,
         timestamp: params.timestamp,
       });
     });
-    this.client.onEvent(sessionId, "Network.loadingFailed", (params) => {
+    this.onEvent(sessionId, "Network.loadingFailed", (params) => {
       const requestKey = `${sessionId}:${params.requestId}`;
       const request = this.networkRequests.get(requestKey);
       this.diagnostics.push({
@@ -268,7 +295,7 @@ export class CdpPage {
       });
       this.networkRequests.delete(requestKey);
     });
-    this.client.onEvent(sessionId, "Network.responseReceived", (params) => {
+    this.onEvent(sessionId, "Network.responseReceived", (params) => {
       if ((params.response?.status ?? 0) >= 400) {
         this.diagnostics.push({
           method: "Network.responseReceived",
@@ -291,24 +318,32 @@ export class CdpPage {
 
   async closeForReset(timeoutMs) {
     const targetId = this.targetId;
-    await this.client.send("Target.closeTarget", { targetId });
-    await waitFor(async () => {
-      const { targetInfos } = await this.client.send("Target.getTargets");
+    const deadline = performance.now() + timeoutMs;
+    await this.client.send("Target.closeTarget", { targetId }, undefined, timeoutMs);
+    while (performance.now() < deadline) {
+      const { targetInfos } = await this.client.send("Target.getTargets", {}, undefined,
+        Math.max(1, deadline - performance.now()));
+      if (performance.now() >= deadline) break;
       const pageExists = targetInfos.some((target) => target.targetId === targetId);
       const dedicatedWorkersExist = targetInfos.some((target) => target.type === "worker" &&
         (!this.browserContextId || target.browserContextId === this.browserContextId));
-      return !pageExists && !dedicatedWorkersExist;
-    }, timeoutMs, "old page or dedicated worker survived browser reset", 10);
+      if (!pageExists && !dedicatedWorkersExist) {
+        this.dispose();
+        return;
+      }
+      await sleep(Math.min(10, Math.max(0, deadline - performance.now())));
+    }
+    throw new Error("old page or dedicated worker survived browser reset");
   }
 
-  send(method, params = {}) {
-    return this.client.send(method, params, this.sessionId);
+  send(method, params = {}, timeoutMs = 15_000) {
+    return this.client.send(method, params, this.sessionId, timeoutMs);
   }
 
   async routeOrigin(sourceOrigin, targetOrigin) {
     const source = new URL(sourceOrigin).origin;
     const target = new URL(targetOrigin).origin;
-    this.client.onEvent(this.sessionId, "Fetch.requestPaused", (params) => {
+    this.onEvent(this.sessionId, "Fetch.requestPaused", (params) => {
       const original = new URL(params.request.url);
       const replacement = original.origin === source
         ? `${target}${original.pathname}${original.search}${original.hash}`
@@ -331,25 +366,52 @@ export class CdpPage {
     });
   }
 
-  async navigate(url) {
-    if (this.loadListener) {
-      this.client.offEvent(this.sessionId, "Page.loadEventFired", this.loadListener);
-    }
-    this.loadPromise = new Promise((resolve) => {
-      const finish = () => {
-        this.client.offEvent(this.sessionId, "Page.loadEventFired", finish);
-        this.loadListener = null;
-        resolve();
+  async navigate(url, { timeoutMs = 30_000 } = {}) {
+    this.cancelLoad?.(new Error("navigation superseded"));
+    this.loadPromise = null;
+    const deadline = performance.now() + timeoutMs;
+    await this.send("Page.setLifecycleEventsEnabled", { enabled: true }, timeoutMs);
+    let navigation = null;
+    const earlyLoads = [];
+    let finish, unsubscribe = () => {};
+    const remaining = Math.max(1, Math.ceil(deadline - performance.now()));
+    const timer = setTimeout(() => finish(new Error(`Page load timed out for ${url}`)), remaining);
+    const loaded = (event) => {
+      if (event.name !== "load") return;
+      if (!navigation) { earlyLoads.push(event); return; }
+      if (event.loaderId === navigation.loaderId && event.frameId === navigation.frameId) finish();
+    };
+    this.loadPromise = new Promise((resolve, reject) => {
+      let settled = false;
+      finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.client.offEvent(this.sessionId, "Page.lifecycleEvent", loaded);
+        unsubscribe();
+        this.cancelLoad = null;
+        if (error) reject(error); else resolve();
       };
-      this.loadListener = finish;
-      this.client.onEvent(this.sessionId, "Page.loadEventFired", finish);
+      this.cancelLoad = finish;
     });
-    const result = await this.send("Page.navigate", { url });
-    if (result.errorText) {
-      this.client.offEvent(this.sessionId, "Page.loadEventFired", this.loadListener);
-      this.loadListener = null;
+    // Events/connection failure can arrive before the navigate RPC returns.
+    // Keep the original rejecting promise for waitForLoad without an unhandled
+    // rejection in that gap.
+    this.loadPromise.catch(() => {});
+    this.client.onEvent(this.sessionId, "Page.lifecycleEvent", loaded);
+    unsubscribe = this.client.onClose?.((error) => finish(error)) ?? (() => {});
+    try {
+      navigation = await this.send("Page.navigate", { url }, remaining);
+      if (navigation.errorText || navigation.isDownload) {
+        throw new Error(`Page.navigate failed for ${url}: ${navigation.errorText || "navigation became a download"}`);
+      }
+      // Same-document navigation has no new loader and emits no load event.
+      if (!navigation.loaderId) finish();
+      else for (const event of earlyLoads) loaded(event);
+    } catch (error) {
+      finish(error);
       this.loadPromise = null;
-      throw new Error(`Page.navigate failed for ${url}: ${result.errorText}`);
+      throw error;
     }
   }
 
@@ -383,9 +445,10 @@ export class CdpClient {
     this.pending = new Map();
     this.listeners = new Map();
     this.closedError = null;
+    this.closeListeners = new Set();
   }
 
-  open() {
+  open({ timeoutMs = 15_000 } = {}) {
     if (typeof this.endpoint !== "string") {
       this.pipeWrite = this.endpoint.pipeWrite;
       this.pipeBuffer = Buffer.alloc(0);
@@ -411,7 +474,7 @@ export class CdpClient {
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.endpoint);
+      this.ws = new WebSocket(this.endpoint, { handshakeTimeout: timeoutMs });
       const startupError = (event) => reject(event.error ?? new Error("CDP websocket failed to open"));
       this.ws.addEventListener("error", startupError, { once: true });
       this.ws.addEventListener("open", () => {
@@ -431,6 +494,8 @@ export class CdpClient {
   close(error = undefined) {
     if (this.closedError) return;
     this.closedError = error ?? new Error("CDP connection closed");
+    for (const listener of this.closeListeners) listener(this.closedError);
+    this.closeListeners.clear();
     if (this.processExitHandler) {
       this.endpoint.process.off("exit", this.processExitHandler);
     }
@@ -493,6 +558,12 @@ export class CdpClient {
     });
   }
 
+  onClose(handler) {
+    if (this.closedError) handler(this.closedError);
+    else this.closeListeners.add(handler);
+    return () => this.closeListeners.delete(handler);
+  }
+
   onEvent(sessionId, method, handler) {
     const key = `${sessionId}:${method}`;
     const handlers = this.listeners.get(key) ?? new Set();
@@ -501,7 +572,10 @@ export class CdpClient {
   }
 
   offEvent(sessionId, method, handler) {
-    this.listeners.get(`${sessionId}:${method}`)?.delete(handler);
+    const key = `${sessionId}:${method}`;
+    const handlers = this.listeners.get(key);
+    handlers?.delete(handler);
+    if (handlers?.size === 0) this.listeners.delete(key);
   }
 
   handlePipeData(chunk) {

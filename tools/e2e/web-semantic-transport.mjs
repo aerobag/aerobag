@@ -54,6 +54,7 @@ export async function recreateWebJourneyPage(browser, previousPage, configurePag
   if (resetStorage) {
     if (browserContextId) {
       await browser.disposeBrowserContext(browserContextId);
+      previousPage.dispose?.();
     } else {
       await previousPage.closeForReset(E2E_TIMING.localReadyMs);
     }

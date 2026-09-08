@@ -138,7 +138,96 @@ fn click(
 }
 
 #[test]
-fn exact_membership_is_unlimited_lexical_and_nearby_is_unique_capped_and_disjoint() {
+fn nearby_airways_keep_the_entire_sea_tie_and_show_low_routes_first() {
+    let renton = NavRef::Airport("KRNT".into());
+    let renton_position = LatLon {
+        lat: 47.4931389,
+        lon: -122.21575,
+    };
+    let sea_position = LatLon {
+        lat: 47.4353731,
+        lon: -122.3096161,
+    };
+    let mut points = [
+        "J1", "J12", "J189", "J20", "J5", "J503", "J505", "J523", "J65", "J70", "J90", "Q902",
+        "T487", "V120", "V2", "V23", "V27", "V298", "V4", "V495",
+    ]
+    .map(|name| point(name, NavRef::Navaid("SEA".into()), sea_position))
+    .to_vec();
+    points.push(points[0].clone());
+    points.push(point(
+        "T1",
+        NavRef::Fix("FARTHER".into()),
+        LatLon {
+            lat: 48.0,
+            ..renton_position
+        },
+    ));
+    let result = classify_points(&renton, renton_position, &points);
+    assert!(result.exact.is_empty());
+    assert_eq!(
+        result.nearby,
+        [
+            "T487", "V2", "V4", "V23", "V27", "V120", "V298", "V495", "J1", "J5", "J12", "J20",
+            "J65", "J70", "J90", "J189", "J503", "J505", "J523", "Q902",
+        ]
+    );
+    points.reverse();
+    assert_eq!(result, classify_points(&renton, renton_position, &points));
+}
+
+#[test]
+fn nearby_cutoff_keeps_a_boundary_tie_after_closer_routes_without_admitting_farther_routes() {
+    let mut points = (0..8)
+        .map(|i| {
+            point(
+                &format!("J{}", i + 100),
+                NavRef::Fix("CLOSER".into()),
+                LatLon {
+                    lat: position().lat + 0.01,
+                    ..position()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    points.extend(["T1", "V1", "V2", "J1", "Q1"].map(|name| {
+        point(
+            name,
+            NavRef::Fix("BOUNDARY".into()),
+            LatLon {
+                lat: position().lat + 0.02,
+                ..position()
+            },
+        )
+    }));
+    points.push(point(
+        "T2",
+        NavRef::Fix("FARTHER".into()),
+        LatLon {
+            lat: position().lat + 0.03,
+            ..position()
+        },
+    ));
+    let result = classify_points(&anchor(), position(), &points);
+    assert_eq!(result.nearby.len(), 13);
+    for name in ["T1", "V1", "V2", "J1", "Q1"] {
+        assert!(result.nearby.iter().any(|found| found == name));
+    }
+    assert!(!result.nearby.iter().any(|name| name == "T2"));
+}
+
+#[test]
+fn through_airways_use_altitude_groups_then_prefix_and_numeric_route_number() {
+    let points =
+        ["V25", "Q7", "T10", "J12", "V2", "T2", "J2"].map(|name| point(name, anchor(), position()));
+    assert_eq!(
+        classify_points(&anchor(), position(), &points).exact,
+        ["T2", "T10", "V2", "V25", "J2", "J12", "Q7"],
+    );
+}
+
+#[test]
+fn exact_membership_is_unlimited_natural_and_nearby_is_unique_distance_limited_and_disjoint() {
     let mut points = (0..35)
         .map(|i| point(&format!("V{i}"), anchor(), position()))
         .collect::<Vec<_>>();
@@ -159,7 +248,7 @@ fn exact_membership_is_unlimited_lexical_and_nearby_is_unique_capped_and_disjoin
     points.push(point("V2", NavRef::Fix("OTHER".into()), position()));
     let result = classify_points(&anchor(), position(), &points);
     assert_eq!(result.exact.len(), 35);
-    assert_eq!(&result.exact[..4], &["V0", "V1", "V10", "V11"]);
+    assert_eq!(&result.exact[..4], &["V0", "V1", "V2", "V3"]);
     assert_eq!(result.nearby.len(), 10);
     assert_eq!(&result.nearby[..3], &["COLLISION", "N00", "N01"]);
     assert!(result
@@ -188,7 +277,7 @@ fn exact_choice_locks_entry_and_back_returns_to_both_sections() {
             .iter()
             .map(|b| b.label.as_str())
             .collect::<Vec<_>>(),
-        ["V187", "V2"]
+        ["V2", "V187"]
     );
     assert_eq!(view.sections[1].buttons[0].label, "V9");
     assert!(view.sections.iter().all(|s| s.dense));

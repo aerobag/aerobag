@@ -12,7 +12,11 @@ use crate::{
     AirwayPresentationPlan, AirwayPresentationSelection, LatLon, NavKvQuery, NavKvStore, NavRef,
 };
 
-const NEARBY_AIRWAY_LIMIT: usize = 10;
+mod order;
+
+use order::AirwayMenuOrder;
+
+const NEARBY_AIRWAY_TARGET: usize = 10;
 const SEARCH_RADII_NM: [f64; 5] = [25.0, 50.0, 100.0, 200.0, 400.0];
 
 #[cfg(test)]
@@ -49,7 +53,7 @@ fn catalog(store: &NavKvStore, anchor: &NavRef) -> Result<Catalog, HadReadError>
             }
         }
         let result = classify_points(anchor, position, &points);
-        if result.nearby.len() == NEARBY_AIRWAY_LIMIT || radius == SEARCH_RADII_NM[4] {
+        if result.nearby.len() >= NEARBY_AIRWAY_TARGET || radius == SEARCH_RADII_NM[4] {
             return Ok(result);
         }
     }
@@ -77,15 +81,21 @@ fn classify_points(anchor: &NavRef, position: LatLon, points: &[AirwaySpatialPoi
             .or_insert(distance);
     }
     let mut nearby = nearby.into_iter().collect::<Vec<_>>();
-    nearby.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    Catalog {
-        exact: exact.into_iter().collect(),
-        nearby: nearby
-            .into_iter()
-            .take(NEARBY_AIRWAY_LIMIT)
-            .map(|(name, _)| name)
-            .collect(),
+    nearby.sort_by(|a, b| a.1.total_cmp(&b.1));
+    // Membership is geographic, not a side effect of presentation order. Keep the
+    // entire cutoff-distance tie, including every airway sharing its nearest fix.
+    if let Some((_, cutoff_distance)) = nearby.get(NEARBY_AIRWAY_TARGET - 1) {
+        let cutoff_distance = *cutoff_distance;
+        nearby.retain(|(_, distance)| *distance <= cutoff_distance);
     }
+    let mut result = Catalog {
+        exact: exact.into_iter().collect(),
+        nearby: nearby.into_iter().map(|(name, _)| name).collect(),
+    };
+    let order = AirwayMenuOrder::default();
+    order.sort(&mut result.exact);
+    order.sort(&mut result.nearby);
+    result
 }
 
 #[derive(Debug, Clone, PartialEq)]

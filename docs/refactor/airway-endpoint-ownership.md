@@ -72,10 +72,17 @@ labels, enabled reasons, and opaque click registrations. Its view is part of the
 flight-plan incremental update, not a separately queried platform model.
 
 The first section contains every airway whose spatial index includes the selected
-canonical NavRef, in lexicographic order. The second contains at most ten other nearby
-airways, ranked by nearest indexed waypoint distance. Search uses the existing spatial
+canonical NavRef. The second selects nearby airways by nearest indexed waypoint distance,
+targeting ten but including the entire tie at the tenth airway's distance. For KRNT,
+all twenty routes sharing SEA survive that cutoff. Search uses the existing spatial
 NAVKV index, expanding through 25/50/100/200/400 nm windows without rereading tiles.
 Platforms neither supply a limit nor interpret membership or branch identities.
+
+Both sections use one `AirwayMenuOrder`: low-altitude T/V routes first, high-altitude
+J/Q routes second, other families last; within a group, prefix then numeric route number.
+The preferred altitude band is an explicit policy parameter, with both directions tested,
+so a future core setting can reverse the groups without changing selection or platform code.
+Proximity decides membership; display ordering never excludes a nearer route.
 
 An exact airway fixes the selected waypoint as entry when its branch occurrence is
 unambiguous; other choices retain an entry step. Exit selection uses the same core

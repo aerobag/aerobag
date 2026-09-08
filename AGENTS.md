@@ -47,6 +47,7 @@ Choose the smallest useful coverage for the feature:
 | Rust behavior | Affected crate/test family under nextest's `ci` profile with `--locked`; relevant doctests |
 | Core/web/Android session adapters or UI contracts | The complete Rust `ui_core_boundary` test binary, plus affected platform tests |
 | Python tools | Relevant `test_*.py` files with CI's `/usr/bin/python3 -m pytest` |
+| Product/client data contracts or fixture locks | `/usr/bin/python3 tools/ci/verify_locked_fixture_contracts.py` (sub-second metadata check), plus verification of any rebuilt fixture bytes |
 | JavaScript E2E tooling | Relevant `node --test` harness contract files, not browser/emulator journeys |
 | Web or Android feature | Focused existing web unit/type checks or Android JVM/static tests through repo entrypoints |
 | Workflow changes | Pinned actionlint command from `.github/workflows/ci.yml` |
@@ -66,6 +67,13 @@ For core/platform boundary changes, run this from the repository root:
 When refactoring a helper, update structural tests to verify the new helper and
 its implementation preserve the contract. Do not merely remove the assertion
 or rename production code to satisfy a stale text match.
+
+Before pushing a client contract bump, publish genuinely rebuilt compact
+fixtures and update their pinned artifact-repository commit and contract
+metadata together. Coordinate this handoff with the producer owner; a client
+requiring NAV25 while the lock still supplies NAV24 is immediately CI-broken,
+even when that feature's Rust tests pass. Never relabel old fixture bytes to
+make the metadata check pass.
 
 ## Before staging a release
 

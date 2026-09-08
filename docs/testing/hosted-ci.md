@@ -216,6 +216,9 @@ by CI test jobs.
 
 ## Release qualification and stability testing
 
+The implementation/audit checklist and retained findings live in the
+[CI hardening plan](ci-hardening-plan.md).
+
 ### Fast iteration without weakening qualification
 
 Run `tools/ci/fast_release_preflight.py` on the integrated clean commit first.

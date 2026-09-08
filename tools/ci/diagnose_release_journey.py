@@ -67,7 +67,7 @@ def diagnostic_lane(
             "AEROBAG_ANDROID_BASELINE_ARCHIVE": str(baseline),
         })
     if net_log:
-        env["AEROBAG_CHROME_NET_LOG"] = str(output / "chrome-net-{repeat}.json")
+        env["AEROBAG_E2E_RETAIN_NET_LOG"] = "1"
     return replace(lane, name=f"diagnose-{platform}-{journey}", env=env)
 
 

@@ -361,40 +361,19 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async navigateToOperationalApp(navigate) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await navigate();
-      const outcome = (await observeUntil(
-        "web application startup after navigation",
-        async () => {
-          const fatal = await this.readElement("startup-fatal-error");
-          if (fatal) {
-            return this.transport.hasCanceledStartupModuleRequest()
-              ? { kind: "canceled" }
-              : { kind: "fatal", detail: fatal.text || "unknown failure" };
-          }
-          const startup = await this.readProjection("parity:startup-state:");
-          if (startup.some((entry) => entry.id.startsWith("parity:startup-state:ready:true"))) {
-            return { kind: "ready" };
-          }
-          return this.transport.hasCanceledStartupModuleRequest()
-            ? { kind: "canceled" }
-            : null;
-        },
-        {
-          timeoutMs: E2E_TIMING.startupMs,
-          intervalMs: E2E_TIMING.pollIntervalMs,
-        },
-      )).value;
-      if (outcome.kind === "ready") return;
-      if (outcome.kind === "canceled") {
-        if (attempt === 0) continue;
-        throw new TerminalObservationError(
-          "application startup failed",
-          "browser canceled the startup module request twice",
-        );
-      }
-      throw new TerminalObservationError("application startup failed", outcome.detail);
-    }
+    await navigate();
+    await observeUntil(
+      "web application startup after navigation",
+      async () => {
+        const fatal = await this.readElement("startup-fatal-error");
+        if (fatal) {
+          throw new TerminalObservationError("application startup failed", fatal.text || "unknown failure");
+        }
+        const startup = await this.readProjection("parity:startup-state:");
+        return startup.some((entry) => entry.id.startsWith("parity:startup-state:ready:true"));
+      },
+      { timeoutMs: E2E_TIMING.startupMs, intervalMs: E2E_TIMING.pollIntervalMs },
+    );
   }
 
   async readCurrentPage() {

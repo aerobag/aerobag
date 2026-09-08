@@ -100,6 +100,7 @@ const fixture = loadReleaseJourneyFixture(args.fixture);
 const artifactDir = args.artifactDir || join(process.cwd(), "test-results", args.journey, args.platform);
 await mkdir(artifactDir, { recursive: true });
 const explicitNetLog = process.env.AEROBAG_CHROME_NET_LOG;
+const retainNetLog = Boolean(explicitNetLog) || process.env.AEROBAG_E2E_RETAIN_NET_LOG === "1";
 const netLogPath = explicitNetLog?.replace("{repeat}", process.env.AEROBAG_E2E_REPEAT_INDEX ?? "1")
   || join(artifactDir, "chrome-netlog.json");
 const userDataDir = await mkdtemp(join(tmpdir(), "aerobag-release-journey-"));
@@ -117,7 +118,8 @@ try {
     await configuredPage.send("Page.enable");
     await configuredPage.send("Runtime.enable");
     await configuredPage.send("Log.enable");
-    await configuredPage.send("Network.enable");
+    // Use Chrome's netlog for passive page and worker network diagnostics;
+    // don't enable the DevTools Network domain just to observe qualification.
     await configuredPage.send("Page.addScriptToEvaluateOnNewDocument", {
       source: workerErrorCaptureScript,
     });
@@ -190,6 +192,6 @@ try {
   await stopProcess(chrome?.process);
   // Network evidence includes worker fetches without attaching a debugger to
   // the worker. Retain failures; successful qualification runs need no netlogs.
-  if (passed && !explicitNetLog) await rm(netLogPath, { force: true });
+  if (passed && !retainNetLog) await rm(netLogPath, { force: true });
   await rm(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

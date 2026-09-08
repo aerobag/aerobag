@@ -186,7 +186,9 @@ test("web journey failures retain worker network evidence without sensitive capt
   assert.match(runner, /join\(artifactDir, "chrome-netlog.json"\)/);
   assert.match(runner, /launchChrome\(\{[^}]*netLogPath/);
   assert.match(runner, /net_log: netLogPath/);
-  assert.match(runner, /if \(passed && !explicitNetLog\) await rm\(netLogPath/);
+  assert.doesNotMatch(runner, /\.send\("Network\.enable"/);
+  assert.match(runner, /AEROBAG_E2E_RETAIN_NET_LOG === "1"/);
+  assert.match(runner, /if \(passed && !retainNetLog\) await rm\(netLogPath/);
   assert.ok(runner.indexOf("await stopProcess(chrome?.process)") < runner.indexOf("await rm(netLogPath"),
     "flush Chrome's netlog before retaining failure evidence or cleaning successful runs");
   assert.match(chrome, /--net-log-capture-mode=Default/);
@@ -1812,30 +1814,31 @@ test("web reset replaces the old app target before clearing persistent origin st
   ]);
 });
 
-test("web reset recovers one browser-canceled startup module without replaying an app action", async () => {
+test("web reset observes startup readiness without replaying navigation", async () => {
   let resets = 0;
+  let reads = 0;
   const transport = {
     async reset() { resets += 1; },
     async readElement() { return null; },
     async collectTestIds(prefix) {
-      return resets === 2 && prefix === "parity:startup-state:"
+      return ++reads >= 2 && prefix === "parity:startup-state:"
         ? [{ id: "parity:startup-state:ready:true:page:Home" }]
         : [];
     },
-    hasCanceledStartupModuleRequest() { return resets === 1; },
   };
   const driver = new WebSemanticJourneyDriver(transport);
 
   await driver.reset();
 
-  assert.equal(resets, 2);
+  assert.equal(resets, 1);
+  assert.equal(reads, 2);
 });
 
-test("web reset fails after two browser-canceled startup modules", async () => {
+test("web reset does not retry browser-canceled startup fetch failures", async () => {
   let resets = 0;
   const transport = {
     async reset() { resets += 1; },
-    async readElement() { return null; },
+    async readElement() { return { visible: true, text: "Failed to fetch" }; },
     async collectTestIds() { return []; },
     hasCanceledStartupModuleRequest() { return true; },
   };
@@ -1843,9 +1846,9 @@ test("web reset fails after two browser-canceled startup modules", async () => {
 
   await assert.rejects(
     driver.reset(),
-    /browser canceled the startup module request twice/,
+    /application startup failed: Failed to fetch/,
   );
-  assert.equal(resets, 2);
+  assert.equal(resets, 1);
 });
 
 test("web reset does not retry an application startup failure", async () => {

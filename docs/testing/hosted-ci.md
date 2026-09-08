@@ -234,6 +234,11 @@ artifacts, including worker fetch evidence without attaching a worker debugger.
 Default capture excludes sensitive payloads. Successful runs discard this log;
 `--net-log` retains it during focused investigations. Use that evidence to
 distinguish transport failures from application failures before changing waits.
+Do not enable the DevTools Network domain merely for qualification diagnostics;
+the independent netlog covers both page and worker requests. Startup navigation
+is single-shot, including browser-canceled module fetches. Only read-only DOM
+observations interrupted by navigation are transient, within their existing
+deadline; clicks and application failures must never be retried into green.
 
 ### Complete workload
 

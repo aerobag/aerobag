@@ -96,6 +96,10 @@ class LocalCandidateQualificationTests(unittest.TestCase):
                 self.assertEqual(lane.env["AEROBAG_RELEASE_JOURNEY_REPETITIONS"], "20")
                 self.assertEqual(lane.env["AEROBAG_WEB_WORKSPACE_DIR"], str(source / "release-ui-target/web/workspace"))
                 self.assertIn("fixture-stop", lane.command[4])
+                if platform == "web":
+                    self.assertEqual(lane.env["AEROBAG_E2E_RETAIN_NET_LOG"], "1")
+                    self.assertNotIn("AEROBAG_CHROME_NET_LOG", lane.env,
+                                     "peer browsers must not overwrite the main browser's trace")
                 self.assert_shell_is_valid(lane.command)
             (source / "android-release-journey-baseline.tar").unlink()
             with self.assertRaisesRegex(qualification.QualificationError, "baseline is missing"):

@@ -90,10 +90,6 @@ export class WebSemanticTransport {
     });
   }
 
-  hasCanceledStartupModuleRequest() {
-    return this.page.hasCanceledStartupModuleRequest?.(this.origin) === true;
-  }
-
   async evaluateObservation(expression) {
     try {
       return await this.page.evaluate(expression);

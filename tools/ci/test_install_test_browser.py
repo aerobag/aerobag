@@ -62,14 +62,18 @@ def test_unsafe_archive_never_escapes_cache(tmp_path, browser_archive):
     assert list((tmp_path / "cache").iterdir()) == []
 
 
-def test_unexpected_cache_is_preserved(tmp_path, browser_archive):
+@pytest.mark.parametrize("nonempty", [False, True])
+def test_unexpected_cache_is_preserved(tmp_path, browser_archive, nonempty):
     archive, _ = browser_archive
     existing = tmp_path / "cache/1.2.3.4"
     existing.mkdir(parents=True)
-    (existing / "keep").write_text("existing data")
+    if nonempty:
+        (existing / "keep").write_text("existing data")
     with pytest.raises(OSError):
         installer.install(tmp_path / "cache", archive)
-    assert (existing / "keep").read_text() == "existing data"
+    assert existing.is_dir()
+    if nonempty:
+        assert (existing / "keep").read_text() == "existing data"
 
 
 def test_wrong_executable_version_is_rejected(tmp_path, browser_archive):

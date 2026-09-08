@@ -156,6 +156,20 @@ late in a long Android shard. Readiness is still proved by a bounded
 exit, so inherited pipe descriptors cannot hide an early browser exit until
 the readiness deadline.
 
+Qualification installs the version/SHA256 in `tools/ci/test-browser.lock.json`
+using `tools/ci/install_test_browser.py --destination DIR`. This sets `CHROME_BIN`
+through `GITHUB_ENV` on hosted jobs; optional local qualification sets the same
+binary explicitly. Never fall back to ambient Chrome on installation failure.
+The cheap preflight does not install or launch a browser. Downloaded browser
+files also avoid the captured cold runner-image I/O bottleneck; evidence and
+limits of that diagnosis are in the [hardening work log](ci-hardening-plan.md).
+
+`Chrome startup diagnostic` is a small non-qualifying workflow, separate from
+release journeys. Its default tests the pinned browser; manual
+`compare_system=true` compares cold/preloaded system Chrome as well. It retains
+every first failure and executes real reset/reload boundary checks without an
+app build. It cannot issue or satisfy release qualification receipts.
+
 Release Android jobs install a same-signed instrumentation APK that serves the
 actual rendered accessibility hierarchy over an adb-forwarded localhost port.
 Do not replace rendered-node actions with direct app/core hooks. A visible,
@@ -181,6 +195,14 @@ Keep this distinction explicit:
 
 - readiness deadlines absorb legitimate runner variability;
 - behavioral deadlines and assertions define the product contract.
+
+Shared observations own deadlines even when a probe or event notification never
+settles. Only `TransientObservationError` permits another read. A terminal
+pre-action read forbids mutation; an action timeout aborts the journey, never
+retries the action. The optional abort signal cannot undo already delivered
+input. Failure diagnostics have a separate bound and retain the initiating error.
+CDP load completion must match the requested frame/loader; old/foreign load
+events and disconnected targets cannot masquerade as successful navigation.
 
 Do not turn a product failure into a pass by adding a fallback or weakening an
 assertion. First establish whether the failure is setup readiness, test timing,

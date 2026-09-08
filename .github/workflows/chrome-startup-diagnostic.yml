@@ -5,6 +5,11 @@ name: Chrome startup diagnostic
 run-name: Chrome startup diagnostic ${{ github.sha }}
 on:
   workflow_dispatch:
+    inputs:
+      compare_system:
+        description: Compare cold/preloaded runner browser with the pinned browser
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -12,6 +17,11 @@ on:
       - tools/ci/diagnose_chrome_startup.mjs
       - tools/ci/test-browser.lock.json
       - tools/ci/install_test_browser.py
+      - tools/ci/chrome-lifecycle.integration.mjs
+      - ui/web-app/scripts/chrome-cdp.mjs
+      - tools/e2e/web-semantic-transport.mjs
+      - tools/e2e/deadline.mjs
+      - tools/e2e/transition-contract.mjs
 permissions:
   contents: read
 jobs:
@@ -22,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        browser: [system, system-preloaded, pinned]
+        browser: ${{ fromJSON(inputs.compare_system && '["system", "system-preloaded", "pinned"]' || '["pinned"]') }}
         transport: [pipe, websocket]
         replica: [1, 2]
     env:
@@ -48,6 +58,8 @@ jobs:
           preload=()
           if [[ "$BROWSER_CONTROL" == system-preloaded ]]; then preload+=(--preload-browser-files); fi
           node tools/ci/diagnose_chrome_startup.mjs --output test-results/chrome-startup --iterations 100 --transport '${{ matrix.transport }}' "${preload[@]}"
+      - name: Verify real browser reset and reload boundaries
+        run: node --test tools/ci/chrome-lifecycle.integration.mjs
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:

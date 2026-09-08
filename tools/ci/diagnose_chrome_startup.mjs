@@ -103,6 +103,7 @@ for (let index = 1; index <= iterations && performance.now() - suiteStarted < 36
     browser = await connectToBrowser(chrome.endpoint);
     result = { index, status: "passed", launch_ms: launchedMs, ready_ms: performance.now() - started };
   } catch (error) {
+    chrome ??= error.chrome;
     result = {
       index, status: "failed", phase, elapsed_ms: performance.now() - started,
       error: { name: error.name, message: error.message, stack: error.stack },

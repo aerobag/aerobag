@@ -14,6 +14,11 @@ import fast_release_preflight
 
 
 class FastReleasePreflightTest(unittest.TestCase):
+    def test_fast_gate_never_installs_a_browser(self) -> None:
+        source = Path(fast_release_preflight.__file__).read_text()
+        self.assertNotIn("prepare_test_browser(", source)
+        self.assertNotIn("install_test_browser", source)
+
     def test_receipt_is_bound_to_exact_commit_and_success(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             receipt = Path(temp_dir) / "receipt.json"

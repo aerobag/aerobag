@@ -25,6 +25,18 @@ import diagnose_release_journey as diagnostic  # noqa: E402
 
 
 class LocalCandidateQualificationTests(unittest.TestCase):
+    def test_full_qualification_uses_the_pinned_browser_not_ambient_chrome(self) -> None:
+        import install_test_browser
+
+        with (
+            mock.patch.dict(qualification.os.environ, {"CHROME_BIN": "/ambient/chrome"}),
+            mock.patch.object(install_test_browser, "install", return_value=Path("/run/pinned/chrome")) as install,
+            redirect_stdout(io.StringIO()),
+        ):
+            qualification.prepare_test_browser(Path("/run"))
+            self.assertEqual(qualification.os.environ["CHROME_BIN"], "/run/pinned/chrome")
+        install.assert_called_once_with(Path("/run/test-browser"))
+
     def test_default_is_one_complete_pass_with_two_emulators(self) -> None:
         with mock.patch.object(sys, "argv", ["local_candidate_qualification.py"]):
             args = qualification.parse_args()
@@ -62,6 +74,7 @@ class LocalCandidateQualificationTests(unittest.TestCase):
                 mock.patch.object(qualification, "create_run_root", return_value=root),
                 mock.patch.object(qualification, "prepare_gradle_caches"),
                 mock.patch.object(qualification, "prepare_environment"),
+                mock.patch.object(qualification, "prepare_test_browser") as browser,
                 mock.patch.object(qualification, "ordinary_lanes", return_value=[ordinary]),
                 mock.patch.object(qualification, "sequential_ci_lanes", return_value=[]),
                 mock.patch.object(qualification, "preflight_results", return_value=[cached]),
@@ -74,6 +87,7 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             ):
                 self.assertEqual(qualification.main(), 0)
 
+            browser.assert_called_once_with(root)
             self.assertEqual([workers for _, workers in batches], [1, 1, 1, 1, 1, 2, 2])
             self.assertEqual([lane.name for lanes, _ in batches for lane in lanes], [
                 "e2e-web-p0", "e2e-web-p1", "e2e-web-p2",

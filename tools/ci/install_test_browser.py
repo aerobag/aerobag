@@ -28,6 +28,8 @@ def install(destination: Path, archive: Path | None = None) -> Path:
     executable = final / "chrome-linux64/chrome"
     marker = final / "archive.sha256"
     if not (executable.is_file() and marker.is_file() and marker.read_text() == lock["sha256"]):
+        if final.exists():
+            raise FileExistsError(f"unexpected test-browser cache; inspect without overwriting: {final}")
         with tempfile.TemporaryDirectory(prefix="install-", dir=destination) as temporary:
             temporary = Path(temporary)
             source = archive or temporary / "chrome.zip"

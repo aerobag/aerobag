@@ -203,6 +203,10 @@ jobs:
           --output "${{ github.workspace }}/.ci/release-journey-materialized"
       - name: Start deterministic publication and web app
         run: ./tools/e2e/release_journey_lab.sh fixture-start-web fresh
+      - name: Install pinned desktop test browser
+        # Downloaded files avoid cold runner-image browser page faults; the
+        # exact version/checksum is shared with optional local qualification.
+        run: python3 tools/ci/install_test_browser.py --destination .ci/test-browser
       - name: Run web ${{ matrix.priority }} journeys
         run: ./tools/e2e/release_journey_lab.sh web-suite "${{ matrix.priority }}"
       - name: Stop journey services
@@ -412,6 +416,8 @@ jobs:
           ./tools/e2e/release_journey_lab.sh android-boot-install
           "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
           "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk"
+      - name: Install pinned desktop test browser for cloud peer
+        run: python3 tools/ci/install_test_browser.py --destination .ci/test-browser
       - name: Run Android shard ${{ matrix.shard }} journeys
         run: ./tools/e2e/release_journey_lab.sh android-suite-shard all "${{ matrix.shard }}" 4
       - name: Stop Android and journey services
@@ -654,6 +660,8 @@ jobs:
           key: nav-db-rollover-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json', 'product/preprocessor/Cargo.lock') }}
       - name: Install matching wasm-bindgen CLI
         run: ./tools/ci/install_wasm_bindgen.sh
+      - name: Install pinned desktop test browser
+        run: python3 tools/ci/install_test_browser.py --destination .ci/test-browser
       - name: Run headless NAVDB rollover journeys
         run: >-
           npm --prefix ui/web-app run e2e:nav-db-rollover --

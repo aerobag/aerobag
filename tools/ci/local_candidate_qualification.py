@@ -128,6 +128,8 @@ def workflow_identity() -> dict[str, str]:
         ROOT / ".github/workflows/ci.yml",
         ROOT / ".github/workflows/e2e-ci.yml",
         ROOT / "tools/ci/local_candidate_qualification.py",
+        ROOT / "tools/ci/test-browser.lock.json",
+        ROOT / "tools/ci/install_test_browser.py",
         ROOT / "tools/e2e/release_journey_lab.sh",
     )
     return {str(path.relative_to(ROOT)): sha256(path) for path in paths}
@@ -151,6 +153,16 @@ def valid_receipt(
     if type(recorded_repetitions) is not int or recorded_repetitions != repetitions:
         return None
     return receipt
+
+
+def prepare_test_browser(run_root: Path) -> None:
+    # Full qualification only: never add a browser download to the cheap gate.
+    # Each run owns its cache, just like its immutable app/fixture inputs.
+    import install_test_browser
+
+    executable = install_test_browser.install(run_root / "test-browser")
+    os.environ["CHROME_BIN"] = str(executable)
+    print(f"Pinned qualification browser: {executable}", flush=True)
 
 
 def assert_clean_commit() -> str:
@@ -1050,6 +1062,7 @@ def main() -> int:
     if git("status", "--porcelain"):
         raise QualificationError("CI generated tracked source changes")
 
+    prepare_test_browser(run_root)
     print("Building one immutable app bundle and fixture", flush=True)
     fixtures, fixture, apps = prepare_inputs(run_root)
 

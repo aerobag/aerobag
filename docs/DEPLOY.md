@@ -129,8 +129,12 @@ Before confirmation it prints a red recommendation to add previous production
 to `sunset`, because installed releases use tag-scoped package and live-feed
 URLs. It also reads the canonical product and live-feed contract registries
 from the production and staging Git tags and identifies contracts changed by
-the candidate. This check is source-only and fails closed when a registry
-cannot be parsed. The command does not edit `sunset` or guess its retention
+the candidate. Releases with the JSON client inventory use it; historical tags
+without that file use their own Rust `PRODUCT_CONTRACTS` registry and Python
+`LIVE_FEEDS_CONTRACT_PATH` constant. This is inspection of immutable history,
+not a fallback to today's contract values. This check is source-only and fails
+closed on unreadable Git objects, malformed inventories, or unknown legacy
+layouts. The command does not edit `sunset` or guess its retention
 deadline; use a complete manual desired-state edit to retain installed clients.
 
 `--promote --force` is the temporary operator escape hatch when qualification

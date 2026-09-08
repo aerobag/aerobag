@@ -38,6 +38,8 @@ DEFAULT_RELEASES = REPO_ROOT / "deploy/releases.json"
 CLIENT_CONTRACT_INVENTORY = (
     "crates/product-contracts/contracts/client-data-contracts.json"
 )
+LEGACY_PRODUCT_CONTRACT_SOURCE = "crates/product-contracts/src/lib.rs"
+LEGACY_LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
 LOCAL_CANDIDATE_QUALIFICATION = (
     REPO_ROOT / "tools/ci/local_candidate_qualification.py"
 )
@@ -210,7 +212,8 @@ def parse_client_contract_inventory(source: str, *, ref: str) -> dict[str, str]:
         live_feeds.get("manifest_schema") if isinstance(live_feeds, dict) else None
     )
     if (
-        inventory.get("schema_version") != 1
+        not isinstance(inventory, dict)
+        or inventory.get("schema_version") != 1
         or not isinstance(package_contracts, dict)
         or not package_contracts
         or not all(
@@ -236,9 +239,64 @@ def parse_client_contract_inventory(source: str, *, ref: str) -> dict[str, str]:
     return contracts
 
 
+def parse_legacy_release_contracts(
+    product_source: str, live_feed_source: str, *, ref: str,
+) -> dict[str, str]:
+    """Inspect immutable releases from before the JSON inventory was introduced."""
+    constants = re.findall(
+        r'pub const ([A-Z][A-Z0-9_]*_CONTRACT_ID):\s*&str\s*=\s*"([^"\n]+)"\s*;',
+        product_source,
+    )
+    constant_values = dict(constants)
+    blocks = re.findall(
+        r"pub const PRODUCT_CONTRACTS:\s*&\[ProductContract\]\s*=\s*&\[(.*?)\n\];",
+        product_source,
+        re.DOTALL,
+    )
+    if len(blocks) != 1 or len(constant_values) != len(constants):
+        raise ManagementError(f"cannot parse legacy PRODUCT_CONTRACTS at release {ref}")
+    entry = re.compile(
+        r'ProductContract\s*\{\s*family_id:\s*"([^"\n]+)"\s*,\s*'
+        r"contract_id:\s*([A-Z][A-Z0-9_]*)\s*,?\s*\}",
+    )
+    entries = entry.findall(blocks[0])
+    if not entries or entry.sub("", blocks[0]).strip(" \t\r\n,"):
+        raise ManagementError(
+            f"cannot safely enumerate every legacy PRODUCT_CONTRACTS entry at release {ref}"
+        )
+    contracts: dict[str, str] = {}
+    for family, constant in entries:
+        if family in contracts or family == "live-feeds" or constant not in constant_values:
+            raise ManagementError(
+                f"invalid legacy PRODUCT_CONTRACTS entry {family!r}: {constant} at release {ref}"
+            )
+        contracts[family] = constant_values[constant]
+    live_paths = re.findall(
+        r'^LIVE_FEEDS_CONTRACT_PATH\s*=\s*"(v[1-9][0-9]*)"\s*$',
+        live_feed_source,
+        re.MULTILINE,
+    )
+    if len(live_paths) != 1:
+        raise ManagementError(f"cannot parse legacy LIVE_FEEDS_CONTRACT_PATH at release {ref}")
+    contracts["live-feeds"] = live_paths[0]
+    return contracts
+
+
 def release_contracts(ref: str) -> dict[str, str]:
-    return parse_client_contract_inventory(
-        git_file(ref, CLIENT_CONTRACT_INVENTORY), ref=ref
+    # A missing historical file is distinct from unreadable Git objects or an
+    # invalid modern inventory. Only the former selects the legacy inspector.
+    try:
+        inventory_path = git("ls-tree", "--name-only", ref, "--", CLIENT_CONTRACT_INVENTORY)
+    except subprocess.CalledProcessError as error:
+        raise ManagementError(f"cannot inspect release contract tree at {ref}") from error
+    if inventory_path:
+        return parse_client_contract_inventory(
+            git_file(ref, CLIENT_CONTRACT_INVENTORY), ref=ref
+        )
+    return parse_legacy_release_contracts(
+        git_file(ref, LEGACY_PRODUCT_CONTRACT_SOURCE),
+        git_file(ref, LEGACY_LIVE_FEED_CONTRACT_SOURCE),
+        ref=ref,
     )
 
 

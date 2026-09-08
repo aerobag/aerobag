@@ -320,6 +320,97 @@ class DesiredStateBehaviorTests(unittest.TestCase):
 
 
 class PromotionContractCompatibilityTests(unittest.TestCase):
+    LEGACY_PRODUCTS = '''
+pub const NAV_DB_CONTRACT_ID: &str = "NAV24";
+pub const NEW_THING_CONTRACT_ID: &str = "NEW1";
+pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
+    ProductContract {
+        family_id: "nav-db",
+        contract_id: NAV_DB_CONTRACT_ID,
+    },
+    ProductContract {
+        family_id: "new-thing",
+        contract_id: NEW_THING_CONTRACT_ID,
+    },
+];
+'''
+    LEGACY_LIVE_FEEDS = 'LIVE_FEEDS_CONTRACT_PATH = "v3"\n'
+
+    def test_historical_release_uses_its_own_legacy_contract_sources(self) -> None:
+        sources = {
+            ("old-release", prod_manage.LEGACY_PRODUCT_CONTRACT_SOURCE): self.LEGACY_PRODUCTS,
+            ("old-release", prod_manage.LEGACY_LIVE_FEED_CONTRACT_SOURCE): self.LEGACY_LIVE_FEEDS,
+        }
+        with (
+            mock.patch.object(prod_manage, "git", return_value="") as git,
+            mock.patch.object(prod_manage, "git_file", side_effect=lambda *key: sources[key]),
+        ):
+            self.assertEqual(prod_manage.release_contracts("old-release"), {
+                "nav-db": "NAV24", "new-thing": "NEW1", "live-feeds": "v3",
+            })
+        git.assert_called_once_with(
+            "ls-tree", "--name-only", "old-release", "--", prod_manage.CLIENT_CONTRACT_INVENTORY,
+        )
+
+    def test_modern_release_prefers_inventory_without_reading_legacy_sources(self) -> None:
+        source = json.dumps({
+            "schema_version": 1,
+            "package_contracts": {"nav-db": "NAV25"},
+            "live_feeds": {"manifest_schema": 3},
+        })
+        with (
+            mock.patch.object(prod_manage, "git", return_value=prod_manage.CLIENT_CONTRACT_INVENTORY),
+            mock.patch.object(prod_manage, "git_file", return_value=source) as read,
+        ):
+            self.assertEqual(prod_manage.release_contracts("new-release"), {
+                "nav-db": "NAV25", "live-feeds": "v3",
+            })
+        read.assert_called_once_with("new-release", prod_manage.CLIENT_CONTRACT_INVENTORY)
+
+    def test_bad_modern_inventory_never_falls_back_to_legacy_sources(self) -> None:
+        for source in ("{broken", "null", "[]", "{}", '{"schema_version": 2}'):
+            with (
+                self.subTest(source=source),
+                mock.patch.object(prod_manage, "git", return_value=prod_manage.CLIENT_CONTRACT_INVENTORY),
+                mock.patch.object(prod_manage, "git_file", return_value=source) as read,
+                self.assertRaises(prod_manage.ManagementError),
+            ):
+                prod_manage.release_contracts("new-release")
+            read.assert_called_once_with("new-release", prod_manage.CLIENT_CONTRACT_INVENTORY)
+
+    def test_git_errors_are_not_treated_as_missing_inventory(self) -> None:
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=subprocess.CalledProcessError(128, "git")),
+            mock.patch.object(prod_manage, "git_file") as read,
+            self.assertRaisesRegex(prod_manage.ManagementError, "cannot inspect release contract tree"),
+        ):
+            prod_manage.release_contracts("missing-release")
+        read.assert_not_called()
+        with (
+            mock.patch.object(prod_manage, "git", return_value=prod_manage.CLIENT_CONTRACT_INVENTORY),
+            mock.patch.object(prod_manage, "git_file", side_effect=prod_manage.ManagementError("unreadable blob")) as read,
+            self.assertRaisesRegex(prod_manage.ManagementError, "unreadable blob"),
+        ):
+            prod_manage.release_contracts("new-release")
+        read.assert_called_once_with("new-release", prod_manage.CLIENT_CONTRACT_INVENTORY)
+
+    def test_legacy_inspection_fails_closed_instead_of_omitting_unknown_entries(self) -> None:
+        source = self.LEGACY_PRODUCTS
+        for product_source, live_source in (
+            (source.replace("NEW_THING_CONTRACT_ID,", "MISSING_CONTRACT_ID,"), self.LEGACY_LIVE_FEEDS),
+            (source.replace('"new-thing"', '"nav-db"'), self.LEGACY_LIVE_FEEDS),
+            (source.replace('"new-thing"', '"live-feeds"'), self.LEGACY_LIVE_FEEDS),
+            (source.replace("\n];", '\n    ProductContract::new("hidden", "HID1"),\n];'), self.LEGACY_LIVE_FEEDS),
+            (source + 'pub const NAV_DB_CONTRACT_ID: &str = "NAV99";', self.LEGACY_LIVE_FEEDS),
+            ("include!(\"generated.rs\");", self.LEGACY_LIVE_FEEDS),
+            (source, ""),
+            (source, self.LEGACY_LIVE_FEEDS * 2),
+            (source, 'LIVE_FEEDS_CONTRACT_PATH = build_contract_path()'),
+        ):
+            with self.subTest(product_source=product_source, live_source=live_source):
+                with self.assertRaises(prod_manage.ManagementError):
+                    prod_manage.parse_legacy_release_contracts(product_source, live_source, ref="old-release")
+
     def test_contract_inventory_discovers_new_families_generically(self) -> None:
         source = json.dumps(
             {

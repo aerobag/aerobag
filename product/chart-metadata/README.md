@@ -32,6 +32,18 @@ TAC archives, and fingerprint both sources and inset metadata. Flyway tiles
 remain in the existing Flyway namespace inside the shared TAC download package;
 sharing an archive does not mix the displayed layers.
 
+Enabling an inset also removes that **same source-pixel polygon** from its parent
+Sectional. This is independent of whether the inset goes to TAC or Flyway. The
+builder adds a tiled, compressed validity mask to the parent's RGB VRT, before both
+the normal neatline warp and any dateline supplement. The original FAA TIFF and
+the edited neatline remain untouched; relocated insets read that original TIFF.
+Polygon interiors, edge-touching notches, and overlapping insets use the same
+masking path, not bounding-box erasure or a second set of hand-edited exclusions.
+Disabled drafts neither publish an inset nor remove its pixels from the parent.
+The parent output remains three-band RGB, like the other charts in its mosaic.
+The mask is a derived build artifact; source, metadata, and builder fingerprints
+invalidate the chart process cache when any of these change.
+
 Navigable inset controls pair source pixels with WGS84 coordinates. Each control
 has an explicit `kind`: `intersection` requires both `latitude` and `longitude`;
 `latitude` and `longitude` ticks supply only their named coordinate (the other
@@ -90,6 +102,11 @@ Run the focused projection, warp, and editor tests with:
 `python3 -m unittest tools.test_chart_cutline_editor`.
 The perimeter-only regression fits no full intersections and predicts an
 independent interior grid through the production VRT, including projection curvature.
+`cargo nextest run --locked --profile ci -p preprocessor-charts` (from
+`product/preprocessor`) also checks actual pixels in the parent Sectional mosaic,
+its dateline supplement, and the relocated TAC/Flyway VRTs. It verifies that
+enabled polygons disappear only from their old placement while ordinary chart
+content and disabled drafts survive.
 
 The navigable-inset candidate inventory deliberately excludes inset maps that
 duplicate standalone TACs (Los Angeles, St Louis, Tampa, and

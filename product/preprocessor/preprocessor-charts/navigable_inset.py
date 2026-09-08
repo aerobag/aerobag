@@ -11,8 +11,10 @@ Fit pixels to that projected plane, then let PROJ reproject the curved graticule
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import sys
+from xml.etree import ElementTree as ET
 
 import numpy as np
 from osgeo import gdal, ogr, osr
@@ -284,6 +286,87 @@ def navigable_inset_diagnostics(source_path, control_points):
         return {"ready": False, "summary": str(error)}
 
 
+def boundary_polygon(boundary, transform):
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    for pixel in boundary:
+        ring.AddPoint_2D(*gdal.ApplyGeoTransform(transform, *pixel))
+    ring.CloseRings()
+    polygon = ogr.Geometry(ogr.wkbPolygon)
+    polygon.AddGeometry(ring)
+    if polygon.IsEmpty() or not polygon.IsValid() or polygon.GetArea() == 0:
+        raise GeoreferenceError("Inset boundary is not a valid polygon")
+    return polygon
+
+
+def mask_parent_insets(rgb_vrt_path, insets, mask_path):
+    """Exclude source-pixel polygons from every parent warp, without touching the TIFF.
+
+    A tiled validity mask avoids another reprojection and handles holes, edge
+    notches, overlaps, and the dateline identically. RGB stays three-band for the
+    family mosaic; the inset builder reads the original unmasked source.
+    """
+    rgb = gdal.Open(str(rgb_vrt_path), gdal.GA_Update)
+    if rgb.GetDriver().ShortName != "VRT" or rgb.RasterCount != 3:
+        raise GeoreferenceError("Parent masking requires the freshly expanded RGB VRT")
+    transform = rgb.GetGeoTransform(can_return_null=True)
+    srs = rgb.GetSpatialRef()
+    if transform is None or srs is None:
+        raise GeoreferenceError("Parent chart has no georeference")
+    shapes = ogr.GetDriverByName("Memory").CreateDataSource("")
+    layer = shapes.CreateLayer("insets", srs=srs, geom_type=ogr.wkbPolygon)
+    for inset in insets:
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(boundary_polygon(inset["boundary"], transform))
+        layer.CreateFeature(feature)
+        feature = None
+
+    # Large paper sheets need only a highly compressible byte mask, never an RGB
+    # copy or a whole-sheet numpy array. Bound GDAL's dirty-tile cache as well.
+    previous_cache = gdal.GetCacheMax()
+    gdal.SetCacheMax(min(previous_cache, 32 * 1024 * 1024))
+    try:
+        mask = gdal.GetDriverByName("GTiff").Create(
+            str(mask_path), rgb.RasterXSize, rgb.RasterYSize, 1, gdal.GDT_Byte,
+            options=["TILED=YES", "COMPRESS=DEFLATE", "ZLEVEL=1"],
+        )
+        mask.SetGeoTransform(transform)
+        mask.SetProjection(srs.ExportToWkt())
+        mask.GetRasterBand(1).Fill(255)
+        gdal.RasterizeLayer(mask, [1], layer, burn_values=[0])
+        mask = None
+    finally:
+        gdal.SetCacheMax(previous_cache)
+
+    rgb.CreateMaskBand(gdal.GMF_PER_DATASET)
+    validity = rgb.GetRasterBand(1).GetMaskBand()
+    source = ET.Element("SimpleSource")
+    ET.SubElement(source, "SourceFilename", relativeToVRT="1").text = os.path.relpath(
+        Path(mask_path).resolve(), Path(rgb_vrt_path).resolve().parent,
+    )
+    ET.SubElement(source, "SourceBand").text = "1"
+    validity.SetMetadataItem("source_0", ET.tostring(source, encoding="unicode"), "new_vrt_sources")
+    validity = rgb = None
+
+    # Warped VRTs do not persist generic source-mask callbacks. Apply the mask in
+    # a normal RGB VRT instead, so reopening the warp still reads masked pixels.
+    # An alpha output would change the three-band family-mosaic contract.
+    covered_path = Path(mask_path).with_suffix(".vrt")
+    Path(rgb_vrt_path).replace(covered_path)
+    rgb = gdal.Translate(str(rgb_vrt_path), str(covered_path), format="VRT", maskBand="none")
+    for index in range(1, 4):
+        band = rgb.GetRasterBand(index)
+        band.SetNoDataValue(51)
+        source = ET.Element("ComplexSource")
+        ET.SubElement(source, "SourceFilename", relativeToVRT="1").text = os.path.relpath(
+            covered_path.resolve(), Path(rgb_vrt_path).resolve().parent,
+        )
+        ET.SubElement(source, "SourceBand").text = str(index)
+        ET.SubElement(source, "UseMaskBand").text = "true"
+        band.SetMetadata({"source_0": ET.tostring(source, encoding="unicode")}, "vrt_sources")
+    band = rgb = None
+    return {"excluded_insets": len(insets)}
+
+
 def build_inset(source_path, inset, output_path):
     """Emit a cropped, georeferenced VRT and its clipped Web Mercator warp."""
     source_path = Path(source_path).resolve()
@@ -315,16 +398,8 @@ def build_inset(source_path, inset, output_path):
         driver.DeleteDataSource(str(cutline_path))
     cutline = driver.CreateDataSource(str(cutline_path))
     layer = cutline.CreateLayer("cutline", srs=fit.srs, geom_type=ogr.wkbPolygon)
-    ring = ogr.Geometry(ogr.wkbLinearRing)
-    for pixel in boundary:
-        ring.AddPoint_2D(*gdal.ApplyGeoTransform(fit.transform, *pixel))
-    ring.CloseRings()
-    polygon = ogr.Geometry(ogr.wkbPolygon)
-    polygon.AddGeometry(ring)
-    if not polygon.IsValid():
-        raise GeoreferenceError("Inset boundary is not a valid polygon")
     feature = ogr.Feature(layer.GetLayerDefn())
-    feature.SetGeometry(polygon)
+    feature.SetGeometry(boundary_polygon(boundary, fit.transform))
     layer.CreateFeature(feature)
     feature = layer = cutline = None
     result = gdal.Warp(str(output_path), str(crop_path), format="VRT",
@@ -341,8 +416,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--mask-parent", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(build_inset(args.source, json.load(sys.stdin), args.output)))
+    build = mask_parent_insets if args.mask_parent else build_inset
+    print(json.dumps(build(args.source, json.load(sys.stdin), args.output)))
 
 
 if __name__ == "__main__":

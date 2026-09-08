@@ -1342,11 +1342,7 @@ fn build_navigable_inset_vrts(
 
     let mut outputs = Vec::new();
     for metadata_path in metadata_paths {
-        let layout: NavigableInsetLayout = serde_json::from_slice(
-            &fs::read(&metadata_path)
-                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        let layout = read_navigable_inset_layout(&metadata_path)?;
         if !layout
             .insets
             .iter()
@@ -1354,9 +1350,7 @@ fn build_navigable_inset_vrts(
         {
             continue;
         }
-        let source_path = work_dir.join(&layout.source);
-        let dimensions = inspect_raster(&source_path)?.dimensions;
-        validate_navigable_inset_layout(&layout, &metadata_path, dimensions)?;
+        validate_navigable_inset_source(work_dir, &layout, &metadata_path)?;
         for inset in layout
             .insets
             .iter()
@@ -1371,6 +1365,70 @@ fn build_navigable_inset_vrts(
         }
     }
     Ok(outputs)
+}
+
+fn read_navigable_inset_layout(metadata_path: &Path) -> anyhow::Result<NavigableInsetLayout> {
+    serde_json::from_slice(
+        &fs::read(metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", metadata_path.display()))
+}
+
+fn validate_navigable_inset_source(
+    work_dir: &Path,
+    layout: &NavigableInsetLayout,
+    metadata_path: &Path,
+) -> anyhow::Result<()> {
+    let dimensions = inspect_raster(&work_dir.join(&layout.source))?.dimensions;
+    validate_navigable_inset_layout(layout, metadata_path, dimensions)
+}
+
+fn mask_parent_navigable_insets(
+    work_dir: &Path,
+    metadata_path: &Path,
+    source_name: &str,
+    rgb_vrt_name: &str,
+) -> anyhow::Result<()> {
+    if !metadata_path.try_exists()? {
+        return Ok(());
+    }
+    let layout = read_navigable_inset_layout(metadata_path)?;
+    if layout.source != source_name {
+        bail!(
+            "{} names {:?}, not parent source {source_name:?}",
+            metadata_path.display(),
+            layout.source
+        );
+    }
+    let enabled = layout
+        .insets
+        .iter()
+        .filter(|inset| inset.enabled)
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        return Ok(());
+    }
+    validate_navigable_inset_source(work_dir, &layout, metadata_path)?;
+    let invocation = ToolInvocation {
+        program: "python3".to_string(),
+        args: vec![
+            "-c".to_string(),
+            include_str!("../navigable_inset.py").to_string(),
+            "--mask-parent".to_string(),
+            rgb_vrt_name.to_string(),
+            format!("{rgb_vrt_name}.inset-mask.tif"),
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!("parent-inset-mask-{}", sanitize_label(source_name)),
+        env: Vec::new(),
+        stdin_text: Some(serde_json::to_string(&enabled)?),
+    };
+    let outcome = invocation.run_logged(&work_dir.join(".rust-logs"))?;
+    invocation.ensure_success(
+        &outcome,
+        &format!("failed to exclude navigable insets from {source_name}"),
+    )
 }
 
 fn validate_navigable_inset_layout(
@@ -1698,6 +1756,17 @@ fn build_one_vfr_vrt(
     translate.ensure_success(
         &translate_outcome,
         &format!("gdal_translate failed for {base_name}"),
+    )?;
+
+    // Both the ordinary and dateline warps consume this masked RGB source.
+    // Relocated insets instead read the untouched FAA raster.
+    mask_parent_navigable_insets(
+        work_dir,
+        &work_dir
+            .join(chart_dir_name)
+            .join(format!("{base_name}{NAVIGABLE_INSET_SUFFIX}")),
+        &tif_name,
+        &rgb_vrt_name,
     )?;
 
     let warp = ToolInvocation {
@@ -3105,6 +3174,185 @@ mod tests {
             fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
             assert!(build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).is_err());
         }
+    }
+
+    fn assert_parent_excludes_relocated_insets(crosses_dateline: bool) {
+        let temp = navigable_inset_fixture();
+        // Give the paper sheet a placement unrelated to the inset's fitted position.
+        let left = if crosses_dateline {
+            20_027_508.342_789
+        } else {
+            1_000.0
+        };
+        let top = 1_000_000.0;
+        assert!(Command::new("gdal_edit.py")
+            .args(["-a_srs", "EPSG:3857", "-a_ullr"])
+            .args([left, top, left + 10_000.0, top - 8_000.0].map(|v| v.to_string()))
+            .arg(temp.path().join("Test SEC.tif"))
+            .status()
+            .unwrap()
+            .success());
+        fs::write(
+            temp.path().join("SEC/Test SEC.geojson"),
+            serde_json::to_vec(&serde_json::json!({
+                "type": "FeatureCollection",
+                "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+                "features": [{"type": "Feature", "properties": {}, "geometry": {
+                    "type": "Polygon", "coordinates": [[
+                        [left, top], [left + 9_500.0, top],
+                        [left + 9_500.0, top - 8_000.0], [left, top - 8_000.0], [left, top]
+                    ], [
+                        [left + 7_000.0, top - 3_500.0], [left + 7_000.0, top - 5_000.0],
+                        [left + 8_500.0, top - 5_000.0], [left + 8_500.0, top - 3_500.0],
+                        [left + 7_000.0, top - 3_500.0]
+                    ]]
+                }}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("Test SEC.htm"),
+            if crosses_dateline {
+                "<meta name=\"dc.coverage.x.min\" content=\"179.91\">\n\
+             <meta name=\"dc.coverage.x.max\" content=\"-179.9\">\n\
+             <meta name=\"dc.coverage.y.min\" content=\"8.87\">\n\
+             <meta name=\"dc.coverage.y.max\" content=\"8.95\">\n"
+            } else {
+                ""
+            },
+        )
+        .unwrap();
+        let layout_path = temp.path().join("SEC/Test SEC.navigable-insets.json");
+        let mut layout: serde_json::Value =
+            serde_json::from_slice(&fs::read(&layout_path).unwrap()).unwrap();
+        let mut flyway = layout["insets"][0].clone();
+        flyway["id"] = serde_json::json!("Edge inset");
+        flyway["target_family"] = serde_json::json!("FLY");
+        flyway["boundary"] = serde_json::json!([[0, 70], [20, 70], [20, 80], [0, 80]]);
+        let mut draft = flyway.clone();
+        draft["id"] = serde_json::json!("Unpublished draft");
+        draft["enabled"] = serde_json::json!(false);
+        draft["boundary"] = serde_json::json!([[60, 60], [90, 60], [90, 78], [60, 78]]);
+        draft["control_points"] = serde_json::json!([]);
+        layout["insets"]
+            .as_array_mut()
+            .unwrap()
+            .extend([flyway, draft]);
+        fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+
+        let sample = |path: &Path, x: f64, y: f64| {
+            let output = Command::new("gdallocationinfo")
+                .args(["-valonly", "-b", "1", "-geoloc"])
+                .arg(path)
+                .args([
+                    (left + (x + 0.5) * 100.0).to_string(),
+                    (top - (y + 0.5) * 100.0).to_string(),
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        let built = super::build_family_vrts(ChartFamily::Sec, temp.path(), 1).unwrap();
+        assert_eq!(built.vrt_count, if crosses_dateline { 2 } else { 1 });
+        assert_eq!(
+            sample(&temp.path().join("Test SEC.vrt"), 80.0, 40.0),
+            "51",
+            "existing neatline exclusion must survive"
+        );
+        let mut parent_vrts = vec![built.main_vrt, temp.path().join("Test SEC.vrt")];
+        if crosses_dateline {
+            parent_vrts.push(super::antimeridian_supplement_vrt_path(
+                temp.path(),
+                "Test SEC",
+            ));
+        }
+        for path in parent_vrts {
+            let output = Command::new("gdalinfo")
+                .arg("-json")
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let info: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                info["bands"].as_array().unwrap().len(),
+                3,
+                "masked parent must remain compatible with the RGB family mosaic"
+            );
+            for (x, y, expected, description) in [
+                (20.0, 20.0, "51", "relocated TAC inset"),
+                (5.0, 75.0, "51", "edge-touching Flyway inset"),
+                (
+                    80.0,
+                    60.0,
+                    "200",
+                    "outside polygon, inside its bounding box",
+                ),
+                (70.0, 70.0, "200", "disabled draft"),
+                (40.0, 75.0, "200", "ordinary sectional content"),
+            ] {
+                assert_eq!(
+                    sample(&path, x, y),
+                    expected,
+                    "{description} in {}",
+                    path.display()
+                );
+            }
+        }
+        // Extraction still uses the untouched source, not the masked parent input.
+        for family in [ChartFamily::Tac, ChartFamily::Flyway] {
+            let outputs = build_navigable_inset_vrts(temp.path(), family).unwrap();
+            assert_eq!(outputs.len(), 1);
+            let output = Command::new("gdalinfo")
+                .args(["-json", "-stats"])
+                .arg(&outputs[0])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let info: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                info["bands"][0]["maximum"], 200.0,
+                "relocated {family:?} pixels vanished"
+            );
+        }
+        for inset in layout["insets"].as_array_mut().unwrap() {
+            inset["enabled"] = serde_json::json!(false);
+        }
+        fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+        let disabled = super::build_family_vrts(ChartFamily::Sec, temp.path(), 1).unwrap();
+        assert_eq!(
+            sample(&disabled.main_vrt, 20.0, 20.0),
+            "200",
+            "stale mask after disabling insets"
+        );
+        fs::remove_file(&layout_path).unwrap();
+        let absent = super::build_family_vrts(ChartFamily::Sec, temp.path(), 1).unwrap();
+        assert_eq!(
+            sample(&absent.main_vrt, 5.0, 75.0),
+            "200",
+            "chart without inset metadata"
+        );
+
+        layout["insets"][0]["enabled"] = serde_json::json!(true);
+        layout["insets"][0]["boundary"] =
+            serde_json::json!([[10, 10], [90, 70], [10, 70], [90, 10]]);
+        fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+        assert!(
+            super::build_family_vrts(ChartFamily::Sec, temp.path(), 1).is_err(),
+            "self-intersecting exclusion must fail the build"
+        );
+    }
+
+    #[test]
+    fn parent_sectional_excludes_relocated_inset_polygons() {
+        assert_parent_excludes_relocated_insets(false);
+    }
+
+    #[test]
+    fn parent_dateline_supplement_excludes_relocated_inset_polygons() {
+        assert_parent_excludes_relocated_insets(true);
     }
 
     #[test]

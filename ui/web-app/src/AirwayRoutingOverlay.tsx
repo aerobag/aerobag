@@ -179,7 +179,7 @@ export function AirwayRoutingOverlay(props: Props) {
     <div ref={panel} className="airwayRoutingPanel waypointActionTray" onPointerDown={(e) => e.stopPropagation()} onPointerUp={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
       <strong>{view.title}</strong>
-      {view.route ? <div className="airwayRoutingSummary">{view.route.summary}</div> : null}
+      {view.route ? <div className="airwayRoutingSummary" data-testid="parity:airway-routing-summary">{view.route.summary}</div> : null}
       {view.drag_label || view.message ? <div className="airwayRoutingMessage" aria-live="polite">{view.drag_label || view.message}</div> : null}
       <div className="airwayRoutingControls" role="toolbar" aria-label={view.title}>
         {view.controls.map(({button, selected, symbol_id}) => <button type="button"

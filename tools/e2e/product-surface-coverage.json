@@ -60,6 +60,7 @@
       "waypoint_info": "plan.row-waypoint-info-opens",
       "weather": "plan.row-weather-opens",
       "add_airway": "plan.add-airway",
+      "find_route": "plan.find-route",
       "select_departure": "procedure.sid.select",
       "select_arrival": "procedure.star.select",
       "select_approach": "procedure.approach.select",

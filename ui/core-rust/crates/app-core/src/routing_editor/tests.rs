@@ -90,6 +90,12 @@ fn airway_editor_exports_compact_controls_in_display_order_with_selected_navigat
     let editor = open(&original, &store());
     let view = editor.view(7).unwrap();
     assert!(view.message.is_empty());
+    for control in &view.controls {
+        assert_eq!(
+            control.button.test_id,
+            format!("parity:airway-routing-control-{}", control.symbol_id)
+        );
+    }
     assert_eq!(
         view.controls
             .iter()

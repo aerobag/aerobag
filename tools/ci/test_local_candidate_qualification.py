@@ -165,7 +165,7 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             names = (
                 "ci-actionlint", "ci-reuse", "ci-rust-format", "ci-rust-shared",
                 "ci-rust-core", "ci-rust-services", "ci-rust-preprocessor",
-                "ci-python", "ci-web", "ci-android-jvm",
+                "ci-python", "ci-harness-contracts", "ci-web", "ci-android-jvm",
             )
             lanes = []
             for name in names:

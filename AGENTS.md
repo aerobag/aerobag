@@ -14,56 +14,30 @@
 
 ## When asked to commit and push
 
-Run a cheap feature preflight before committing, not just the new tests written
-for the change. Target **under two minutes total on a warm checkout**. Select
-checks from [ordinary CI](.github/workflows/ci.yml), with its pinned tools and
-environment; a cold build, dependency installation, emulator, or full release
-qualification is not implicitly part of this budget.
+Run `/usr/bin/python3 tools/ci/cheap_preflight.py` before committing. It runs
+all inexpensive suites on the current working tree; do not substitute a
+hand-picked test list. A core enum can break a JavaScript journey contract,
+even when no JavaScript file changed.
 
-- Inspect the final diff and run `git diff --check`. Stage only the intended
-  changes; preserve other sessions' work.
-- Run relevant existing regression and contract tests as well as new tests.
-  Test ownership crosses language boundaries: changing Kotlin or TypeScript
-  adapters can break tests housed in Rust.
-- Run applicable formatting and generated-source checks. For Rust edits, use
-  `./scripts/check-rust-format.sh`. If generation is needed, inspect its tracked
-  diff and include intended outputs; do not silently leave stale generated code.
-- Use explicit empty artifact directories for fixture-free checks. Use the web
-  target-workspace entrypoint rather than source-tree `node_modules`; use
-  `ANDROID_BUILD_NATIVE_LIBRARIES=false` for Android JVM/static-only checks.
-- Recheck after the final edit or integration change. A pass on an earlier tree
-  does not validate the tree being committed.
+The command includes all fixture-free Rust tests/doctests, Python tool tests,
+web unit/type checks, Android JVM/static tests, browser E2E harness contracts,
+workflow lint, licensing, Rust formatting, generated UI sources, fixture-contract
+metadata, and diff checks. It shares ordinary-CI suite definitions with release
+preflight. `--list` shows the exact commands. Browser/emulator journeys, external
+fixture replays, package production, and full web/native app builds remain
+separate checks when the change warrants them.
+
+- Aim for about two minutes on warm caches. Cold builds/dependency setup can take
+  longer; suite deadlines fail explicitly and preserve logs. Report unexpected
+  cost or missing prerequisites before extending the deadline.
+- Inspect the final diff and stage only intended changes; preserve other
+  sessions' work. Check after the final edit or integration change.
+- Keep generated sources current. The preflight checks them in temporary paths
+  before any build can regenerate them; fix stale output and inspect its diff.
 - Fix in-scope failures without weakening assertions or retrying into green.
-  If a needed check exceeds the budget, is blocked, or exposes an unrelated
-  failure, report it and ask how to proceed rather than silently skipping it or
-  starting a long suite. Do not push known failing relevant checks without the
-  user's explicit acceptance.
-- In the handoff, list exact checks and results, and explicitly name checks not
-  run. A targeted pass is not a claim that all ordinary CI passed.
-
-Choose the smallest useful coverage for the feature:
-
-| Changed surface | Cheap checks to consider |
-| --- | --- |
-| Rust behavior | Affected crate/test family under nextest's `ci` profile with `--locked`; relevant doctests |
-| Core/web/Android session adapters or UI contracts | The complete Rust `ui_core_boundary` test binary, plus affected platform tests |
-| Python tools | Relevant `test_*.py` files with CI's `/usr/bin/python3 -m pytest` |
-| Product/client data contracts or fixture locks | `/usr/bin/python3 tools/ci/verify_locked_fixture_contracts.py` (sub-second metadata check), plus verification of any rebuilt fixture bytes |
-| JavaScript E2E tooling | Relevant `node --test` harness contract files, not browser/emulator journeys |
-| Web or Android feature | Focused existing web unit/type checks or Android JVM/static tests through repo entrypoints |
-| Workflow changes | Pinned actionlint command from `.github/workflows/ci.yml` |
-| Documentation only | Diff/whitespace checks and verification of referenced paths and commands; no app build |
-
-For core/platform boundary changes, run this from the repository root:
-
-```sh
-(
-  cd ui/core-rust
-  AEROBAG_ARTIFACT_READ_PATH="$(mktemp -d)" \
-    cargo +1.94.1 nextest run --locked --profile ci \
-      -p app-core --test ui_core_boundary
-)
-```
+  Do not push known failing relevant checks without the user's explicit acceptance.
+- Report exact checks and results, and name unrun checks. Cheap preflight passing
+  does not mean complete ordinary CI, fixture CI, or release journeys passed.
 
 When refactoring a helper, update structural tests to verify the new helper and
 its implementation preserve the contract. Do not merely remove the assertion
@@ -103,7 +77,7 @@ come from one real available publication.
 - Run `tools/ci/fast_release_preflight.py` for the complete emulator-free
   ordinary-CI preflight on a clean integrated commit. `--stage` now runs it
   automatically before creating release intent or a tag. This is broader than
-  the two-minute feature checklist and is cached against the exact commit.
+  the cheap working-tree preflight and is cached against the exact commit.
 - Full prequalification remains optional. The operator may choose `--stage`
   directly and use the release-tag journey qualification round trip. Do not
   treat the full local qualifier's `--check` receipt verification as running tests.

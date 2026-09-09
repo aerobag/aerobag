@@ -25,6 +25,17 @@ env:
   NEXTEST_VERSION: 0.9.140
 
 jobs:
+  harness-contracts:
+    name: Browser E2E harness contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Test browser E2E harness contracts
+        run: node --test tools/e2e/*.test.mjs
+
   workflow-lint:
     name: GitHub Actions workflows
     runs-on: ubuntu-latest
@@ -276,8 +287,6 @@ jobs:
         run: |
           mkdir -p "$(dirname "$AEROBAG_JUNIT_PATH")"
           npm --prefix ui/web-app run ci
-      - name: Test browser E2E harness contracts
-        run: node --test tools/e2e/*.test.mjs
       - name: Verify generated sources are current
         run: git diff --exit-code -- ui/core-rust/schemas ui/web-app/src/generated
       - name: Report individual tests
@@ -357,13 +366,13 @@ jobs:
       - name: Install Python test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes python3-gdal python3-numpy python3-pytest
+          sudo apt-get install --yes python3-gdal python3-numpy python3-pypdf python3-pytest
       - name: Verify locked fixture contracts
         run: python3 tools/ci/verify_locked_fixture_contracts.py
       - name: Run Python tests
         run: |
           mkdir -p test-results/python
-          mapfile -t tests < <(find tools product/preprocessor/scripts -type f -name 'test_*.py' -print | sort)
+          mapfile -t tests < <(find tools product/preprocessor/scripts product/preprocessor/preprocessor-tpp/scripts -type f -name 'test_*.py' -print | sort)
           /usr/bin/python3 -m pytest "${tests[@]}" --junitxml=test-results/python/junit.xml
       - name: Report individual tests
         if: ${{ always() }}

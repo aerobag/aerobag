@@ -17,6 +17,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -420,20 +421,31 @@ def run_lane(lane: Lane, log_dir: Path) -> LaneResult:
         log.write(f"cwd={lane.cwd}\ncommand={json.dumps(lane.command)}\n\n")
         log.flush()
         try:
-            result = subprocess.run(
+            with subprocess.Popen(
                 lane.command,
                 cwd=lane.cwd,
                 env=lane_environment(lane.env),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=lane.timeout_seconds,
-                check=False,
-            )
-            returncode = result.returncode
-        except subprocess.TimeoutExpired:
-            log.write(f"\nTIMED OUT after {lane.timeout_seconds}s\n")
-            returncode = 124
+                start_new_session=True,
+            ) as process:
+                try:
+                    returncode = process.wait(timeout=lane.timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    # Lanes can be shell pipelines or build tools with children.
+                    # Kill their group so the deadline cannot leave builds/tests
+                    # running after the preflight has reported failure.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                    log.write(f"\nTIMED OUT after {lane.timeout_seconds}s\n")
+                    returncode = 124
+        except OSError as error:
+            log.write(f"\nFAILED TO START: {error}\n")
+            returncode = 127
     duration = time.monotonic() - started
     state = "PASS" if returncode == 0 else "FAIL"
     print(f"{state} {lane.name} ({duration:.1f}s) log={log_path}", flush=True)
@@ -468,28 +480,24 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
     empty_artifacts.mkdir(parents=True, exist_ok=True)
     workload = run_root / "aerobag-cloud-workload-ci.json"
     workload_health = run_root / "aerobag-cloud-workload-ci-pipeline-health.json"
-    python_tests = shlex.join(
-        sorted(
-            subprocess.check_output(
-                [
-                    "find",
-                    "tools",
-                    "product/preprocessor/scripts",
-                    "-type",
-                    "f",
-                    "-name",
-                    "test_*.py",
-                    "-print",
-                ],
-                cwd=ROOT,
-                text=True,
-            ).split()
+    python_tests = shlex.join(sorted(
+        str(path.relative_to(ROOT))
+        for directory in (
+            "tools", "product/preprocessor/scripts",
+            "product/preprocessor/preprocessor-tpp/scripts",
         )
-    )
+        for path in (ROOT / directory).rglob("test_*.py")
+    ))
     return [
         Lane("ci-actionlint", ("go", "run", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.7")),
         Lane("ci-reuse", (str(ROOT / "scripts/check-licenses.sh"),)),
         Lane("ci-rust-format", (str(ROOT / "scripts/check-rust-format.sh"),)),
+        Lane("ci-harness-contracts", (
+            "node", "--test", *(
+                str(path.relative_to(ROOT))
+                for path in sorted((ROOT / "tools/e2e").glob("*.test.mjs"))
+            ),
+        )),
         Lane(
             "ci-rust-shared",
             bash("cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),
@@ -547,7 +555,6 @@ def sequential_ci_lanes(run_root: Path) -> list[Lane]:
             bash(
                 f"mkdir -p {shlex.quote(str(run_root / 'web-results'))}"
                 " && npm --prefix ui/web-app run ci"
-                " && node --test tools/e2e/*.test.mjs"
                 " && git diff --exit-code -- ui/core-rust/schemas ui/web-app/src/generated"
             ),
             env={

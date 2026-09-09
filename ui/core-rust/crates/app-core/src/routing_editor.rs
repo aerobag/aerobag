@@ -735,6 +735,9 @@ impl RoutingEditor {
             selected: false,
             symbol_id: "remove".into(),
         });
+        for control in &mut view.controls {
+            control.button.test_id = format!("parity:airway-routing-control-{}", control.symbol_id);
+        }
     }
 }
 

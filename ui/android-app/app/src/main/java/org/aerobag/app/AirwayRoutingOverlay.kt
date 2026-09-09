@@ -224,7 +224,9 @@ internal fun BoxScope.AirwayRoutingOverlay(view: UiAirwayRouting, displayFrame: 
     MenuPanel(Modifier.align(Alignment.BottomCenter).padding(start=ThumbGap, end=ThumbGap, bottom=ThumbSize + ThumbGap*2)
         .onGloballyPositioned { panelBounds = it.boundsInParent() }.zIndex(4f), width=trayWidth) {
         Text(view.title, modifier=Modifier.padding(horizontal=5.dp))
-        view.route?.let { Text(it.summary, modifier=Modifier.padding(horizontal=5.dp), style=androidx.compose.material3.MaterialTheme.typography.bodySmall) }
+        view.route?.let { Text(it.summary, modifier=Modifier.padding(horizontal=5.dp)
+            .e2eIndexedControl(semanticTag="parity:airway-routing-summary", enabled=false, text=it.summary),
+            style=androidx.compose.material3.MaterialTheme.typography.bodySmall) }
         view.dragLabel.ifEmpty { view.message }.takeIf { it.isNotEmpty() }?.let {
             Text(it,modifier=Modifier.padding(horizontal=5.dp),style=androidx.compose.material3.MaterialTheme.typography.bodySmall)
         }

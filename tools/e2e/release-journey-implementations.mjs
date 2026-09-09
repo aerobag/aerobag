@@ -6,6 +6,7 @@ import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import {
   E2E_TIMING, TerminalObservationError, TransientObservationError,
 } from "./transition-contract.mjs";
+import { semanticOptionSelected } from "./release-journey-runtime.mjs";
 
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
@@ -2486,6 +2487,73 @@ async function flightPlanAirwayEstimates(runtime) {
   runtime.check("plan.estimates-vectors", Boolean(estimates), `${estimates?.length ?? 0} populated cells`);
 }
 
+async function flightPlanFindRoute(runtime) {
+  const airway = runtime.capability("airway");
+  const control = (name) => `airway-routing-control-${name}`;
+  const labels = async () => (await planRows(runtime)).map((row) => row.text);
+  const summary = () => runtime.driver.readElement("airway-routing-summary");
+  const selected = async (name) => semanticOptionSelected(
+    await runtime.driver.readElement(control(name)),
+  );
+  const openEditor = async () => {
+    await openPlanRow(runtime, airway.entry);
+    return runtime.action("find published airway route", "plan-row-action:find_route", {
+      complete: async () => {
+        const draft = await summary();
+        const apply = await runtime.driver.readElement(control("apply_route"));
+        return draft?.text && apply?.enabled ? draft : null;
+      },
+    });
+  };
+
+  await runtime.reset();
+  await acceptDisclaimer(runtime);
+  await runtime.openPage("flight_plan");
+  await appendRoute(runtime, `${airway.entry} ${airway.exit}`);
+  const before = await labels();
+  const draft = await openEditor();
+  runtime.check("plan.find-route", /Direct: .+ nm Airway: .+ nm/.test(draft.text), draft.text);
+  await runtime.openPage("flight_plan");
+  runtime.check("plan.find-route-draft", JSON.stringify(await labels()) === JSON.stringify(before));
+  await runtime.openPage("map");
+
+  // Select the other mode so this works regardless of the persisted preference.
+  const initial = await selected("gnss") ? "gnss" : "vor";
+  const other = initial === "gnss" ? "vor" : "gnss";
+  const changed = await runtime.action("change route navigation mode", control(other), {
+    complete: () => selected(other),
+  });
+  runtime.check("plan.find-route-navigation", changed);
+  const undone = await runtime.action("undo route navigation mode", control("undo"), {
+    complete: () => selected(initial),
+  });
+  const redone = await runtime.action("redo route navigation mode", control("redo"), {
+    complete: () => selected(other),
+  });
+  runtime.check("plan.find-route-history", undone && redone);
+
+  await runtime.action("cancel route draft", control("remove"), {
+    complete: async () => !(await summary()),
+  });
+  await runtime.openPage("flight_plan");
+  runtime.check("plan.find-route-cancel", JSON.stringify(await labels()) === JSON.stringify(before));
+
+  await openEditor();
+  await runtime.action("apply airway route", control("apply_route"), {
+    complete: async () => !(await summary()),
+  });
+  await runtime.openPage("flight_plan");
+  const applied = await runtime.eventually("applied airway row", async () => {
+    const rows = await labels();
+    return rows.some((label) => label.split(/\s+/).includes(airway.airway)) ? rows : null;
+  });
+  runtime.check("plan.find-route-apply", applied.length > before.length, applied);
+  const restored = await runtime.action("undo applied airway route", "undo", {
+    complete: async () => JSON.stringify(await labels()) === JSON.stringify(before),
+  });
+  runtime.check("plan.find-route-undo", restored);
+}
+
 function altitudeControlId(runtime, controlId) {
   return runtime.platform === "web"
     ? `altitude-planner-control-${controlId}`
@@ -3340,6 +3408,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.airport-info": airportInfo,
   "shared.inspector-details": inspectorDetails,
   "shared.flight-plan-airway-estimates": flightPlanAirwayEstimates,
+  "shared.flight-plan-find-route": flightPlanFindRoute,
   "shared.altitude-planner": altitudePlanner,
   "shared.replay-track-up": replayTrackUp,
   "shared.prepared-live-feeds": preparedLiveFeeds,

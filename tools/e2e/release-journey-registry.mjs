@@ -75,6 +75,11 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "plan.add-airway", "plan.airway-scroll", "plan.airway-entry-fixed", "plan.estimates-vectors",
     "plan.ete-scope", "plan.time-mode", "plan.weather-badge", "plan.undo", "plan.redo",
   ]),
+  journey("shared.flight-plan-find-route", "p1", shared, [
+    "plan.find-route", "plan.find-route-draft", "plan.find-route-navigation",
+    "plan.find-route-history", "plan.find-route-cancel", "plan.find-route-apply",
+    "plan.find-route-undo",
+  ]),
   journey("shared.plate-advisories-and-references", "p1", shared, [
     "plate.notam", "plate.geometry-warning", "plate.legend", "plate.inset",
     "plate.composite-scroll",

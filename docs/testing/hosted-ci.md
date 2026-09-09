@@ -19,6 +19,30 @@ Keep independently actionable tests in independently named jobs or report their
 JUnit cases through `tools/ci/junit_summary.py`. Do not collapse unrelated
 failures into one suite-wide boolean.
 
+## Cheap working-tree preflight
+
+Before committing, run `/usr/bin/python3 tools/ci/cheap_preflight.py`. It works
+with uncommitted changes and always runs the complete inexpensive suites:
+fixture-free Rust tests/doctests and the hermetic service workload, Python tool
+tests, web unit/type checks, Android JVM/static tests, all Node harness-contract
+tests, actionlint, REUSE, Rust formatting, generated UI sources, fixture-contract
+metadata, and diff checks. `--list` prints the exact commands. Rust core includes
+the entire `ui_core_boundary` binary. Suite membership is shared with release
+preflight, so adding a core UI action cannot bypass journey-coverage checks.
+
+Use warm target workspaces and tool caches. This command avoids web/WASM/native
+app packaging, browsers/emulators, and external fixture replays. It does not
+create release-qualification receipts. Every run retains its logs and has a
+180-second deadline per suite, including compilation; a timeout is a failure,
+not skipped coverage. `--timeout-seconds` is an explicit override for cold setup.
+Generated schemas, wires, conformance data and symbols are compared in temporary
+paths first, before Android generation can overwrite stale checked-in files.
+The run also fails if source files or HEAD change while checks are in progress.
+
+The Node harness contracts also have a standalone ordinary-CI job. They run
+without waiting for the web build or launching a browser. The full release
+preflight retains all ordinary-CI checks, including app builds and startup smoke.
+
 ## Hermetic Inputs
 
 Fixture-free jobs must make the absence of production data explicit. Core tests

@@ -758,6 +758,12 @@ def add_channel_release_metrics(
         ("live_feed_status", "release live-feed daemon"),
     ]:
         value = record.get(field)
+        # Keep the existing metric ID / deep links, but use current channel
+        # evidence rather than a staging receipt invalidated by product refresh.
+        # Older controller snapshots have no deployment fields yet.
+        deployment_checks = field == "qualification_status" and "deployment_status" in record
+        if deployment_checks:
+            value = record.get("deployment_status")
         expected = "running" if field == "live_feed_status" else "passed"
         if value == expected:
             severity = "ok"
@@ -772,6 +778,8 @@ def add_channel_release_metrics(
         else:
             severity = "critical"
         message = f"{label}: {value}"
+        if deployment_checks and record.get("deployment_error"):
+            message += f" ({record['deployment_error']})"
         if field == "qualification_status" and value == "bypassed":
             reason = record.get("qualification_bypass_reason") or "forced promotion"
             message += f" ({reason})"
@@ -783,6 +791,24 @@ def add_channel_release_metrics(
             label=label,
             value=value,
             severity=severity,
+            message=message,
+        )
+
+    # Passing routine HTTP checks must not erase or conceal a forced admission.
+    if "deployment_status" in record and (
+        record.get("qualification_status") == "bypassed"
+        or record.get("qualification_bypassed_at_utc")
+    ):
+        reason = record.get("qualification_bypass_reason") or "forced promotion"
+        message = f"release qualification bypassed: {reason}"
+        if record.get("qualification_bypassed_at_utc"):
+            message += f" at {record['qualification_bypassed_at_utc']}"
+        add_metric(
+            metrics,
+            metric_id="release.qualification_bypass",
+            label="release qualification bypass",
+            value="bypassed",
+            severity="critical" if role == "production" else "warning",
             message=message,
         )
 

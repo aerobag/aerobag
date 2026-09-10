@@ -107,14 +107,16 @@ function renderServices(services) {{
 }}
 function card(role, tag, record) {{
   const links = channelLinks(role, tag);
+  const deployedChecks = record && "deployment_status" in record ? record.deployment_status : record?.qualification_status;
   const heading = role === "sunset" ? `Sunset ${{tag}}` : role[0].toUpperCase() + role.slice(1);
   return `<article id="${{role === "sunset" ? `release-${{esc(tag)}}` : role}}" class="card ${{role}}">
     <div class="title-row"><div><div class="role">${{esc(role)}}</div><h3>${{esc(heading)}}</h3></div><span class="tag">${{esc(tag)}}</span></div>
     <dl class="facts">
       <dt>Commit</dt><dd><code>${{esc(record?.commit || "unknown")}}</code></dd>
       <dt>Build</dt><dd class="${{stateClass(record?.build_status)}}">${{esc(record?.build_status || "unknown")}}</dd>
-      <dt>Deployed checks</dt><dd class="${{stateClass(record?.qualification_status)}}">${{esc(record?.qualification_status || "unknown")}}</dd>
+      <dt>Deployed checks</dt><dd class="${{stateClass(deployedChecks)}}">${{esc(deployedChecks || "unknown")}}</dd>
       <dt>Live feeds</dt><dd class="${{stateClass(record?.live_feed_status)}}">${{esc(record?.live_feed_status || "unknown")}}</dd>
+      ${{record?.deployment_error ? `<dt>Deployment check error</dt><dd class="critical">${{esc(record.deployment_error)}}</dd>` : ""}}
       ${{record?.last_error ? `<dt>Last error</dt><dd class="critical">${{esc(record.last_error)}}</dd>` : ""}}
     </dl>
     <div class="links"><a href="${{links.app}}">App</a><a href="${{links.packages}}">Artifacts</a><a href="${{links.downloads}}">Downloads</a><a href="${{links.live}}">Live feeds</a><a href="${{links.pipeline}}">Pipeline</a></div>

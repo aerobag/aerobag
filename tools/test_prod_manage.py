@@ -1136,6 +1136,37 @@ class ReconcileCommandTests(unittest.TestCase):
         self.assertEqual(result, 0)
         deploy.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
 
+    def test_pending_deployment_checks_use_lightweight_runtime_path(self) -> None:
+        pending = releases.ReconciliationPlan([releases.ReconcileAction("check_deployment", "2026-08-20.1")])
+        for runtime_changed, receipt_missing in [(True, False), (False, False), (False, True)]:
+            with self.subTest(runtime_changed=runtime_changed, receipt_missing=receipt_missing), ExitStack() as stack:
+                for patcher in self.common_patches(pending):
+                    stack.enter_context(patcher)
+                record = releases.ObservedRelease(
+                    tag="2026-08-20.1", tag_object="a" * 40, commit="b" * 40,
+                    build_status="passed", live_feed_endpoint="http://127.0.0.1:8100",
+                    live_feed_status="running",
+                )
+                observed = releases.ObservedState(
+                    releases={record.tag: record}, production=record.tag, generation=1,
+                )
+                stack.enter_context(mock.patch.object(prod_manage, "load_remote_observed", return_value=observed))
+                initial_plan = releases.ReconciliationPlan([]) if receipt_missing else pending
+                stack.enter_context(mock.patch.object(
+                    prod_manage, "reconciliation_plan", side_effect=[initial_plan, releases.ReconciliationPlan([])],
+                ))
+                drift = [prod_manage.RuntimeFailure("runtime", "runtime differs")] if runtime_changed else []
+                if receipt_missing:
+                    drift.append(prod_manage.RuntimeFailure("deployment", "deployment check record is missing"))
+                stack.enter_context(mock.patch.object(prod_manage, "remote_runtime_failures", side_effect=[drift, []]))
+                update = stack.enter_context(mock.patch.object(prod_manage, "update_runtime"))
+                checks = stack.enter_context(mock.patch.object(prod_manage.deployment, "check_active_deployments"))
+                deploy = stack.enter_context(mock.patch.object(prod_manage, "deploy"))
+                self.assertEqual(prod_manage.reconcile(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES), 0)
+                self.assertEqual(update.call_count, int(runtime_changed))
+                checks.assert_called_once()
+                deploy.assert_not_called()
+
     def test_service_only_drift_uses_runtime_repair_without_full_deploy(self) -> None:
         converged = releases.ReconciliationPlan([])
         patches = self.common_patches(converged)

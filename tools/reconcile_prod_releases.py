@@ -45,7 +45,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("/etc/aerobag/deployed-rev"),
     )
-    parser.add_argument("--plan", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--plan", action="store_true")
+    mode.add_argument(
+        "--check-deployments-only",
+        action="store_true",
+        help="check existing channel endpoints without builds, refresh, activation, or GC",
+    )
     parser.add_argument("--refresh-products", action="store_true")
     parser.add_argument(
         "--force-production-tag",
@@ -137,7 +143,8 @@ def qualification_is_current(record: releases.ObservedRelease) -> bool:
             Path(record.qualification_record).read_text(encoding="utf-8")
         )
         return (
-            qualification.get("schema_version") == 1
+            isinstance(qualification, dict)
+            and qualification.get("schema_version") == 1
             and qualification.get("tag") == record.tag
             and qualification.get("commit") == record.commit
             and qualification.get("release_json_sha256")
@@ -145,7 +152,113 @@ def qualification_is_current(record: releases.ObservedRelease) -> bool:
             and qualification.get("product_manifest_sha256")
             == _sha256(Path(record.product_manifest))
         )
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return False
+
+
+def deployment_channel(observed: releases.ObservedState, tag: str) -> tuple[str, str]:
+    """Return the active role and channel directory; never probe a guessed URL."""
+    if observed.production == tag:
+        return "production", "production"
+    if observed.staging == tag:
+        return "staging", "staging"
+    if tag in observed.sunset:
+        return "sunset", f"releases/{tag}"
+    raise RuntimeError(f"release {tag} is not active on a channel")
+
+
+def public_channel_checks(
+    origin: str, role: str, channel: str, channel_root: Path, release_root: Path
+) -> dict[str, tuple[str, Path | None, str]]:
+    base = origin.rstrip("/") + ("" if role == "production" else f"/{channel}")
+    web_base = base + ("/web" if role == "sunset" else "")
+    checks = {
+        "web": (f"{web_base}/", release_root / "web/index.html", "text/html"),
+        "packages": (
+            f"{base}/packages/current_artifacts.json",
+            channel_root / "packages/current_artifacts.json",
+            "application/json",
+        ),
+        "live_feeds": (f"{base}/live-feeds/status.json", None, "application/json"),
+        "apk": (
+            f"{base}/downloads/android-apk.json",
+            release_root / "downloads/android-apk.json",
+            "application/json",
+        ),
+    }
+    # Older retained releases legitimately predate the standalone About page.
+    # New staging candidates still have to supply it.
+    about = release_root / "web/about.html"
+    if role == "staging" or about.is_file():
+        checks["about"] = (f"{web_base}/about", about, "text/html")
+    return checks
+
+
+def check_public_responses(
+    checks: dict[str, tuple[str, Path | None, str]], context: str
+) -> dict[str, str]:
+    responses = {}
+    for name, (url, expected_path, expected_content_type) in checks.items():
+        expected_digest = _sha256(expected_path) if expected_path is not None else None
+        with urllib.request.urlopen(url, timeout=30) as response:
+            body = response.read()
+            if response.status != 200 or not body:
+                raise RuntimeError(f"{context} failed for {url}")
+            if response.headers.get_content_type() != expected_content_type:
+                raise RuntimeError(
+                    f"{context} received unexpected content type from {url}: "
+                    f"{response.headers.get_content_type()}"
+                )
+            digest = hashlib.sha256(body).hexdigest()
+            if expected_digest is not None and digest != expected_digest:
+                raise RuntimeError(f"{context} received unexpected bytes from {url}")
+            responses[name] = digest
+    return responses
+
+
+def deployment_evidence(
+    record: releases.ObservedRelease,
+    observed: releases.ObservedState,
+    artifact_root: Path,
+    public_origin: str,
+) -> dict:
+    if record.release_root is None or record.product_manifest is None:
+        raise RuntimeError(f"release {record.tag} is missing deployment artifacts")
+    role, channel = deployment_channel(observed, record.tag)
+    release_root = Path(record.release_root)
+    release_builder.validate_release_directory(release_root, record.tag, record.commit)
+    return {
+        "schema_version": 1,
+        "kind": "deployed-channel-checks",
+        "tag": record.tag,
+        "commit": record.commit,
+        "channel_role": role,
+        "public_origin": public_origin.rstrip("/"),
+        "release_json_sha256": _sha256(release_root / "release.json"),
+        "product_manifest_sha256": _sha256(Path(record.product_manifest)),
+        # Production discovery also includes retained releases. A change to
+        # that merged view needs checking even when this release is unchanged.
+        "channel_manifest_sha256": _sha256(
+            artifact_root / "channel-current" / channel / "packages/current_artifacts.json"
+        ),
+    }
+
+
+def deployment_is_current(
+    record: releases.ObservedRelease,
+    observed: releases.ObservedState,
+    artifact_root: Path,
+    public_origin: str,
+) -> bool:
+    if record.deployment_status != "passed" or record.deployment_record is None:
+        return False
+    try:
+        receipt = json.loads(Path(record.deployment_record).read_text(encoding="utf-8"))
+        expected = deployment_evidence(record, observed, artifact_root, public_origin)
+        return isinstance(receipt, dict) and all(
+            receipt.get(key) == value for key, value in expected.items()
+        )
+    except (OSError, ValueError, TypeError, RuntimeError):
         return False
 
 
@@ -206,6 +319,13 @@ class Controller:
             ):
                 record.qualification_status = "pending"
                 record.last_error = "qualification no longer matches release artifacts"
+            if record.deployment_status == "passed" and not deployment_is_current(
+                record, self.observed, self.artifact_root, self.args.public_origin
+            ):
+                record.deployment_status = "pending"
+                record.deployment_error = (
+                    "deployment checks no longer match current channel artifacts"
+                )
 
     def save(self) -> None:
         releases.write_observed_state(self.args.observed, self.observed)
@@ -291,6 +411,7 @@ class Controller:
         self.observed.generation = number
         self.observed.channel_inputs_dirty = False
         self.observed.gc_pending = True
+        self.invalidate_deployment_checks()
         self.save()
         return True
 
@@ -311,44 +432,13 @@ class Controller:
         self.save()
 
     def validate_public_production(self) -> None:
-        origin = self.args.public_origin.rstrip("/")
         current = self.artifact_root / "channel-current/production"
-        checks = [
-            ("/", current / "web/index.html", "text/html"),
-            (
-                "/packages/current_artifacts.json",
-                current / "packages/current_artifacts.json",
-                "application/json",
+        check_public_responses(
+            public_channel_checks(
+                self.args.public_origin, "production", "production", current, current
             ),
-            ("/live-feeds/status.json", None, "application/json"),
-            (
-                "/downloads/android-apk.json",
-                current / "downloads/android-apk.json",
-                "application/json",
-            ),
-        ]
-        about = current / "web/about.html"
-        if about.is_file():
-            checks.insert(1, ("/about", about, "text/html"))
-        for path, expected_path, expected_content_type in checks:
-            url = origin + path
-            with urllib.request.urlopen(url, timeout=30) as response:
-                body = response.read()
-                if response.status != 200 or not body:
-                    raise RuntimeError(
-                        f"activated production channel failed validation at {url}"
-                    )
-                if response.headers.get_content_type() != expected_content_type:
-                    raise RuntimeError(
-                        f"activated production channel served unexpected content type "
-                        f"at {url}: {response.headers.get_content_type()}"
-                    )
-                if expected_path is not None and hashlib.sha256(body).hexdigest() != _sha256(
-                    expected_path
-                ):
-                    raise RuntimeError(
-                        f"activated production channel served unexpected bytes at {url}"
-                    )
+            "activated production channel validation",
+        )
 
     def build_product_manifest(self, tag: str, *, force: bool) -> Path:
         record = self.observed.releases[tag]
@@ -447,6 +537,9 @@ class Controller:
             record.release_root = str(release_root)
             record.build_status = "passed"
             record.qualification_status = "pending"
+            record.deployment_status = "pending"
+            record.deployment_record = None
+            record.deployment_error = None
             record.last_error = None
         except BaseException as error:
             record.build_status = "failed"
@@ -475,6 +568,8 @@ class Controller:
                 # this release can later be promoted or used for rollback.
                 record.qualification_status = "pending"
                 record.qualification_record = None
+                record.deployment_status = "pending"
+                record.deployment_error = None
             record.last_error = None
             self.save()
 
@@ -704,6 +799,7 @@ class Controller:
         self.observed.generation = generation_number
         self.observed.channel_inputs_dirty = False
         self.observed.gc_pending = True
+        self.invalidate_deployment_checks()
         draining_deadline = (
             datetime.now(timezone.utc) + timedelta(hours=1)
         ).isoformat().replace("+00:00", "Z")
@@ -714,56 +810,66 @@ class Controller:
                 record.draining_until_utc = draining_deadline
         self.save()
 
+    def invalidate_deployment_checks(self) -> None:
+        tags = [self.observed.production, self.observed.staging, *self.observed.sunset]
+        for tag in filter(None, tags):
+            record = self.observed.releases[tag]
+            record.deployment_status = "pending"
+            record.deployment_error = None
+
+    def check_deployment(self, tag: str) -> dict:
+        role, channel = deployment_channel(self.observed, tag)
+        self.progress(f"Running {role} deployment checks for {tag}")
+        record = self.observed.releases[tag]
+        release_root = Path(record.release_root or "")
+        try:
+            evidence = deployment_evidence(
+                record, self.observed, self.artifact_root, self.args.public_origin
+            )
+            responses = check_public_responses(
+                public_channel_checks(
+                    self.args.public_origin,
+                    role,
+                    channel,
+                    self.artifact_root / "channel-current" / channel,
+                    release_root,
+                ),
+                f"{role} deployment checks for {tag}",
+            )
+            if evidence != deployment_evidence(
+                record, self.observed, self.artifact_root, self.args.public_origin
+            ):
+                raise RuntimeError(f"deployment artifacts changed during checks for {tag}")
+            receipt = {
+                **evidence,
+                "checked_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "public_response_sha256": responses,
+            }
+            path = self.artifact_root / "state/deployment-checks" / tag / f"{role}.json"
+            releases._write_json_atomic(path, receipt)
+        except Exception as error:
+            record.deployment_status = "failed"
+            record.deployment_error = str(error)
+            self.save()
+            raise
+        record.deployment_record = str(path)
+        record.deployment_status = "passed"
+        record.deployment_error = None
+        self.save()
+        return receipt
+
     def qualify(self, tag: str) -> None:
-        self.progress(f"Running staging checks for {tag}")
         if self.observed.staging != tag:
             raise RuntimeError(f"release {tag} must be active on staging before qualification")
         record = self.observed.releases[tag]
+        try:
+            receipt = self.check_deployment(tag)
+        except Exception as error:
+            record.qualification_status = "failed"
+            record.last_error = str(error)
+            self.save()
+            raise
         release_root = Path(record.release_root or "")
-        release_builder.validate_release_directory(release_root, tag, record.commit)
-        base = self.args.public_origin.rstrip("/") + "/staging"
-        checks = {
-            "web": (f"{base}/", release_root / "web/index.html", "text/html"),
-            "about": (
-                f"{base}/about",
-                release_root / "web/about.html",
-                "text/html",
-            ),
-            "packages": (
-                f"{base}/packages/current_artifacts.json",
-                self.artifact_root
-                / "channel-current/staging/packages/current_artifacts.json",
-                "application/json",
-            ),
-            "live_feeds": (
-                f"{base}/live-feeds/status.json",
-                None,
-                "application/json",
-            ),
-            "apk": (
-                f"{base}/downloads/android-apk.json",
-                release_root / "downloads/android-apk.json",
-                "application/json",
-            ),
-        }
-        responses = {}
-        for name, (url, expected_path, expected_content_type) in checks.items():
-            with urllib.request.urlopen(url, timeout=30) as response:
-                body = response.read()
-                if response.status != 200 or not body:
-                    raise RuntimeError(f"staging qualification failed for {url}")
-                if response.headers.get_content_type() != expected_content_type:
-                    raise RuntimeError(
-                        f"staging qualification received unexpected content type "
-                        f"from {url}: {response.headers.get_content_type()}"
-                    )
-                if expected_path is not None and hashlib.sha256(body).hexdigest() != _sha256(
-                    expected_path
-                ):
-                    raise RuntimeError(
-                        f"staging qualification received unexpected bytes from {url}"
-                    )
-                responses[name] = hashlib.sha256(body).hexdigest()
         qualification = {
             "schema_version": 1,
             "tag": tag,
@@ -773,7 +879,7 @@ class Controller:
             ),
             "release_json_sha256": _sha256(release_root / "release.json"),
             "product_manifest_sha256": _sha256(Path(record.product_manifest or "")),
-            "public_response_sha256": responses,
+            "public_response_sha256": receipt["public_response_sha256"],
         }
         qualification_path = release_root / "qualification.json"
         qualification_path.write_text(
@@ -786,6 +892,15 @@ class Controller:
         record.qualification_bypass_reason = None
         record.last_error = None
         self.save()
+
+    def check_active_deployments(self) -> None:
+        if not releases.deployment_checks_are_only_pending_work(
+            self.desired, self.observed
+        ):
+            raise RuntimeError("release state must converge before deployment-only checks")
+        for tag in self.desired.tags():
+            self.check_deployment(tag)
+        self.progress("Deployment checks complete")
 
     def adopt_legacy_production_if_exact(self) -> bool:
         """Record the pre-controller deployment without weakening later gates."""
@@ -869,6 +984,8 @@ class Controller:
                 self.activate()
             elif action.kind == "qualify_release" and action.tag is not None:
                 self.qualify(action.tag)
+            elif action.kind == "check_deployment" and action.tag is not None:
+                self.check_deployment(action.tag)
             else:
                 raise RuntimeError(f"unsupported reconciliation action {action}")
         raise RuntimeError("release reconciliation did not converge after 100 actions")
@@ -885,11 +1002,15 @@ def main() -> int:
         except BlockingIOError:
             raise SystemExit("another release reconciliation is already running") from None
         controller = Controller(args)
-        assignment_pending = not releases.plan_reconciliation(
-            controller.desired,
-            controller.observed,
-            force_production_tag=args.force_production_tag,
-        ).converged
+        if args.check_deployments_only:
+            controller.check_active_deployments()
+            return 0
+        # Failed/stale serving checks must not starve periodic product refresh:
+        # the refresh may itself repair the bad publication. Only structural
+        # release work (build/activation/staging admission) defers maintenance.
+        assignment_pending = not releases.deployment_checks_are_only_pending_work(
+            controller.desired, controller.observed,
+        )
         run_gc, refresh_products = maintenance_policy(
             assignment_pending=assignment_pending,
             refresh_requested=args.refresh_products,

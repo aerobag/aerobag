@@ -151,6 +151,8 @@ release state. The channel generation carries the same audit so recovery after
 a controller restart preserves it. Bypass never counts as passing qualification.
 A later successful qualification clears the bypass fields; product refreshes
 can invalidate qualification and reset the status to `pending`.
+Routine production/sunset deployment checks do not grant staging qualification
+or clear this audit.
 
 `--reconcile` never edits, commits, tags, or pushes desired state. It first
 compares the checked-in assignments with observed state and the installed
@@ -385,11 +387,29 @@ publication, not a fixed allowance. Old merged history totals are excluded from
 the new release-specific comparison; old single-publication baselines remain
 usable.
 
-Qualification `pending` or `bypassed` is critical for production and a warning
-for staging or sunset. `failed` is critical for every role; `passed` is OK.
-Legacy `pending` records do not prove a bypass: a product refresh or a stale
-qualification receipt can also produce that status. Build and live-feed health
-remain separate signals.
+**Deployed release checks** describes current channel health, separately from
+staging admission and GitHub qualification. The controller records
+`deployment_status`, `deployment_record`, and `deployment_error` for production,
+staging, and every retained sunset release. The existing
+`release.qualification_status` dashboard metric ID remains stable, but reads
+this deployment status (old controller snapshots retain their old behavior).
+`pending` is critical for production and a warning for staging/sunset; `failed`
+is critical for every role and includes the check error.
+
+After product refresh or channel activation, reconciliation checks each active
+channel's public web, About (when supported by an old release), package discovery,
+live-feed status, and APK metadata endpoints. It verifies HTTP status, content
+type, and exact static bytes; no Chrome or hosted journeys run on production.
+Receipts bind the release, product manifest, channel role, origin, and served
+package manifest. Stale/missing receipts are checked again, including records
+created before deployment receipts existed. Successful production/sunset checks
+do not alter historical staging qualification. Only staging checks can qualify
+a candidate for promotion. Forced admission remains a separate visible
+`release.qualification_bypass` alarm even after deployment checks pass.
+
+This lifecycle repair is a controller/monitor runtime update through
+`tools/prod_manage.py --reconcile`; it does not require a new application release.
+Build and live-feed health remain separate signals.
 
 Every metric has a detail row, including string statuses and missing values.
 **Weather camera sites** reports the minimum published inventory across each

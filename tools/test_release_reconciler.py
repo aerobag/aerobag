@@ -144,6 +144,7 @@ class ReconciliationPlannerTests(unittest.TestCase):
             commit=(tag.encode().hex() + "1" * 40)[:40],
             build_status="passed" if built else "pending",
             qualification_status="passed" if qualified else "pending",
+            deployment_status="passed" if built else "pending",
             product_manifest=f"published/{tag}/product_artifacts.json" if built else None,
             release_root=f"release-builds/{tag}" if built else None,
             live_feed_endpoint=f"http://127.0.0.1/{tag}" if built else None,
@@ -300,6 +301,58 @@ class ReconciliationPlannerTests(unittest.TestCase):
 
         self.assertEqual(plan.actions, [])
         self.assertTrue(plan.converged)
+
+    def test_legacy_records_need_deployment_checks_not_another_staging(self) -> None:
+        production = self.observed_release("prod", qualified=False)
+        old_document = {
+            "tag": production.tag, "tag_object": production.tag_object,
+            "commit": production.commit, "build_status": "passed",
+            "qualification_status": "pending", "live_feed_status": "running",
+            "live_feed_endpoint": "http://127.0.0.1:8100",
+        }
+        production = releases.ObservedRelease.from_dict(old_document, "old record")
+        self.assertEqual(production.deployment_status, "pending")
+        self.assertIsNone(production.deployment_record)
+        observed = releases.ObservedState(releases={"prod": production}, production="prod", generation=1)
+        desired = self.desired("prod", None)
+        self.assertEqual(
+            releases.plan_reconciliation(desired, observed).actions,
+            [releases.ReconcileAction("check_deployment", "prod")],
+        )
+        self.assertTrue(releases.deployment_checks_are_only_pending_work(desired, observed))
+        self.assertEqual(production.deployment_status, "pending", "inspection must not mutate real state")
+
+    def test_deployment_checks_only_does_not_hide_pending_staging_work(self) -> None:
+        production = self.observed_release("prod")
+        production.deployment_status = "pending"
+        observed = releases.ObservedState(releases={"prod": production}, production="prod", generation=1)
+        desired = self.desired("prod", "candidate")
+        self.assertEqual(
+            releases.plan_reconciliation(desired, observed).actions,
+            [releases.ReconcileAction("check_deployment", "prod")],
+        )
+        self.assertFalse(releases.deployment_checks_are_only_pending_work(desired, observed))
+        observed.releases["candidate"] = self.observed_release("candidate", qualified=False)
+        observed.staging = "candidate"
+        self.assertFalse(releases.deployment_checks_are_only_pending_work(desired, observed))
+
+    def test_sunset_assignment_changes_before_checking_its_endpoints(self) -> None:
+        production = self.observed_release("prod")
+        old = self.observed_release("old")
+        old.deployment_status = "pending"
+        observed = releases.ObservedState(
+            releases={"prod": production, "old": old}, production="prod", generation=1,
+        )
+        desired = self.desired("prod", None, ("old",))
+        self.assertEqual(
+            releases.plan_reconciliation(desired, observed).actions,
+            [releases.ReconcileAction("activate_generation")],
+        )
+        observed.sunset = ["old"]
+        self.assertEqual(
+            releases.plan_reconciliation(desired, observed).actions,
+            [releases.ReconcileAction("check_deployment", "old")],
+        )
 
     def test_adopted_legacy_state_still_materializes_first_generation(self) -> None:
         production = self.observed_release("2026-08-22.1")

@@ -542,14 +542,15 @@ def remote_runtime_failures(
         record = observed.releases.get(tag)
         if record is None:
             continue
-        for path, description in (
-            (record.release_root, f"release output for {tag} is missing"),
-            (record.product_manifest, f"product manifest for {tag} is missing"),
-            (record.qualification_record, f"qualification record for {tag} is missing"),
+        for path, category, description in (
+            (record.release_root, "release", f"release output for {tag} is missing"),
+            (record.product_manifest, "release", f"product manifest for {tag} is missing"),
+            (record.qualification_record, "release", f"qualification record for {tag} is missing"),
+            (record.deployment_record, "deployment", f"deployment check record for {tag} is missing"),
         ):
             if path is not None:
                 checks.append(
-                    (f"test -e {deployment.shell_quote(path)}", "release", description)
+                    (f"test -e {deployment.shell_quote(path)}", category, description)
                 )
 
     lines = [
@@ -1040,11 +1041,16 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
     assert_remote_idle(config)
     observed = load_remote_observed(config)
     plan = reconciliation_plan(desired, observed)
+    checks_only = bool(plan.actions) and releases.deployment_checks_are_only_pending_work(
+        desired, observed
+    )
     runtime_failures = (
         remote_runtime_failures(config, desired, observed)
-        if plan.converged
+        if plan.converged or checks_only
         else []
     )
+    if any(failure.category == "deployment" for failure in runtime_failures):
+        checks_only = releases.deployment_checks_are_only_pending_work(desired, observed)
     assignments = describe_assignments(desired)
     if plan.converged and not runtime_failures:
         print_success(f"Production is reconciled: {assignments}")
@@ -1061,7 +1067,18 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
         or "deployment state differs"
     )
     print(f"Production needs reconciliation ({detail}): {assignments}")
-    if plan.converged and all(
+    if checks_only and all(
+        failure.category in {"service", "runtime", "deployment"} for failure in runtime_failures
+    ):
+        if any(failure.category in {"service", "runtime"} for failure in runtime_failures):
+            update_runtime(config_path)
+        timed_operation(
+            "Checking deployed releases",
+            lambda: deployment.check_active_deployments(
+                config, progress=report_deployment_progress,
+            ),
+        )
+    elif plan.converged and all(
         failure.category == "service" for failure in runtime_failures
     ):
         repair_runtime(config_path)

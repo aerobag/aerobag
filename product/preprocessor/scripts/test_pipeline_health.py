@@ -380,6 +380,48 @@ class PipelineHealthTests(unittest.TestCase):
                         self.assertIn("forced promotion", qualification["message"])
                         self.assertIn("2026-09-07T15:00:00Z", qualification["message"])
 
+    def test_current_deployment_evidence_replaces_stale_staging_status(self) -> None:
+        for role in ["production", "staging", "sunset"]:
+            for status in ["passed", "pending", "failed", None]:
+                with self.subTest(role=role, status=status):
+                    metrics = []
+                    pipeline_health.add_channel_release_metrics(metrics, {
+                        "role": role, "tag": "example",
+                        "release_state": {
+                            "build_status": "passed", "live_feed_status": "running",
+                            "qualification_status": "pending",
+                            "deployment_status": status,
+                            "deployment_error": "wrong About bytes" if status == "failed" else None,
+                        },
+                    })
+                    metric = next(item for item in metrics if item["id"] == "release.qualification_status")
+                    self.assertEqual(metric["value"], status)
+                    expected = "ok" if status == "passed" else "critical"
+                    if status == "pending" and role in {"staging", "sunset"}:
+                        expected = "warning"
+                    self.assertEqual(metric["severity"], expected)
+                    if status == "failed":
+                        self.assertIn("wrong About bytes", metric["message"])
+
+    def test_passing_deployment_does_not_hide_forced_admission_after_refresh(self) -> None:
+        for status in ["bypassed", "pending"]:
+            with self.subTest(status=status):
+                metrics = []
+                pipeline_health.add_channel_release_metrics(metrics, {
+                    "role": "production", "tag": "example",
+                    "release_state": {
+                        "build_status": "passed", "live_feed_status": "running",
+                        "qualification_status": status, "deployment_status": "passed",
+                        "qualification_bypassed_at_utc": "2026-09-08T19:00:00Z",
+                        "qualification_bypass_reason": "forced promotion",
+                    },
+                })
+                by_id = {item["id"]: item for item in metrics}
+                self.assertEqual(by_id["release.qualification_status"]["severity"], "ok")
+                self.assertEqual(by_id["release.qualification_bypass"]["severity"], "critical")
+                self.assertIn("forced promotion", by_id["release.qualification_bypass"]["message"])
+                self.assertIn("2026-09-08T19:00:00Z", by_id["release.qualification_bypass"]["message"])
+
     def test_live_feed_health_requires_daemon_product_policy(self) -> None:
         now = datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc)
         facts = {

@@ -18,7 +18,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -237,6 +237,9 @@ class ObservedRelease:
     commit: str
     build_status: str = "pending"
     qualification_status: str = "pending"
+    deployment_status: str = "pending"
+    deployment_record: str | None = None
+    deployment_error: str | None = None
     product_manifest: str | None = None
     release_root: str | None = None
     live_feed_endpoint: str | None = None
@@ -259,6 +262,9 @@ class ObservedRelease:
                 "commit",
                 "build_status",
                 "qualification_status",
+                "deployment_status",
+                "deployment_record",
+                "deployment_error",
                 "product_manifest",
                 "release_root",
                 "live_feed_endpoint",
@@ -465,6 +471,17 @@ def plan_reconciliation(
     if observed.channel_inputs_dirty or observed.generation == 0:
         return ReconciliationPlan([ReconcileAction("activate_generation")])
 
+    desired_sunset = _desired_sunset_tags(desired)
+    if observed.sunset != desired_sunset:
+        return ReconciliationPlan([ReconcileAction("activate_generation")])
+
+    # Serving an already-promoted release is not staging qualification. Refresh
+    # its deployment evidence (and retained clients' evidence) before spending
+    # time on a new staging build. Legacy observed records default to pending.
+    for tag in production_tags:
+        if observed.releases[tag].deployment_status != "passed":
+            return ReconciliationPlan([ReconcileAction("check_deployment", tag)])
+
     staging_tag = desired.staging.tag if desired.staging is not None else None
     if staging_tag is not None:
         staging_record = observed.releases.get(staging_tag)
@@ -479,11 +496,26 @@ def plan_reconciliation(
             return ReconciliationPlan([ReconcileAction("activate_generation", staging_tag)])
         if staging_record.qualification_status != "passed":
             return ReconciliationPlan([ReconcileAction("qualify_release", staging_tag)])
+        if staging_record.deployment_status != "passed":
+            return ReconciliationPlan([ReconcileAction("check_deployment", staging_tag)])
 
-    desired_sunset = _desired_sunset_tags(desired)
     if observed.staging != staging_tag or observed.sunset != desired_sunset:
         return ReconciliationPlan([ReconcileAction("activate_generation")])
     return ReconciliationPlan([])
+
+
+def deployment_checks_are_only_pending_work(
+    desired: DesiredReleases, observed: ObservedState
+) -> bool:
+    """Look beyond the first check action without changing real observations."""
+    checked = replace(
+        observed,
+        releases={
+            tag: replace(record, deployment_status="passed")
+            for tag, record in observed.releases.items()
+        },
+    )
+    return plan_reconciliation(desired, checked).converged
 
 
 @dataclass(frozen=True)

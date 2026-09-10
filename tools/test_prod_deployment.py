@@ -585,6 +585,28 @@ class RuntimeUpdateTests(unittest.TestCase):
         ssh.assert_called_once_with(config, "systemctl start aerobag-build-product.timer", dry_run=False)
 
 
+    def test_deployment_checks_invoke_only_python_and_restore_timer_after_failure(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        for failed in [False, True]:
+            with (
+                self.subTest(failed=failed),
+                mock.patch.object(deploy_prod, "quiesce_release_reconciliation") as quiesce,
+                mock.patch.object(deploy_prod, "run_ssh", side_effect=[RuntimeError("bad route") if failed else None, None]) as ssh,
+            ):
+                if failed:
+                    with self.assertRaisesRegex(RuntimeError, "bad route"):
+                        deploy_prod.check_active_deployments(config)
+                else:
+                    deploy_prod.check_active_deployments(config)
+            quiesce.assert_called_once_with(config, dry_run=False)
+            command = ssh.call_args_list[0].args[1]
+            self.assertTrue(command.startswith("/usr/bin/python3 "))
+            self.assertIn("--check-deployments-only", command)
+            self.assertNotIn("--refresh-products", command)
+            self.assertNotIn("aerobag-ensure-toolchain", command)
+            self.assertEqual(ssh.call_args_list[-1].args[1], "systemctl start aerobag-build-product.timer")
+
+
 class AndroidSigningKeyTests(unittest.TestCase):
     def test_default_key_lives_in_the_credentials_tree(self) -> None:
         self.assertEqual(

@@ -2390,6 +2390,34 @@ def update_runtime(
         run_ssh(config, "systemctl start aerobag-build-product.timer", dry_run=dry_run)
 
 
+def check_active_deployments(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Refresh deployed HTTP evidence without invoking any build tooling."""
+    quiesce_release_reconciliation(config, dry_run=dry_run)
+    try:
+        _report(progress, "Checking deployed release endpoints")
+        source = Path(config["source_root"])
+        artifacts = Path(config["artifact_root"])
+        command = [
+            "/usr/bin/python3", str(source / "tools/reconcile_prod_releases.py"),
+            "--check-deployments-only",
+            "--desired", str(source / config["release_desired_state"]),
+            "--observed", str(artifacts / "state/releases-observed.json"),
+            "--source-root", str(source),
+            "--artifact-root", str(artifacts),
+            "--cargo-target-dir", str(config["cargo_target_dir"]),
+            "--controller-preprocessor", str(Path(config["cargo_target_dir"]) / "release/preprocessor-cli"),
+            "--ui-target-root", str(config["ui_target_root"]),
+        ]
+        run_ssh(config, " ".join(shell_quote(part) for part in command), dry_run=dry_run)
+    finally:
+        run_ssh(config, "systemctl start aerobag-build-product.timer", dry_run=dry_run)
+
+
 def reconcile_host(
     config: dict[str, Any],
     *,

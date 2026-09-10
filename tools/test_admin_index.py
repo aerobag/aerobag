@@ -53,6 +53,9 @@ class AdminIndexTests(unittest.TestCase):
         )
 
         self.assertIn("<dt>Deployed checks</dt>", html)
+        self.assertIn('"deployment_status" in record ? record.deployment_status : record?.qualification_status', html)
+        self.assertIn("stateClass(deployedChecks)", html)
+        self.assertIn("esc(record.deployment_error)", html)
         self.assertNotIn("<dt>Qualification</dt>", html)
 
 

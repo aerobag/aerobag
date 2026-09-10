@@ -74,6 +74,19 @@ class PrimaryNavigationLayoutTest {
     }
 
     @Test
+    fun geographicEditorsCannotEscapeIntoTheScreenControlPlane() {
+        val map = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val layers = map.indexOf("MapSurfaceLayers(")
+        val content = map.indexOf("mapContent = {", layers)
+        val editor = map.indexOf("AirwayRoutingOverlay(", content)
+        val controls = map.indexOf("controls = {", content)
+        val navigation = map.indexOf("PrimaryNavigationDock(", controls)
+        assertTrue("Map must use the touch-tested layer owner.", layers >= 0 && content > layers)
+        assertTrue("The full-screen editor belongs inside map content, below every screen control.",
+            editor > content && controls > editor && navigation > controls)
+    }
+
+    @Test
     fun topRowsDoNotOwnPageNavigation() {
         val mapControls = sourceBetween(
             chartsSource,

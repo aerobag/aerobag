@@ -19,6 +19,14 @@ Keep independently actionable tests in independently named jobs or report their
 JUnit cases through `tools/ci/junit_summary.py`. Do not collapse unrelated
 failures into one suite-wide boolean.
 
+The green `CI` workflow is not the status of `E2E main`. Android shared journeys
+already run all priorities on ordinary main/PR E2E runs; web runs p0 there and
+adds p1/p2 for release tags, schedules, and explicit candidate runs. Inspect
+existing E2E failures before staging, including still-relevant ancestor failures
+when a newer push canceled its predecessor. Do not call a repeated application
+timeout an infrastructure flake without examining its retained action/rendering
+evidence. This does not add a second full qualification wait before staging.
+
 ## Cheap working-tree preflight
 
 Before committing, run `/usr/bin/python3 tools/ci/cheap_preflight.py`. It works
@@ -50,6 +58,27 @@ every `tools/e2e/*.test.mjs`. The harness owns a separate workspace from the
 parallel web checks; it must not depend on their setup or source-tree
 `node_modules`. A cold, offline bootstrap regression uses a tiny local package
 and runs the real entrypoint with the workspace environment unset.
+
+Android JVM tests include small Compose/Robolectric component tests, with a
+pinned Android SDK level and no production data or native-core initialization.
+Use physical `performTouchInput` for input routing and layering: semantic
+`performClick` bypasses hit testing and can make an untappable control look
+functional. `MapSurfaceLayersTest` includes a reproduction of a non-consuming
+full-screen editor intercepting HOME, plus portrait/landscape tests of the
+production layer container and uncovered map input. This belongs in ordinary
+CI and cheap preflight, not in another release-only gate.
+
+For navigation effects, exercise real removal from and reentry into composition,
+not just rerendering an always-mounted helper. `AirwayRoutingNavigationEffectTest`
+distinguishes a newly activated editor from mounting an existing draft; persistent
+state must not replay a one-shot navigation request. These component tests use
+Compose's controlled synchronization, without sleeps, emulator startup, or FAA
+fixtures. Their pinned test-library/SDK dependencies still require cold setup.
+
+Harness model tests establish that a journey rejects modeled defects; they do
+not establish that platform navigation or rendering works. New or changed
+journeys require a focused real run on every claimed platform, with matching
+application bytes. Preserve that evidence and explicitly report unrun checks.
 
 Python preflight also verifies producer telemetry contracts. Hosted Python CI
 fetches history/tags and compares immutable definitions and monitoring coverage

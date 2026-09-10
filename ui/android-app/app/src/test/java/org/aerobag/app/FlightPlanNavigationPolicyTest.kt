@@ -11,6 +11,14 @@ import org.junit.Test
 
 class FlightPlanNavigationPolicyTest {
     @Test
+    fun routingNavigationUsesTheLifecycleTestedActivationBoundary() {
+        val source = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
+        assertTrue(source.contains("AirwayRoutingNavigationEffect(airwayRouting?.takeIf { it.mapOpen }?.editId)"))
+        assertFalse("Page-local state must not replay an existing editor as a new navigation event.",
+            source.contains("openedRoutingId"))
+    }
+
+    @Test
     fun focusedAppendRouteFieldDoesNotBlockPageNavigation() {
         val source = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
 

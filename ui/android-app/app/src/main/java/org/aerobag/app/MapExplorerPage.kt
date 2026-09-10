@@ -3177,7 +3177,7 @@ internal fun MapExplorerPage(
             }
     }
 
-    Box(
+    MapSurfaceLayers(
         modifier = Modifier
             .fillMaxSize()
             .e2eIndexedElement(
@@ -3393,505 +3393,507 @@ internal fun MapExplorerPage(
                     false
                 }
             },
-    ) {
-        E2eProjectionView(
-            viewId = R.id.e2e_viewport_projection,
-            state = buildViewportProjectionState(currentViewport, plannedMapUpDeg),
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 30.dp)
-                .size(1.dp),
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_map_family_projection,
-            state = "$selectedFamilyId:map:$selectedMapId",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 2.dp)
-                .size(1.dp),
-        )
-        mapLayerState.options.forEachIndexed { index, option ->
-            val state = mapLayerState.toggleState(option.layerId)
-            Box(
+        mapContent = {
+            E2eProjectionView(
+                viewId = R.id.e2e_viewport_projection,
+                state = buildViewportProjectionState(currentViewport, plannedMapUpDeg),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .offset(x = (4 + index * 2).dp)
-                    .size(1.dp)
-                    .testTag(
-                        "parity:map-layer:${option.layerId.name}:visible:${state.visible}:enabled:${state.enabled}",
-                    ),
+                    .offset(x = 30.dp)
+                    .size(1.dp),
             )
-        }
-        RasterImageLayers(
-            tiles = tiles,
-            tileRects = tileRects,
-            tileBitmapCache = tileBitmapCache,
-            tileLabels = debugState.tileLabels,
-            tileLabelPaint = mapRenderPaints.tileLabel,
-            tileLabelBackgroundPaint = mapRenderPaints.tileLabelBackground,
-            nexradFrame = if (mapLayerState.nexrad.visible) nexradFrame else null,
-            terrainOverlay = terrainOverlay,
-            viewport = currentViewport,
-            surfaceWidthPx = surfaceWidthPx,
-            surfaceHeightPx = surfaceHeightPx,
-            mapUpDeg = plannedMapUpDeg,
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_raster_state_projection,
-            state =
-                "plan:${rasterPlanFrame.planId}:maps:${tiles.map { rasterSemanticToken(it.mapViewId) }.distinct().sorted().joinToString(",").ifEmpty { "none" }}:" +
-                    "planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 20.dp)
-                .size(1.dp),
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_vector_state_projection,
-            state = "features:${displayedMapOverlay.visibleFeatures.size}",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 22.dp)
-                .size(1.dp),
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_live_overlay_projection,
-            state =
-                "metars:${displayedMapOverlay.visibleMetars.size}:" +
-                    "pireps:${displayedMapOverlay.visiblePireps.size}:" +
-                    "obstacles:${displayedMapOverlay.visibleFeatures.count { it.symbolKind == "obstacle" }}:" +
-                    "tfrs:${displayedMapOverlay.tfrPaths.size}",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 24.dp)
-                .size(1.dp),
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_nexrad_state_projection,
-            state =
-                "tiles:${nexradFrame?.images?.size ?: 0}:" +
-                    "frame:${nexradFrame?.selectedFrameIndex ?: "none"}:" +
-                    "frames:${nexradFrame?.frameCount ?: 0}",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 32.dp)
-                .size(1.dp),
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_map_selection_projection,
-            state = mapSelectionProjectionState,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 28.dp)
-                .size(1.dp),
-        )
-        AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
-        MapFeatureOverlayLayer(
-            displayedMapOverlay = displayedMapOverlay,
-            uiTheme = uiTheme,
-            densityScale = density.density,
-            fixMarkerStrokeColor = mapRenderPaints.fixMarkerStrokeColor,
-            fixMarkerFillColor = mapRenderPaints.fixMarkerFillColor,
-            airportMarkerStrokeColor = mapRenderPaints.airportMarkerStrokeColor,
-            airportToweredFillColor = mapRenderPaints.airportToweredFillColor,
-            airportUntoweredFillColor = mapRenderPaints.airportUntoweredFillColor,
-            vorMarkerColor = mapRenderPaints.vorMarkerColor,
-            vorMarkerStrokeColor = mapRenderPaints.vorMarkerStrokeColor,
-            fixLabelStrokePaint = mapRenderPaints.fixLabelStroke,
-            airportLabelStrokePaint = mapRenderPaints.airportLabelStroke,
-            vorLabelFillPaint = mapRenderPaints.vorLabelFill,
-            fixLabelFillPaint = mapRenderPaints.fixLabelFill,
-            airportToweredLabelFillPaint = mapRenderPaints.airportToweredLabelFill,
-            airportUntoweredLabelFillPaint = mapRenderPaints.airportUntoweredLabelFill,
-            mapUpDeg = plannedMapUpDeg,
-        )
-        ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
-        OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
-        if (flightPlanRoute.isNotEmpty() && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
             E2eProjectionView(
-                viewId = R.id.e2e_flight_plan_route_overlay_projection,
-                state = flightPlanRouteOverlayProjectionState(
-                    flightPlanRoute = flightPlanRoute,
-                    viewport = displayViewport,
-                    surfaceWidthPx = surfaceWidthPx,
-                    surfaceHeightPx = surfaceHeightPx,
-                ),
+                viewId = R.id.e2e_map_family_projection,
+                state = "$selectedFamilyId:map:$selectedMapId",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 2.dp)
+                    .size(1.dp),
+            )
+            mapLayerState.options.forEachIndexed { index, option ->
+                val state = mapLayerState.toggleState(option.layerId)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset(x = (4 + index * 2).dp)
+                        .size(1.dp)
+                        .testTag(
+                            "parity:map-layer:${option.layerId.name}:visible:${state.visible}:enabled:${state.enabled}",
+                        ),
+                )
+            }
+            RasterImageLayers(
+                tiles = tiles,
+                tileRects = tileRects,
+                tileBitmapCache = tileBitmapCache,
+                tileLabels = debugState.tileLabels,
+                tileLabelPaint = mapRenderPaints.tileLabel,
+                tileLabelBackgroundPaint = mapRenderPaints.tileLabelBackground,
+                nexradFrame = if (mapLayerState.nexrad.visible) nexradFrame else null,
+                terrainOverlay = terrainOverlay,
+                viewport = currentViewport,
+                surfaceWidthPx = surfaceWidthPx,
+                surfaceHeightPx = surfaceHeightPx,
+                mapUpDeg = plannedMapUpDeg,
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_raster_state_projection,
+                state =
+                    "plan:${rasterPlanFrame.planId}:maps:${tiles.map { rasterSemanticToken(it.mapViewId) }.distinct().sorted().joinToString(",").ifEmpty { "none" }}:" +
+                        "planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 20.dp)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_vector_state_projection,
+                state = "features:${displayedMapOverlay.visibleFeatures.size}",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 22.dp)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_live_overlay_projection,
+                state =
+                    "metars:${displayedMapOverlay.visibleMetars.size}:" +
+                        "pireps:${displayedMapOverlay.visiblePireps.size}:" +
+                        "obstacles:${displayedMapOverlay.visibleFeatures.count { it.symbolKind == "obstacle" }}:" +
+                        "tfrs:${displayedMapOverlay.tfrPaths.size}",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 24.dp)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_nexrad_state_projection,
+                state =
+                    "tiles:${nexradFrame?.images?.size ?: 0}:" +
+                        "frame:${nexradFrame?.selectedFrameIndex ?: "none"}:" +
+                        "frames:${nexradFrame?.frameCount ?: 0}",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 32.dp)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_map_selection_projection,
+                state = mapSelectionProjectionState,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 28.dp)
+                    .size(1.dp),
+            )
+            AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
+            MapFeatureOverlayLayer(
+                displayedMapOverlay = displayedMapOverlay,
+                uiTheme = uiTheme,
+                densityScale = density.density,
+                fixMarkerStrokeColor = mapRenderPaints.fixMarkerStrokeColor,
+                fixMarkerFillColor = mapRenderPaints.fixMarkerFillColor,
+                airportMarkerStrokeColor = mapRenderPaints.airportMarkerStrokeColor,
+                airportToweredFillColor = mapRenderPaints.airportToweredFillColor,
+                airportUntoweredFillColor = mapRenderPaints.airportUntoweredFillColor,
+                vorMarkerColor = mapRenderPaints.vorMarkerColor,
+                vorMarkerStrokeColor = mapRenderPaints.vorMarkerStrokeColor,
+                fixLabelStrokePaint = mapRenderPaints.fixLabelStroke,
+                airportLabelStrokePaint = mapRenderPaints.airportLabelStroke,
+                vorLabelFillPaint = mapRenderPaints.vorLabelFill,
+                fixLabelFillPaint = mapRenderPaints.fixLabelFill,
+                airportToweredLabelFillPaint = mapRenderPaints.airportToweredLabelFill,
+                airportUntoweredLabelFillPaint = mapRenderPaints.airportUntoweredLabelFill,
+                mapUpDeg = plannedMapUpDeg,
+            )
+            ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
+            OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
+            if (flightPlanRoute.isNotEmpty() && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+                E2eProjectionView(
+                    viewId = R.id.e2e_flight_plan_route_overlay_projection,
+                    state = flightPlanRouteOverlayProjectionState(
+                        flightPlanRoute = flightPlanRoute,
+                        viewport = displayViewport,
+                        surfaceWidthPx = surfaceWidthPx,
+                        surfaceHeightPx = surfaceHeightPx,
+                    ),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset(x = 26.dp)
+                        .size(1.dp),
+                )
+            }
+            RouteOverlayLayer(
+                flightPlanRoute = flightPlanRoute,
+                distanceAnnotations = flightPlanRouteDistanceAnnotations,
+                visibleFeatureIds = displayedMapOverlay.flightPlanFeatures.mapTo(mutableSetOf()) { it.id },
+                viewport = displayViewport,
+                surfaceWidthPx = surfaceWidthPx,
+                surfaceHeightPx = surfaceHeightPx,
+                densityScale = density.density,
+                uiTheme = uiTheme,
+            )
+            MapFeatureOverlayLayer(
+                displayedMapOverlay = displayedMapOverlay,
+                uiTheme = uiTheme,
+                densityScale = density.density,
+                fixMarkerStrokeColor = mapRenderPaints.fixMarkerStrokeColor,
+                fixMarkerFillColor = mapRenderPaints.fixMarkerFillColor,
+                airportMarkerStrokeColor = mapRenderPaints.airportMarkerStrokeColor,
+                airportToweredFillColor = mapRenderPaints.airportToweredFillColor,
+                airportUntoweredFillColor = mapRenderPaints.airportUntoweredFillColor,
+                vorMarkerColor = mapRenderPaints.vorMarkerColor,
+                vorMarkerStrokeColor = mapRenderPaints.vorMarkerStrokeColor,
+                fixLabelStrokePaint = mapRenderPaints.fixLabelStroke,
+                airportLabelStrokePaint = mapRenderPaints.airportLabelStroke,
+                vorLabelFillPaint = mapRenderPaints.vorLabelFill,
+                fixLabelFillPaint = mapRenderPaints.fixLabelFill,
+                airportToweredLabelFillPaint = mapRenderPaints.airportToweredLabelFill,
+                airportUntoweredLabelFillPaint = mapRenderPaints.airportUntoweredLabelFill,
+                flightPlanOnly = true,
+                mapUpDeg = plannedMapUpDeg,
+            )
+            TrafficOverlayLayer(
+                displayedMapOverlay = displayedMapOverlay,
+                densityScale = density.density,
+                uiTheme = uiTheme,
+                mapUpDeg = plannedMapUpDeg,
+            )
+            MapSelectionHighlightLayer(
+                selectedItem = mapSelection?.selectedItem,
+                displayedMapOverlay = displayedMapOverlay,
+                viewport = displayViewport,
+                surfaceWidthPx = surfaceWidthPx,
+                surfaceHeightPx = surfaceHeightPx,
+                densityScale = density.density,
+                uiTheme = uiTheme,
+                mapUpDeg = plannedMapUpDeg,
+            )
+            SituationOverlayLayer(
+                situationOverlay = situationOverlay,
+                densityScale = density.density,
+                labelStrokePaint = mapRenderPaints.situationLabelStroke,
+                labelFillPaint = mapRenderPaints.situationLabelFill,
+                aircraftPlanViewPath = aircraftPlanViewPath,
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_ownship_state_projection,
+                state =
+                    "mode:${ownship.mode.name.lowercase()}:" +
+                        "source:${ownshipControls.sources.firstOrNull { it.active }?.sourceId ?: "none"}:" +
+                        "draw:${ownship.drawAircraft}:" +
+                        "position:${ownship.position?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "none"}:" +
+                        "track:${ownship.trackDegTrue?.let { "%.1f".format(it) } ?: "none"}",
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offset(x = 26.dp)
                     .size(1.dp),
             )
-        }
-        RouteOverlayLayer(
-            flightPlanRoute = flightPlanRoute,
-            distanceAnnotations = flightPlanRouteDistanceAnnotations,
-            visibleFeatureIds = displayedMapOverlay.flightPlanFeatures.mapTo(mutableSetOf()) { it.id },
-            viewport = displayViewport,
-            surfaceWidthPx = surfaceWidthPx,
-            surfaceHeightPx = surfaceHeightPx,
-            densityScale = density.density,
-            uiTheme = uiTheme,
-        )
-        MapFeatureOverlayLayer(
-            displayedMapOverlay = displayedMapOverlay,
-            uiTheme = uiTheme,
-            densityScale = density.density,
-            fixMarkerStrokeColor = mapRenderPaints.fixMarkerStrokeColor,
-            fixMarkerFillColor = mapRenderPaints.fixMarkerFillColor,
-            airportMarkerStrokeColor = mapRenderPaints.airportMarkerStrokeColor,
-            airportToweredFillColor = mapRenderPaints.airportToweredFillColor,
-            airportUntoweredFillColor = mapRenderPaints.airportUntoweredFillColor,
-            vorMarkerColor = mapRenderPaints.vorMarkerColor,
-            vorMarkerStrokeColor = mapRenderPaints.vorMarkerStrokeColor,
-            fixLabelStrokePaint = mapRenderPaints.fixLabelStroke,
-            airportLabelStrokePaint = mapRenderPaints.airportLabelStroke,
-            vorLabelFillPaint = mapRenderPaints.vorLabelFill,
-            fixLabelFillPaint = mapRenderPaints.fixLabelFill,
-            airportToweredLabelFillPaint = mapRenderPaints.airportToweredLabelFill,
-            airportUntoweredLabelFillPaint = mapRenderPaints.airportUntoweredLabelFill,
-            flightPlanOnly = true,
-            mapUpDeg = plannedMapUpDeg,
-        )
-        TrafficOverlayLayer(
-            displayedMapOverlay = displayedMapOverlay,
-            densityScale = density.density,
-            uiTheme = uiTheme,
-            mapUpDeg = plannedMapUpDeg,
-        )
-        MapSelectionHighlightLayer(
-            selectedItem = mapSelection?.selectedItem,
-            displayedMapOverlay = displayedMapOverlay,
-            viewport = displayViewport,
-            surfaceWidthPx = surfaceWidthPx,
-            surfaceHeightPx = surfaceHeightPx,
-            densityScale = density.density,
-            uiTheme = uiTheme,
-            mapUpDeg = plannedMapUpDeg,
-        )
-        SituationOverlayLayer(
-            situationOverlay = situationOverlay,
-            densityScale = density.density,
-            labelStrokePaint = mapRenderPaints.situationLabelStroke,
-            labelFillPaint = mapRenderPaints.situationLabelFill,
-            aircraftPlanViewPath = aircraftPlanViewPath,
-        )
-        E2eProjectionView(
-            viewId = R.id.e2e_ownship_state_projection,
-            state =
-                "mode:${ownship.mode.name.lowercase()}:" +
-                    "source:${ownshipControls.sources.firstOrNull { it.active }?.sourceId ?: "none"}:" +
-                    "draw:${ownship.drawAircraft}:" +
-                    "position:${ownship.position?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "none"}:" +
-                    "track:${ownship.trackDegTrue?.let { "%.1f".format(it) } ?: "none"}",
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 26.dp)
-                .size(1.dp),
-        )
-        mapFollowProbeTag?.let { tag ->
-            E2eProjectionView(
-                viewId = R.id.e2e_map_follow_projection,
-                state = tag.removePrefix("parity:map-follow-state:"),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .offset(x = 34.dp)
-                    .size(1.dp),
+            mapFollowProbeTag?.let { tag ->
+                E2eProjectionView(
+                    viewId = R.id.e2e_map_follow_projection,
+                    state = tag.removePrefix("parity:map-follow-state:"),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset(x = 34.dp)
+                        .size(1.dp),
+                )
+            }
+            planUiState?.airwayRouting?.takeIf { it.mapOpen && mapInteraction?.editRoute == true }?.let { routing ->
+                AirwayRoutingOverlay(routing, mapGeometryFrame, uiSession, sessionWorkRunner,
+                    onViewport = { updateViewport(it, MapViewportUpdateSource.UserInput, syncFollow = false) },
+                    onSnapshot = actions.onSessionSnapshotChange, onError = actions.onSessionCommandFailure)
+            }
+        },
+        controls = {
+            FlightDataBanner(
+                banner = flightDataBanner,
+                surfaceSize = surfaceSize,
+                situationDockTopPadding = situationDockTopPadding,
+                uiTheme = uiTheme,
+                onCellActivated = { cellId ->
+                    applySessionCommand("performFlightDataBannerCellAction") {
+                        uiSession.performFlightDataBannerCellAction(cellId)
+                    }
+                },
+                modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
             )
-        }
-        FlightDataBanner(
-            banner = flightDataBanner,
-            surfaceSize = surfaceSize,
-            situationDockTopPadding = situationDockTopPadding,
-            uiTheme = uiTheme,
-            onCellActivated = { cellId ->
-                applySessionCommand("performFlightDataBannerCellAction") {
-                    uiSession.performFlightDataBannerCellAction(cellId)
-                }
-            },
-            modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
-        )
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(
-                    top = situationDockTopPadding,
-                    end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
-                ),
-            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
-            verticalAlignment = Alignment.Top,
-        ) {
-            sessionSnapshot.mapStatusControls.controls.forEach { control ->
-                DataStatusBadge(
-                    dataStatusState = control.state,
-                    open = openStatusControlId == control.id,
-                    onToggle = {
-                        openStatusControlId = control.id.takeUnless { it == openStatusControlId }
-                        situationTrayOpen = false
-                        chartTrayOpen = false
-                        layerTrayOpen = false
-                    },
-                    onAction = { actionId ->
-                        val decision = uiSession.statusActionDecision(actionId)
-                        if (decision.performSessionMutation) {
-                            applySessionCommand("performStatusAction") {
-                                uiSession.performStatusAction(actionId)
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = situationDockTopPadding,
+                        end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
+                    ),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                verticalAlignment = Alignment.Top,
+            ) {
+                sessionSnapshot.mapStatusControls.controls.forEach { control ->
+                    DataStatusBadge(
+                        dataStatusState = control.state,
+                        open = openStatusControlId == control.id,
+                        onToggle = {
+                            openStatusControlId = control.id.takeUnless { it == openStatusControlId }
+                            situationTrayOpen = false
+                            chartTrayOpen = false
+                            layerTrayOpen = false
+                        },
+                        onAction = { actionId ->
+                            val decision = uiSession.statusActionDecision(actionId)
+                            if (decision.performSessionMutation) {
+                                applySessionCommand("performStatusAction") {
+                                    uiSession.performStatusAction(actionId)
+                                }
+                            }
+                            if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
+                                actions.onReloadApplication()
                             }
                         }
-                        if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
-                            actions.onReloadApplication()
+                    )
+                }
+            }
+            SituationStatusBadge(
+                controls = ownshipControls,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = situationDockTopPadding, end = ThumbGap),
+                open = situationTrayOpen,
+                onToggle = {
+                    situationTrayOpen = !situationTrayOpen
+                    openStatusControlId = null
+                    chartTrayOpen = false
+                    layerTrayOpen = false
+                },
+                onSelectSource = { source ->
+                    if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
+                    actions.onSelectOwnshipSource(source.sourceId)
+                },
+                onSituationControlInput = actions.onSituationControlInput,
+                onTextAction = { actionId, value ->
+                    applySessionCommand("performOwnshipTextAction") {
+                        uiSession.performOwnshipTextAction(actionId, value)
+                    }
+                },
+            )
+
+            MapTopLeftControls(
+                modifier = Modifier.align(Alignment.TopStart),
+                selectedLabel = selectedLauncher.launcherLabel,
+                chartReferenceFamilyId = chartReferenceAction?.family_id,
+                onOpenChartReference = {
+                    chartReferenceAction?.let { action ->
+                        actions.onOpenChartReference(action.family_id, action.suggested_chart_ids)
+                    }
+                },
+                trayOptions = trayOptions,
+                trayOpen = chartTrayOpen,
+                onToggle = {
+                    chartTrayOpen = !chartTrayOpen
+                    layerTrayOpen = false
+                    openStatusControlId = null
+                    situationTrayOpen = false
+                },
+                layerTrayOpen = layerTrayOpen,
+                onToggleLayerTray = {
+                    layerTrayOpen = !layerTrayOpen
+                    chartTrayOpen = false
+                    openStatusControlId = null
+                    situationTrayOpen = false
+                },
+                layerOptions = layerTrayOptions,
+                chartSearchText = chartSearchText,
+                chartSearchOpen = chartSearchOpen,
+                chartSearchLoading = chartSearchLoading,
+                chartSearchError = chartSearchError,
+                chartSearchSuggestions = chartSearchSuggestions,
+                onChartSearchTextChange = { value ->
+                    if (value != chartSearchText) {
+                        chartSearchInspectionGate.invalidate()
+                        mapSelection = null
+                    }
+                    chartSearchText = value
+                    chartSearchOpen = true
+                },
+                onChartSearchFocus = { chartSearchOpen = true },
+                onChartSearchSubmit = { submitChartSearch() },
+                onChartSearchSuggestionClick = { suggestion -> inspectNavRef(suggestion.navRef.toNavRef()) },
+                centerHereEnabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
+                centerHereSelected = mapFollowUiState.following,
+                centerHereDisabledReason = mapFollowUiState.disabledReason,
+                onCenterHere = {
+                    followTargetGate.clear()
+                    applySessionCommand(if (mapFollowUiState.following) "disengageMapFollow" else "engageMapFollow") {
+                        if (mapFollowUiState.following) {
+                            uiSession.disengageMapFollow(viewportState.value)
+                        } else {
+                            uiSession.engageMapFollow(viewportState.value)
                         }
                     }
-                )
-            }
-        }
-        SituationStatusBadge(
-            controls = ownshipControls,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = situationDockTopPadding, end = ThumbGap),
-            open = situationTrayOpen,
-            onToggle = {
-                situationTrayOpen = !situationTrayOpen
-                openStatusControlId = null
-                chartTrayOpen = false
-                layerTrayOpen = false
-            },
-            onSelectSource = { source ->
-                if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
-                actions.onSelectOwnshipSource(source.sourceId)
-            },
-            onSituationControlInput = actions.onSituationControlInput,
-            onTextAction = { actionId, value ->
-                applySessionCommand("performOwnshipTextAction") {
-                    uiSession.performOwnshipTextAction(actionId, value)
-                }
-            },
-        )
-
-        MapTopLeftControls(
-            modifier = Modifier.align(Alignment.TopStart),
-            selectedLabel = selectedLauncher.launcherLabel,
-            chartReferenceFamilyId = chartReferenceAction?.family_id,
-            onOpenChartReference = {
-                chartReferenceAction?.let { action ->
-                    actions.onOpenChartReference(action.family_id, action.suggested_chart_ids)
-                }
-            },
-            trayOptions = trayOptions,
-            trayOpen = chartTrayOpen,
-            onToggle = {
-                chartTrayOpen = !chartTrayOpen
-                layerTrayOpen = false
-                openStatusControlId = null
-                situationTrayOpen = false
-            },
-            layerTrayOpen = layerTrayOpen,
-            onToggleLayerTray = {
-                layerTrayOpen = !layerTrayOpen
-                chartTrayOpen = false
-                openStatusControlId = null
-                situationTrayOpen = false
-            },
-            layerOptions = layerTrayOptions,
-            chartSearchText = chartSearchText,
-            chartSearchOpen = chartSearchOpen,
-            chartSearchLoading = chartSearchLoading,
-            chartSearchError = chartSearchError,
-            chartSearchSuggestions = chartSearchSuggestions,
-            onChartSearchTextChange = { value ->
-                if (value != chartSearchText) {
-                    chartSearchInspectionGate.invalidate()
-                    mapSelection = null
-                }
-                chartSearchText = value
-                chartSearchOpen = true
-            },
-            onChartSearchFocus = { chartSearchOpen = true },
-            onChartSearchSubmit = { submitChartSearch() },
-            onChartSearchSuggestionClick = { suggestion -> inspectNavRef(suggestion.navRef.toNavRef()) },
-            centerHereEnabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
-            centerHereSelected = mapFollowUiState.following,
-            centerHereDisabledReason = mapFollowUiState.disabledReason,
-            onCenterHere = {
-                followTargetGate.clear()
-                applySessionCommand(if (mapFollowUiState.following) "disengageMapFollow" else "engageMapFollow") {
-                    if (mapFollowUiState.following) {
-                        uiSession.disengageMapFollow(viewportState.value)
-                    } else {
-                        uiSession.engageMapFollow(viewportState.value)
-                    }
-                }
-            },
-            mapOrientationMode = mapOrientationMode,
-            compassNeedleRotationDeg = compassNeedleRotationDegrees(
-                plannedMapUpDeg,
-                ownship.magneticVariationDeg,
-            ),
-            onMapOrientationToggle = {
-                actions.onMapOrientationModeChange(
-                    if (mapOrientationMode == MapOrientationMode.North) {
-                        MapOrientationMode.Track
-                    } else {
-                        MapOrientationMode.North
-                    },
-                )
-            },
-        )
-
-        if (playbackPanelState.visible) {
-            E2eProjectionView(
-                viewId = R.id.e2e_playback_widget_projection,
-                state =
-                    "status:${playbackUiState.status.name.lowercase()}:" +
-                        "cursor:${String.format("%.3f", playbackUiState.cursorSeconds)}:" +
-                        "duration:${String.format("%.3f", playbackUiState.durationSeconds)}:" +
-                        "rate:${String.format("%.2f", playbackUiState.rate)}:" +
-                        "gaps:${playbackUiState.gapSpans.size}",
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .offset(x = 36.dp)
-                    .size(1.dp),
-            )
-            MapPlaybackWidgetOverlay(
-                surfaceWidthDp = surfaceWidthDp,
-                uiSession = uiSession,
-                playbackUiState = playbackUiState,
-                sourcePath = playbackSourcePath,
-                onSourcePathChange = actions.onPlaybackSourcePathChange,
-                onSnapshotChange = actions.onSessionSnapshotChange,
-                onSessionCommandFailure = actions.onSessionCommandFailure,
-                modifier = Modifier.align(Alignment.BottomStart),
-            )
-        }
-
-        planUiState?.airwayRouting?.takeIf { it.mapOpen && mapInteraction?.editRoute == true }?.let { routing ->
-            AirwayRoutingOverlay(routing, mapGeometryFrame, uiSession, sessionWorkRunner,
-                onViewport = { updateViewport(it, MapViewportUpdateSource.UserInput, syncFollow = false) },
-                onSnapshot = actions.onSessionSnapshotChange, onError = actions.onSessionCommandFailure)
-        }
-
-        if (menuTrayOpen) {
-            Scrim {
-                chartTrayOpen = false
-                layerTrayOpen = false
-                openStatusControlId = null
-                situationTrayOpen = false
-            }
-        }
-
-        mapSelection?.takeIf { mapInteraction?.inspect == true }?.let { selection ->
-            Popup(
-                onDismissRequest = { mapSelection = null },
-                properties = PopupProperties(focusable = true, clippingEnabled = false),
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Scrim { mapSelection = null }
-                    E2eProjectionView(
-                        viewId = R.id.e2e_map_selection_projection,
-                        state = mapSelectionProjectionState,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .size(1.dp),
+                },
+                mapOrientationMode = mapOrientationMode,
+                compassNeedleRotationDeg = compassNeedleRotationDegrees(
+                    plannedMapUpDeg,
+                    ownship.magneticVariationDeg,
+                ),
+                onMapOrientationToggle = {
+                    actions.onMapOrientationModeChange(
+                        if (mapOrientationMode == MapOrientationMode.North) {
+                            MapOrientationMode.Track
+                        } else {
+                            MapOrientationMode.North
+                        },
                     )
-                    if (selection.detailModal != null) {
-                        selection.detailModal.airportInfo?.let { airportInfo ->
-                            AirportInfoModal(
-                                detail = airportInfo,
-                                onTimeDisplayAction = { actionId ->
-                                    applySessionCommand("performTimeDisplayAction") {
-                                        uiSession.performTimeDisplayAction(actionId)
-                                    }
-                                    val airportId = airportInfo.airportId
-                                    airportInfoScope.launch {
-                                        runCatching {
-                                            withContext(Dispatchers.IO) {
-                                                uiSession.airportInfo(airportId)
-                                            }
-                                        }.onSuccess { detail ->
-                                            mapSelection = mapSelection?.copy(
-                                                detailModal = MapSelectionDetailModalState(
-                                                    title = airportId,
-                                                    airportInfo = detail,
-                                                ),
-                                            )
+                },
+            )
+
+            if (playbackPanelState.visible) {
+                E2eProjectionView(
+                    viewId = R.id.e2e_playback_widget_projection,
+                    state =
+                        "status:${playbackUiState.status.name.lowercase()}:" +
+                            "cursor:${String.format("%.3f", playbackUiState.cursorSeconds)}:" +
+                            "duration:${String.format("%.3f", playbackUiState.durationSeconds)}:" +
+                            "rate:${String.format("%.2f", playbackUiState.rate)}:" +
+                            "gaps:${playbackUiState.gapSpans.size}",
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset(x = 36.dp)
+                        .size(1.dp),
+                )
+                MapPlaybackWidgetOverlay(
+                    surfaceWidthDp = surfaceWidthDp,
+                    uiSession = uiSession,
+                    playbackUiState = playbackUiState,
+                    sourcePath = playbackSourcePath,
+                    onSourcePathChange = actions.onPlaybackSourcePathChange,
+                    onSnapshotChange = actions.onSessionSnapshotChange,
+                    onSessionCommandFailure = actions.onSessionCommandFailure,
+                    modifier = Modifier.align(Alignment.BottomStart),
+                )
+            }
+
+            if (menuTrayOpen) {
+                Scrim {
+                    chartTrayOpen = false
+                    layerTrayOpen = false
+                    openStatusControlId = null
+                    situationTrayOpen = false
+                }
+            }
+
+            mapSelection?.takeIf { mapInteraction?.inspect == true }?.let { selection ->
+                Popup(
+                    onDismissRequest = { mapSelection = null },
+                    properties = PopupProperties(focusable = true, clippingEnabled = false),
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Scrim { mapSelection = null }
+                        E2eProjectionView(
+                            viewId = R.id.e2e_map_selection_projection,
+                            state = mapSelectionProjectionState,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .size(1.dp),
+                        )
+                        if (selection.detailModal != null) {
+                            selection.detailModal.airportInfo?.let { airportInfo ->
+                                AirportInfoModal(
+                                    detail = airportInfo,
+                                    onTimeDisplayAction = { actionId ->
+                                        applySessionCommand("performTimeDisplayAction") {
+                                            uiSession.performTimeDisplayAction(actionId)
                                         }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .zIndex(OverlayPlaneModal),
-                            )
-                        } ?: selection.detailModal.weatherDetail?.let { weatherDetail ->
-                            WeatherDetailModal(
-                                detail = weatherDetail,
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .zIndex(OverlayPlaneModal),
-                            )
-                        } ?: MapSelectionDetailModal(
-                            title = selection.detailModal.title,
-                            text = selection.detailModal.text.orEmpty(),
-                            status = selection.detailModal.status,
-                            onTimeDisplayAction = ::toggleOpenMapSelectionTimeDisplay,
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(OverlayPlaneModal),
-                        )
-                    } else {
-                        MapSelectionTray(
-                            state = selection,
-                            centerProbeTag = mapSelectionCenterProbeTag,
-                            onBoundsChange = { mapSelectionTrayBounds = it },
-                            modifier = Modifier
-                                .zIndex(OverlayPlaneModal)
-                                .align(
-                                    when {
-                                        selection.point.x < surfaceWidthPx / 2f && selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomEnd
-                                        selection.point.x < surfaceWidthPx / 2f -> Alignment.TopEnd
-                                        selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomStart
-                                        else -> Alignment.TopStart
+                                        val airportId = airportInfo.airportId
+                                        airportInfoScope.launch {
+                                            runCatching {
+                                                withContext(Dispatchers.IO) {
+                                                    uiSession.airportInfo(airportId)
+                                                }
+                                            }.onSuccess { detail ->
+                                                mapSelection = mapSelection?.copy(
+                                                    detailModal = MapSelectionDetailModalState(
+                                                        title = airportId,
+                                                        airportInfo = detail,
+                                                    ),
+                                                )
+                                            }
+                                        }
                                     },
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .zIndex(OverlayPlaneModal),
                                 )
-                                .padding(ThumbGap),
-                            onSelectItem = { item ->
-                                mapSelection = selection.copy(
-                                    selectedItem = item,
-                                    detailModal = null,
+                            } ?: selection.detailModal.weatherDetail?.let { weatherDetail ->
+                                WeatherDetailModal(
+                                    detail = weatherDetail,
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .zIndex(OverlayPlaneModal),
                                 )
-                                item.actions
-                                    .firstOrNull { it.actionUid == item.automaticActionUid }
-                                    ?.let(::performSelectedMapAction)
-                            },
-                            onSelectAction = { _, action ->
-                                if (!action.enabled) {
-                                    action.disabledReason
-                                        ?.takeIf { it.isNotBlank() }
-                                        ?.let { reason ->
-                                            Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
+                            } ?: MapSelectionDetailModal(
+                                title = selection.detailModal.title,
+                                text = selection.detailModal.text.orEmpty(),
+                                status = selection.detailModal.status,
+                                onTimeDisplayAction = ::toggleOpenMapSelectionTimeDisplay,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .zIndex(OverlayPlaneModal),
+                            )
+                        } else {
+                            MapSelectionTray(
+                                state = selection,
+                                centerProbeTag = mapSelectionCenterProbeTag,
+                                onBoundsChange = { mapSelectionTrayBounds = it },
+                                modifier = Modifier
+                                    .zIndex(OverlayPlaneModal)
+                                    .align(
+                                        when {
+                                            selection.point.x < surfaceWidthPx / 2f && selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomEnd
+                                            selection.point.x < surfaceWidthPx / 2f -> Alignment.TopEnd
+                                            selection.point.y < surfaceHeightPx / 2f -> Alignment.BottomStart
+                                            else -> Alignment.TopStart
+                                        },
+                                    )
+                                    .padding(ThumbGap),
+                                onSelectItem = { item ->
+                                    mapSelection = selection.copy(
+                                        selectedItem = item,
+                                        detailModal = null,
+                                    )
+                                    item.actions
+                                        .firstOrNull { it.actionUid == item.automaticActionUid }
+                                        ?.let(::performSelectedMapAction)
+                                },
+                                onSelectAction = { _, action ->
+                                    if (!action.enabled) {
+                                        action.disabledReason
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?.let { reason ->
+                                                Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
+                                        }
+                                        return@MapSelectionTray
                                     }
-                                    return@MapSelectionTray
-                                }
-                                performSelectedMapAction(action)
-                            },
-                        )
+                                    performSelectedMapAction(action)
+                                },
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        PrimaryNavigationDock(
-            currentPage = page,
-            navElement = navElement,
-            onHomeClick = { actions.onSelectPage(AppPage.Home) },
-            onOpenPlan = actions.onOpenPlan,
-            onSelectPage = actions.onSelectPage,
-            onOpenChartOrPlate = { actions.onSelectPage(AppPage.Charts) },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = ThumbGap),
-        )
+            PrimaryNavigationDock(
+                currentPage = page,
+                navElement = navElement,
+                onHomeClick = { actions.onSelectPage(AppPage.Home) },
+                onOpenPlan = actions.onOpenPlan,
+                onSelectPage = actions.onSelectPage,
+                onOpenChartOrPlate = { actions.onSelectPage(AppPage.Charts) },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = ThumbGap),
+            )
 
-    }
+        },
+    )
 }
 
 @Composable

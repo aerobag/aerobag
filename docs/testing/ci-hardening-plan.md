@@ -20,7 +20,9 @@ uncomposed Android rows, compilation inside a server-readiness timeout, historic
 NAVDB fixture availability, and a hosted Chrome/CDP startup stall. The first
 four motivated concrete isolation, observation, lifecycle, and fixture fixes.
 Not every CI failure is intermittent: missing `find_route` surface coverage on
-the new airway-routing revision is a deterministic coverage failure, not a flake.
+the new airway-routing revision was a deterministic coverage failure, not a flake.
+The real journey added in `72a11f50` then exposed two deterministic Android
+product bugs in the feature. See the September 10 work log below.
 
 Hosted Chrome failure evidence:
 
@@ -175,6 +177,60 @@ production state, weaken assertions, or erase failure artifacts.
   on each runner, including delayed-worker isolation and failed-peer cleanup.
   Full local qualification was deliberately not run; no release was staged or
   promoted. Ordinary CI's separate coverage failure remains visible.
+- 2026-09-10: Investigated release `2026-09-10.1` / `0ef1aa9c`,
+  [hosted run 34533229388](https://github.com/aerobag/aerobag/actions/runs/34533229388).
+  The sole failed execution lane was Android shard 3: `shared.flight-plan-find-route`
+  timed out opening HOME after successfully displaying a route draft. The
+  aggregate failure was derivative; every other execution/preparation job passed.
+  The exact hosted APK, fixture, and baseline reproduce this alone on a fresh
+  local emulator, excluding predecessor contamination. The rendered app was not
+  black, and no Chrome startup failure was involved.
+- 2026-09-10: Root cause 1, introduced by `63f3a803`: the route editor's
+  full-screen high-z pointer handler won Compose sibling hit testing over HOME.
+  Declining to consume an unrelated tap does not re-hit-test an underlying
+  sibling. Introduced production-owned `MapSurfaceLayers`: geographic/editor
+  layers and screen controls have separate parents, so local overlay zIndex
+  cannot outrank screen controls. Three real Compose/Robolectric tests use
+  physical input: a reproduction of the broken flat layout and portrait/landscape
+  tests of the production container, including uncovered map input.
+- 2026-09-10: Fixing HOME exposed root cause 2 in the same introducing commit:
+  Flight Plan's page-local `remember(null)` replayed the existing draft as a new
+  navigation request after HOME -> Flight Plan. The page immediately returned
+  to the map. Added a production navigation effect that observes new editor
+  activation, not mounting existing state, with two real Compose lifecycle tests
+  including actual removal/reentry. No journey assertion, action, timeout, or
+  retry policy was changed to make either fix pass.
+- 2026-09-10: Why cheaper checks missed this: all 337 harness-model tests passed
+  while their navigation stub directly changed a page variable, bypassing both
+  physical hit testing and Android composition lifecycle. Added the five rendered
+  component tests to the existing Android JVM suite (ordinary CI, cheap preflight,
+  and fast release preflight); their focused runtime was about 2.2 seconds plus
+  Gradle startup/compilation. Structural guards verify the actual pages use these
+  tested boundaries. Updated agent/testing guidance to require physical-input and
+  remount tests for these classes of changes and focused real-platform evidence
+  for new journeys; a registry entry and passing mock tests are not that evidence.
+- 2026-09-10: Earlier feedback was already available: main-branch
+  [run 34437773361, shard 3](https://github.com/aerobag/aerobag/actions/runs/34437773361/job/102748480177)
+  failed the same Find Route -> HOME action at 04:55 UTC, before the staging run.
+  Android's main E2E already includes all priorities (web p1/p2 have narrower
+  triggers). This is not an Android release-only selection gap. The preceding
+  preflight-bootstrap push's E2E was canceled by the staging commit's main push;
+  [that main run](https://github.com/aerobag/aerobag/actions/runs/34533229098/job/103062102182)
+  also failed identically. Inspect and triage existing main E2E results separately
+  from green ordinary CI, rather than starting another complete prequal or
+  discovering the same red result again at release time.
+- 2026-09-10: Local diagnostic validation, not a qualification receipt:
+  19 focused JVM tests passed (including the five new rendered component tests).
+  Rebuilt only Kotlin/UI, verifying its native library byte-for-byte against the
+  hosted APK and retaining the hosted fixture/baseline. All eight Android shard-3
+  journeys passed once, including real navigation, inspector details, weather,
+  and saved-state restart; Find Route took 17.33 seconds, the journey span was
+  188.82 seconds plus emulator/install setup. Retained evidence: original inputs
+  `/tmp/aerobag-journey-investigation-U8VLa2`, original-APK isolated failure
+  `/tmp/aerobag-journey-diagnostic-jtiuhdp4`, first-fix lifecycle failure
+  `/tmp/aerobag-map-layer-fixed-vm12s1v5`, and final passing shard
+  `/tmp/aerobag-map-lifecycle-fixed-hpz2zulg`. No new full hosted qualification,
+  staging, promotion, or release-receipt claim was made.
 
 ## Ownership and causal-completion audit
 
@@ -192,8 +248,13 @@ production state, weaken assertions, or erase failure artifacts.
 
 - Inspect first-attempt results from the next full exact-tag qualification.
   This patch's targeted checks cannot establish that the entire suite is flake-free.
-- Keep the unrelated `find_route` manifest/real-behavior coverage gap visible;
-  do not add a pretend coverage claim just to green ordinary CI.
+- The `find_route` manifest gap is closed by `72a11f50`; keep the real journey
+  and the new fixture-free Android component regressions. Gradually replace
+  source-only UI checks with production-owned input/lifecycle component tests
+  where those boundaries are the subject, retaining end-to-end integration proof.
+- Triage new main-branch E2E reds when they appear, including distinguishing a
+  product defect from harness/infrastructure trouble. Cancellation or a green
+  ordinary-CI result does not resolve an unchanged earlier product failure.
 - Legacy smoke scripts still use older broad `waitFor` helpers; migrate them
   incrementally with behavioral tests. Shared release transition/reset boundaries
   were the implementation scope here, not every historical script.

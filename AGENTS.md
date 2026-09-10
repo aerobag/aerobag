@@ -37,6 +37,17 @@ separate checks when the change warrants them.
   before any build can regenerate them; fix stale output and inspect its diff.
 - Fix in-scope failures without weakening assertions or retrying into green.
   Do not push known failing relevant checks without the user's explicit acceptance.
+- For Android overlay, stacking, or touch-routing changes, add a fixture-free
+  Compose/Robolectric component test using physical `performTouchInput`, not
+  semantic `performClick`. Exercise the production layout owner; mocked journey
+  drivers and source assertions cannot prove that a visible control receives taps.
+- For Compose navigation side effects, test actual unmount/remount with existing
+  state as well as new state transitions. Restoring a persistent draft is not a
+  fresh navigation request; page-local `remember` state is lost on reentry.
+- A new or changed journey needs a focused real run on each platform it claims
+  to cover, using an app built with the relevant changes. Cheap harness-model
+  tests validate orchestration, not the product UI. Report unrun platform checks
+  explicitly instead of treating a registry entry as executed coverage.
 - Report exact checks and results, and name unrun checks. Cheap preflight passing
   does not mean complete ordinary CI, fixture CI, or release journeys passed.
 
@@ -59,10 +70,13 @@ come from one real available publication.
 
 ## Before staging a release
 
-- The command is `tools/prod_manage.py --stage`, not `--staging`. Check ordinary
-  CI for the integrated revision, not only an individual feature's local tests.
-  Recommend resolving known failures before spending another staging build;
-  report failed, pending, or unrun checks distinctly.
+- The command is `tools/prod_manage.py --stage`, not `--staging`. Inspect ordinary
+  CI and the existing main-branch E2E results, not only an individual feature's
+  local tests. A green `CI` workflow does not mean `E2E main` passed. Triage known
+  E2E failures before spending another staging build, including ancestor failures
+  whose affected code is unchanged; report failed, pending, canceled, and unrun
+  checks distinctly. This is not a requirement to start or wait for another full
+  prequalification run.
 - Prefer `tools/prod_manage.py --stage` directly for routine releases: fast local
   checks, then deployment and one complete hosted exact-tag qualification in
   parallel. Do not add a full local or hosted candidate run by default.

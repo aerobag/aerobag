@@ -390,14 +390,13 @@ internal fun FlightPlanPage(
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     val airwayRouting = planUiState?.airwayRouting
-    var openedRoutingId by remember { mutableStateOf<String?>(null) }
+    AirwayRoutingNavigationEffect(airwayRouting?.takeIf { it.mapOpen }?.editId) {
+        onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
+        onSelectPage(AppPage.Map)
+    }
     var priorRoutingRow by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(airwayRouting) {
-        if (airwayRouting?.mapOpen == true && openedRoutingId != airwayRouting.editId) {
-            openedRoutingId = airwayRouting.editId
-            onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
-            onSelectPage(AppPage.Map)
-        } else if (airwayRouting == null && (overlayState as? FlightPlanOverlayState.RowTray)?.rowUid == priorRoutingRow) {
+        if (airwayRouting == null && (overlayState as? FlightPlanOverlayState.RowTray)?.rowUid == priorRoutingRow) {
             onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
         }
         priorRoutingRow = airwayRouting?.rowUid

@@ -363,6 +363,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Verify telemetry promises against the integration base
+        env:
+          TELEMETRY_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+        run: python3 tools/ci/verify_telemetry_contracts.py --base-ref "$TELEMETRY_BASE_REF"
       - name: Install Python test dependencies
         run: |
           sudo apt-get update

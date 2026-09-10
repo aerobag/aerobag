@@ -15,12 +15,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "product/preprocessor/scripts"))
+import telemetry_contracts  # noqa: E402
 ABOUT_DOWNLOAD_PANEL_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_BEGIN -->"
 ABOUT_DOWNLOAD_PANEL_END = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_END -->"
 ABOUT_DOWNLOAD_SCRIPT_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_BEGIN -->"
@@ -128,6 +131,8 @@ def validate_release_directory(path: Path, tag: str, commit: str) -> dict:
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
     if document.get("tag") != tag or document.get("commit") != commit:
         raise RuntimeError(f"immutable release directory identity mismatch: {path}")
+    if "telemetry_contracts" in document:
+        telemetry_contracts.expected_contracts(document, tag=tag, commit=commit)
     artifacts = document.get("artifacts")
     if not isinstance(artifacts, dict):
         raise RuntimeError(f"immutable release has no artifact identities: {path}")
@@ -263,6 +268,8 @@ def build_release(args: argparse.Namespace) -> Path:
             f"release worktree is {actual_commit}, expected configured commit {args.commit}"
         )
 
+    telemetry_pins = telemetry_contracts.build_pins(repo_root, args.tag, args.commit)
+
     final_root = release_directory(args.artifact_root.resolve(), args.tag, args.commit)
     if final_root.exists():
         if _load_existing_release(final_root, args.tag, args.commit):
@@ -343,6 +350,7 @@ def build_release(args: argparse.Namespace) -> Path:
             "schema_version": 1,
             "tag": args.tag,
             "commit": args.commit,
+            "telemetry_contracts": telemetry_pins,
             "built_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "endpoints": {
                 "packages": env["AEROBAG_PACKAGE_SOURCE_BASE_URL"],

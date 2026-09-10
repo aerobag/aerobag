@@ -6,6 +6,7 @@
 - Before changing or diagnosing hosted tests, read [`docs/testing/hosted-ci.md`](docs/testing/hosted-ci.md). Keep CI inputs hermetic, test selection exact, and external readiness waits bounded and diagnostic.
 - Run the fast release preflight before staging. Full local prequalification is an optional deeper gate, not a prerequisite for discovering ordinary build and unit-test failures.
 - Treat published contract identifiers as immutable. A key, encoding, or required-shape change needs a new descriptor/version and matching fixture metadata; do not weaken readers with compatibility fallbacks.
+- When adding or changing monitored product telemetry, update the producer contract and rule together; see `contracts/telemetry/README.md`. Never infer unsupported telemetry from a missing field, extend the frozen legacy registry, or invent approval for a monitoring-coverage removal.
 - Generate platform wire enums and invalidation names from the owning core contract. Do not hand-copy them into Kotlin, TypeScript, fixture locks, or E2E prefix allowlists.
 - Use the shared Android indexed-control modifiers for core-driven controls. They own both the Compose test tag and E2E geometry/state registration.
 - Read NAVKV manifests, roots, and pages through the shared directory reader so compression, paths, and errors have one implementation.

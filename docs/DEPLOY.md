@@ -414,7 +414,14 @@ Build and live-feed health remain separate signals.
 Every metric has a detail row, including string statuses and missing values.
 **Weather camera sites** reports the minimum published inventory across each
 release's cycles and warns below **960** unique sites (baseline: 974, including
-218 Canadian sites). An unavailable count also warns. See
+218 Canadian sites). A missing or invalid **promised** count warns. Older known
+producer contracts without that measurement show gray **Not instrumented**,
+not a passing value or an alarm. Unknown contracts produce a separate telemetry
+coverage warning. Expectations are pinned in immutable release metadata, with
+an exact-commit bootstrap registry for already-existing releases; publication
+claims cannot select a weaker contract. See [producer telemetry contracts](../contracts/telemetry/README.md)
+for contract ownership, future feature additions, and reviewed coverage changes.
+See
 [weather camera ingestion](WEATHER_CAMERAS.md) for the two-source union and how
 to obtain your own FAA API credential by email and MoU.
 

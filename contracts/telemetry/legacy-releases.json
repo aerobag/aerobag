@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "frozen_at_utc": "2026-09-10T00:00:00Z",
+  "evidence": "ProductFactsProduct and product_facts_document in each exact tagged producer revision; v2 adds weather_camera_site_count in ed2186bbb814e1d1c467d6a18b2846f6b3fe93e0. No legacy producer emits a telemetry_contract claim.",
+  "releases": {
+    "1c3ef6390318bead8c0106ceb8d80b5353d93728": {
+      "tags": [
+        "2026-08-22.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "cd32dbb320673e1557c1baa565dd92f3f48dcf48": {
+      "tags": [
+        "2026-08-23.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "4b08b8171444fc0b00e1b1a3c7a083f9a9213153": {
+      "tags": [
+        "2026-08-23.2"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "c4223d10db91169efa62da973987dbcacaa01a25": {
+      "tags": [
+        "2026-08-24.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "5ddaa0fdb37327336c6718a07a24e92db168af16": {
+      "tags": [
+        "2026-08-24.2"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "bf823a1deafc5ddad51763b6653561ea33b67c54": {
+      "tags": [
+        "2026-08-25.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "578e086ae487a9d16fee46456372faaf4f1118e7": {
+      "tags": [
+        "2026-08-25.2"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "ef510a21548238e8c9cc4a474eb71a11f434ecaf": {
+      "tags": [
+        "2026-08-26.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "3b46bf7692f4e2d8e7310004cdca1c8af6b2a37f": {
+      "tags": [
+        "2026-08-27.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "136b0beb14d4e473307379db71cd376317bb3036": {
+      "tags": [
+        "2026-08-30.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "a20139a36d578e2f19531e2f2167ee7c7028beeb": {
+      "tags": [
+        "2026-08-30.2"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "196a6319fa435dbb570f27e2a515d45ca8242668": {
+      "tags": [
+        "2026-08-30.3"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "df02dc0216834a7d1c7cb292f68ee7f3c0f9ecae": {
+      "tags": [
+        "2026-08-30.4"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "2546b79ff893bf28eff48064cdc5fc252340acae": {
+      "tags": [
+        "2026-09-05.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "eceb6135124bd76bc2dda414c05b23b40d55863b": {
+      "tags": [
+        "2026-09-05.2"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "e3e0aad99244a39a25c7fdb915c3f71de00f5336": {
+      "tags": [
+        "2026-09-07.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "8ab7472d6a0fb02e0591ccb9c84d641bd139a45e": {
+      "tags": [
+        "2026-09-07.2"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v1",
+          "sha256": "f7f271d22ec6354569238f79f7db5ec7c244d5833e5ddde11792f51123b793ef"
+        }
+      }
+    },
+    "59dba72490c8a60889395e43cda40b29dd0e9494": {
+      "tags": [
+        "2026-09-08.1"
+      ],
+      "producers": {
+        "product-facts": {
+          "id": "product-facts-v2",
+          "sha256": "38313c657c69742e719c24232a6cb7feafbeb0c9aef35dc50aa63987f7258265"
+        }
+      }
+    }
+  }
+}

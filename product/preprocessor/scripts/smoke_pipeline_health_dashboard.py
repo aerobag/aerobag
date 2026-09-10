@@ -28,6 +28,8 @@ const fixtureMetrics = [
   {id:"input.available", scope:"global", value:true, severity:"ok"},
   {id:"cloud.mode", scope:"global", value:"normal", severity:"ok"},
   {id:"missing.status", scope:"global", value:null, severity:"critical"},
+  {id:"channel.release-old.cycle_product.weather_camera_site_count", scope:"release-old", value:null, severity:"not_instrumented", message:"Not instrumented in this release (product-facts-v1)"},
+  {id:"unknown.telemetry", scope:"global", value:null, severity:"unknown"},
 ];
 const fixtureRecord = {
   sampled_at_utc:"2026-09-07T15:00:00Z",
@@ -35,7 +37,7 @@ const fixtureRecord = {
   evaluation: {
     top_line_status:"critical",
     metrics:fixtureMetrics,
-    alerts:fixtureMetrics.filter(metric => metric.severity !== "ok").map(metric => ({
+    alerts:fixtureMetrics.filter(metric => ["warning", "critical"].includes(metric.severity)).map(metric => ({
       metric_id:metric.id, scope:metric.scope, severity:metric.severity, message:String(metric.value),
     })),
     scopes: {
@@ -63,7 +65,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
   for (const metric of fixtureMetrics) {
     const row = rowFor(metric.id);
     check(row, `missing row ${metric.id}`);
-    check(row.querySelector(".pill").textContent === metric.severity, "row severity");
+    check(row.querySelector(".pill").textContent === metric.severity.replaceAll("_", " "), "row severity");
     const expectedValue = formatValue(metric) + (metric.unit ? ` ${metric.unit}` : "");
     check(row.querySelector(".metric-value").textContent === expectedValue, "row value and unit");
     check(Boolean(row.querySelector(".plot")) === (graphValue(metric.value) !== null), "plot eligibility");
@@ -71,6 +73,10 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
   }
   check(dashboard.plots.size === 3, "only numeric and boolean metrics get plots");
   check(plotCalls.length > 0, "numeric plots are exercised");
+  const unsupported = rowFor("channel.release-old.cycle_product.weather_camera_site_count");
+  check(unsupported.querySelector(".pill.not_instrumented").textContent === "not instrumented", "unsupported coverage is neutral, not green");
+  check(!unsupported.querySelector(".plot"), "unsupported measurement does not invent a graph value");
+  check(!document.querySelector('#alerts a[href*="weather_camera_site_count"][href*="release-old"]'), "unsupported coverage is not an alarm");
   const reusedRow = rowFor(fixtureMetrics[0].id);
   ensureMetricRows(fixtureRecord);
   check(rowFor(fixtureMetrics[0].id) === reusedRow, "unchanged rows are reused");

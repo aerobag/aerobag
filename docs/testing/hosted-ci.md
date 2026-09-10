@@ -43,6 +43,13 @@ The Node harness contracts also have a standalone ordinary-CI job. They run
 without waiting for the web build or launching a browser. The full release
 preflight retains all ordinary-CI checks, including app builds and startup smoke.
 
+Python preflight also verifies producer telemetry contracts. Hosted Python CI
+fetches history/tags and compares immutable definitions and monitoring coverage
+against the push/PR base SHA, not just the current tree. Both paths compare
+against production and the checked-in coverage baseline. See
+[telemetry contracts](../../contracts/telemetry/README.md) before adding a
+measurement or intentionally removing coverage.
+
 ## Hermetic Inputs
 
 Fixture-free jobs must make the absence of production data explicit. Core tests

@@ -386,6 +386,7 @@ struct BuildStatusProduct {
 #[derive(Debug, Clone, Serialize)]
 struct ProductFactsDocument {
     schema_version: u32,
+    telemetry_contract: serde_json::Value,
     generated_at_utc: String,
     build: ProductFactsBuild,
     products: Vec<ProductFactsProduct>,
@@ -4934,6 +4935,20 @@ mod tests {
 
         let facts = product_facts_document(root, &current_path, "2026-05-03T18:03:00Z").unwrap();
         assert_eq!(facts.schema_version, 1);
+        let declared: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/telemetry/producers.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            facts.telemetry_contract,
+            declared["producers"]["product-facts"]
+        );
+        assert_eq!(
+            facts.telemetry_contract["sha256"],
+            sha256_hex(include_bytes!(
+                "../../../../contracts/telemetry/product-facts-v3.json"
+            ))
+        );
         assert_eq!(facts.build.status, "pass");
         assert_eq!(facts.products.len(), 1);
         assert_eq!(

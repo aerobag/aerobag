@@ -527,6 +527,7 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
             "ci-python",
             bash(
                 "python3 tools/ci/verify_locked_fixture_contracts.py && "
+                "python3 tools/ci/verify_telemetry_contracts.py && "
                 f"mkdir -p {run_root / 'python-results'} && /usr/bin/python3 -m pytest {python_tests} "
                 f"--junitxml={run_root / 'python-results/junit.xml'}"
             ),

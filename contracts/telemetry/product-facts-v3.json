@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "product-facts-v3",
+  "producer": "product-facts",
+  "payload_schema_version": 1,
+  "requires_claim": true,
+  "measurements": {
+    "cycle_product.error_count": {
+      "field": "error_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "Errors for this product, including its producer diagnostics."
+    },
+    "cycle_product.warning_count": {
+      "field": "warning_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "Warnings for this product, including its producer diagnostics."
+    },
+    "cycle_product.weather_camera_site_count": {
+      "field": "weather_camera_site_count",
+      "family": "nav-db",
+      "type": "nonnegative-integer",
+      "unit": "sites",
+      "meaning": "Unique weather camera sites in the published NAVDB vector inventory, not camera images or tile copies."
+    }
+  }
+}

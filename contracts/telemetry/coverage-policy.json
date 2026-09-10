@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "required": {
+    "product-facts": {
+      "id": "product-facts-v3",
+      "sha256": "7fcbfa46a0c620802d0dd8701241ff2b06f5f7aad6b7996343b46f7dfdec7489"
+    }
+  },
+  "exceptions": []
+}

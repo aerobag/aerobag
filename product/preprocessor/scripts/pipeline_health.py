@@ -24,6 +24,7 @@ from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+import telemetry_contracts
 
 SCHEMA_VERSION = 2
 HISTORY_SCHEMA_VERSION = 3
@@ -49,6 +50,14 @@ SECONDS_PER_DAY = 24 * 60 * 60
 CYCLE_PUBLICATION_WARNING_SECONDS = 20 * SECONDS_PER_DAY
 CYCLE_PUBLICATION_CRITICAL_SECONDS = 15 * SECONDS_PER_DAY
 SEVERITY_RANK = {"ok": 0, "warning": 1, "critical": 2}
+
+# Each rule declares its input promise. This common gate, not individual metric
+# code or the channel's age/role, decides whether a rule is applicable.
+PRODUCT_METRIC_REQUIREMENTS = {
+    "cycle_product.error_count": ("product-facts", "cycle_product.error_count"),
+    "cycle_product.warning_count": ("product-facts", "cycle_product.warning_count"),
+    "cycle_product.weather_camera_site_count": ("product-facts", "cycle_product.weather_camera_site_count"),
+}
 
 
 def utc_now() -> datetime:
@@ -374,6 +383,7 @@ def collect_channel_facts(
         "tag": source["tag"],
         "deployment_managed": source["deployment_managed"],
         "release_state": release_record,
+        "telemetry": collect_telemetry_expectations(source, release_record),
         "inputs": {
             "current_artifacts": {
                 "path": str(current_path),
@@ -391,6 +401,24 @@ def collect_channel_facts(
             },
         },
     }
+
+
+def collect_telemetry_expectations(source: dict[str, Any], release_record: Any) -> dict[str, Any]:
+    try:
+        if not isinstance(release_record, dict):
+            raise ValueError("no independently identified deployed producer")
+        root = release_record.get("release_root")
+        if not isinstance(root, str) or not root:
+            raise ValueError("deployed producer has no immutable release metadata path")
+        metadata, error = read_json_file(Path(root) / "release.json")
+        if error:
+            raise ValueError(error)
+        expected = telemetry_contracts.expected_contracts(
+            metadata, tag=source["tag"], commit=release_record.get("commit", ""),
+        )
+        return {"contracts": expected, "error": None}
+    except (ValueError, OSError) as error:
+        return {"contracts": {}, "error": str(error)}
 
 
 def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
@@ -532,6 +560,8 @@ def evaluate_health(
                 previous_records,
                 history_scope=channel_id,
             )
+            if "telemetry" in channel or channel.get("deployment_managed") is True:
+                apply_telemetry_contracts(channel_metrics, channel)
             role = channel.get("role")
             tag = channel.get("tag")
             scope_label = (
@@ -573,7 +603,7 @@ def evaluate_health(
 
     for metric in metrics:
         severity = metric.get("severity", "ok")
-        if severity != "ok":
+        if severity in {"warning", "critical"}:
             alerts.append(
                 {
                     "severity": severity,
@@ -1297,6 +1327,47 @@ def add_product_fact_metrics(
         )
 
 
+def apply_telemetry_contracts(metrics: list[dict[str, Any]], channel: dict[str, Any]) -> None:
+    context = channel.get("telemetry") or {}
+    expectations = context.get("contracts", {})
+    for producer in sorted({producer for producer, _ in PRODUCT_METRIC_REQUIREMENTS.values()}):
+        expected = expectations.get(producer)
+        errors = [context["error"]] if context.get("error") else []
+        invalid: dict[str, list[str]] = {}
+        if expected is None:
+            errors.append(f"no independently pinned {producer} contract")
+        elif not errors:
+            errors, invalid = telemetry_contracts.check_payloads(
+                expected, channel.get("inputs", {}).get("product_facts", []),
+            )
+        add_metric(
+            metrics, metric_id=f"telemetry.{producer}.contract", label=f"{producer} telemetry contract",
+            value="unknown" if errors else expected["pin"]["id"],
+            severity="warning" if errors else "ok",
+            message="; ".join(errors) if errors else f"Expected {expected['pin']['id']}; publication identity verified, measurements checked separately",
+            details={"expected": expected.get("pin") if expected else None, "errors": errors},
+        )
+        for metric in metrics:
+            requirement = PRODUCT_METRIC_REQUIREMENTS.get(metric["id"])
+            if requirement is None or requirement[0] != producer:
+                continue
+            measurement = requirement[1]
+            if errors:
+                state, message = "unknown", "Cannot evaluate: producer telemetry contract is unavailable or violated"
+            elif measurement not in expected["contract"]["measurements"]:
+                state, message = "not_instrumented", f"Not instrumented in this release ({expected['pin']['id']})"
+            elif measurement in invalid:
+                state, message = "warning", f"Required telemetry {measurement} unavailable or invalid for {', '.join(invalid[measurement])}"
+            else:
+                metric["telemetry_contract"] = expected["pin"]["id"]
+                continue
+            metric.update(value=None, severity=state, message=message,
+                          availability="invalid" if state == "warning" else state)
+            # A stale computed threshold/value must not imply evaluated coverage.
+            metric.pop("warning_threshold", None)
+            metric.pop("critical_threshold", None)
+
+
 def add_weather_camera_metric(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
     cycle_counts: dict[str, int] = {}
     unavailable = []
@@ -1348,8 +1419,10 @@ def product_count_summary(facts: dict[str, Any]) -> dict[str, Any]:
     for product in iter_current_product_facts(facts):
         cycle = str(product.get("cycle") or "uncycled")
         counts = cycle_counts.setdefault(cycle, {"error_count": 0, "warning_count": 0})
-        counts["error_count"] += int(product.get("error_count") or 0)
-        counts["warning_count"] += int(product.get("warning_count") or 0)
+        for name in ("error_count", "warning_count"):
+            value = product.get(name)
+            if type(value) is int and value >= 0:
+                counts[name] += value
     return {
         "counts": max_cycle_counts(cycle_counts),
         "cycles": cycle_counts,
@@ -2141,6 +2214,7 @@ def dashboard_html() -> str:
     .ok { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, var(--line)); }
     .warning { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, var(--line)); }
     .critical { color:var(--crit); border-color:color-mix(in srgb, var(--crit) 55%, var(--line)); }
+    .not_instrumented, .unknown { color:var(--muted); border-color:var(--line); }
     section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
     table { width:100%; border-collapse:collapse; }
     th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
@@ -2193,7 +2267,7 @@ def dashboard_html() -> str:
   <div id="metricRows" class="metric-list"></div>
 </main>
 <script>
-const cls = (severity) => severity === "critical" ? "critical" : severity === "warning" ? "warning" : "ok";
+const cls = (severity) => ["critical", "warning", "not_instrumented", "unknown"].includes(severity) ? severity : "ok";
 const severityRank = { ok: 0, warning: 1, critical: 2 };
 const severityNames = ["ok", "warning", "critical"];
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -2323,7 +2397,7 @@ function renderCurrent(record) {
 function updateMetricRow(row, metric) {
   row.metric = metric;
   row.title.textContent = metric.label || metric.id;
-  row.pill.textContent = metric.severity || "ok";
+  row.pill.textContent = (metric.severity || "ok").replaceAll("_", " ");
   row.pill.className = `pill ${cls(metric.severity)}`;
   row.value.innerHTML = `${esc(formatValue(metric))}${metric.unit ? ` <span class="muted">${esc(metric.unit)}</span>` : ""}`;
   row.message.textContent = metric.message || "";

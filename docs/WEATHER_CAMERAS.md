@@ -69,13 +69,17 @@ when the published count is **below 960**. Exactly 960 is OK. Counts measure
 unique sites, not individual cameras, images, or replicated vector tiles.
 For overlapping cycles it displays the lowest count, with per-cycle details,
 so a healthy cycle cannot hide a smaller inventory. Missing or invalid counts
-also warn. The metric is part of the normal dashboard, history, and alert list.
+also warn when the producer contract promises them. The metric is part of the
+normal dashboard, history, and alert list.
 
 The count travels from vector statistics through NAVDB build metadata into
 `product-facts.json`. It therefore measures the package being served, without
 making additional FAA requests on every health poll. A new cycle publication is
-needed to reflect an upstream inventory change. Older releases without this
-metadata report an unavailable count until rebuilt.
+needed to reflect an upstream inventory change. Known older producer contracts
+without this instrumentation show **Not instrumented**, with no camera-count
+alarm. Rebuilding the same old producer does not add telemetry; a producer whose
+contract promises the count warns if it is absent. These rules apply to every
+channel, not only sunsets. See [producer telemetry contracts](../contracts/telemetry/README.md).
 
 ## Published Data
 

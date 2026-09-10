@@ -7,9 +7,13 @@
 from __future__ import annotations
 
 import sys
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
@@ -19,6 +23,52 @@ import build_release  # noqa: E402
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def test_build_pins_telemetry_beside_binary_identities_and_reuses_immutable_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            shutil.copytree(build_release.REPO_ROOT / "contracts/telemetry", source / "contracts/telemetry")
+            args = SimpleNamespace(
+                repo_root=source, tag="test-release", commit="a" * 40,
+                artifact_root=root / "artifacts", cargo_target_dir=root / "cargo",
+                ui_target_root=root / "ui", public_origin="https://example.invalid",
+            )
+
+            def fake_build(command, *, cwd, env):
+                web = Path(env["AEROBAG_WEB_DIST"])
+                if command[0] == "cargo":
+                    binary_root = args.cargo_target_dir / "release"
+                    binary_root.mkdir(parents=True)
+                    for binary in ["aerobag-live-feedsd", "preprocessor-cli"]:
+                        (binary_root / binary).write_bytes(binary.encode())
+                elif command == ["npm", "run", "build:release"]:
+                    web.mkdir(parents=True)
+                    Path(env["AEROBAG_UI_TARGET_ROOT"]).mkdir(parents=True)
+                    (web / "index.html").write_text("web")
+                    (web / "about.html").write_text(
+                        build_release.ABOUT_DOWNLOAD_PANEL_BEGIN + build_release.ABOUT_DOWNLOAD_PANEL_END
+                        + build_release.ABOUT_DOWNLOAD_SCRIPT_BEGIN + build_release.ABOUT_DOWNLOAD_SCRIPT_END
+                    )
+                elif command == ["./scripts/build_prod_apk.sh"]:
+                    downloads = web / "downloads"
+                    downloads.mkdir()
+                    (downloads / "app.apk").write_bytes(b"apk")
+                    (downloads / "android-apk.json").write_text(json.dumps({
+                        "filename": "app.apk", "apk_url": "/app.apk", "apk_size_bytes": 3,
+                        "git_commit": args.commit, "version_name": args.tag, "built_at_utc": "now",
+                    }))
+
+            with patch.object(build_release.subprocess, "run", return_value=SimpleNamespace(stdout=args.commit)), patch.object(build_release, "_run", side_effect=fake_build):
+                built = build_release.build_release(args)
+            metadata_bytes = (built / "release.json").read_bytes()
+            metadata = build_release.validate_release_directory(built, args.tag, args.commit)
+            self.assertEqual(metadata["telemetry_contracts"], build_release.telemetry_contracts.producer_pins(source / "contracts/telemetry"))
+            self.assertIn("sha256", metadata["artifacts"]["preprocessor_binary"])
+            with patch.object(build_release.subprocess, "run", return_value=SimpleNamespace(stdout=args.commit)), patch.object(build_release, "_run") as rebuild:
+                self.assertEqual(build_release.build_release(args), built)
+                rebuild.assert_not_called()
+            self.assertEqual((built / "release.json").read_bytes(), metadata_bytes)
+
     def test_release_directory_is_immutable_and_commit_disambiguated(self) -> None:
         self.assertEqual(
             build_release.release_directory(

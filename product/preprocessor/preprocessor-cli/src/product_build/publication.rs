@@ -643,6 +643,10 @@ pub(super) fn product_facts_document(
     });
     Ok(ProductFactsDocument {
         schema_version: 1,
+        telemetry_contract: serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../../../../contracts/telemetry/producers.json"
+        ))?["producers"]["product-facts"]
+            .clone(),
         generated_at_utc: generated_at_utc.to_string(),
         build: ProductFactsBuild {
             status: "pass".to_string(),

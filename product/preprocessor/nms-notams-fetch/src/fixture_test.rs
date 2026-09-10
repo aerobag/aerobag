@@ -668,6 +668,7 @@ fn apply_transition_range(input: TransitionRangeInput<'_>) -> anyhow::Result<()>
                     published_head_state_id: Some(boundaries[cursor].state_id.clone()),
                 },
                 transitions: transitions[cursor..next].to_vec(),
+                checkpoint: None,
             };
             let delta = collapse_notam_transitions(&snapshot.cursor, &snapshot.transitions)?;
             let path = output_root.join("delta-artifacts").join(format!(

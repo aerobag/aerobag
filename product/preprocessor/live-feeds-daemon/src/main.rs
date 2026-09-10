@@ -29,13 +29,14 @@ use nms_notams_fetch::{
 use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
-        default_poll_interval, prune_live_feed_scratch_root,
+        default_poll_interval, prune_live_feed_scratch_root, run_upstream_live_feed_publish_tick,
         run_upstream_live_feed_publish_tick_parallel, write_live_feeds_current_manifest,
         CompiledFixtureCache, FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart,
-        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTaskPhase,
-        LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest, ProductBuilder,
-        PublishedLiveFeedUpdate, QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent,
-        LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
+        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedPublisher, LiveFeedSourceAndBuilder,
+        LiveFeedTaskPhase, LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest,
+        ProductBuilder, PublishedLiveFeedUpdate, QueuedLiveFeedSource, SerializedLiveFeedPublisher,
+        SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
+        LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
     notam_store::{is_incompatible_notam_store_schema, NotamPersistentStore},
     products::{
@@ -201,6 +202,7 @@ struct ProductStatusHistory {
     current_error_count: u64,
     current_warning_count: u64,
     consecutive_failure_count: u32,
+    failure_episodes: BTreeMap<String, ProductFailureEpisode>,
     quality: Option<serde_json::Value>,
     attempts: VecDeque<ProductAttemptSample>,
     samples: VecDeque<ProductUpdateSample>,
@@ -246,6 +248,7 @@ struct ProductStatusSnapshot {
     current_error_count: u64,
     current_warning_count: u64,
     consecutive_failure_count: u32,
+    failure_episodes: BTreeMap<String, ProductFailureEpisode>,
     quality: Option<serde_json::Value>,
     attempts: Vec<ProductAttemptSample>,
     samples: Vec<ProductUpdateSample>,
@@ -254,6 +257,29 @@ struct ProductStatusSnapshot {
     auxiliary_worker: Option<AuxiliaryWorkerStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     auxiliary_samples: Vec<AuxiliaryWorkerSample>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductFailureEpisode {
+    first_failure_at_utc: chrono::DateTime<Utc>,
+    last_failure_at_utc: chrono::DateTime<Utc>,
+    failure_count: u32,
+    phase: String,
+    error: String,
+}
+
+impl ProductStatusHistory {
+    fn recover(&mut self, lane: &str) {
+        self.failure_episodes.remove(lane);
+        self.refresh_failure_count();
+    }
+
+    fn refresh_failure_count(&mut self) {
+        self.consecutive_failure_count =
+            self.failure_episodes.values().fold(0u32, |count, episode| {
+                count.saturating_add(episode.failure_count)
+            });
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -372,7 +398,11 @@ impl DaemonStatus {
 
     fn record_tick_result(&self, result: &LiveFeedTickResult) {
         for update in &result.published {
-            self.record_product_success(update);
+            let recovered = !result
+                .failures
+                .iter()
+                .any(|failure| failure.product == update.product);
+            self.record_product_success(update, recovered);
         }
         for failure in &result.failures {
             self.record_product_failure(failure);
@@ -390,9 +420,13 @@ impl DaemonStatus {
         let mut state = self.inner.lock().expect("live-feed status lock");
         let history = state.products.entry(product.to_string()).or_default();
         history.last_attempt_at_utc = Some(observed_at_utc);
-        history.last_success_at_utc = Some(observed_at_utc);
-        history.last_source_timestamp_utc = source_timestamp_utc.clone();
-        history.consecutive_failure_count = 0;
+        // Source-only auxiliary workers have no published product. For actual
+        // products only successful publication proves served-data freshness.
+        if live_feed_product_policy(product).is_none() {
+            history.last_success_at_utc = Some(observed_at_utc);
+            history.last_source_timestamp_utc = source_timestamp_utc.clone();
+        }
+        history.recover("source");
         push_limited(
             &mut history.attempts,
             ProductAttemptSample {
@@ -435,14 +469,17 @@ impl DaemonStatus {
     }
 
     fn record_source_failure(&self, product: &str, error: impl Into<String>) {
-        self.record_product_failure(&preprocessor_live_feeds::engine::FailedLiveFeedTask {
-            product: product.to_string(),
-            phase: LiveFeedTaskPhase::Poll,
-            error: error.into(),
-        });
+        self.record_failure(
+            "source",
+            &preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                product: product.to_string(),
+                phase: LiveFeedTaskPhase::Poll,
+                error: error.into(),
+            },
+        );
     }
 
-    fn record_product_success(&self, update: &PublishedLiveFeedUpdate) {
+    fn record_product_success(&self, update: &PublishedLiveFeedUpdate, recovered: bool) {
         let observed_at_utc = Utc::now();
         let delta_bytes = delta_bytes_for_status(update);
         let state_bytes = state_bytes_for_status(&update.state_path).ok();
@@ -461,7 +498,9 @@ impl DaemonStatus {
         history.current_version = Some(update.version.clone());
         history.current_error_count = 0;
         history.current_warning_count = 0;
-        history.consecutive_failure_count = 0;
+        if recovered {
+            history.recover("publication");
+        }
         if quality.is_some() {
             history.quality = quality;
         }
@@ -503,6 +542,14 @@ impl DaemonStatus {
         &self,
         failure: &preprocessor_live_feeds::engine::FailedLiveFeedTask,
     ) {
+        self.record_failure("publication", failure);
+    }
+
+    fn record_failure(
+        &self,
+        lane: &str,
+        failure: &preprocessor_live_feeds::engine::FailedLiveFeedTask,
+    ) {
         let observed_at_utc = Utc::now();
         let phase = live_feed_phase_name(failure.phase).to_string();
         let mut state = self.inner.lock().expect("live-feed status lock");
@@ -511,7 +558,21 @@ impl DaemonStatus {
         history.last_failure_at_utc = Some(observed_at_utc);
         history.last_failure_phase = Some(phase.clone());
         history.last_error = Some(failure.error.clone());
-        history.consecutive_failure_count = history.consecutive_failure_count.saturating_add(1);
+        let episode = history
+            .failure_episodes
+            .entry(lane.to_string())
+            .or_insert_with(|| ProductFailureEpisode {
+                first_failure_at_utc: observed_at_utc,
+                last_failure_at_utc: observed_at_utc,
+                failure_count: 0,
+                phase: phase.clone(),
+                error: failure.error.clone(),
+            });
+        episode.last_failure_at_utc = observed_at_utc;
+        episode.failure_count = episode.failure_count.saturating_add(1);
+        episode.phase = phase.clone();
+        episode.error = failure.error.clone();
+        history.refresh_failure_count();
         push_limited(
             &mut history.attempts,
             ProductAttemptSample {
@@ -554,6 +615,7 @@ impl DaemonStatus {
                         current_error_count: history.current_error_count,
                         current_warning_count: history.current_warning_count,
                         consecutive_failure_count: history.consecutive_failure_count,
+                        failure_episodes: history.failure_episodes.clone(),
                         quality: history.quality.clone(),
                         attempts: history.attempts.iter().cloned().collect(),
                         samples: history.samples.iter().cloned().collect(),
@@ -565,7 +627,7 @@ impl DaemonStatus {
             })
             .collect();
         DaemonStatusSnapshot {
-            schema_version: 2,
+            schema_version: 3,
             generated_at_utc: now,
             started_at_utc: state.started_at_utc,
             active_sse_clients: state.active_clients.len(),
@@ -1029,63 +1091,89 @@ fn start_live_feed_driver(
     {
         eprintln!("live-feed startup scratch prune failed: {error:#}");
     }
-    let task_pool = live_feed_task_pool()?;
-    thread::spawn(move || {
-        let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
-        let notam_state_root_for_enrichment = nms_notams
-            .as_ref()
-            .map(|nms_notams| nms_notams.state_root.clone());
-        let mut tasks = production_tasks(
-            fetch.clone(),
-            notam_state_root_for_enrichment,
-            tfr_detail_backfill_state_root.clone(),
-        );
-        start_tfr_detail_backfill_supervisor(
-            fetch.clone(),
-            tfr_detail_backfill_state_root,
-            scratch_root.join("tfr-detail-backfill"),
+    let publisher = Arc::new(SerializedLiveFeedPublisher::new(
+        FileLiveFeedPublisher::new(live_root, SystemClock),
+    ));
+    let notam_state_root_for_enrichment = nms_notams
+        .as_ref()
+        .map(|nms_notams| nms_notams.state_root.clone());
+    let mut tasks = production_tasks(
+        fetch.clone(),
+        notam_state_root_for_enrichment,
+        tfr_detail_backfill_state_root.clone(),
+    );
+    start_tfr_detail_backfill_supervisor(
+        fetch.clone(),
+        tfr_detail_backfill_state_root,
+        scratch_root.join("tfr-detail-backfill"),
+        status.clone(),
+    );
+    if let Some(nms_notams) = nms_notams {
+        let source = QueuedLiveFeedSource::new("notams");
+        let publication_state_root = nms_notams.state_root.join("publication");
+        start_nms_notams_supervisor(
+            nms_notams,
+            publication_state_root.clone(),
+            notam_airport_catalog.expect("NMS config has an airport catalog"),
+            source.sender(),
             status.clone(),
         );
-        if let Some(nms_notams) = nms_notams {
-            let source = QueuedLiveFeedSource::new("notams");
-            let publication_state_root = nms_notams.state_root.join("publication");
-            start_nms_notams_supervisor(
-                nms_notams,
-                publication_state_root.clone(),
-                notam_airport_catalog.expect("NMS config has an airport catalog"),
-                source.sender(),
-                status.clone(),
-            );
-            tasks.push(Box::new(ImmediateQueuedDaemonLiveFeedTask::new(
-                LiveFeedSourceAndBuilder::new(
-                    source,
-                    NotamLiveFeedBuilder::new(publication_state_root),
-                ),
-                Duration::from_secs(60),
-            )));
-        }
-        for task in &tasks {
-            status.register_product(task.product_id(), task.nominal_interval());
-        }
-        loop {
-            let now = Utc::now();
-            let result = run_upstream_live_feed_publish_tick_parallel(
-                &task_pool,
-                now,
-                &mut tasks,
-                &scratch_root,
-                &publisher,
-                &broker,
-            );
-            for task in &mut tasks {
-                task.observe_tick_result(now, &result);
-            }
-            status.record_tick_result(&result);
-            log_tick_result("production", &result);
-            thread::sleep(poll_interval);
-        }
-    });
+        tasks.push(Box::new(ImmediateQueuedDaemonLiveFeedTask::new(
+            LiveFeedSourceAndBuilder::new(
+                source,
+                NotamLiveFeedBuilder::new(publication_state_root),
+            ),
+            Duration::from_secs(60),
+        )));
+    }
+    for task in &tasks {
+        status.register_product(task.product_id(), task.nominal_interval());
+    }
+    for mut task in tasks {
+        let publisher = Arc::clone(&publisher);
+        let broker = broker.clone();
+        let status = status.clone();
+        let scratch_root = scratch_root.clone();
+        // One in-flight operation per product; no batch barrier or shared
+        // worker pool in which stalled downloads can starve another feed.
+        thread::Builder::new()
+            .name(format!("live-feed-{}", task.product_id()))
+            .spawn(move || loop {
+                let result = run_production_task_tick(
+                    Utc::now(),
+                    &mut task,
+                    &scratch_root,
+                    publisher.as_ref(),
+                    &broker,
+                    &status,
+                );
+                log_tick_result("production", &result);
+                thread::sleep(poll_interval);
+            })
+            .context("failed to start live-feed product worker")?;
+    }
     Ok(())
+}
+
+fn run_production_task_tick(
+    now: chrono::DateTime<Utc>,
+    task: &mut Box<dyn DaemonLiveFeedTask + Send>,
+    scratch_root: &Path,
+    publisher: &impl LiveFeedPublisher,
+    broker: &impl SseBroker,
+    status: &DaemonStatus,
+) -> LiveFeedTickResult {
+    let result = run_upstream_live_feed_publish_tick(
+        now,
+        std::slice::from_mut(task),
+        scratch_root,
+        publisher,
+        broker,
+    );
+    // Retry delays begin at completion, not before a potentially slow download.
+    task.observe_tick_result(Utc::now(), &result);
+    status.record_tick_result(&result);
+    result
 }
 
 fn start_simulation_driver(
@@ -4052,11 +4140,84 @@ mod tests {
             parse_utc_timestamp("2026-07-24T00:00:00Z", "test timestamp")?
         );
         let notams = &status.snapshot().products["notams"];
+        assert!(
+            notams.last_source_timestamp_utc.is_none(),
+            "collector readiness is not a successful publication"
+        );
         assert_eq!(
-            notams.last_source_timestamp_utc.as_deref(),
+            notams
+                .attempts
+                .last()
+                .unwrap()
+                .source_timestamp_utc
+                .as_deref(),
             Some("2026-07-24T00:00:00Z")
         );
         assert_eq!(notams.consecutive_failure_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn source_and_publication_failures_recover_independently() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let publisher = FileLiveFeedPublisher::new(temp.path().join("live"), SystemClock);
+        let update = publisher.publish(json_built_state(temp.path(), "notams", "test-version")?)?;
+        let status = DaemonStatus::default();
+        let failure = preprocessor_live_feeds::engine::FailedLiveFeedTask {
+            product: "notams".to_string(),
+            phase: LiveFeedTaskPhase::Publish,
+            error: "test publish error".to_string(),
+        };
+        status.record_product_failure(&failure);
+        let first_failure = status.snapshot().products["notams"].failure_episodes["publication"]
+            .first_failure_at_utc;
+        // Enough collector successes to evict all publication attempts from the
+        // bounded history must still neither clear nor reset its failure age.
+        for _ in 0..STATUS_HISTORY_LIMIT + 1 {
+            status.record_source_success(
+                "notams",
+                Some("2026-09-10T12:00:00Z".to_string()),
+                "nms_poll",
+            );
+        }
+        let snapshot = status.snapshot();
+        let product = &snapshot.products["notams"];
+        assert_eq!(product.consecutive_failure_count, 1);
+        assert_eq!(
+            product.failure_episodes["publication"].first_failure_at_utc,
+            first_failure
+        );
+        assert!(product.last_success_at_utc.is_none());
+        assert!(product.last_source_timestamp_utc.is_none());
+
+        status.record_source_failure("notams", "source unavailable");
+        // A published update plus failed maintenance must not reset the episode.
+        status.record_tick_result(&LiveFeedTickResult {
+            published: vec![update.clone()],
+            failures: vec![failure],
+        });
+        assert_eq!(
+            status.snapshot().products["notams"].failure_episodes["publication"]
+                .first_failure_at_utc,
+            first_failure
+        );
+        status.record_tick_result(&LiveFeedTickResult {
+            published: vec![update],
+            failures: vec![],
+        });
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.products["notams"].failure_episodes.len(), 1);
+        assert!(snapshot.products["notams"]
+            .failure_episodes
+            .contains_key("source"));
+        status.record_source_success("notams", None, "nms_poll");
+        assert!(status.snapshot().products["notams"]
+            .failure_episodes
+            .is_empty());
+        assert_eq!(
+            status.snapshot().products["notams"].consecutive_failure_count,
+            0
+        );
         Ok(())
     }
 
@@ -4074,6 +4235,12 @@ mod tests {
 
         let snapshot = status.snapshot();
         let metars = snapshot.products.get("metars").expect("METAR status");
+        assert_eq!(snapshot.schema_version, 3);
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            wire["products"]["metars"]["failure_episodes"]["publication"]["failure_count"],
+            1
+        );
         assert!(metars.last_attempt_at_utc.is_some());
         assert!(metars.last_failure_at_utc.is_some());
         assert_eq!(metars.last_failure_phase.as_deref(), Some("build"));
@@ -4323,6 +4490,112 @@ mod tests {
                 ["source_records_without_location"],
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn production_workers_publish_and_repoll_while_another_feed_is_blocked() -> anyhow::Result<()> {
+        struct ProbeBuilder {
+            product: &'static str,
+            gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+        }
+        impl ProductBuilder for ProbeBuilder {
+            fn product_id(&self) -> &str {
+                self.product
+            }
+            fn build_state(
+                &self,
+                event: &UpstreamEvent,
+                scratch: &Path,
+            ) -> anyhow::Result<BuiltLiveFeedState> {
+                if let Some((entered, release)) = &self.gate {
+                    entered.send(())?;
+                    release
+                        .recv_timeout(Duration::from_secs(10))
+                        .context("slow builder was not released")?;
+                }
+                json_built_state(
+                    scratch,
+                    self.product,
+                    &event.observed_at_utc.timestamp_millis().to_string(),
+                )
+            }
+        }
+
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live");
+        let scratch = temp.path().join("scratch");
+        let publisher = SerializedLiveFeedPublisher::new(FileLiveFeedPublisher::new(
+            live_root.clone(),
+            SystemClock,
+        ));
+        let broker = BroadcastSseBroker::default();
+        let updates = broker.subscribe();
+        let status = DaemonStatus::default();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut slow: Box<dyn DaemonLiveFeedTask + Send> = Box::new(ProductionLiveFeedTask::new(
+            "tafs",
+            Duration::ZERO,
+            Box::new(ProbeBuilder {
+                product: "tafs",
+                gate: Some((entered_tx, release_rx)),
+            }),
+        ));
+        let mut fast: Box<dyn DaemonLiveFeedTask + Send> = Box::new(ProductionLiveFeedTask::new(
+            "metars",
+            Duration::ZERO,
+            Box::new(ProbeBuilder {
+                product: "metars",
+                gate: None,
+            }),
+        ));
+        let now = Utc::now();
+        thread::scope(|scope| -> anyhow::Result<()> {
+            let blocked = scope.spawn(|| {
+                run_production_task_tick(now, &mut slow, &scratch, &publisher, &broker, &status)
+            });
+            entered_rx.recv_timeout(Duration::from_secs(10))?;
+            for minute in 0..2 {
+                let result = run_production_task_tick(
+                    now + chrono::Duration::minutes(minute),
+                    &mut fast,
+                    &scratch,
+                    &publisher,
+                    &broker,
+                    &status,
+                );
+                assert!(result.failures.is_empty(), "{:#?}", result.failures);
+                assert_eq!(result.published.len(), 1);
+                assert_eq!(
+                    updates
+                        .recv_timeout(Duration::from_secs(1))?
+                        .invalidation
+                        .product,
+                    "metars"
+                );
+                assert_eq!(
+                    status.snapshot().products["metars"].attempts.len(),
+                    minute as usize + 1
+                );
+            }
+            assert!(
+                !blocked.is_finished(),
+                "slow feed should still be held by the gate"
+            );
+            release_tx.send(())?;
+            let result = blocked.join().expect("slow worker panicked");
+            assert!(result.failures.is_empty(), "{:#?}", result.failures);
+            Ok(())
+        })?;
+        let current =
+            preprocessor_live_feeds::engine::read_live_feeds_current(&live_root)?.unwrap();
+        assert_eq!(
+            current.products.len(),
+            2,
+            "concurrent publication lost a catalog entry"
+        );
+        assert_eq!(status.snapshot().products["tafs"].attempts.len(), 1);
         Ok(())
     }
 

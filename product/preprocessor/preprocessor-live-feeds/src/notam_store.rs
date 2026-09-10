@@ -217,6 +217,9 @@ pub struct NotamPublicationSnapshot {
     pub server_only_records_by_keyword: BTreeMap<String, u64>,
     pub cursor: NotamPublicationCursor,
     pub transitions: Vec<NotamPublicationTransition>,
+    // Captured in the same read transaction as identity/journal on first publish
+    // or source-epoch reset. Normal incremental updates do not copy all records.
+    pub checkpoint: Option<notam_state::NotamCheckpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -944,9 +947,16 @@ impl NotamPersistentStore {
         let tx = connection
             .transaction()
             .context("failed to start consistent NOTAM checkpoint read")?;
-        let state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
+        let checkpoint = Self::read_checkpoint(&tx)?;
+        tx.commit()
+            .context("failed to finish consistent NOTAM checkpoint read")?;
+        Ok(checkpoint)
+    }
+
+    fn read_checkpoint(tx: &Transaction<'_>) -> anyhow::Result<notam_state::NotamCheckpoint> {
+        let state_id = read_metadata(tx, STATE_ID_METADATA_KEY)?
             .context("NOTAM projection is missing its current state ID")?;
-        let counters = read_projection_counters(&tx)?;
+        let counters = read_projection_counters(tx)?;
         let records = {
             let mut statement = tx
                 .prepare("SELECT record_json FROM notam_client_records ORDER BY id")
@@ -973,8 +983,6 @@ impl NotamPersistentStore {
         if verified.state_id() != checkpoint.state_id {
             bail!("verified NOTAM checkpoint changed state identity");
         }
-        tx.commit()
-            .context("failed to finish consistent NOTAM checkpoint read")?;
         Ok(checkpoint)
     }
 
@@ -1100,6 +1108,11 @@ impl NotamPersistentStore {
                 );
             }
         }
+        let checkpoint = cursor
+            .published_head_state_id
+            .is_none()
+            .then(|| Self::read_checkpoint(&tx))
+            .transpose()?;
         tx.commit()
             .context("failed to finish consistent NOTAM publication read")?;
         Ok(NotamPublicationSnapshot {
@@ -1111,6 +1124,7 @@ impl NotamPersistentStore {
             server_only_records_by_keyword,
             cursor,
             transitions,
+            checkpoint,
         })
     }
 

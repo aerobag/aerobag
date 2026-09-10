@@ -23,6 +23,36 @@ use std::{
 const NETWORK_FETCH_OUTER_ATTEMPTS: u32 = 3;
 const NETWORK_FETCH_OUTER_RETRY_DELAY: Duration = Duration::from_secs(2);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkTimeouts {
+    pub connect: Duration,
+    pub total: Duration,
+}
+
+impl Default for NetworkTimeouts {
+    fn default() -> Self {
+        // Bulk cycle archives can be large. Live products use a tighter budget.
+        Self {
+            connect: Duration::from_secs(15),
+            total: Duration::from_secs(1800),
+        }
+    }
+}
+
+impl NetworkTimeouts {
+    fn apply(self, command: &mut Command) -> anyhow::Result<()> {
+        if self.connect.is_zero() || self.total.is_zero() {
+            bail!("network deadlines must be positive");
+        }
+        command
+            .arg("--connect-timeout")
+            .arg(self.connect.as_secs_f64().to_string())
+            .arg("--max-time")
+            .arg(self.total.as_secs_f64().to_string());
+        Ok(())
+    }
+}
+
 pub fn manifest_path_for_run(run_root: &str) -> String {
     format!("{run_root}/meta/manifest.json")
 }
@@ -346,6 +376,7 @@ pub struct PrefetchRequest {
     pub headers: BTreeMap<String, String>,
     pub force_http1: bool,
     pub allow_html: bool,
+    pub timeouts: NetworkTimeouts,
 }
 
 impl std::fmt::Debug for PrefetchRequest {
@@ -358,6 +389,7 @@ impl std::fmt::Debug for PrefetchRequest {
             .field("header_names", &self.headers.keys().collect::<Vec<_>>())
             .field("force_http1", &self.force_http1)
             .field("allow_html", &self.allow_html)
+            .field("timeouts", &self.timeouts)
             .finish()
     }
 }
@@ -372,11 +404,17 @@ impl PrefetchRequest {
             headers: BTreeMap::new(),
             force_http1: false,
             allow_html: false,
+            timeouts: NetworkTimeouts::default(),
         }
     }
 
     pub fn with_logical_file_name(mut self, logical_file_name: impl Into<String>) -> Self {
         self.logical_file_name = Some(logical_file_name.into());
+        self
+    }
+
+    pub fn with_timeouts(mut self, timeouts: NetworkTimeouts) -> Self {
+        self.timeouts = timeouts;
         self
     }
 
@@ -539,13 +577,28 @@ fn prefetch_archives_inner(
         }));
     }
 
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("prefetch worker panicked"))??;
-    }
+    join_prefetch_workers(handles)
+}
 
-    Ok(())
+fn join_prefetch_workers(
+    handles: Vec<thread::JoinHandle<anyhow::Result<()>>>,
+) -> anyhow::Result<()> {
+    // A failed request must not detach its siblings. Otherwise they outlive the
+    // product tick, race scratch cleanup, and overlap the next scheduled retry.
+    let mut first_error = None;
+    for handle in handles {
+        if let Err(error) = handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("prefetch worker panicked"))
+            .and_then(|result| result)
+        {
+            first_error.get_or_insert(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[derive(Clone)]
@@ -648,6 +701,7 @@ fn prefetch_one(
                     headers: &request.headers,
                     force_http1: request.force_http1,
                     allow_html: request.allow_html,
+                    timeouts: request.timeouts,
                     file_name,
                     dest_dir,
                     archive_path: &archive_path,
@@ -658,6 +712,7 @@ fn prefetch_one(
                 &request.url,
                 &request.headers,
                 request.force_http1,
+                request.timeouts,
                 file_name,
                 dest_dir,
             )?;
@@ -717,6 +772,7 @@ struct NetworkFetchRequest<'a> {
     headers: &'a BTreeMap<String, String>,
     force_http1: bool,
     allow_html: bool,
+    timeouts: NetworkTimeouts,
     file_name: &'a str,
     dest_dir: &'a Path,
     archive_path: &'a Path,
@@ -748,6 +804,7 @@ fn fetch_network_with_cache_once(
         headers,
         force_http1,
         allow_html,
+        timeouts,
         file_name,
         dest_dir,
         archive_path,
@@ -760,6 +817,7 @@ fn fetch_network_with_cache_once(
         network_url,
         headers,
         force_http1,
+        timeouts,
         dest_dir,
         &temp_path,
         &headers_path,
@@ -775,6 +833,7 @@ fn fetch_network_with_cache_once(
             network_url,
             headers,
             force_http1,
+            timeouts,
             dest_dir,
             &temp_path,
             &headers_path,
@@ -839,6 +898,7 @@ fn curl_download_with_status(
     network_url: &str,
     request_headers: &BTreeMap<String, String>,
     force_http1: bool,
+    timeouts: NetworkTimeouts,
     dest_dir: &Path,
     temp_path: &Path,
     headers_path: &Path,
@@ -846,6 +906,7 @@ fn curl_download_with_status(
     metadata: Option<&serde_json::Value>,
 ) -> anyhow::Result<CurlDownloadResult> {
     let mut command = Command::new("curl");
+    timeouts.apply(&mut command)?;
     command
         .arg("-L")
         .arg("--silent")
@@ -895,12 +956,20 @@ fn fetch_network(
     url: &str,
     request_headers: &BTreeMap<String, String>,
     force_http1: bool,
+    timeouts: NetworkTimeouts,
     file_name: &str,
     dest_dir: &Path,
 ) -> anyhow::Result<()> {
     let mut last_error = None;
     for attempt in 1..=NETWORK_FETCH_OUTER_ATTEMPTS {
-        match fetch_network_once(url, request_headers, force_http1, file_name, dest_dir) {
+        match fetch_network_once(
+            url,
+            request_headers,
+            force_http1,
+            timeouts,
+            file_name,
+            dest_dir,
+        ) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
@@ -917,6 +986,7 @@ fn fetch_network_once(
     url: &str,
     request_headers: &BTreeMap<String, String>,
     force_http1: bool,
+    timeouts: NetworkTimeouts,
     file_name: &str,
     dest_dir: &Path,
 ) -> anyhow::Result<()> {
@@ -924,6 +994,7 @@ fn fetch_network_once(
     let temp_path = temporary_download_path(&archive_path);
     let cookies_path = temp_path.with_extension("cookies");
     let mut command = Command::new("curl");
+    timeouts.apply(&mut command)?;
     command
         .arg("-L")
         .arg("--fail")
@@ -1352,6 +1423,117 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn failed_prefetch_waits_for_sibling_workers_before_returning() -> anyhow::Result<()> {
+        use std::sync::mpsc;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let workers = vec![
+            thread::spawn(|| anyhow::bail!("first fetch failed")),
+            thread::spawn(move || {
+                entered_tx.send(())?;
+                release_rx.recv_timeout(Duration::from_secs(10))?;
+                Ok(())
+            }),
+        ];
+        let joiner = thread::spawn(move || {
+            done_tx.send(join_prefetch_workers(workers)).unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5))?;
+        // It is incorrect to return the first error while its sibling is held.
+        let premature = done_rx.recv_timeout(Duration::from_millis(50));
+        release_tx.send(())?;
+        joiner.join().expect("joiner panicked");
+        assert!(
+            matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)),
+            "a fetch worker was detached"
+        );
+        let error = done_rx.recv_timeout(Duration::from_secs(5))?.unwrap_err();
+        assert_eq!(error.to_string(), "first fetch failed");
+        Ok(())
+    }
+
+    #[test]
+    fn stalled_http_has_a_deadline_with_and_without_cache_or_headers() -> anyhow::Result<()> {
+        for cached in [false, true] {
+            for authenticated in [false, true] {
+                let temp = tempfile::tempdir()?;
+                // The listening socket accepts TCP into its backlog but never
+                // supplies an HTTP response. No sleeps or external server needed.
+                let listener = TcpListener::bind("127.0.0.1:0")?;
+                listener.set_nonblocking(true)?;
+                let url = format!("http://{}/stalled.json", listener.local_addr()?);
+                let headers = if authenticated {
+                    BTreeMap::from([("Authorization".to_string(), "test-only-token".to_string())])
+                } else {
+                    BTreeMap::new()
+                };
+                let timeouts = NetworkTimeouts {
+                    connect: Duration::from_secs(1),
+                    total: Duration::from_millis(200),
+                };
+                let archive_path = temp.path().join("stalled.json");
+                let started = std::time::Instant::now();
+                let result = if cached {
+                    fetch_network_with_cache_once(&NetworkFetchRequest {
+                        layout: &CacheLayout::new(temp.path().join("cache")),
+                        cache_key: &url,
+                        network_url: &url,
+                        headers: &headers,
+                        force_http1: false,
+                        allow_html: false,
+                        timeouts,
+                        file_name: "stalled.json",
+                        dest_dir: temp.path(),
+                        archive_path: &archive_path,
+                    })
+                    .map(|_| ())
+                } else {
+                    fetch_network_once(&url, &headers, false, timeouts, "stalled.json", temp.path())
+                };
+                let error = format!("{:#}", result.expect_err("stalled response succeeded"));
+                assert!(error.contains("timed out"), "{error}");
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "HTTP deadline was not enforced"
+                );
+                assert!(
+                    listener.accept().is_ok(),
+                    "curl never connected to the stalled endpoint"
+                );
+                assert!(
+                    !archive_path.exists(),
+                    "timed-out response became a valid download"
+                );
+                assert_eq!(
+                    fs::read_dir(temp.path())?.count(),
+                    0,
+                    "failed attempt leaked partial files"
+                );
+                assert!(!error.contains("test-only-token"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn network_deadlines_are_explicit_and_positive() -> anyhow::Result<()> {
+        let mut command = Command::new("curl");
+        NetworkTimeouts::default().apply(&mut command)?;
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--connect-timeout", "15", "--max-time", "1800"]
+        );
+        assert!(NetworkTimeouts {
+            connect: Duration::ZERO,
+            total: Duration::from_secs(1)
+        }
+        .apply(&mut command)
+        .is_err());
+        Ok(())
+    }
 
     fn serve_inventory() -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

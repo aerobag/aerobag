@@ -411,6 +411,45 @@ This lifecycle repair is a controller/monitor runtime update through
 `tools/prod_manage.py --reconcile`; it does not require a new application release.
 Build and live-feed health remain separate signals.
 
+Live-feed alarms describe **ongoing degradation**, not a historical hiccup.
+`live_feed.<product>.failure_duration_seconds` warns after **2 minutes** of an
+unrecovered failure and becomes critical after **10 minutes**. Another failure
+does not restart that clock. Successful recovery clears the alarm on the next
+monitor sample (normally within a minute); a failure and recovery between
+samples need not alarm at all. Product-specific stale-data thresholds remain
+independent and still catch a hung worker or an unavailable publication.
+
+The two-hour failure rate and consecutive-failure graphs are informational.
+Past failures remain in the dashboard's two-hour details and historical numeric
+graphs; they no longer latch the current alarm. For longer-term flakiness audits,
+use the 14-day pipeline-health JSONL histories to locate affected periods and
+the release's `aerobag-live-feeds-release@<tag>` journal for individual errors.
+Do not count a two-hour rolling failure count at every sample as a new incident.
+Data-integrity/quality alarms (for example unresolved rejected NOTAM rows) remain
+separate from transport failure history.
+
+Production runs one worker per live product, with one operation in flight per
+product. Fetch/build work is independent; shared catalog publication and GC
+are serialized. A slow feed no longer holds a batch barrier before other feeds
+can publish or poll again. Simulation retains its ordered fixture batches.
+Live-product curl transfers have a **10-second connection** and **120-second
+total** deadline per transfer, including redirects. Existing three-attempt
+retries remain; FAA cookie handoffs can add a second bounded transfer per attempt.
+NMS requests have 10-second DNS/connection and 300-second end-to-end deadlines
+(including large initial loads). Other bulk fetches have 15-second connection
+and 30-minute total deadlines. These are network bounds, not whole-build bounds.
+
+NOTAM builds capture an owned projection/journal snapshot in one read
+transaction, including checkpoint records only for initial publication. Later
+ingestion cannot change the build's promised state, and acknowledging that
+snapshot does not consume newer journal entries. See the
+[v3 operational status contract](contracts/live-feed-status-v3.md) for independent
+source/publication recovery and legacy monitoring behavior.
+
+The monitoring rule update can be installed with `tools/prod_manage.py --reconcile`.
+The Rust worker, snapshot, and deadline changes require a newly built release;
+reconciling alone does not replace an old production or sunset daemon binary.
+
 Every metric has a detail row, including string statuses and missing values.
 **Weather camera sites** reports the minimum published inventory across each
 release's cycles and warns below **960** unique sites (baseline: 974, including

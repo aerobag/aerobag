@@ -39,6 +39,8 @@ DASHBOARD_WINDOW_SECONDS = 24 * 60 * 60
 DASHBOARD_BUCKET_SECONDS = 5 * 60
 DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
+LIVE_FEED_FAILURE_WARNING_SECONDS = 2 * 60
+LIVE_FEED_FAILURE_CRITICAL_SECONDS = 10 * 60
 EXPECTED_NOTAM_PROCEDURE_WITHOUT_UI_ANCHOR = 1
 MIN_WEATHER_CAMERA_SITE_COUNT = 960
 ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
@@ -974,12 +976,82 @@ def add_aerobag_cloud_metrics(metrics: list[dict[str, Any]], facts: dict[str, An
                 "lower_is_worse": lower_is_worse,
             },
         )
+
+
+def live_feed_attempts(status: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
+    attempts = status.get("attempts")
+    if not isinstance(attempts, list):
+        return []
+    return sorted(
+        [
+            attempt for attempt in attempts
+            if isinstance(attempt, dict)
+            and (at := parse_time(attempt.get("attempted_at_utc"))) is not None
+            and at <= now
+        ],
+        key=lambda attempt: parse_time(attempt["attempted_at_utc"]),
+    )
+
+
+def live_feed_failure_episodes(
+    status: dict[str, Any], attempts: list[dict[str, Any]], schema_version: int
+) -> Any:
+    # New daemons retain episode starts independently of their bounded history.
+    # Existing releases expose the same source/publication outcomes as attempts;
+    # reconstruct their episodes without letting a source poll clear publication.
+    if schema_version == 3:
+        # Missing v3 instrumentation is a coverage error, not legacy support.
+        return status.get("failure_episodes")
+    episodes: dict[str, Any] = {}
+    independent_source = bool(status.get("source_samples")) or any(
+        attempt.get("phase") == "source" for attempt in attempts
+    )
+    for attempt in attempts:
+        phase = attempt.get("phase")
+        if attempt.get("result") == "failure":
+            lane = "source" if phase == "poll" and independent_source else "publication"
+            episode = episodes.setdefault(
+                lane, {"first_failure_at_utc": attempt["attempted_at_utc"], "failure_count": 0}
+            )
+            episode.update(
+                last_failure_at_utc=attempt["attempted_at_utc"],
+                phase=phase,
+                error=attempt.get("error"),
+            )
+            episode["failure_count"] += 1
+        elif phase == "source":
+            episodes.pop("source", None)
+        elif attempt.get("result") == "success":
+            episodes.pop("publication", None)
+    # Very old/empty history still must not turn an explicitly failing product green.
+    if not attempts and status.get("consecutive_failure_count"):
+        episodes["publication"] = {
+            "first_failure_at_utc": status.get("last_failure_at_utc"),
+            "last_failure_at_utc": status.get("last_failure_at_utc"),
+            "failure_count": status["consecutive_failure_count"],
+            "phase": status.get("last_failure_phase"),
+            "error": status.get("last_error"),
+        }
+    return episodes
+
+
 def add_live_feed_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime
 ) -> None:
     payload = facts["inputs"]["live_feeds_status"].get("payload")
     products = payload.get("products") if isinstance(payload, dict) else None
     if not isinstance(products, dict):
+        return
+    status_schema_version = payload.get("schema_version")
+    if status_schema_version not in (2, 3):
+        add_metric(
+            metrics,
+            metric_id="live_feed.status_schema_version",
+            label="Live-feed operational status schema",
+            value=status_schema_version,
+            severity="critical",
+            message=f"Unsupported live-feed operational status schema: {status_schema_version}",
+        )
         return
     policies = payload.get("product_policies") if isinstance(payload, dict) else None
     if not isinstance(policies, list):
@@ -1036,9 +1108,25 @@ def add_live_feed_metrics(
                 message=f"{display} is missing from live-feed status",
             )
             continue
+        attempts = live_feed_attempts(status, now)
         source_time = parse_time(status.get("last_source_timestamp_utc")) or parse_time(
             status.get("last_success_at_utc")
         )
+        if status_schema_version == 2 and any(
+            attempt.get("phase") == "source" for attempt in attempts
+        ):
+            # Legacy daemons mixed collector freshness with publication freshness.
+            # A collector heartbeat is not evidence that the served data advanced.
+            published = [
+                a for a in attempts
+                if a.get("result") == "success" and a.get("phase") != "source"
+            ]
+            if published:
+                source_time = parse_time(published[-1].get("source_timestamp_utc")) or parse_time(
+                    published[-1].get("attempted_at_utc")
+                )
+            else:
+                source_time = parse_time(status.get("last_published_at_utc"))
         if source_time is None:
             add_metric(
                 metrics,
@@ -1065,19 +1153,65 @@ def add_live_feed_metrics(
                 critical_threshold=critical_seconds,
                 message=f"{display} data is {stale_seconds} seconds old",
             )
-        failures = int(status.get("consecutive_failure_count") or 0)
+        episodes = live_feed_failure_episodes(status, attempts, status_schema_version)
+        episodes_valid = isinstance(episodes, dict) and all(
+            isinstance(episode, dict)
+            and (first := parse_time(episode.get("first_failure_at_utc"))) is not None
+            and type(episode.get("failure_count")) is int
+            and episode["failure_count"] > 0
+            and (status_schema_version == 2 or (
+                lane in ("source", "publication")
+                and (last := parse_time(episode.get("last_failure_at_utc"))) is not None
+                and first <= last
+                and isinstance(episode.get("phase"), str)
+                and isinstance(episode.get("error"), str)
+            ))
+            for lane, episode in episodes.items()
+        )
+        failures = sum(e["failure_count"] for e in episodes.values()) if episodes_valid else None
+        duration = None
+        active_failures = []
+        failure_message = f"{display} failure episode telemetry is invalid"
+        failure_severity = "critical"
+        if episodes_valid:
+            duration = max(
+                (max(0, int((now - parse_time(e["first_failure_at_utc"])).total_seconds()))
+                 for e in episodes.values()),
+                default=0,
+            )
+            failure_severity = threshold_severity(
+                duration, LIVE_FEED_FAILURE_WARNING_SECONDS, LIVE_FEED_FAILURE_CRITICAL_SECONDS
+            )
+            failure_message = (
+                f"{display} ongoing failure for {duration} seconds ({failures} failed attempts)"
+                if episodes else f"{display} has no ongoing failure"
+            )
+            active_failures = [
+                {"attempted_at_utc": e["last_failure_at_utc"], "phase": e.get("phase"),
+                 "error": e.get("error")}
+                for e in episodes.values()
+            ]
         add_metric(
             metrics,
             metric_id=f"live_feed.{product}.consecutive_failures",
             label=f"{display} consecutive failures",
             value=failures,
-            severity=threshold_severity(failures, 1, 3),
-            warning_threshold=1,
-            critical_threshold=3,
+            severity="ok",
             message=f"{display} consecutive failures: {failures}",
         )
-        attempts = status.get("attempts")
-        if isinstance(attempts, list) and attempts:
+        add_metric(
+            metrics,
+            metric_id=f"live_feed.{product}.failure_duration_seconds",
+            label=f"{display} ongoing failure age",
+            value=duration,
+            unit="seconds",
+            severity=failure_severity,
+            warning_threshold=LIVE_FEED_FAILURE_WARNING_SECONDS,
+            critical_threshold=LIVE_FEED_FAILURE_CRITICAL_SECONDS,
+            message=failure_message,
+            details={"episodes": episodes, "failures": active_failures},
+        )
+        if attempts:
             failure_window_start = now - timedelta(
                 seconds=LIVE_FEED_FAILURE_WINDOW_SECONDS
             )
@@ -1110,9 +1244,6 @@ def add_live_feed_metrics(
                 if last_failure_time is not None
                 else None
             )
-            severity = "critical" if attempt_count >= 3 and failure_rate >= 0.5 else (
-                "warning" if failure_count > 0 else "ok"
-            )
             detail_failures = [
                 {
                     "attempted_at_utc": attempt.get("attempted_at_utc"),
@@ -1136,12 +1267,10 @@ def add_live_feed_metrics(
             add_metric(
                 metrics,
                 metric_id=f"live_feed.{product}.failure_rate_2h",
-                label=f"{display} 2h failure rate",
+                label=f"{display} 2h failure rate (history)",
                 value=round(failure_rate, 6),
                 unit="ratio",
-                severity=severity,
-                warning_threshold=0.0,
-                critical_threshold=0.5,
+                severity="ok",
                 message=failure_message,
                 details={
                     "window_seconds": LIVE_FEED_FAILURE_WINDOW_SECONDS,

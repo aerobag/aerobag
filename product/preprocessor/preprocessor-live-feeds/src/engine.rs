@@ -227,6 +227,7 @@ pub enum LiveFeedStatePayload {
     },
     NotamIncremental {
         state_root: PathBuf,
+        snapshot: Box<NotamPublicationSnapshot>,
     },
 }
 
@@ -349,6 +350,42 @@ pub trait LiveFeedPublisher {
 
 pub trait SseBroker {
     fn announce(&self, event: LiveFeedInvalidation) -> anyhow::Result<()>;
+}
+
+/// Feed workers may fetch/build independently, but publication and maintenance
+/// both mutate the shared catalog and must never race its read/modify/write.
+pub struct SerializedLiveFeedPublisher<P>(Mutex<P>);
+
+impl<P> SerializedLiveFeedPublisher<P> {
+    pub fn new(publisher: P) -> Self {
+        Self(Mutex::new(publisher))
+    }
+}
+
+impl<P: LiveFeedPublisher> LiveFeedPublisher for SerializedLiveFeedPublisher<P> {
+    fn publish(&self, built: BuiltLiveFeedState) -> anyhow::Result<PublishedLiveFeedUpdate> {
+        self.0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("publisher lock poisoned"))?
+            .publish(built)
+    }
+
+    fn acknowledge(&self, update: &PublishedLiveFeedUpdate) -> anyhow::Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("publisher lock poisoned"))?
+            .acknowledge(update)
+    }
+
+    fn maintain_after_acknowledgement(
+        &self,
+        update: &PublishedLiveFeedUpdate,
+    ) -> anyhow::Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("publisher lock poisoned"))?
+            .maintain_after_acknowledgement(update)
+    }
 }
 
 pub trait LiveFeedProductTask {
@@ -1018,11 +1055,20 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                     changed_count_if_no_delta,
                 },
             ),
-            LiveFeedStatePayload::NotamIncremental { state_root } => {
+            LiveFeedStatePayload::NotamIncremental {
+                state_root,
+                snapshot,
+            } => {
                 if temporal_coverage.is_some() {
                     bail!("incremental NOTAM publication does not support temporal coverage");
                 }
-                self.publish_notam_incremental(product, version, state_root, status_timestamps)
+                self.publish_notam_incremental(
+                    product,
+                    version,
+                    state_root,
+                    *snapshot,
+                    status_timestamps,
+                )
             }
         }
     }
@@ -1532,16 +1578,16 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         product: String,
         requested_version: String,
         state_root: PathBuf,
+        mut snapshot: NotamPublicationSnapshot,
         status_timestamps: LiveFeedStatusTimestamps,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
         if product != NOTAM_PRODUCT_ID {
             bail!("incremental NOTAM payload declares product {product}");
         }
         let store = NotamPersistentStore::new(state_root);
-        let mut snapshot = store.publication_snapshot()?;
         if requested_version != snapshot.current_state_id {
             bail!(
-                "NOTAM build requested state {requested_version}, but projection is {}",
+                "NOTAM build requested state {requested_version}, but captured snapshot is {}",
                 snapshot.current_state_id
             );
         }
@@ -1754,9 +1800,14 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
 
         let state_ref = match previous_manifest.as_ref() {
             Some(manifest) => manifest.state.clone(),
-            None => {
-                self.write_notam_checkpoint(&store, &snapshot.current_state_id, &snapshot.counters)?
-            }
+            None => self.write_notam_checkpoint_value(
+                snapshot
+                    .checkpoint
+                    .as_ref()
+                    .context("NOTAM initial publication has no captured checkpoint")?,
+                &snapshot.current_state_id,
+                &snapshot.counters,
+            )?,
         };
         trim_notam_delta_suffix(&state_ref.state_sha256, &mut recent_deltas)?;
         validate_notam_delta_chain(
@@ -1855,7 +1906,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
     fn reconcile_published_notam_prefix(
         &self,
         store: &NotamPersistentStore,
-        snapshot: NotamPublicationSnapshot,
+        mut snapshot: NotamPublicationSnapshot,
         published_entry: Option<&LiveFeedCurrentEntry>,
     ) -> anyhow::Result<(NotamPublicationSnapshot, bool)> {
         let Some(published_entry) = published_entry else {
@@ -1908,26 +1959,14 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         )?;
         self.prune_notam_journal_best_effort(store);
 
-        let reconciled = store.publication_snapshot()?;
-        if reconciled.cursor.published_head_state_id.as_deref()
-            != Some(published_entry.current.as_str())
-        {
-            bail!(
-                "NOTAM publication cursor did not reconcile to verified current.json head {}",
-                published_entry.current
-            );
-        }
-        Ok((reconciled, false))
-    }
-
-    fn write_notam_checkpoint(
-        &self,
-        store: &NotamPersistentStore,
-        expected_state_id: &str,
-        expected_counters: &notam_state::NotamCounters,
-    ) -> anyhow::Result<LivePayloadRef> {
-        let checkpoint = store.current_checkpoint()?;
-        self.write_notam_checkpoint_value(&checkpoint, expected_state_id, expected_counters)
+        // Only the verified published prefix changed. Re-reading the live store
+        // here could silently replace the captured projection with a newer one.
+        snapshot.cursor = NotamPublicationCursor {
+            published_through_journal_seq: journal_seq,
+            published_head_state_id: Some(published_entry.current.clone()),
+        };
+        snapshot.transitions.drain(..prefix_len);
+        Ok((snapshot, false))
     }
 
     fn write_notam_checkpoint_value(
@@ -3703,6 +3742,101 @@ mod tests {
     }
 
     #[test]
+    fn notam_build_snapshot_survives_ingestion_before_publish_and_ack() -> anyhow::Result<()> {
+        use crate::products::NotamLiveFeedBuilder;
+
+        let temp = tempdir()?;
+        let state_root = temp.path().join("notam-state");
+        let store = NotamPersistentStore::new(&state_root);
+        let publisher = FileLiveFeedPublisher::new(temp.path().join("live"), SystemClock);
+        let builder = NotamLiveFeedBuilder::new(state_root);
+        let event = UpstreamEvent {
+            product: NOTAM_PRODUCT_ID.to_string(),
+            source_id: "notam-source".to_string(),
+            previous_source_id: None,
+            observed_at_utc: Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap(),
+            payload_path: None,
+        };
+        let record = crate::canonicalize_structured_notam_record(serde_json::from_value(
+            serde_json::json!({
+                "id": "placeholder", "nms_id": "1784413572039718", "source_type": "D",
+                "notam_status": "ACTIVE", "location_designator": "AAA", "icao_id": "KAAA",
+                "location": "AAA", "notam_number": "1", "notam_year": "2026",
+                "notam_type": "N", "text": "RWY 01 CLSD."
+            }),
+        )?)?;
+
+        // Build A, mutate the live projection to B, then publish the captured A.
+        store.synchronize_current_records(&[record.clone()], "2026-09-10T12:00:00Z")?;
+        let a = builder.build_state(&event, temp.path())?;
+        let checkpoint_a = store.current_checkpoint()?;
+        let b_summary = store.synchronize_current_records(&[], "2026-09-10T12:01:00Z")?;
+        let update_a = publisher.publish(a)?;
+        let decoded = nav_kv_package::decode_xz_if_needed(&fs::read(&update_a.state_path)?)
+            .map_err(anyhow::Error::msg)?
+            .into_owned();
+        let checkpoint: NotamCheckpoint = serde_json::from_slice(&decoded)?;
+        assert_eq!(checkpoint, checkpoint_a);
+        publisher.acknowledge(&update_a)?;
+        let after_a = store.publication_snapshot()?;
+        assert_eq!(after_a.current_state_id, b_summary.state_id);
+        assert_eq!(
+            after_a.cursor.published_head_state_id.as_deref(),
+            Some(update_a.version.as_str())
+        );
+        assert!(
+            !after_a.transitions.is_empty(),
+            "ack A discarded the pending B transition"
+        );
+        assert!(
+            after_a.checkpoint.is_none(),
+            "incremental publication copied the full checkpoint"
+        );
+
+        // Repeat the interleaving on a normal delta. C has two records, so all
+        // three states have distinct identities, and client replay proves no loss.
+        let b = builder.build_state(&event, temp.path())?;
+        let mut second = record.clone();
+        second.nms_id = Some("1784413572039719".to_string());
+        second.notam_number = Some("2".to_string());
+        let second = crate::canonicalize_structured_notam_record(second)?;
+        let mut c_records = vec![record, second];
+        let c_summary = store.synchronize_current_records(&c_records, "2026-09-10T12:02:00Z")?;
+        let update_b = publisher.publish(b)?;
+        assert_eq!(update_b.version, b_summary.state_id);
+        // Simulate a crash after publishing B but before acknowledging it. C's
+        // captured journal contains that prefix; ingestion advances again to D.
+        let c = builder.build_state(&event, temp.path())?;
+        let mut third = c_records[0].clone();
+        third.nms_id = Some("1784413572039720".to_string());
+        third.notam_number = Some("3".to_string());
+        c_records.push(crate::canonicalize_structured_notam_record(third)?);
+        let d_summary = store.synchronize_current_records(&c_records, "2026-09-10T12:03:00Z")?;
+        let update_c = publisher.publish(c)?;
+        publisher.acknowledge(&update_c)?;
+        assert_eq!(update_c.version, c_summary.state_id);
+        let update_d = publisher.publish(builder.build_state(&event, temp.path())?)?;
+        publisher.acknowledge(&update_d)?;
+        assert_eq!(update_d.version, d_summary.state_id);
+        let mut replay = NotamState::from_checkpoint(checkpoint, &mut NotamApplyWork::default())?;
+        for update in [&update_b, &update_c, &update_d] {
+            let bytes = fs::read(update.delta_path.as_ref().context("missing delta")?)?;
+            let decoded =
+                nav_kv_package::decode_xz_if_needed(&bytes).map_err(anyhow::Error::msg)?;
+            let delta: NotamDelta = serde_json::from_slice(&decoded)?;
+            replay.apply_delta(delta, &mut NotamApplyWork::default())?;
+        }
+        assert_eq!(replay.checkpoint(), store.current_checkpoint()?);
+
+        let mut corrupt = builder.build_state(&event, temp.path())?;
+        corrupt.version = "wrong-build-identity".to_string();
+        assert!(
+            format!("{:#}", publisher.publish(corrupt).unwrap_err()).contains("captured snapshot")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn fresh_notam_store_replaces_unrelated_published_source_epoch() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let live_root = temp.path().join("live-feeds");
@@ -3762,6 +3896,7 @@ mod tests {
             version: synchronized.state_id.clone(),
             payload: LiveFeedStatePayload::NotamIncremental {
                 state_root: state_root.clone(),
+                snapshot: Box::new(store.publication_snapshot()?),
             },
             state_sha256: None,
             state_payload_kind: None,
@@ -3805,7 +3940,10 @@ mod tests {
             .publish(BuiltLiveFeedState {
                 product: NOTAM_PRODUCT_ID.to_string(),
                 version: update.version,
-                payload: LiveFeedStatePayload::NotamIncremental { state_root },
+                payload: LiveFeedStatePayload::NotamIncremental {
+                    state_root,
+                    snapshot: Box::new(store.publication_snapshot()?),
+                },
                 state_sha256: None,
                 state_payload_kind: None,
                 status_timestamps: Default::default(),

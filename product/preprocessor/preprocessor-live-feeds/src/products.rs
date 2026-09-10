@@ -13,7 +13,7 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Timelike, Utc};
 use preprocessor_fetch::{
     hash_file, prefetch_archives_with_provenance, prefetch_requests_with_provenance,
-    FetchCacheConfig, FetchCacheMode, PrefetchRequest,
+    FetchCacheConfig, FetchCacheMode, NetworkTimeouts, PrefetchRequest,
 };
 use preprocessor_vectors::{build_obstacle_dataset, BuildObstacleDatasetRequest};
 use serde_json::Value;
@@ -50,6 +50,13 @@ const NEXRAD_INDEX_URL: &str = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS
 
 const GFS_CYCLE_HOURS: i64 = 6;
 const GFS_CYCLE_CANDIDATE_COUNT: usize = 5;
+
+fn live_feed_request(url: impl Into<String>) -> PrefetchRequest {
+    PrefetchRequest::new(url).with_timeouts(NetworkTimeouts {
+        connect: std::time::Duration::from_secs(10),
+        total: std::time::Duration::from_secs(120),
+    })
+}
 
 pub const WINDS_ALOFT_FORECAST_HOURS: &[u32] = &[0, 3, 6, 9, 12, 15, 18, 21, 24];
 pub const WINDS_ALOFT_PRESSURE_LEVELS_MB: &[u32] = &[1000, 925, 850, 700, 600, 500, 400, 300];
@@ -175,13 +182,14 @@ impl ProductBuilder for NotamLiveFeedBuilder {
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let generated_at_utc = normalized_event_time(event.observed_at_utc);
         let store = NotamPersistentStore::new(&self.state_root);
-        let (state_id, _counters) = store.current_state_summary()?;
+        let snapshot = store.publication_snapshot()?;
         Ok(with_collected_at(
             BuiltLiveFeedState {
                 product: "notams".to_string(),
-                version: state_id,
+                version: snapshot.current_state_id.clone(),
                 payload: LiveFeedStatePayload::NotamIncremental {
                     state_root: self.state_root.clone(),
+                    snapshot: Box::new(snapshot),
                 },
                 state_sha256: None,
                 state_payload_kind: None,
@@ -489,7 +497,7 @@ impl ProductBuilder for MetarLiveFeedBuilder {
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let provenance_dir = scratch_dir.join("meta").join("provenance").join("metars");
         let requests =
-            vec![PrefetchRequest::new(METAR_XML_URL).with_logical_file_name("metars.cache.xml.gz")];
+            vec![live_feed_request(METAR_XML_URL).with_logical_file_name("metars.cache.xml.gz")];
         prefetch_archives_with_provenance(
             &requests,
             &input_dir,
@@ -550,7 +558,7 @@ impl ProductBuilder for TafLiveFeedBuilder {
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let provenance_dir = scratch_dir.join("meta").join("provenance").join("tafs");
         let requests =
-            vec![PrefetchRequest::new(TAF_XML_URL).with_logical_file_name("tafs.cache.xml.gz")];
+            vec![live_feed_request(TAF_XML_URL).with_logical_file_name("tafs.cache.xml.gz")];
         prefetch_archives_with_provenance(
             &requests,
             &input_dir,
@@ -610,8 +618,9 @@ impl ProductBuilder for PirepLiveFeedBuilder {
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let provenance_dir = scratch_dir.join("meta").join("provenance").join("pireps");
-        let requests = vec![PrefetchRequest::new(PIREP_XML_URL)
-            .with_logical_file_name("aircraftreports.cache.xml.gz")];
+        let requests =
+            vec![live_feed_request(PIREP_XML_URL)
+                .with_logical_file_name("aircraftreports.cache.xml.gz")];
         prefetch_archives_with_provenance(
             &requests,
             &input_dir,
@@ -688,8 +697,8 @@ impl ProductBuilder for TfrLiveFeedBuilder {
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let provenance_dir = scratch_dir.join("meta").join("provenance").join("tfrs");
         let requests = vec![
-            PrefetchRequest::new(TFR_LIST_URL).with_logical_file_name("list.json"),
-            PrefetchRequest::new(TFR_GRAPHICS_URL).with_logical_file_name("graphics.geojson"),
+            live_feed_request(TFR_LIST_URL).with_logical_file_name("list.json"),
+            live_feed_request(TFR_GRAPHICS_URL).with_logical_file_name("graphics.geojson"),
         ];
         prefetch_requests_with_provenance(
             &requests,
@@ -878,7 +887,7 @@ fn fetch_one_tfr_detail_backfill(
     let file_name = format!("{}.xml", sanitize_notam_id(&target.tfr_id));
     let input_dir = fresh_dir(&input_root.join(sanitize_notam_id(&target.tfr_id)))?;
     let provenance_dir = input_dir.join("provenance");
-    let request = PrefetchRequest::new(&target.source_url)
+    let request = live_feed_request(&target.source_url)
         .with_logical_file_name(&file_name)
         .with_cache_key(format!("tfr-detail-backfill:{}", target.tfr_id));
     prefetch_requests_with_provenance(
@@ -930,14 +939,12 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
         let (cycle, input_dir) =
             acquire_newest_complete_gfs_cycle(event.observed_at_utc, |candidate| {
                 let candidate_dir = fresh_dir(&input_path)?;
-                let readiness_request = PrefetchRequest::new(gfs_winds_aloft_filter_url(
-                    candidate,
-                    final_forecast_hour,
-                ))
-                .with_logical_file_name(format!(
-                    "gfs_{}_{}_f{final_forecast_hour:03}.grib2",
-                    candidate.date, candidate.cycle
-                ));
+                let readiness_request =
+                    live_feed_request(gfs_winds_aloft_filter_url(candidate, final_forecast_hour))
+                        .with_logical_file_name(format!(
+                            "gfs_{}_{}_f{final_forecast_hour:03}.grib2",
+                            candidate.date, candidate.cycle
+                        ));
                 // GFS publishes forecast hours in order. Fetching the final required
                 // hour both proves readiness and seeds that time slice for the full fetch.
                 prefetch_requests_with_provenance(
@@ -953,7 +960,7 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
         let requests = WINDS_ALOFT_FORECAST_HOURS
             .iter()
             .map(|forecast_hour| {
-                PrefetchRequest::new(gfs_winds_aloft_filter_url(&cycle, *forecast_hour))
+                live_feed_request(gfs_winds_aloft_filter_url(&cycle, *forecast_hour))
                     .with_logical_file_name(format!(
                         "gfs_{}_{}_f{forecast_hour:03}.grib2",
                         cycle.date, cycle.cycle
@@ -1033,9 +1040,8 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             .join("meta")
             .join("provenance")
             .join("obstacles");
-        let requests = vec![
-            PrefetchRequest::new(OBSTACLE_DOF_URL).with_logical_file_name("DAILY_DOF_DAT.ZIP")
-        ];
+        let requests =
+            vec![live_feed_request(OBSTACLE_DOF_URL).with_logical_file_name("DAILY_DOF_DAT.ZIP")];
         prefetch_archives_with_provenance(
             &requests,
             &input_dir,
@@ -1214,7 +1220,7 @@ fn fetch_latest_nexrad_source(
     fetch: &LiveFeedFetchConfig,
 ) -> anyhow::Result<PathBuf> {
     let provenance_dir = scratch_dir.join("meta").join("provenance").join("nexrad");
-    let index_request = PrefetchRequest::new(NEXRAD_INDEX_URL)
+    let index_request = live_feed_request(NEXRAD_INDEX_URL)
         .with_logical_file_name("index.html")
         .allow_html();
     prefetch_requests_with_provenance(
@@ -1226,7 +1232,7 @@ fn fetch_latest_nexrad_source(
         "nexrad-index",
     )?;
     let latest = parse_latest_nexrad_listing(&input_dir.join("index.html"))?;
-    let request = PrefetchRequest::new(format!("{NEXRAD_INDEX_URL}{latest}"))
+    let request = live_feed_request(format!("{NEXRAD_INDEX_URL}{latest}"))
         .with_logical_file_name(latest.clone());
     prefetch_archives_with_provenance(
         &[request],
@@ -1568,6 +1574,7 @@ mod tests {
         assert_eq!(built.product, "notams");
         let LiveFeedStatePayload::NotamIncremental {
             state_root: built_state_root,
+            ..
         } = &built.payload
         else {
             panic!("NOTAM live-feed state should be incremental");

@@ -693,9 +693,18 @@ impl std::error::Error for NmsHttpResponseError {}
 
 impl NmsHttpClient {
     fn new(attempts: usize, retry_delay: Duration) -> Self {
+        Self::with_deadline(attempts, retry_delay, Duration::from_secs(300))
+    }
+
+    fn with_deadline(attempts: usize, retry_delay: Duration, deadline: Duration) -> Self {
         assert!(attempts > 0, "NMS HTTP attempts must be positive");
         Self {
-            agent: ureq::Agent::new_with_defaults(),
+            agent: ureq::Agent::config_builder()
+                .timeout_resolve(Some(Duration::from_secs(10)))
+                .timeout_connect(Some(Duration::from_secs(10)))
+                .timeout_global(Some(deadline))
+                .build()
+                .into(),
             attempts,
             retry_delay,
         }
@@ -863,6 +872,27 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use tempfile::tempdir;
+
+    #[test]
+    fn stalled_nms_http_response_has_an_end_to_end_deadline() -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let url = format!("http://{}/updates", listener.local_addr()?);
+        let client = NmsHttpClient::with_deadline(1, Duration::ZERO, Duration::from_millis(200));
+        let started = Instant::now();
+        let error = client
+            .request_bytes("deadline test", NMS_JSON_RESPONSE_LIMIT, |agent| {
+                agent.get(&url).call()
+            })
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").to_lowercase().contains("timeout"),
+            "{error:#}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(listener.accept().is_ok(), "client never connected");
+        Ok(())
+    }
 
     use super::*;
 

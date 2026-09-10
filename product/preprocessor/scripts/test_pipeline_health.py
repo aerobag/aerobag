@@ -36,6 +36,8 @@ def evaluate_health(
     facts: dict, history: list, now: datetime
 ) -> dict:
     payload = facts.get("inputs", {}).get("live_feeds_status", {}).get("payload")
+    if isinstance(payload, dict):
+        payload.setdefault("schema_version", 2)
     if isinstance(payload, dict) and "product_policies" not in payload:
         products = payload.get("products")
         product_ids = products.keys() if isinstance(products, dict) else []
@@ -243,7 +245,7 @@ class PipelineHealthTests(unittest.TestCase):
                     }]}}],
                     "live_feeds_status": {
                         "error": None,
-                        "payload": {"products": {}, "product_policies": policy},
+                        "payload": {"schema_version": 2, "products": {}, "product_policies": policy},
                     },
                 },
             }
@@ -430,7 +432,7 @@ class PipelineHealthTests(unittest.TestCase):
                 "deploy_health": {"error": None, "payload": {}},
                 "live_feeds_status": {
                     "error": None,
-                    "payload": {"products": {}, "product_policies": None},
+                    "payload": {"schema_version": 2, "products": {}, "product_policies": None},
                 },
                 "build_watch": {"error": None, "payload": {}},
                 "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
@@ -655,7 +657,10 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(stale["critical_threshold"], 1800)
         failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
         self.assertEqual(failure_rate["value"], 0.666667)
-        self.assertEqual(failure_rate["severity"], "critical")
+        self.assertEqual(failure_rate["severity"], "ok")
+        ongoing = metric(evaluation, "live_feed.metars.failure_duration_seconds")
+        self.assertEqual(ongoing["severity"], "critical")
+        self.assertEqual(ongoing["value"], 600)
 
     def test_nexrad_staleness_allows_five_minute_fetch_interval(self) -> None:
         now = datetime(2026, 6, 19, 12, 10, 0, tzinfo=timezone.utc)
@@ -735,7 +740,10 @@ class PipelineHealthTests(unittest.TestCase):
 
         failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
         self.assertEqual(failure_rate["value"], 0.333333)
-        self.assertEqual(failure_rate["severity"], "warning")
+        self.assertEqual(failure_rate["severity"], "ok")
+        ongoing = metric(evaluation, "live_feed.metars.failure_duration_seconds")
+        self.assertEqual(ongoing["severity"], "ok")
+        self.assertEqual(ongoing["value"], 0)
         self.assertEqual(failure_rate["details"]["last_error"], "gzip failed")
         self.assertEqual(
             failure_rate["details"]["failures"][0]["attempted_at_utc"],
@@ -865,7 +873,10 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(stale["warning_threshold"], 5 * 60)
         self.assertEqual(stale["critical_threshold"], 15 * 60)
         failures = metric(evaluation, "live_feed.notams.consecutive_failures")
-        self.assertEqual(failures["severity"], "warning")
+        self.assertEqual(failures["severity"], "ok")
+        self.assertEqual(failures["value"], 1)
+        ongoing = metric(evaluation, "live_feed.notams.failure_duration_seconds")
+        self.assertEqual(ongoing["severity"], "critical")
         failure_rate = metric(evaluation, "live_feed.notams.failure_rate_2h")
         self.assertEqual(failure_rate["severity"], "ok")
         self.assertIsNone(failure_rate["details"]["last_error"])
@@ -1685,6 +1696,117 @@ class ReleaseProductDiagnosticsTests(unittest.TestCase):
         self.assertEqual(by_id["input.current_artifacts.available"]["severity"], "ok")
         self.assertEqual(by_id["input.product_facts_artifacts.available"]["severity"], "critical")
         self.assertEqual(channel["inputs"]["product_facts"], [])
+
+
+class LiveFeedRecoveryTests(unittest.TestCase):
+    start = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+
+    def at(self, seconds: int) -> str:
+        return pipeline_health.iso_utc(self.start + timedelta(seconds=seconds))
+
+    def attempt(self, seconds: int, result: str, phase: str | None = None) -> dict:
+        return {
+            "attempted_at_utc": self.at(seconds), "result": result, "phase": phase,
+            "error": "test failure" if result == "failure" else None,
+            "source_timestamp_utc": self.at(seconds) if result == "success" else None,
+        }
+
+    def metrics(self, status: dict, seconds: int, product: str = "tfrs") -> dict:
+        display, warning, critical = TEST_LIVE_FEED_HEALTH_POLICIES[product]
+        facts = {"inputs": {"live_feeds_status": {"payload": {
+            "schema_version": 3 if "failure_episodes" in status else 2,
+            "products": {product: status},
+            "product_policies": [{"product_id": product, "display_name": display,
+                                  "operator_health": {"warning_after_seconds": warning,
+                                                      "critical_after_seconds": critical}}],
+        }}}}
+        metrics = []
+        pipeline_health.add_live_feed_metrics(metrics, facts, self.start + timedelta(seconds=seconds))
+        return {m["id"].removeprefix(f"live_feed.{product}."): m for m in metrics}
+
+    def test_failure_grace_persistence_and_recovery_with_history_retained(self) -> None:
+        for explicit_episodes in [False, True]:
+            with self.subTest(explicit_episodes=explicit_episodes):
+                status = {"last_source_timestamp_utc": self.at(0),
+                          "attempts": [self.attempt(0, "failure", "build")]}
+                if explicit_episodes:
+                    status["failure_episodes"] = {"publication": {
+                        "first_failure_at_utc": self.at(0), "last_failure_at_utc": self.at(0),
+                        "failure_count": 1, "phase": "build", "error": "test failure",
+                    }}
+                for age, severity in [(0, "ok"), (119, "ok"), (120, "warning"),
+                                      (599, "warning"), (600, "critical")]:
+                    metrics = self.metrics(status, age)
+                    self.assertEqual(metrics["failure_duration_seconds"]["value"], age)
+                    self.assertEqual(metrics["failure_duration_seconds"]["severity"], severity)
+                    self.assertEqual(metrics["failure_rate_2h"]["severity"], "ok")
+                status["attempts"].append(self.attempt(610, "success"))
+                status["last_source_timestamp_utc"] = self.at(610)
+                if explicit_episodes:
+                    status["failure_episodes"] = {}
+                recovered = self.metrics(status, 611)
+                self.assertEqual(recovered["failure_duration_seconds"]["value"], 0)
+                self.assertTrue(all(m["severity"] == "ok" for m in recovered.values()))
+                self.assertEqual(recovered["failure_rate_2h"]["details"]["failure_count"], 1)
+                self.assertEqual(recovered["failure_rate_2h"]["details"]["last_error"], "test failure")
+
+    def test_hiccup_recovered_before_first_monitor_sample_never_alarms(self) -> None:
+        status = {"last_source_timestamp_utc": self.at(10), "consecutive_failure_count": 0,
+                  "attempts": [self.attempt(0, "failure", "publish"), self.attempt(10, "success")]}
+        metrics = self.metrics(status, 60)
+        self.assertTrue(all(m["severity"] == "ok" for m in metrics.values()))
+        self.assertEqual(metrics["failure_rate_2h"]["value"], 0.5)
+
+    def test_legacy_source_and_publication_recover_independently(self) -> None:
+        status = {"last_source_timestamp_utc": self.at(30), "consecutive_failure_count": 0,
+                  "attempts": [self.attempt(-60, "success"), self.attempt(0, "failure", "publish"),
+                               self.attempt(30, "nms_poll", "source")]}
+        self.assertEqual(self.metrics(status, 120, "notams")["failure_duration_seconds"]["severity"], "warning")
+        status["attempts"].extend([self.attempt(180, "success"), self.attempt(190, "failure", "poll"),
+                                   self.attempt(210, "success")])
+        metrics = self.metrics(status, 311, "notams")
+        self.assertEqual(metrics["failure_duration_seconds"]["value"], 121)
+        self.assertEqual(set(metrics["failure_duration_seconds"]["details"]["episodes"]), {"source"})
+        status["attempts"].append(self.attempt(330, "nms_poll", "source"))
+        self.assertEqual(self.metrics(status, 331, "notams")["failure_duration_seconds"]["value"], 0)
+
+    def test_legacy_source_heartbeat_does_not_mask_stale_publication(self) -> None:
+        status = {"last_source_timestamp_utc": self.at(899), "last_success_at_utc": self.at(899),
+                  "attempts": [self.attempt(-1, "success"), self.attempt(899, "nms_poll", "source")]}
+        metrics = self.metrics(status, 900, "notams")
+        self.assertEqual(metrics["stale_seconds"]["value"], 901)
+        self.assertEqual(metrics["stale_seconds"]["severity"], "critical")
+        status["attempts"] = [self.attempt(899, "nms_poll", "source")]
+        self.assertEqual(self.metrics(status, 900, "notams")["stale_seconds"]["severity"], "critical")
+
+    def test_explicit_episode_survives_attempt_history_eviction(self) -> None:
+        status = {"last_source_timestamp_utc": self.at(0),
+                  "attempts": [self.attempt(9000, "nms_poll", "source")],
+                  "failure_episodes": {"publication": {
+                      "first_failure_at_utc": self.at(0), "last_failure_at_utc": self.at(0),
+                      "failure_count": 1, "phase": "publish", "error": "still broken"}}}
+        metrics = self.metrics(status, 9000)
+        self.assertEqual(metrics["failure_duration_seconds"]["value"], 9000)
+        self.assertEqual(metrics["failure_duration_seconds"]["severity"], "critical")
+        self.assertEqual(metrics["failure_duration_seconds"]["details"]["failures"][0]["error"], "still broken")
+
+    def test_malformed_explicit_episodes_cannot_claim_recovery(self) -> None:
+        for episodes in [None, [], {"publication": {}}, {"publication": {"first_failure_at_utc": "bad", "failure_count": 1}}]:
+            status = {"last_source_timestamp_utc": self.at(0), "failure_episodes": episodes}
+            self.assertEqual(self.metrics(status, 120)["failure_duration_seconds"]["severity"], "critical")
+
+    def test_v3_missing_instrumentation_is_not_interpreted_as_legacy(self) -> None:
+        self.assertIsNone(pipeline_health.live_feed_failure_episodes({}, [], 3))
+        self.assertEqual(pipeline_health.live_feed_failure_episodes({}, [], 2), {})
+
+    def test_episode_started_during_monitor_fetch_is_not_a_coverage_alarm(self) -> None:
+        status = {"last_source_timestamp_utc": self.at(0), "failure_episodes": {"publication": {
+            "first_failure_at_utc": self.at(1), "last_failure_at_utc": self.at(1),
+            "failure_count": 1, "phase": "publish", "error": "just failed",
+        }}}
+        metric = self.metrics(status, 0)["failure_duration_seconds"]
+        self.assertEqual(metric["value"], 0)
+        self.assertEqual(metric["severity"], "ok")
 
 
 if __name__ == "__main__":

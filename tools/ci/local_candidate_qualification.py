@@ -493,11 +493,11 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
         Lane("ci-reuse", (str(ROOT / "scripts/check-licenses.sh"),)),
         Lane("ci-rust-format", (str(ROOT / "scripts/check-rust-format.sh"),)),
         Lane("ci-harness-contracts", (
-            "node", "--test", *(
-                str(path.relative_to(ROOT))
-                for path in sorted((ROOT / "tools/e2e").glob("*.test.mjs"))
-            ),
-        )),
+            str(ROOT / "ui/web-app/scripts/run-target-workspace.sh"), "inner:test:harness",
+        ), env={
+            "AEROBAG_REPO_ROOT": str(ROOT),
+            "AEROBAG_WEB_WORKSPACE_DIR": str(run_root / "harness-workspace"),
+        }, timeout_seconds=300),
         Lane(
             "ci-rust-shared",
             bash("cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),

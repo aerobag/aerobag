@@ -1027,7 +1027,7 @@ test("native plate opening does not click an already-selected exact airport twic
 });
 
 test("native map selection dismissal observes the fixed projection", () => {
-  const native = readFileSync("tools/e2e/run-android-e2e-suite.mjs", "utf8");
+  const native = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
   const body = native.slice(
     native.indexOf("async function dismissMapSelection"),
     native.indexOf("async function inspectRawTerrainSpot"),

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 import io
+import json
 import subprocess
 import tempfile
 import unittest
@@ -26,11 +27,22 @@ class CheapPreflightTests(unittest.TestCase):
                 "ci-python", "ci-generated-ui", "ci-web-unit", "ci-android-jvm", "ci-diff",
             })
             harness = lanes["ci-harness-contracts"].command
-            self.assertIn("tools/e2e/release-journey-foundation.test.mjs", harness)
-            self.assertEqual(set(harness[2:]), {
-                str(path.relative_to(cheap_preflight.ROOT))
-                for path in (cheap_preflight.ROOT / "tools/e2e").glob("*.test.mjs")
-            })
+            self.assertEqual(harness, (
+                str(cheap_preflight.ROOT / "ui/web-app/scripts/run-target-workspace.sh"),
+                "inner:test:harness",
+            ))
+            package = json.loads((cheap_preflight.ROOT / "ui/web-app/package.json").read_text())
+            self.assertEqual(package["scripts"][harness[-1]],
+                             'node --test "${AEROBAG_REPO_ROOT:?missing repository root}"/tools/e2e/*.test.mjs')
+            self.assertNotEqual(lanes["ci-harness-contracts"].env["AEROBAG_WEB_WORKSPACE_DIR"],
+                                lanes["ci-web-unit"].env["AEROBAG_WEB_WORKSPACE_DIR"])
+            release_harness = next(lane for lane in cheap_preflight.qualification.ordinary_lanes(root)
+                                   if lane.name == "ci-harness-contracts")
+            self.assertEqual(release_harness.command, harness)
+            self.assertEqual(release_harness.env["AEROBAG_WEB_WORKSPACE_DIR"],
+                             str(root / "harness-workspace"))
+            workflow = (cheap_preflight.ROOT / ".github/workflows/ci.yml").read_text()
+            self.assertIn("run: ./ui/web-app/scripts/run-target-workspace.sh inner:test:harness", workflow)
             self.assertIn("--workspace", lanes["ci-rust-core"].command[-1])
             self.assertNotIn("-E ", lanes["ci-rust-core"].command[-1])
             self.assertIn("testDebugUnitTest", lanes["ci-android-jvm"].command)

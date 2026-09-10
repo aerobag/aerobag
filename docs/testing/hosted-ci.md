@@ -43,6 +43,14 @@ The Node harness contracts also have a standalone ordinary-CI job. They run
 without waiting for the web build or launching a browser. The full release
 preflight retains all ordinary-CI checks, including app builds and startup smoke.
 
+Cheap preflight, fast/full release preflight, and the hosted harness job all use
+`ui/web-app/scripts/run-target-workspace.sh inner:test:harness`. This prepares
+lockfile-controlled dependencies and exports their workspace before selecting
+every `tools/e2e/*.test.mjs`. The harness owns a separate workspace from the
+parallel web checks; it must not depend on their setup or source-tree
+`node_modules`. A cold, offline bootstrap regression uses a tiny local package
+and runs the real entrypoint with the workspace environment unset.
+
 Python preflight also verifies producer telemetry contracts. Hosted Python CI
 fetches history/tags and compares immutable definitions and monitoring coverage
 against the push/PR base SHA, not just the current tree. Both paths compare

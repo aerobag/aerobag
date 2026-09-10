@@ -51,6 +51,15 @@ def cheap_lanes(run_root: Path) -> list[qualification.Lane]:
     # Share ordinary-CI suite membership with release preflight. No path-based
     # selection: a Rust enum can break a JavaScript harness contract.
     lanes = qualification.ordinary_lanes(run_root)
+    # Each Node lane owns its preparation: never race npm ci or script copying
+    # against the parallel web checks, and keep warm harness dependencies reusable.
+    lanes = [
+        replace(lane, env={
+            **(lane.env or {}),
+            "AEROBAG_WEB_WORKSPACE_DIR": str(ui_target / "web/harness-workspace"),
+        }) if lane.name == "ci-harness-contracts" else lane
+        for lane in lanes
+    ]
     lanes.extend([
         qualification.Lane("ci-generated-ui", (
             "/usr/bin/python3", "tools/ci/check_generated_ui_sources.py",

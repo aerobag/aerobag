@@ -28,13 +28,17 @@ jobs:
   harness-contracts:
     name: Browser E2E harness contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/.ci/ui-target/web/harness-workspace
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - name: Test browser E2E harness contracts
-        run: node --test tools/e2e/*.test.mjs
+        run: ./ui/web-app/scripts/run-target-workspace.sh inner:test:harness
 
   workflow-lint:
     name: GitHub Actions workflows

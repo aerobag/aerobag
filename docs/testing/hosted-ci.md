@@ -75,6 +75,18 @@ state must not replay a one-shot navigation request. These component tests use
 Compose's controlled synchronization, without sleeps, emulator startup, or FAA
 fixtures. Their pinned test-library/SDK dependencies still require cold setup.
 
+For overlapping async UI actions, control completion order instead of repeating
+a journey until a race appears. `cloudActionFeedback.test.tsx` mounts the actual
+React Cloud page in a per-file jsdom environment, clicks its DOM buttons, and
+uses manually resolved/rejected promises at its action boundary. Resolve the
+newer action, flush React with `act`, assert its rendered feedback, then finish
+the older action and assert that feedback remains. Cover stale successes and
+errors, normal ordering, and legitimate latest-action errors. No sleep, timer
+advance, polling, cloud server, native core, or browser startup is involved.
+These tests belong to the existing web unit suite and therefore cheap preflight
+and ordinary CI. They test feedback ownership, not actual clipboard permissions
+or browser hit testing; keep representative real-platform journeys for those.
+
 Harness model tests establish that a journey rejects modeled defects; they do
 not establish that platform navigation or rendering works. New or changed
 journeys require a focused real run on every claimed platform, with matching

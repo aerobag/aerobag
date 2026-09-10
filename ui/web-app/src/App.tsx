@@ -1332,7 +1332,7 @@ type NavigationPagePolicy = {
   defaultChartOrPlateReturnPage: AppPage;
 };
 
-const NavigationPageOptionsContext = createContext<NavigationPagePolicy | null>(null);
+export const NavigationPageOptionsContext = createContext<NavigationPagePolicy | null>(null);
 
 function navigationPageOptionsFromCore(state: UiSessionSnapshot["navigation_page_state"]): NavigationPagePolicy {
   const pagePairs = state.options.flatMap((option) => {
@@ -12948,7 +12948,7 @@ function writeClipboardFallback(text: string): boolean {
   }
 }
 
-function CloudPage(props: {
+export function CloudPage(props: {
   page: AppPage;
   state: UiSessionSnapshot["cloud_page_state"];
   navElement: NavElementUiView | null | undefined;
@@ -12965,8 +12965,12 @@ function CloudPage(props: {
   const [fieldValues, setFieldValues] = useState<Partial<Record<CloudUiFieldId, string>>>({});
   const [copyStatus, setCopyStatus] = useState("");
   const [actionError, setActionError] = useState("");
+  const feedbackGeneration = useRef(0);
 
   const invoke = async (action: UiSessionSnapshot["cloud_page_state"]["overall_status"]["actions"][number]) => {
+    // A core snapshot can expose the next action before older provider work
+    // finishes. Only the latest user action owns this page's feedback.
+    const generation = ++feedbackGeneration.current;
     setActionError("");
     setCopyStatus("");
     try {
@@ -12979,9 +12983,13 @@ function CloudPage(props: {
         fields,
         action.platform_effect ?? null,
       );
-      setCopyStatus(completionLabel ?? "");
+      if (generation === feedbackGeneration.current) {
+        setCopyStatus(completionLabel ?? "");
+      }
     } catch (error) {
-      setActionError(errorMessage(error));
+      if (generation === feedbackGeneration.current) {
+        setActionError(errorMessage(error));
+      }
     }
   };
 

@@ -232,6 +232,32 @@ production state, weaken assertions, or erase failure artifacts.
   `/tmp/aerobag-map-lifecycle-fixed-hpz2zulg`. No new full hosted qualification,
   staging, promotion, or release-receipt claim was made.
 
+- 2026-09-10: Release `2026-09-10.2` / `0c8391e5`,
+  [hosted run 34539463288](https://github.com/aerobag/aerobag/actions/runs/34539463288),
+  passed all Android shards but failed web p1's Cloud Device Setup Code copy
+  confirmation. An ordinary isolated replay passed; controlled response ordering
+  reproduced the same timeout: deliver an older successful cloud root read just
+  after the real clipboard succeeds, and its action completion erases `Copied`
+  18.6ms later. This is an application feedback-ownership race, not evidence
+  that the journey needs a longer deadline. The hosted trace lacks completion
+  ordering, so its precise historical interleaving remains unproved.
+- 2026-09-10: CloudPage now gives only the latest invoked action permission to
+  settle its feedback, for successes and errors. Six rendered React component
+  tests control promise completion directly, including reverse order and stale
+  errors; the initial four reproduced two failures in 47ms before the fix and
+  passed in 48ms afterward. They run in ordinary web CI and cheap preflight,
+  using pinned jsdom with no fixtures, browser startup, sleeps, or repetitions.
+  No journey assertion or timeout was changed.
+- 2026-09-10: One controlled real-Chrome crossfill replay passed after rebuilding
+  the changed React UI (17.8s lane including setup). Diagnostic-only inputs:
+  pinned Chrome 152.0.7977.82, the hosted cloud server and fixture, and cached
+  local debug WASM from `b2ad0d9c` (unchanged core source at HEAD, not the hosted
+  optimized bytes). Retained original failure:
+  `/tmp/aerobag-journey-diagnostic-o5d87fhe`; rebuilt-UI pass and provenance:
+  `/tmp/aerobag-cloud-feedback-fixed-9H6Jxo`. Both use the observation and
+  response-order preloads under `/tmp/aerobag-cloud-journey-B1ArLy`. This is
+  focused regression evidence, not a new full hosted qualification.
+
 ## Ownership and causal-completion audit
 
 | Boundary | Owner and result |

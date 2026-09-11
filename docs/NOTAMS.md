@@ -122,6 +122,16 @@ agreement for every client-visible publication transition and final checkpoint,
 then verifies checkpoint/delta convergence in app core across varied disconnect
 and catch-up schedules.
 
+Changes to airport admission, normalized identity/effects, or expiration must
+run this replay and review its derived `expected.json` in the same change. The
+raw capture is immutable; publish a new artifact commit and update the lock only
+after explaining differences, not by accepting new counts/hashes blindly. See
+the [September 11 projection audit](testing/notam-projection-audit-2026-09-11.md).
+Tiny `projection_test` cases run without the capture in ordinary CI and cheap
+preflight, exercising the real collector, reference/incremental publication, and
+client catch-up for airport AIRSPACE, NAV, OBST, and SVC notices. Those quick
+semantic checks complement rather than replace the pinned full replay.
+
 ## Development
 
 The dev stack looks for:

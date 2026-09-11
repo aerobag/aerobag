@@ -239,7 +239,11 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
             .sum::<usize>(),
         expected.update_count
     );
-    assert_eq!(transitions.len(), expected.transition_count);
+    assert_eq!(
+        transitions.len(),
+        expected.transition_count,
+        "NMS publication differs from pinned expected.json; audit source projection changes before updating fixture expectations (docs/testing/notam-projection-audit-2026-09-11.md)"
+    );
     assert_eq!(mutation_count, expected.mutation_count);
     assert_eq!(removal_count, expected.removal_count);
     assert_eq!(repeated_id_count, expected.repeated_mutation_id_count);

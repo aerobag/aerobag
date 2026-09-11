@@ -22,6 +22,9 @@ pub mod rendezvous_audit;
 #[cfg(test)]
 mod fixture_test;
 
+#[cfg(test)]
+mod projection_test;
+
 const NMS_HTTP_ATTEMPTS: usize = 5;
 const NMS_HTTP_RETRY_DELAY: Duration = Duration::from_secs(2);
 const NMS_JSON_RESPONSE_LIMIT: u64 = 512 * 1024 * 1024;

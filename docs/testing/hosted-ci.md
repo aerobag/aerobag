@@ -153,6 +153,14 @@ and fixture-fetch/report helpers. They also run every Monday at 09:23 UTC and
 through manual dispatch. Keep this path-filtered workflow non-required; GitHub
 leaves a required workflow pending when path filters skip it.
 
+NOTAM admission/identity/effects/expiry changes also need the full NMS replay and
+a reviewed fixture-expectation update; a green cheap preflight cannot establish
+that the external golden remains current. The fixture-free `projection_test`
+cases cover real collector-to-client transitions for airport AIRSPACE, NAV,
+OBST, and SVC, including expiry, duplicates, cancellation, and server-only
+facilities. See the [September 11 audit](notam-projection-audit-2026-09-11.md)
+for the missed expectation update that left Heavy Fixture CI red.
+
 A narrowly scoped fixture job must select its exact test or test family.
 `--run-ignored ignored-only` is not sufficient: it selects every ignored test
 that survives the other filters. For example, the METAR fixture job adds:

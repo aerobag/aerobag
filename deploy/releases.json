@@ -1,11 +1,9 @@
 {
   "production": {
-    "tag": "2026-09-11.1"
-  },
-  "schema_version": 1,
-  "staging": {
     "tag": "2026-09-11.2"
   },
+  "schema_version": 1,
+  "staging": null,
   "sunset": [
     {
       "tag": "2026-08-30.3",
@@ -14,6 +12,10 @@
     {
       "tag": "2026-09-08.1",
       "until_utc": "2026-09-25T03:21:32Z"
+    },
+    {
+      "tag": "2026-09-11.1",
+      "until_utc": "2026-09-25T20:09:23Z"
     }
   ]
 }

@@ -209,6 +209,59 @@ class GithubAuthenticationTests(unittest.TestCase):
 
 
 class OperationLogTests(unittest.TestCase):
+    def test_last_line_reports_success_failure_and_interruption_after_diagnostics(self) -> None:
+        for result, error, expected in (
+            (0, None, "\x1b[1;32mPromotion SUCCEEDED\x1b[0m"),
+            (1, None, "\x1b[1;31mPromotion NOT COMPLETED\x1b[0m"),
+            (2, subprocess.CalledProcessError(1, ["ssh", "prod"]), "\x1b[1;31mPromotion FAILED\x1b[0m"),
+            (2, prod_manage.ManagementError("not ready"), "\x1b[1;31mPromotion FAILED\x1b[0m"),
+            (2, RuntimeError("unexpected"), "\x1b[1;31mPromotion FAILED\x1b[0m"),
+            (130, KeyboardInterrupt(), "\x1b[1;31mPromotion INTERRUPTED\x1b[0m"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                log = Path(temporary) / "operation.log"
+                output = io.StringIO()
+                args = SimpleNamespace(stage=False, promote=True, reconcile=False)
+
+                def operation(*_args, **_kwargs):
+                    print("intermediate progress")
+                    prod_manage.deployment.append_command_log("retained details")
+                    if error is not None:
+                        raise error
+                    return result
+
+                with (
+                    mock.patch.dict(os.environ, {}, clear=True),
+                    mock.patch.object(prod_manage, "parse_args", return_value=args),
+                    mock.patch.object(prod_manage, "create_operation_log", return_value=log),
+                    mock.patch.object(prod_manage, "github_authentication_command", return_value=None),
+                    mock.patch.object(prod_manage, "promote", side_effect=operation),
+                    redirect_stdout(output), redirect_stderr(output),
+                ):
+                    self.assertEqual(prod_manage.main(), result)
+                self.assertEqual(output.getvalue().splitlines()[-1], expected)
+                if result not in (0, 1):
+                    self.assertIn(f"detailed log retained at {log}", output.getvalue())
+                    self.assertTrue(log.is_file())
+
+    def test_result_labels_do_not_claim_hosted_success_for_plain_stage_or_pending_status(self) -> None:
+        for operation, watch, result, expected in (
+            ("stage", False, 0, "Staging deployment SUCCEEDED (hosted qualification not checked)"),
+            ("stage", True, 0, "Staging and qualification SUCCEEDED"),
+            ("qualification_status", False, 1, "Staging qualification NOT PASSED"),
+            ("qualification_status", True, 130, "Staging qualification INTERRUPTED"),
+            ("candidate_status", False, 1, "Candidate qualification NOT PASSED"),
+            ("reconcile", False, 2, "Production reconciliation FAILED"),
+            ("prequalify", False, 0, "Local prequalification SUCCEEDED"),
+        ):
+            output = io.StringIO()
+            with (
+                self.subTest(expected=expected), mock.patch.dict(os.environ, {"NO_COLOR": "1"}),
+                redirect_stdout(output), redirect_stderr(output),
+            ):
+                prod_manage.print_operation_result(SimpleNamespace(**{operation: True, "watch": watch}), result)
+            self.assertEqual(output.getvalue(), expected + "\n")
+
     @staticmethod
     def reconcile_args() -> SimpleNamespace:
         return SimpleNamespace(

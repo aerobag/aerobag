@@ -38,6 +38,14 @@ metadata, and diff checks. `--list` prints the exact commands. Rust core include
 the entire `ui_core_boundary` binary. Suite membership is shared with release
 preflight, so adding a core UI action cannot bypass journey-coverage checks.
 
+Preprocessor Cargo integration tests include `promotion_merge`: it invokes the
+real Python activation controller and freshly built Rust merger on tiny generated
+publication manifests. System-service/HTTP checks and app-byte validation are
+stubbed; manifest selection, merging, channel symlinks, release endpoints and GC
+roots are real. It covers promotion with a same-contract sunset plus a distinct
+legacy contract, and confirms the merger still rejects unselected duplicates.
+No downloaded fixtures, browser, emulator, or production access is needed.
+
 Use warm target workspaces and tool caches. This command avoids web/WASM/native
 app packaging, browsers/emulators, and external fixture replays. It does not
 create release-qualification receipts. Every run retains its logs and has a

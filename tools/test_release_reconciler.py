@@ -398,6 +398,43 @@ class ReconciliationPlannerTests(unittest.TestCase):
 
 
 class ChannelGenerationTests(unittest.TestCase):
+    def test_discovery_prefers_controlling_release_without_discarding_distinct_contract_sets(self) -> None:
+        def manifest(tag, contracts):
+            return releases.ChannelManifest(tag, Path(tag), {"contracts": contracts}, ())
+
+        production = manifest("production", {"nav-db": "NAV25", "terrain": "TER2"})
+        old = manifest("old", {"terrain": "TER2", "nav-db": "NAV25"})
+        legacy = manifest("legacy", {"nav-db": "NAV23", "terrain": "TER2"})
+        changed_family = manifest("changed-family", {"nav-db": "NAV25", "terrain": "TER1"})
+        extra_family = manifest("extra-family", {"nav-db": "NAV25", "terrain": "TER2", "new": "NEW1"})
+        manifests = [production, old, legacy, changed_family, extra_family]
+        self.assertEqual(releases.discovery_manifests(manifests), [production, legacy, changed_family, extra_family])
+        self.assertEqual(len(manifests), 5)
+        self.assertEqual(releases.discovery_manifests([old, production]), [old])
+
+    def test_discovery_does_not_treat_missing_or_invalid_contracts_as_duplicates(self) -> None:
+        for contracts in (None, {}, [], {"nav-db": None}, {"": "NAV25"}, {"nav-db": 25}):
+            with self.subTest(contracts=contracts), self.assertRaises(releases.ReleaseConfigError):
+                releases.discovery_manifests([
+                    releases.ChannelManifest("tag", Path("manifest"), {"contracts": contracts}, ()),
+                ])
+
+    def test_materialized_discovery_deduplicates_without_losing_release_views(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifests = [releases.ChannelManifest(
+                tag, root / tag, {"contracts": {"nav-db": contract}, "as_of_date": tag}, (),
+            ) for tag, contract in (("new", "NAV25"), ("old", "NAV25"), ("legacy", "NAV23"))]
+            output = root / "generation"
+            releases.materialize_channel_generation(
+                output, root / "published", production_manifests=manifests, staging_manifests=[],
+            )
+            combined = json.loads((output / "production/packages/current_artifacts.json").read_text())
+            self.assertEqual([value["as_of_date"] for value in combined], ["new", "legacy"])
+            for manifest in manifests:
+                scoped = output / "releases" / manifest.release_tag / "packages/current_artifacts.json"
+                self.assertEqual(json.loads(scoped.read_text()), [manifest.document])
+
     def test_real_nested_artifact_roots_link_at_the_url_root_component(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

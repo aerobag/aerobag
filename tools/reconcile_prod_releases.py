@@ -721,7 +721,7 @@ class Controller:
                 "--output",
                 str(output),
             ]
-            for manifest in manifests:
+            for manifest in releases.discovery_manifests(manifests):
                 command.extend(["--manifest", str(manifest.source_path)])
             _run(command)
 

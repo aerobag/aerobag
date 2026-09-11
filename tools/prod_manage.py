@@ -1253,6 +1253,36 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
     return 0
 
 
+def print_operation_result(args: argparse.Namespace, result: int) -> None:
+    labels = (
+        ("prequalify", "Local prequalification"), ("candidate_status", "Candidate qualification"),
+        ("stage", "Staging"), ("promote", "Promotion"), ("reconcile", "Production reconciliation"),
+        ("qualification_status", "Staging qualification"),
+    )
+    operation, label = next((key, value) for key, value in labels if getattr(args, key, False))
+    if result == 0:
+        if operation == "stage":
+            label = "Staging and qualification" if getattr(args, "watch", False) else "Staging deployment"
+        status = "SUCCEEDED"
+    elif result == 130:
+        status = "INTERRUPTED"
+    elif result == 1:
+        # A declined confirmation or an incomplete status read is not a failed build.
+        status = "NOT PASSED" if operation.endswith("status") else "NOT COMPLETED"
+    else:
+        status = "FAILED"
+    message = f"{label} {status}"
+    if result == 0 and operation == "stage" and not getattr(args, "watch", False):
+        message += " (hosted qualification not checked)"
+    if "NO_COLOR" not in os.environ:
+        color = "1;32" if result == 0 else "1;31"
+        message = f"\x1b[{color}m{message}\x1b[0m"
+    # Flush both streams before the final line, including redirected/buffered output.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    print(message, file=sys.stdout if result == 0 else sys.stderr, flush=True)
+
+
 def main() -> int:
     args = parse_args()
     operation_log = create_operation_log()
@@ -1326,6 +1356,7 @@ def main() -> int:
         operation_log.unlink(missing_ok=True)
     else:
         print(f"prod_manage: detailed log retained at {operation_log}", file=sys.stderr)
+    print_operation_result(args, result)
     return result
 
 

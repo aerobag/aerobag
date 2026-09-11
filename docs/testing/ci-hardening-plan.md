@@ -260,6 +260,19 @@ production state, weaken assertions, or erase failure artifacts.
 
 ## Ownership and causal-completion audit
 
+- 2026-09-11: Promotion of `2026-09-11.1` committed intent but failed activation
+  when outgoing `2026-09-08.1` was retained in sunset. Both use NAV25 and identical
+  package contract sets; the controller passed both to a merger that correctly
+  rejects duplicate discovery contract sets. Traffic stayed on the old release.
+  Fixed selection at the controller boundary (controlling release first), keeping
+  all release-scoped endpoints and GC roots. New `promotion_merge` Cargo integration
+  test reproduced the exact duplicate-contract error before the fix and passed
+  afterward in 70ms, using the real controller and Rust executable. Existing mock
+  controller tests had replaced the merger and could not detect this mismatch.
+  The release manager now finishes with an explicit colored operation result
+  after the log path; error, interrupt, pending and deployment-only states are
+  tested without claiming full hosted qualification.
+
 | Boundary | Owner and result |
 | --- | --- |
 | Browser storage, permissions, page and dedicated workers | Fresh context per reset; same context/new page per reload. Real test dirties cookies/localStorage/IndexedDB, holds a worker response across reset, and compares with an isolated clean run. Failed context disposal stops replacement. Page listeners are disposed with their page. |

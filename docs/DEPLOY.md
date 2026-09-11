@@ -142,6 +142,16 @@ closed on unreadable Git objects, malformed inventories, or unknown legacy
 layouts. Retaining the outgoing release avoids this removal warning and does
 not require inspecting old contract inventories.
 
+Combined channel discovery contains one publication per exact contract set,
+preferring the controlling release, then the first matching sunset entry. Each
+retained release still has its own discovery, package/web/APK endpoints, live-feed
+route and GC roots, including releases omitted from combined discovery.
+
+Every completed `prod_manage.py` operation ends with a bold green success or red
+failure/incomplete/interrupted result, after any retained-log path. `NO_COLOR`
+disables ANSI coloring. A successful plain `--stage` says deployment succeeded
+without claiming hosted qualification passed; use `--watch` for that result.
+
 `--promote --force` is the temporary operator escape hatch when qualification
 infrastructure is unavailable. It bypasses deployed-staging qualification and
 exact-commit GitHub CI only. The exact candidate must still have completed its

@@ -91,7 +91,7 @@ class ForcedPromotionActivationTests(unittest.TestCase):
             previous, root / "published",
             production_manifests=[releases.ChannelManifest(
                 release_tag="old", source_path=root / "old-manifest.json",
-                document={}, publication_roots=(),
+                document={"contracts": {"nav-db": "NAV25"}}, publication_roots=(),
             )],
             staging_manifests=[],
         )
@@ -100,7 +100,7 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         for target, name, options in [
             (self.instance, "_manifest", {"return_value": releases.ChannelManifest(
                 release_tag="candidate", source_path=root / "manifest.json",
-                document={}, publication_roots=(),
+                document={"contracts": {"nav-db": "NAV25"}}, publication_roots=(),
             )}),
             (self.instance, "validate_public_production", {}),
             (controller.release_builder, "normalize_release_permissions", {}),

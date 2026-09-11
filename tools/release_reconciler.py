@@ -526,6 +526,29 @@ class ChannelManifest:
     publication_roots: tuple[str, ...]
 
 
+def discovery_manifests(manifests: Iterable[ChannelManifest]) -> list[ChannelManifest]:
+    """Select one publication per exact contract set, preferring input order.
+
+    The controlling release is first. This applies ONLY to shared discovery;
+    release-scoped views, live feeds and GC roots must retain every release.
+    """
+    selected = []
+    seen = set()
+    for manifest in manifests:
+        contracts = manifest.document.get("contracts")
+        if not isinstance(contracts, dict) or not contracts or any(
+            not isinstance(key, str) or not key.strip()
+            or not isinstance(value, str) or not value.strip()
+            for key, value in contracts.items()
+        ):
+            raise ReleaseConfigError(f"product manifest {manifest.source_path} has invalid contracts")
+        identity = tuple(sorted(contracts.items()))
+        if identity not in seen:
+            selected.append(manifest)
+            seen.add(identity)
+    return selected
+
+
 def load_channel_manifest(release_tag: str, source_path: Path) -> ChannelManifest:
     try:
         document = json.loads(source_path.read_text(encoding="utf-8"))
@@ -661,7 +684,7 @@ def materialize_channel_generation(
                 continue
             packages_root = output_root / channel / "packages"
             current_path = packages_root / "current_artifacts.json"
-            _write_json(current_path, [manifest.document for manifest in manifests])
+            _write_json(current_path, [manifest.document for manifest in discovery_manifests(manifests)])
             _link_publication_roots(packages_root, published_root, manifests)
             current_artifacts_paths.append(
                 current_path.relative_to(output_root).as_posix()

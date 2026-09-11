@@ -46,7 +46,7 @@ LOCAL_CANDIDATE_QUALIFICATION = (
 FAST_RELEASE_PREFLIGHT = REPO_ROOT / "tools/ci/fast_release_preflight.py"
 QUALIFICATION_POLL_SECONDS = 30
 DEFAULT_WATCH_TIMEOUT_SECONDS = 3600
-DEFAULT_SUNSET_DAYS = 14
+DEFAULT_SUNSET_DAYS = 4
 DEFAULT_GITHUB_TOKEN_HELPER = Path(
     "/root/aerobag-credentials/github-ci-reader/with-token"
 )
@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     operation.add_argument("--stage", action="store_true")
     operation.add_argument(
         "--promote", action="store_true",
-        help="promote staging and retain outgoing production in sunset for 14 days",
+        help=f"promote staging and retain outgoing production in sunset for {DEFAULT_SUNSET_DAYS} days",
     )
     operation.add_argument("--reconcile", action="store_true")
     operation.add_argument("--qualification-status", action="store_true")
@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sunset-days", type=int, metavar="DAYS",
-        help="with --promote, retain outgoing production for DAYS (default: 14; 0 disables retention)",
+        help=f"with --promote, retain outgoing production for DAYS (default: {DEFAULT_SUNSET_DAYS}; 0 disables retention)",
     )
     parser.add_argument(
         "--watch", action="store_true",

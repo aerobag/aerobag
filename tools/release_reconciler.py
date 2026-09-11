@@ -19,7 +19,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -32,6 +32,9 @@ RELEASE_LIVE_FEEDS_STATE_ENV = "AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT"
 RECONCILIATION_PROGRESS_RELATIVE_PATH = "state/release-reconciliation-progress"
 RELEASE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+RELEASE_DRAIN_GRACE = timedelta(hours=1)
+GENERATION_RETIREMENT_FILE = "retirement.json"
+RELEASE_GC_ROOTS = "state/release-gc-roots.json"
 
 
 class ReleaseConfigError(ValueError):
@@ -811,32 +814,163 @@ def _generation_gc_paths(build_root: Path, generation_root: Path) -> list[str]:
     return result
 
 
-def activate_channel_generation(build_root: Path, generation_root: Path) -> None:
+def owned_path(build_root: Path, relative: Path | str) -> Path:
+    """Resolve an exact controller-owned path without following symlinks.
+
+    In particular, cleanup must never traverse a substituted namespace parent
+    or turn an unexpected release-root symlink into an external deletion.
+    """
+    relative = Path(relative)
+    if build_root.is_symlink() or relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ReleaseConfigError(f"unsafe controller-owned path: {relative}")
+    path = build_root
+    for part in relative.parts:
+        path = path / part
+        if path.is_symlink():
+            raise ReleaseConfigError(f"symlink in controller-owned path: {path}")
+    return path
+
+
+def current_generation(build_root: Path) -> Path | None:
+    link = build_root / "channel-current"
+    if not link.is_symlink():
+        if link.exists():
+            raise ReleaseConfigError(f"channel-current is not a symlink: {link}")
+        return None
+    target = link.resolve()
+    if target.parent != build_root / "channel-generations":
+        raise ReleaseConfigError(f"unsafe channel-current target: {target}")
+    owned_path(build_root, target.relative_to(build_root))
+    if not target.is_dir():
+        raise ReleaseConfigError(f"missing active generation: {target}")
+    return target
+
+
+def _retire_generation(generation: Path, until: datetime) -> None:
+    marker = owned_path(generation, GENERATION_RETIREMENT_FILE)
+    _write_json_atomic(marker, {
+        "schema_version": 1,
+        "until_utc": until.isoformat().replace("+00:00", "Z"),
+    })
+
+
+@dataclass(frozen=True)
+class GenerationRetention:
+    retained: tuple[Path, ...]
+    expired: tuple[Path, ...]
+    gc_paths: tuple[str, ...]
+    release_tags: frozenset[str]
+
+
+def generation_retention(
+    build_root: Path, *, now: datetime | None = None,
+    draining_until: dict[str, datetime] | None = None,
+) -> GenerationRetention:
+    """Plan bounded generation retention; migrate old GC roots conservatively.
+
+    Call under the release-reconciler lock. A legacy rooted predecessor gets
+    one persisted grace period on first observation, never a sliding deadline.
+    Unrooted historical/abandoned generations need no additional grace.
+    """
+    now = now or datetime.now(timezone.utc)
+    active = current_generation(build_root)
+    if active is None:
+        return GenerationRetention((), (), (), frozenset())
+    registry = owned_path(build_root, RELEASE_GC_ROOTS)
+    rooted = set()
+    if registry.exists():
+        document = _object(json.loads(registry.read_text()), "release GC roots", {
+            "schema_version", "current_artifacts_paths",
+        })
+        values = document.get("current_artifacts_paths")
+        if document.get("schema_version") != 1 or not isinstance(values, list) or not values:
+            raise ReleaseConfigError("invalid release GC roots")
+        for value in values:
+            if not isinstance(value, str):
+                raise ReleaseConfigError("invalid release GC root path")
+            parts = Path(value).parts
+            if len(parts) < 3 or parts[0] != "channel-generations" or ".." in parts or parts[-1] != "current_artifacts.json":
+                raise ReleaseConfigError(f"invalid release GC root path: {value}")
+            owned_path(build_root, Path(*parts[:2]))
+            path = build_root / value
+            # Legacy bootstrap intentionally links production/packages to the
+            # shared published tree. Read it, but never follow it for deletion.
+            if not path.resolve().is_relative_to(build_root):
+                raise ReleaseConfigError(f"release GC root escapes build root: {path}")
+            if not path.is_file():
+                raise ReleaseConfigError(f"missing release GC root: {path}")
+            rooted.add(build_root / parts[0] / parts[1])
+    retained, expired = [], []
+    for generation in sorted((build_root / "channel-generations").iterdir()):
+        owned_path(build_root, generation.relative_to(build_root))
+        if not generation.is_dir():
+            continue
+        marker = owned_path(generation, GENERATION_RETIREMENT_FILE)
+        if generation == active:
+            retained.append(generation)
+            continue
+        if not marker.exists() and generation in rooted:
+            _retire_generation(generation, now + RELEASE_DRAIN_GRACE)
+        until = None
+        if marker.exists():
+            document = _object(json.loads(marker.read_text()), "generation retirement", {
+                "schema_version", "until_utc",
+            })
+            if document.get("schema_version") != 1:
+                raise ReleaseConfigError(f"invalid generation retirement: {marker}")
+            value = _parse_utc(document.get("until_utc"), str(marker))
+            until = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if generation in rooted and draining_until:
+            # A recovered service drain can finish later than its generation's
+            # original lease. Keep its publication rooted until both finish.
+            for path in _generation_gc_paths(build_root, generation):
+                parts = Path(path).parts
+                if len(parts) >= 4 and parts[2] == "releases":
+                    deadline = draining_until.get(parts[3])
+                    if deadline is not None and deadline > now and (until is None or deadline > until):
+                        until = deadline
+                        _retire_generation(generation, until)
+        (retained if until is not None and until > now else expired).append(generation)
+    paths = sorted({path for generation in retained for path in _generation_gc_paths(build_root, generation)})
+    tags = set()
+    for value in paths:
+        parts = Path(value).parts
+        if len(parts) >= 4 and parts[2] == "releases":
+            tags.add(_release_tag(parts[3], "generation release"))
+    return GenerationRetention(tuple(retained), tuple(expired), tuple(paths), frozenset(tags))
+
+
+def write_generation_gc_roots(build_root: Path, paths: Iterable[str]) -> None:
+    _write_json_atomic(owned_path(build_root, RELEASE_GC_ROOTS), {
+        "schema_version": CHANNEL_GENERATION_SCHEMA_VERSION,
+        "current_artifacts_paths": sorted(set(paths)),
+    })
+
+
+def activate_channel_generation(
+    build_root: Path, generation_root: Path, *, now: datetime | None = None,
+) -> None:
     """Atomically direct new requests at a complete generation.
 
-    GC is rooted first and includes the prior generation. This may retain data
-    briefly if the process stops between the two atomic writes, but it can
-    never discard data still served by either side of a channel switch.
+    GC is rooted first and includes every still-draining generation, including
+    rapid successive activations. Persist leases before changing roots/pointers
+    so interruption or rollback cannot discard either side of a channel switch.
     """
 
     build_root = build_root.resolve()
-    generation_root = generation_root.resolve()
+    generation_root = owned_path(build_root, generation_root.relative_to(build_root))
+    if generation_root.parent != build_root / "channel-generations":
+        raise ReleaseConfigError(f"unsafe generation target: {generation_root}")
     new_roots = _generation_gc_paths(build_root, generation_root)
-
+    now = now or datetime.now(timezone.utc)
+    retention = generation_retention(build_root, now=now)
     current_link = build_root / "channel-current"
-    previous_roots: list[str] = []
-    if current_link.is_symlink():
-        previous_generation = current_link.resolve()
-        if previous_generation != generation_root:
-            previous_roots = _generation_gc_paths(build_root, previous_generation)
-
-    _write_json_atomic(
-        build_root / "state/release-gc-roots.json",
-        {
-            "schema_version": CHANNEL_GENERATION_SCHEMA_VERSION,
-            "current_artifacts_paths": sorted(set([*new_roots, *previous_roots])),
-        },
-    )
+    previous_generation = current_generation(build_root)
+    if previous_generation is not None and previous_generation != generation_root:
+        _retire_generation(previous_generation, now + RELEASE_DRAIN_GRACE)
+    # Also protect a candidate if activation fails before replacing the pointer.
+    _retire_generation(generation_root, now + RELEASE_DRAIN_GRACE)
+    write_generation_gc_roots(build_root, [*new_roots, *retention.gc_paths])
 
     relative_target = os.path.relpath(generation_root, build_root)
     temporary_link = build_root / f".channel-current.{os.getpid()}"

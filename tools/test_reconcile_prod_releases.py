@@ -140,6 +140,16 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         self.assertIsNone(self.record.qualification_bypassed_at_utc)
         self.assertIsNone(self.record.qualification_bypass_reason)
 
+    def test_other_channel_activations_do_not_extend_an_existing_service_drain(self) -> None:
+        deadline = "2026-01-01T00:00:00Z"
+        old = releases.ObservedRelease(
+            tag="old", tag_object="a" * 40, commit="b" * 40,
+            live_feed_status="running", draining_until_utc=deadline,
+        )
+        self.instance.observed.releases["old"] = old
+        self.instance.activate()
+        self.assertEqual(old.draining_until_utc, deadline)
+
     def test_failed_activation_does_not_record_a_bypass(self) -> None:
         self.instance.validate_public_production.side_effect = RuntimeError("bad route")
         with self.assertRaisesRegex(RuntimeError, "bad route"):
@@ -706,10 +716,11 @@ class DeploymentLifecycleTests(unittest.TestCase):
             mock.patch.object(self.instance, "run_pending_gc") as gc,
             mock.patch.object(self.instance, "reconcile") as reconcile,
             mock.patch.object(self.instance, "stop_completed_drains") as drains,
+            mock.patch.object(self.instance, "maintain_retirement") as retirement,
         ):
             self.assertEqual(controller.main(), 0)
         checks.assert_called_once_with()
-        for forbidden in [refresh, gc, reconcile, drains]:
+        for forbidden in [refresh, gc, reconcile, drains, retirement]:
             forbidden.assert_not_called()
 
     def test_pending_or_failed_checks_do_not_starve_scheduled_product_refresh(self) -> None:
@@ -727,6 +738,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
                 mock.patch.object(self.instance, "run_pending_gc") as gc,
                 mock.patch.object(self.instance, "reconcile", return_value=0) as reconcile,
                 mock.patch.object(self.instance, "stop_completed_drains"),
+                mock.patch.object(self.instance, "maintain_retirement"),
                 mock.patch.object(self.instance, "recover_activated_generation"),
             ):
                 self.assertEqual(controller.main(), 0)

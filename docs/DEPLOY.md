@@ -121,7 +121,7 @@ for the full tag run.
 `--promote` requires a clean `main` synchronized with `origin/main`, and checks
 that the configured candidate is active and qualified on staging and that both
 exact-commit GitHub workflows passed. It commits the production pointer change,
-clears staging, retains outgoing production in sunset for **14 days**, pushes,
+clears staging, retains outgoing production in sunset for **4 days**, pushes,
 synchronizes only the new release intent, and activates the qualified channel generation. It does not
 install host packages, refresh products, or synchronously run GC.
 With no staging assignment it exits locally without contacting production.
@@ -217,11 +217,32 @@ live.
 
 Promotion is another desired-state commit: move the staged tag to `production`,
 clear `staging`, and retain the prior production under `sunset` with an explicit
-expiration (14 days from the promotion proposal by default). The next periodic
+expiration (4 days from the promotion proposal by default). The next periodic
 reconciliation after that deadline retires the sunset release. A qualified
 promotion is a channel-pointer change and graceful nginx reload, not a rebuild.
 Rollback assigns the retained prior tag to production. GC roots production,
-staging, unexpired sunset releases, and the previous generation.
+staging, unexpired sunset releases, and draining channel generations.
+
+Retirement maintenance runs under the release-reconciler lock on every normal
+controller invocation, including the existing two-hour product timer. Removing
+a sunset unpublishes its routes on activation; the old daemon and generation
+have a one-hour drain grace. The next maintenance pass after that deadline stops
+and disables the daemon, expires the generation's GC references, removes its
+release-owned binary/web/APK, live output, mutable state, scratch and deployment
+check files and service environment, and runs pending publication/build-cache GC. A new deployment or a
+successful product refresh is not required to expire those references. Long
+running reconciliations can delay maintenance; retirement is not instantaneous.
+
+Every activated generation has a persisted `retirement.json` lease. The active
+generation is always protected, and rapid successive activations retain all
+still-draining generations. A legacy predecessor already in the GC registry
+receives one migration grace period; that deadline is not extended on each
+pass. Historical, unrooted generations and stopped releases are swept too.
+Cleanup verifies service state and exact controller-owned paths, refuses
+symlinked namespace roots, and never follows links into shared artifacts.
+Shared publication/cache content is removed only by its existing reference-aware
+GC. Retired tag/commit identities remain in observed state, but removed build
+records are invalidated so deliberately reintroducing an old tag rebuilds it.
 
 ## Aerobag Cloud Backups
 

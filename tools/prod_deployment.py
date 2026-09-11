@@ -53,6 +53,7 @@ RUNTIME_SOURCE_PATHS = (
     "tools/prod_deployment.py",
     "tools/reconcile_prod_releases.py",
     "tools/release_reconciler.py",
+    "tools/release_retirement.py",
     "tools/build_release.py",
     "tools/admin_index.py",
     "tools/live_feed_contract.py",

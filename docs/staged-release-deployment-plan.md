@@ -62,7 +62,7 @@ make and apply its commits, but they do not introduce a second state model:
   into an implicit retry.
 - `tools/prod_manage.py --promote` is a desired-state change. It commits the
   qualified staging assignment as production, clears staging, retains outgoing
-  production in sunset for 14 days, and enters activation-only reconciliation.
+  production in sunset for 4 days, and enters activation-only reconciliation.
   `--sunset-days DAYS` overrides retention; `0` explicitly disables it. Existing
   sunset entries keep their deadlines. With no staging assignment it exits locally;
   it does not contact production merely to check whether an earlier promotion
@@ -387,7 +387,7 @@ Promotion is expressed by changing desired state, normally in one commit:
 - set `production.tag` to the currently staged tag;
 - set `staging` to `null`; and
 - add the previous production tag to `sunset`, retaining its release-scoped
-  package and live-feed endpoints for 14 days by default.
+  package and live-feed endpoints for 4 days by default.
 
 `--promote` computes a UTC deadline from the proposal time, displays it in the
 confirmation note and diff, then commits that exact deadline with the promotion.

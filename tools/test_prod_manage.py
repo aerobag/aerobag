@@ -86,7 +86,7 @@ class DesiredStateMutationTests(unittest.TestCase):
             prod_manage.parse_args()
 
     def test_promotion_sunset_defaults_and_overrides(self) -> None:
-        for extra, days in (([], 14), (["--sunset-days", "30"], 30), (["--sunset-days", "0"], 0)):
+        for extra, days in (([], 4), (["--sunset-days", "30"], 30), (["--sunset-days", "0"], 0)):
             with self.subTest(days=days), mock.patch.object(sys, "argv", ["prod_manage.py", "--promote", *extra]):
                 self.assertEqual(prod_manage.parse_args().sunset_days, days)
 
@@ -385,7 +385,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         self.assertEqual(proposed["production"], original["production"])
         self.assertEqual(proposed["sunset"], original["sunset"])
 
-    def test_promotion_moves_staging_to_production_and_retains_outgoing_for_two_weeks(self) -> None:
+    def test_promotion_moves_staging_to_production_and_retains_outgoing_for_four_days(self) -> None:
         original = desired_document(staging="2026-08-22.1")
         before = json.dumps(original)
         proposed, old, candidate = prod_manage.promotion_document(
@@ -397,7 +397,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         self.assertEqual(proposed["production"], {"tag": candidate})
         self.assertIsNone(proposed["staging"])
         self.assertEqual(proposed["sunset"], [
-            *original["sunset"], {"tag": old, "until_utc": "2026-09-05T18:42:05Z"},
+            *original["sunset"], {"tag": old, "until_utc": "2026-08-26T18:42:05Z"},
         ])
         self.assertEqual(json.dumps(original), before)
         self.assertIsNot(proposed["sunset"][0], original["sunset"][0])
@@ -428,8 +428,8 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         now = datetime(2026, 8, 22, tzinfo=timezone.utc)
         proposed, old, _ = prod_manage.promotion_document(desired_document(staging="2026-08-22.1"), now=now)
         desired = releases.parse_desired_releases(proposed)
-        self.assertIn(old, releases.effective_desired_releases(desired, now + timedelta(days=14, seconds=-1)).tags())
-        self.assertNotIn(old, releases.effective_desired_releases(desired, now + timedelta(days=14)).tags())
+        self.assertIn(old, releases.effective_desired_releases(desired, now + timedelta(days=4, seconds=-1)).tags())
+        self.assertNotIn(old, releases.effective_desired_releases(desired, now + timedelta(days=4)).tags())
         # Retrying promotion does not silently extend the already-written deadline.
         with self.assertRaisesRegex(prod_manage.ManagementError, "no staging"):
             prod_manage.promotion_document(proposed, now=now + timedelta(days=1))
@@ -440,7 +440,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         next_stage = prod_manage.stage_document(first, "2026-08-23.1")
         second, old, _ = prod_manage.promotion_document(next_stage, now=now + timedelta(days=1))
         self.assertEqual(second["sunset"], [
-            *first["sunset"], {"tag": old, "until_utc": "2026-09-06T00:00:00Z"},
+            *first["sunset"], {"tag": old, "until_utc": "2026-08-27T00:00:00Z"},
         ])
 
     def test_invalid_retention_and_naive_clocks_fail_before_mutation(self) -> None:
@@ -632,13 +632,13 @@ pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
 
         self.assertIn("release-scoped package and live-feed endpoints", warning)
         self.assertIn("nav-db contract NAV9", warning)
-        self.assertIn("--sunset-days 14", warning)
+        self.assertIn("--sunset-days 4", warning)
 
     def test_unchanged_contracts_still_warn_about_release_scoped_urls(self) -> None:
         warning = prod_manage.promotion_compatibility_warning("2026-08-20.1", ())
 
         self.assertIn("release-scoped package and live-feed endpoints", warning)
-        self.assertIn("--sunset-days 14", warning)
+        self.assertIn("--sunset-days 4", warning)
 
 
 class PromotionGateTests(unittest.TestCase):
@@ -1505,10 +1505,10 @@ class PromoteCommandTests(unittest.TestCase):
         print_warning.assert_not_called()
         written = json.loads(write.call_args.args[1])
         self.assertEqual(written["sunset"], [
-            *document["sunset"], {"tag": "2026-08-20.1", "until_utc": "2026-09-25T18:42:05Z"},
+            *document["sunset"], {"tag": "2026-08-20.1", "until_utc": "2026-09-15T18:42:05Z"},
         ])
-        self.assertIn("2026-09-25T18:42:05Z", proposal.call_args.kwargs["note"])
-        self.assertIn("2026-09-25T18:42:05Z", proposal.call_args.args[2])
+        self.assertIn("2026-09-15T18:42:05Z", proposal.call_args.kwargs["note"])
+        self.assertIn("2026-09-15T18:42:05Z", proposal.call_args.args[2])
         self.assertNotIn("manual", proposal.call_args.kwargs["note"])
         reconcile.assert_called_once_with(
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
@@ -1584,7 +1584,7 @@ class PromoteCommandTests(unittest.TestCase):
             if days == 0:
                 contracts.assert_called_once()
                 self.assertIn("nav-db contract NAV9", warning.call_args.args[0])
-                self.assertIn("--sunset-days 14", warning.call_args.args[0])
+                self.assertIn("--sunset-days 4", warning.call_args.args[0])
                 self.assertIn("retired immediately", proposal.call_args.kwargs["note"])
             else:
                 contracts.assert_not_called()

@@ -27,6 +27,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import build_release as release_builder  # noqa: E402
 import release_reconciler as releases  # noqa: E402
+import release_retirement as retirement  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -333,8 +334,10 @@ class Controller:
     def progress(self, message: str) -> None:
         write_progress(self.artifact_root, message)
 
-    def stop_completed_drains(self) -> None:
-        now = datetime.now(timezone.utc)
+    def stop_completed_drains(
+        self, *, protected_tags: set[str] | None = None, now: datetime | None = None,
+    ) -> None:
+        now = now or datetime.now(timezone.utc)
         changed = False
         if self.observed.legacy_live_feed_draining_until_utc is not None:
             deadline = datetime.fromisoformat(
@@ -353,13 +356,17 @@ class Controller:
                 )
                 self.observed.legacy_live_feed_draining_until_utc = None
                 changed = True
-        active_tags = set(self.desired.tags())
+        active_tags = set(self.desired.tags()) | set(filter(None, [
+            self.observed.production, self.observed.staging, *self.observed.sunset,
+        ]))
         for tag, record in self.observed.releases.items():
             if record.draining_until_utc is None:
                 continue
             if tag in active_tags:
                 record.draining_until_utc = None
                 changed = True
+                continue
+            if protected_tags and tag in protected_tags:
                 continue
             deadline = datetime.fromisoformat(
                 record.draining_until_utc.replace("Z", "+00:00")
@@ -378,6 +385,86 @@ class Controller:
             record.draining_until_utc = None
             changed = True
         if changed:
+            self.save()
+
+    def maintain_retirement(
+        self, *, now: datetime | None = None,
+        env_root: Path = Path("/etc/aerobag/live-feeds"),
+    ) -> None:
+        """Finish retirement even without a new deployment or product refresh.
+
+        The caller holds the reconciler lock. Fail closed on unsafe paths,
+        missing retained manifests, or a service that cannot be inspected/stopped.
+        """
+        now = now or datetime.now(timezone.utc)
+
+        def retention_plan():
+            return releases.generation_retention(self.artifact_root, now=now, draining_until={
+                tag: datetime.fromisoformat(record.draining_until_utc.replace("Z", "+00:00"))
+                for tag, record in self.observed.releases.items()
+                if record.draining_until_utc is not None
+            })
+
+        retention = retention_plan()
+        if not retention.retained:
+            return  # No authoritative serving generation: never infer garbage.
+        protected = set(self.desired.tags()) | set(retention.release_tags) | set(filter(None, [
+            self.observed.production, self.observed.staging, *self.observed.sunset,
+        ]))
+        self.stop_completed_drains(protected_tags=protected, now=now)
+        candidates = []
+        recovered_drain = False
+        for tag, record in self.observed.releases.items():
+            if tag in protected:
+                continue
+            paths = retirement.release_paths(self.artifact_root, record)
+            environment = releases.owned_path(env_root, f"{tag}.env")
+            if environment.exists() and not environment.is_file():
+                raise releases.ReleaseConfigError(f"unexpected release environment: {environment}")
+            # Include historical stopped/failed releases, not just today's drains.
+            if not any(path.exists() for path in [*paths, environment]) and record.release_root is None and record.live_feed_endpoint is None:
+                continue
+            unit = f"aerobag-live-feeds-release@{tag}.service"
+            result = subprocess.run(
+                ["systemctl", "show", unit, "--property=ActiveState", "--value"],
+                check=True, text=True, stdout=subprocess.PIPE, timeout=30,
+            )
+            if result.stdout.strip() not in {"inactive", "failed"}:
+                # Recover a missing drain record after interrupted activation;
+                # never delete files merely because observed state says stopped.
+                if record.draining_until_utc is None:
+                    record.draining_until_utc = (now + releases.RELEASE_DRAIN_GRACE).isoformat().replace("+00:00", "Z")
+                    record.live_feed_status = "running"
+                    self.save()
+                    recovered_drain = True
+                continue
+            if record.draining_until_utc is not None and datetime.fromisoformat(
+                record.draining_until_utc.replace("Z", "+00:00")
+            ) > now:
+                continue
+            # A failed/inactive but enabled unit must not restart after cleanup.
+            _run(["systemctl", "disable", "--now", unit])
+            candidates.append((record, paths, environment))
+        if recovered_drain:
+            retention = retention_plan()
+            candidates = [entry for entry in candidates if entry[0].tag not in retention.release_tags]
+        registry = self.artifact_root / releases.RELEASE_GC_ROOTS
+        current_roots = json.loads(registry.read_text()).get("current_artifacts_paths") if registry.exists() else None
+        if not candidates and not retention.expired and current_roots == list(retention.gc_paths):
+            return
+        # Persist the retry obligation BEFORE releasing roots or deleting files.
+        self.observed.gc_pending = True
+        self.save()
+        releases.write_generation_gc_roots(self.artifact_root, retention.gc_paths)
+        for generation in retention.expired:
+            print(f"Removing retired channel generation {generation.name}", flush=True)
+            retirement.remove_owned_path(self.artifact_root, generation)
+        for record, paths, environment in candidates:
+            print(f"Removing retired release files for {record.tag}", flush=True)
+            for path in paths:
+                retirement.remove_owned_path(self.artifact_root, path)
+            retirement.remove_owned_path(env_root, environment)
+            retirement.forget_removed_artifacts(record)
             self.save()
 
     def recover_activated_generation(self) -> bool:
@@ -801,12 +888,12 @@ class Controller:
         self.observed.gc_pending = True
         self.invalidate_deployment_checks()
         draining_deadline = (
-            datetime.now(timezone.utc) + timedelta(hours=1)
+            datetime.now(timezone.utc) + releases.RELEASE_DRAIN_GRACE
         ).isoformat().replace("+00:00", "Z")
         if previous is not None and previous.name == "legacy-bootstrap":
             self.observed.legacy_live_feed_draining_until_utc = draining_deadline
         for tag, record in self.observed.releases.items():
-            if tag not in all_tags and record.live_feed_status == "running":
+            if tag not in all_tags and record.live_feed_status == "running" and record.draining_until_utc is None:
                 record.draining_until_utc = draining_deadline
         self.save()
 
@@ -1018,8 +1105,8 @@ def main() -> int:
         if not args.plan:
             controller.save()
         if not args.plan:
-            controller.stop_completed_drains()
             controller.recover_activated_generation()
+            controller.maintain_retirement()
             if run_gc:
                 controller.run_pending_gc()
         if refresh_products and not args.plan:

@@ -381,6 +381,12 @@ exact-release qualification concurrently. Do not insert a full local pass or a
 hosted candidate round trip by default. Promotion still requires deployed
 staging checks, ordinary CI, and the full exact-tag journey run to pass.
 
+`--stage --watch` follows those checks after deployment instead of returning
+immediately. Resume with `--qualification-status --watch`. It pins one release,
+polls every 30 seconds, stops on failure/cancellation or full success, and has a
+one-hour post-deployment budget (`--watch-timeout SECONDS` to override).
+Interrupting or timing out the watch does not cancel jobs or promote anything.
+
 `tools/prod_manage.py --prequalify` optionally runs the complete workload locally.
 Ordinary CI lanes, three web priority lanes, four fresh Android shard lanes
 (each spanning all priorities), and the native journeys run with the same

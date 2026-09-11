@@ -77,6 +77,25 @@ after confirmation. Reconciliation also rejects an overlapping reconciler.
 Direct desired-state edits followed by `--reconcile` remain the complete
 lower-level interface.
 
+Use `tools/prod_manage.py --stage --watch` to stage and then watch qualification
+without manually polling. Hosted checks already start at the release push and
+overlap deployment; watching adds no qualification run or local prequalification.
+It pins the newly created tag/commit, checks every 30 seconds, prints changed
+statuses with workflow links and an elapsed-time heartbeat, and exits when all
+deployed checks, ordinary CI, and exact-tag release journeys pass (exit 0) or a
+check fails/cancels (exit 1). It never promotes or reruns jobs.
+
+The watch budget defaults to 3600 seconds **after deployment**, configurable with
+`--watch-timeout SECONDS`. Missing/queued runs remain incomplete; a timeout or
+status-read error exits 2, not a misleading qualification pass/failure. Status
+reads themselves are bounded (SSH 30 seconds; GitHub requests 20 seconds, with
+the existing bounded credential-refresh helper), so an in-flight read can finish
+after the polling budget. Ctrl-C during watching exits 130 and leaves jobs and
+staging intact. Resume with `tools/prod_manage.py --qualification-status --watch`;
+this selects the staging assignment in the current `deploy/releases.json` once.
+Without `--watch`, both commands retain their one-shot behavior. Watching requires
+GitHub read credentials, checked before a `--stage --watch` mutation begins.
+
 ### Release Naming
 
 Before assigning a new staging release:

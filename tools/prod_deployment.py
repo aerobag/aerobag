@@ -186,6 +186,7 @@ def run_command(
     input_text: str | None = None,
     capture: bool = False,
     dry_run: bool = False,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command_log = os.environ.get(COMMAND_LOG_ENV)
     if command_log is None:
@@ -205,6 +206,7 @@ def run_command(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=True,
+                timeout=timeout_seconds,
             )
         except subprocess.CalledProcessError as error:
             append_command_log(error.stdout or "")
@@ -222,6 +224,7 @@ def run_command(
                 stdout=stream,
                 stderr=subprocess.STDOUT,
                 check=True,
+                timeout=timeout_seconds,
             )
     return subprocess.run(
         args,
@@ -229,6 +232,7 @@ def run_command(
         input=input_text,
         text=True,
         check=True,
+        timeout=timeout_seconds,
     )
 
 
@@ -262,6 +266,7 @@ def run_ssh(
     input_text: str | None = None,
     capture: bool = False,
     dry_run: bool = False,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = ["ssh", "-o", "BatchMode=yes", ssh_target(config), command]
     return run_command(
@@ -270,6 +275,7 @@ def run_ssh(
         input_text=input_text,
         capture=capture,
         dry_run=dry_run,
+        timeout_seconds=timeout_seconds,
     )
 
 

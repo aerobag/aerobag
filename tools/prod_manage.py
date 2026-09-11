@@ -44,6 +44,8 @@ LOCAL_CANDIDATE_QUALIFICATION = (
     REPO_ROOT / "tools/ci/local_candidate_qualification.py"
 )
 FAST_RELEASE_PREFLIGHT = REPO_ROOT / "tools/ci/fast_release_preflight.py"
+QUALIFICATION_POLL_SECONDS = 30
+DEFAULT_WATCH_TIMEOUT_SECONDS = 3600
 DEFAULT_GITHUB_TOKEN_HELPER = Path(
     "/root/aerobag-credentials/github-ci-reader/with-token"
 )
@@ -87,9 +89,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="promote a built, active staging release without qualification",
     )
+    parser.add_argument(
+        "--watch", action="store_true",
+        help="with --stage or --qualification-status, poll exact-release qualification until done",
+    )
+    parser.add_argument(
+        "--watch-timeout", type=int, metavar="SECONDS",
+        help="qualification watch budget after deployment (default: 3600 seconds)",
+    )
     args = parser.parse_args()
     if args.force and not args.promote:
         parser.error("--force requires --promote")
+    if args.watch and not (args.stage or args.qualification_status):
+        parser.error("--watch requires --stage or --qualification-status")
+    if args.watch_timeout is not None:
+        if not args.watch or args.watch_timeout <= 0:
+            parser.error("--watch-timeout requires --watch and a positive number of seconds")
+    else:
+        args.watch_timeout = DEFAULT_WATCH_TIMEOUT_SECONDS
     return args
 
 
@@ -106,6 +123,7 @@ def operation_requires_github_authentication(args: argparse.Namespace) -> bool:
             getattr(args, "promote", False)
             and not getattr(args, "force", False)
         )
+        or (getattr(args, "stage", False) and getattr(args, "watch", False))
     )
 
 
@@ -433,7 +451,9 @@ def assert_remote_idle(config: dict[str, Any]) -> None:
         raise ManagementError(str(error)) from error
 
 
-def load_remote_observed(config: dict[str, Any]) -> releases.ObservedState:
+def load_remote_observed(
+    config: dict[str, Any], *, timeout_seconds: float | None = None,
+) -> releases.ObservedState:
     path = f"{config['artifact_root']}/state/releases-observed.json"
     quoted_path = deployment.shell_quote(path)
     result = deployment.run_ssh(
@@ -441,6 +461,7 @@ def load_remote_observed(config: dict[str, Any]) -> releases.ObservedState:
         f"if test -f {quoted_path}; then cat {quoted_path}; fi",
         capture=True,
         dry_run=False,
+        **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
     )
     if not result.stdout.strip():
         return releases.ObservedState.empty()
@@ -666,32 +687,107 @@ def assert_staging_is_qualified(
         )
 
 
-def qualification_status(config_path: Path, releases_path: Path) -> int:
+def staging_qualification_checks(
+    config: dict[str, Any], identity: releases.ResolvedTag,
+) -> tuple[release_ci.WorkflowQualification, ...]:
+    observed = load_remote_observed(config, timeout_seconds=30)
+    record = observed.releases.get(identity.tag)
+    state, detail = "pending", "release has not been observed on the host"
+    if record is not None:
+        if record.commit != identity.commit or record.tag_object != identity.tag_object:
+            state, detail = "failed", "deployed release identity does not match the immutable tag"
+        elif "failed" in (record.build_status, record.deployment_status, record.qualification_status):
+            state = "failed"
+            detail = record.deployment_error or record.last_error or (
+                f"build: {record.build_status}; deployment: {record.deployment_status}; "
+                f"checks: {record.qualification_status}"
+            )
+        elif observed.staging != identity.tag:
+            state = "failed" if record.qualification_status == "passed" else "pending"
+            detail = f"not active on staging (active: {observed.staging or 'none'})"
+        else:
+            state = "passed" if record.qualification_status == "passed" else "pending"
+            detail = record.qualification_status
+    ci = release_ci.release_qualification(
+        config.get("github_repository", release_ci.DEFAULT_GITHUB_REPOSITORY),
+        identity.tag,
+        identity.commit,
+    )
+    return (
+        release_ci.WorkflowQualification("Deployed staging checks", state, detail),
+        ci.ordinary_ci, ci.release_journeys,
+    )
+
+
+def print_qualification_checks(checks: tuple[release_ci.WorkflowQualification, ...]) -> None:
+    for check in checks:
+        suffix = f" ({check.url})" if check.url else ""
+        print(f"{check.label}: {check.state} - {check.detail}{suffix}", flush=True)
+
+
+def watch_qualification(
+    config: dict[str, Any], identity: releases.ResolvedTag,
+    *, timeout_seconds: int = DEFAULT_WATCH_TIMEOUT_SECONDS,
+) -> int:
+    # Resolve once: another checkout/staging operation must never retarget this wait.
+    print(f"Watching release: {identity.tag} ({identity.commit})", flush=True)
+    resume = "tools/prod_manage.py --qualification-status --watch"
+    print(
+        f"Polling every {QUALIFICATION_POLL_SECONDS}s for up to {timeout_seconds}s. "
+        f"Ctrl-C stops only this watch; resume with {resume}.", flush=True,
+    )
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    previous = None
+    try:
+        while True:
+            checks = staging_qualification_checks(config, identity)
+            if checks != previous:
+                print_qualification_checks(checks)
+                previous = checks
+            if all(check.passed for check in checks):
+                print_success(f"Staging qualification {identity.tag} PASSED")
+                return 0
+            if any(check.state == "failed" for check in checks):
+                print_warning(f"Staging qualification {identity.tag} FAILED")
+                return 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ManagementError(
+                    f"Qualification watch {identity.tag} TIMED OUT after {timeout_seconds}s; "
+                    f"qualification is still incomplete, not failed. Jobs were not canceled. Resume: {resume}"
+                )
+            print(
+                f"Still waiting for {identity.tag} ({time.monotonic() - started:.0f}s elapsed)...",
+                flush=True,
+            )
+            time.sleep(min(QUALIFICATION_POLL_SECONDS, remaining))
+    except KeyboardInterrupt:
+        print(f"Qualification watch stopped; jobs were not canceled. Resume: {resume}", flush=True)
+        return 130
+    except (release_ci.ReleaseCiError, subprocess.SubprocessError, OSError) as error:
+        raise ManagementError(
+            f"Qualification watch {identity.tag} could not read status: {error}. "
+            f"Jobs were not canceled. Resume: {resume}"
+        ) from error
+
+
+def qualification_status(
+    config_path: Path, releases_path: Path, *, watch: bool = False,
+    watch_timeout_seconds: int = DEFAULT_WATCH_TIMEOUT_SECONDS,
+) -> int:
     document = load_release_document(releases_path)
     desired = releases.parse_desired_releases(document)
     if desired.staging is None:
         raise ManagementError("there is no staging release to qualify")
     config = deployment.load_config(config_path)
     identity = releases.resolve_release_tag(REPO_ROOT, desired.staging.tag)
-    observed = load_remote_observed(config)
-    record = observed.releases.get(desired.staging.tag)
-    deployed = (
-        observed.staging == desired.staging.tag
-        and record is not None
-        and record.commit == identity.commit
-        and record.qualification_status == "passed"
-    )
-    ci = release_ci.release_qualification(
-        config.get("github_repository", release_ci.DEFAULT_GITHUB_REPOSITORY),
-        desired.staging.tag,
-        identity.commit,
-    )
-    print(f"Release: {desired.staging.tag} ({identity.commit})")
-    print(f"Deployed staging checks: {'passed' if deployed else 'pending or failed'}")
-    for check in (ci.ordinary_ci, ci.release_journeys):
-        suffix = f" ({check.url})" if check.url else ""
-        print(f"{check.label}: {check.state} - {check.detail}{suffix}")
-    if deployed and ci.passed:
+    if watch:
+        return watch_qualification(config, identity, timeout_seconds=watch_timeout_seconds)
+    checks = staging_qualification_checks(config, identity)
+    print(f"Release: {identity.tag} ({identity.commit})")
+    print_qualification_checks(checks)
+    if all(check.passed for check in checks):
         print_success("Staging qualification passed")
         return 0
     return 1
@@ -873,7 +969,10 @@ def staging_failure_message(config: dict[str, Any], tag: str) -> str:
     return fallback
 
 
-def stage(config_path: Path, releases_path: Path) -> int:
+def stage(
+    config_path: Path, releases_path: Path, *, watch: bool = False,
+    watch_timeout_seconds: int = DEFAULT_WATCH_TIMEOUT_SECONDS,
+) -> int:
     assert_clean_checkout("stage")
     git("fetch", "--tags", "origin", capture=False)
     assert_main_not_behind(require_synchronized=True)
@@ -930,6 +1029,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
     git("add", str(releases_path.relative_to(REPO_ROOT)), capture=False)
     git("commit", "-m", f"Stage {tag}", capture=False)
     git("tag", "-a", tag, "-m", f"Aerobag {tag}", capture=False)
+    identity = releases.resolve_release_tag(REPO_ROOT, tag) if watch else None
     git("push", "--atomic", "origin", "main", tag, capture=False)
     try:
         git("push", "--atomic", github_url, "main", tag, capture=False)
@@ -950,6 +1050,8 @@ def stage(config_path: Path, releases_path: Path) -> int:
             "qualification runs in GitHub; inspect it with "
             "tools/prod_manage.py --qualification-status."
         )
+        if identity is not None:
+            return watch_qualification(config, identity, timeout_seconds=watch_timeout_seconds)
     return result
 
 
@@ -1131,7 +1233,11 @@ def main() -> int:
             elif getattr(args, "candidate_status", False):
                 result = candidate_status(DEFAULT_CONFIG)
             elif args.stage:
-                result = stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
+                result = stage(
+                    DEFAULT_CONFIG, DEFAULT_RELEASES,
+                    watch=getattr(args, "watch", False),
+                    watch_timeout_seconds=getattr(args, "watch_timeout", DEFAULT_WATCH_TIMEOUT_SECONDS),
+                )
             elif args.promote:
                 result = promote(
                     DEFAULT_CONFIG,
@@ -1141,7 +1247,11 @@ def main() -> int:
             elif args.reconcile:
                 result = reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
             else:
-                result = qualification_status(DEFAULT_CONFIG, DEFAULT_RELEASES)
+                result = qualification_status(
+                    DEFAULT_CONFIG, DEFAULT_RELEASES,
+                    watch=getattr(args, "watch", False),
+                    watch_timeout_seconds=getattr(args, "watch_timeout", DEFAULT_WATCH_TIMEOUT_SECONDS),
+                )
         except (
             ManagementError,
             release_ci.ReleaseCiError,

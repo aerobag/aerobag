@@ -25,6 +25,18 @@ import prod_deployment as deploy_prod  # noqa: E402
 
 
 class ProductPublicationTests(unittest.TestCase):
+    def test_read_only_ssh_can_have_a_bounded_process_timeout(self) -> None:
+        with (
+            mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("ssh", 30)) as run,
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(subprocess.TimeoutExpired),
+        ):
+            deploy_prod.run_ssh(
+                {"ssh_user": "root", "ssh_host": "prod"}, "cat state.json",
+                capture=True, timeout_seconds=30,
+            )
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+
     def test_command_log_hides_captured_ssh_trace_and_records_output(self) -> None:
         config = {"ssh_user": "root", "ssh_host": "prod"}
         completed = subprocess.CompletedProcess(

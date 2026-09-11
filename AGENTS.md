@@ -99,3 +99,7 @@ come from one real available publication.
 - After staging, use `tools/prod_manage.py --qualification-status`: passing
   deployed staging checks alone does not mean ordinary CI and exact-release
   journeys passed. Do not automatically bypass failures with `--promote --force`.
+  Use `--stage --watch` to poll through qualification, or resume with
+  `--qualification-status --watch`. This observes the exact release; it does not
+  rerun tests or promote. Failed/canceled checks stop the watch; missing or queued
+  runs wait up to its bounded budget (`--watch-timeout SECONDS`, default 3600).

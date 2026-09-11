@@ -969,6 +969,58 @@ class StageOrderingTests(unittest.TestCase):
 
         warning.assert_called_once_with("Staging build 2026-08-22.1 FAILED")
 
+    def test_watch_starts_only_after_successful_staging_and_returns_its_result(self) -> None:
+        identity = releases.ResolvedTag("2026-08-22.1", "b" * 40, "a" * 40)
+        for deployment_result, watch_result, expected in (
+            (0, 0, 0), (0, 1, 1), (0, 130, 130), (1, 0, 1),
+        ):
+            events = []
+
+            def fake_git(*args, **kwargs):
+                events.append(args[0])
+                return self.clean_git(*args, **kwargs)
+
+            def resolve(*_args):
+                events.append("resolve")
+                return identity
+
+            def reconcile(*_args):
+                events.append("reconcile")
+                return deployment_result
+
+            def watch(*_args, **_kwargs):
+                events.append("watch")
+                return watch_result
+
+            with (
+                self.subTest(deployment=deployment_result, watch=watch_result),
+                mock.patch.object(prod_manage, "git", side_effect=fake_git),
+                mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
+                mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+                mock.patch.object(prod_manage, "assert_remote_idle"),
+                mock.patch.object(prod_manage, "run_stage_preflight"),
+                mock.patch.object(prod_manage, "next_release_name", return_value=identity.tag),
+                mock.patch.object(prod_manage, "print_proposal"),
+                mock.patch.object(prod_manage, "confirmed", return_value=True),
+                mock.patch.object(prod_manage, "write_atomic"),
+                mock.patch.object(prod_manage.releases, "resolve_release_tag", side_effect=resolve),
+                mock.patch.object(prod_manage, "reconcile", side_effect=reconcile),
+                mock.patch.object(prod_manage, "watch_qualification", side_effect=watch) as watcher,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES,
+                    watch=True, watch_timeout_seconds=90,
+                )
+            self.assertEqual(result, expected)
+            self.assertLess(events.index("commit"), events.index("resolve"))
+            self.assertLess(events.index("resolve"), events.index("push"))
+            if deployment_result == 0:
+                watcher.assert_called_once_with({}, identity, timeout_seconds=90)
+                self.assertEqual(events[-2:], ["reconcile", "watch"])
+            else:
+                watcher.assert_not_called()
+
     def test_stage_does_not_consult_candidate_qualification(self) -> None:
         document = desired_document()
         with (

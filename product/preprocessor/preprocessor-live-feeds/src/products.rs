@@ -1121,13 +1121,7 @@ impl ProductBuilder for NexradSourceGridLiveFeedBuilder {
             .to_string();
         let observed_at = parse_nexrad_observed_at_utc(&source_file)?.and_utc();
         let source_sha256 = hash_file(&source_path)?;
-        let palette_hash = hash_text(NEXRAD_FIXED_OPAQUE_PALETTE_JSON);
-        let version = format!(
-            "{}_{}_png8{}",
-            observed_at.format("%Y%m%dT%H%M%SZ"),
-            &source_sha256[..16],
-            &palette_hash[..8]
-        );
+        let version = nexrad_state_version(observed_at, &source_sha256, self.debug_lat_lon_grid);
         build_nexrad_source_grid_tiles(
             &source_path,
             &output_dir,
@@ -1153,6 +1147,35 @@ pub const NEXRAD_FIXED_OPAQUE_PALETTE_JSON: &str =
     include_str!("../../../../docs/nexrad/analysis/whole-day-greedy-255-palette.json");
 
 const NEXRAD_SOURCE_GRID_TILE_SCRIPT: &str = include_str!("nexrad_source_grid_tiles.py");
+const NEXRAD_TILE_SIZE: u32 = 512;
+const NEXRAD_RES_LEVELS: [u8; 4] = [0, 1, 2, 3];
+
+fn nexrad_encoder_sha256(script: &str, palette: &str, debug_lat_lon_grid: bool) -> String {
+    // State URLs are immutable: palette, algorithm, and output options all
+    // participate, even when the upstream NOAA frame has not changed.
+    hash_text(&format!(
+        "script={}\npalette={}\ntile_size={}\nlevels={:?}\ndebug={}\n",
+        hash_text(script),
+        hash_text(palette),
+        NEXRAD_TILE_SIZE,
+        NEXRAD_RES_LEVELS,
+        debug_lat_lon_grid
+    ))
+}
+
+fn nexrad_state_version(observed_at: DateTime<Utc>, source_sha256: &str, debug: bool) -> String {
+    let encoder = nexrad_encoder_sha256(
+        NEXRAD_SOURCE_GRID_TILE_SCRIPT,
+        NEXRAD_FIXED_OPAQUE_PALETTE_JSON,
+        debug,
+    );
+    format!(
+        "{}_{}_png2{}",
+        observed_at.format("%Y%m%dT%H%M%SZ"),
+        &source_sha256[..16],
+        &encoder[..16]
+    )
+}
 
 pub fn build_nexrad_source_grid_tiles(
     source_gz_path: &Path,
@@ -1171,7 +1194,8 @@ pub fn build_nexrad_source_grid_tiles(
         .with_context(|| format!("failed to write {}", script_path.display()))?;
     fs::write(&palette_path, NEXRAD_FIXED_OPAQUE_PALETTE_JSON)
         .with_context(|| format!("failed to write {}", palette_path.display()))?;
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(&script_path)
         .arg("--palette")
         .arg(&palette_path)
@@ -1187,17 +1211,19 @@ pub fn build_nexrad_source_grid_tiles(
         .arg(source_file)
         .arg("--source-sha256")
         .arg(source_sha256)
+        .arg("--encoder-sha256")
+        .arg(nexrad_encoder_sha256(
+            NEXRAD_SOURCE_GRID_TILE_SCRIPT,
+            NEXRAD_FIXED_OPAQUE_PALETTE_JSON,
+            debug_lat_lon_grid,
+        ))
         .arg("--tile-size")
-        .arg("512")
-        .arg("--res-level")
-        .arg("0")
-        .arg("--res-level")
-        .arg("1")
-        .arg("--res-level")
-        .arg("2")
-        .arg("--res-level")
-        .arg("3")
-        .args(debug_lat_lon_grid.then_some("--debug-lat-lon-grid"))
+        .arg(NEXRAD_TILE_SIZE.to_string())
+        .args(debug_lat_lon_grid.then_some("--debug-lat-lon-grid"));
+    for res in NEXRAD_RES_LEVELS {
+        command.arg("--res-level").arg(res.to_string());
+    }
+    let output = command
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
@@ -1355,6 +1381,41 @@ mod tests {
     };
     use serde::Deserialize;
     use tempfile::tempdir;
+
+    #[test]
+    fn nexrad_encoder_identity_covers_algorithm_palette_and_debug_output() {
+        let fingerprint = nexrad_encoder_sha256("script", "palette", false);
+        assert_eq!(
+            fingerprint,
+            nexrad_encoder_sha256("script", "palette", false)
+        );
+        assert_ne!(
+            fingerprint,
+            nexrad_encoder_sha256("repaired script", "palette", false)
+        );
+        assert_ne!(
+            fingerprint,
+            nexrad_encoder_sha256("script", "other palette", false)
+        );
+        assert_ne!(
+            fingerprint,
+            nexrad_encoder_sha256("script", "palette", true)
+        );
+    }
+
+    #[test]
+    fn nexrad_repaired_state_cannot_reuse_legacy_or_debug_urls() {
+        let observed = Utc.with_ymd_and_hms(2026, 9, 10, 0, 52, 41).unwrap();
+        let sha = "0d3b50d0849a87915940cfc114d6473968efdca0054ae5cd40071d9cc96ca79d";
+        let version = nexrad_state_version(observed, sha, false);
+        assert!(version.starts_with("20260910T005241Z_0d3b50d0849a8791_png2"));
+        assert_ne!(version, "20260910T005241Z_0d3b50d0849a8791_png89c0edbec");
+        assert_ne!(version, nexrad_state_version(observed, sha, true));
+        assert_ne!(
+            version,
+            nexrad_state_version(observed, &hash_text("new source"), false)
+        );
+    }
 
     fn incremental_test_notam_line(number: u32, text: &str) -> Value {
         let xml = format!(
@@ -2027,12 +2088,7 @@ mod tests {
         for (index, frame) in manifest.frames.iter().enumerate() {
             let source_path = fixture_root.join("raw").join(&frame.file);
             let observed_at = parsed_fixture_time(frame)?;
-            let version = format!(
-                "{}_{}_png8{}",
-                observed_at.format("%Y%m%dT%H%M%SZ"),
-                &frame.sha256[..16],
-                &palette_hash[..8]
-            );
+            let version = nexrad_state_version(observed_at, &frame.sha256, false);
             expected_last_version = Some(version.clone());
             let output_dir = temp.path().join("states").join(format!("{index:03}"));
             fs::create_dir_all(&output_dir)?;
@@ -2053,8 +2109,19 @@ mod tests {
             assert_eq!(manifest_value["state_id"], version);
             assert_eq!(manifest_value["source_file"], frame.file);
             assert_eq!(manifest_value["source_sha256"], frame.sha256);
-            assert_eq!(manifest_value["tile_encoding"], "png8-fixed-palette");
-            assert_eq!(manifest_value["palette"]["sha256"], palette_hash);
+            assert_eq!(manifest_value["schema_version"], 2);
+            assert_eq!(manifest_value["tile_encoding"], "png-bounded-palette-v1");
+            assert_eq!(
+                manifest_value["quantization"]["base_palette_sha256"],
+                palette_hash
+            );
+            assert_eq!(manifest_value["quality"]["poor_color_match_count"], 0);
+            assert!(
+                manifest_value["quality"]["palette_error_max"]
+                    .as_f64()
+                    .unwrap()
+                    <= 8.0
+            );
             assert_eq!(
                 manifest_value["res-levels"],
                 serde_json::json!([0, 1, 2, 3])
@@ -2068,12 +2135,21 @@ mod tests {
             collect_png_paths(&output_dir.join("tiles"), &mut png_paths)?;
             assert_eq!(png_paths.len(), tile_count);
             let mut min_palette_length = usize::MAX;
+            let mut rgba_tile_count = 0;
             for png_path in &png_paths {
                 let (color_type, palette_lengths) = png_color_type_and_palette_lengths(png_path)?;
+                if color_type == 6 {
+                    assert!(
+                        palette_lengths.is_empty(),
+                        "RGBA tile should not carry a palette"
+                    );
+                    rgba_tile_count += 1;
+                    continue;
+                }
                 assert_eq!(
                     color_type,
                     3,
-                    "{} should be indexed PNG",
+                    "{} should be indexed or RGBA PNG",
                     png_path.display()
                 );
                 assert_eq!(
@@ -2095,6 +2171,10 @@ mod tests {
                 );
                 min_palette_length = min_palette_length.min(palette_lengths[0]);
             }
+            assert_eq!(
+                manifest_value["quality"]["rgba_tile_count"],
+                rgba_tile_count
+            );
             assert!(
                 min_palette_length < 768,
                 "at least one NEXRAD tile should use a compact palette"

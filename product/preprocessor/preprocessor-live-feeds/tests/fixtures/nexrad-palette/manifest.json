@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "file": "20260908T214639Z-res0-13-1.png",
+      "sha256": "ba76b4702fa0d6b3badaf0f33d7bfa5a489a3539e80d4401bf51e83bc41e7515",
+      "before_file": "20260908T214639Z-res0-13-1-before.png",
+      "before_sha256": "599ed847156fe95c5fc555981b30c997aabb92fab159c788a44e79cdc541d940",
+      "source_url": "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/CONUS_L2_CREF_QCD_20260908_214639.tif.gz",
+      "source_sha256": "44a88c2811f110fc65e4a36f7737917c1069f2f9f48fa5edfc3111691e0b406d",
+      "observed_at_utc": "2026-09-08T21:46:39Z",
+      "state_id": "20260908T214639Z_44a88c2811f110fc_png89c0edbec",
+      "source_grid": {
+        "width": 7000,
+        "height": 3500,
+        "geo_transform": [
+          -130.0,
+          0.009999999776482582,
+          0.0,
+          55.0,
+          0.0,
+          -0.009999999776482582
+        ],
+        "projection": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+      },
+      "crop": [
+        6656,
+        512,
+        344,
+        512
+      ],
+      "palette_sha256": "9c0edbecb15256a2a3c0e7e5be934624e20590714d350a8a46dedd6fb13c6ba1",
+      "tiler_sha256": "7e6c0f6962e858a5b9b07a4cce19b1edaa1086c94d840e941f69f91300bab901",
+      "poor_color_match_count_before": 1,
+      "error_max_before": 10,
+      "palette_entries_before": 143,
+      "exception_colors": 1
+    },
+    {
+      "file": "20260910T005241Z-res0-6-3.png",
+      "sha256": "5c50dc675ea3f9701acd66140f02df94f910ad5f5ee244320b1e7376c2ab1557",
+      "before_file": "20260910T005241Z-res0-6-3-before.png",
+      "before_sha256": "04f04291b048736b26f5668add27ae563263cdd997de1a28e128a891663d5028",
+      "source_url": "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/CONUS_L2_CREF_QCD_20260910_005241.tif.gz",
+      "source_sha256": "0d3b50d0849a87915940cfc114d6473968efdca0054ae5cd40071d9cc96ca79d",
+      "observed_at_utc": "2026-09-10T00:52:41Z",
+      "state_id": "20260910T005241Z_0d3b50d0849a8791_png89c0edbec",
+      "source_grid": {
+        "width": 7000,
+        "height": 3500,
+        "geo_transform": [
+          -130.0,
+          0.009999999776482582,
+          0.0,
+          55.0,
+          0.0,
+          -0.009999999776482582
+        ],
+        "projection": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+      },
+      "crop": [
+        3072,
+        1536,
+        512,
+        512
+      ],
+      "palette_sha256": "9c0edbecb15256a2a3c0e7e5be934624e20590714d350a8a46dedd6fb13c6ba1",
+      "tiler_sha256": "7e6c0f6962e858a5b9b07a4cce19b1edaa1086c94d840e941f69f91300bab901",
+      "poor_color_match_count_before": 2,
+      "error_max_before": 54,
+      "palette_entries_before": 167,
+      "exception_colors": 2
+    },
+    {
+      "file": "20260910T011240Z-res0-6-3.png",
+      "sha256": "fbc86786fa157da301dd9226c4a0905dc324a8ff272a323a6291e84f2ac18695",
+      "before_file": "20260910T011240Z-res0-6-3-before.png",
+      "before_sha256": "59b797732365a284fa9df1492e21285f72bed51a6bd644aa2dbd5b7407dd0bac",
+      "source_url": "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/CONUS_L2_CREF_QCD_20260910_011240.tif.gz",
+      "source_sha256": "fd209c32d3176badba9ae4617484cc32bff66732193d6e5317313706418c6ac7",
+      "observed_at_utc": "2026-09-10T01:12:40Z",
+      "state_id": "20260910T011240Z_fd209c32d3176bad_png89c0edbec",
+      "source_grid": {
+        "width": 7000,
+        "height": 3500,
+        "geo_transform": [
+          -130.0,
+          0.009999999776482582,
+          0.0,
+          55.0,
+          0.0,
+          -0.009999999776482582
+        ],
+        "projection": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+      },
+      "crop": [
+        3072,
+        1536,
+        512,
+        512
+      ],
+      "palette_sha256": "9c0edbecb15256a2a3c0e7e5be934624e20590714d350a8a46dedd6fb13c6ba1",
+      "tiler_sha256": "7e6c0f6962e858a5b9b07a4cce19b1edaa1086c94d840e941f69f91300bab901",
+      "poor_color_match_count_before": 2,
+      "error_max_before": 41,
+      "palette_entries_before": 175,
+      "exception_colors": 2
+    },
+    {
+      "file": "20260910T052442Z-res0-5-3.png",
+      "sha256": "280bf16f411345d6818f7aeaae461871844d077cf3d3d465c1ec339cb2bdcc27",
+      "before_file": "20260910T052442Z-res0-5-3-before.png",
+      "before_sha256": "614c41c210933bf52882d477f7d7ee37c34ec539153494991c3c929534c42205",
+      "source_url": "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/CONUS_L2_CREF_QCD_20260910_052442.tif.gz",
+      "source_sha256": "66ca7302f277845ad00bdf68237f114f73ddcfb4adc453b10c525b4da77ec8d0",
+      "observed_at_utc": "2026-09-10T05:24:42Z",
+      "state_id": "20260910T052442Z_66ca7302f277845a_png89c0edbec",
+      "source_grid": {
+        "width": 7000,
+        "height": 3500,
+        "geo_transform": [
+          -130.0,
+          0.009999999776482582,
+          0.0,
+          55.0,
+          0.0,
+          -0.009999999776482582
+        ],
+        "projection": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+      },
+      "crop": [
+        2560,
+        1536,
+        512,
+        512
+      ],
+      "palette_sha256": "9c0edbecb15256a2a3c0e7e5be934624e20590714d350a8a46dedd6fb13c6ba1",
+      "tiler_sha256": "7e6c0f6962e858a5b9b07a4cce19b1edaa1086c94d840e941f69f91300bab901",
+      "poor_color_match_count_before": 8,
+      "error_max_before": 41,
+      "palette_entries_before": 214,
+      "exception_colors": 6
+    },
+    {
+      "file": "20260911T042443Z-res0-13-1.png",
+      "sha256": "d0ada26124fccd006081446481aca4630f69ac2db3376354a197cf62b8271ee8",
+      "before_file": "20260911T042443Z-res0-13-1-before.png",
+      "before_sha256": "c2964a779aaf3bb20f8d83abfff6bb4fe740417a67ea345aaffbb97b6c7af861",
+      "source_url": "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/CONUS_L2_CREF_QCD_20260911_042443.tif.gz",
+      "source_sha256": "a35cb1abac58749947ac3d27066fb0f0a5a2d050b19589547715370a1c18cbcf",
+      "observed_at_utc": "2026-09-11T04:24:43Z",
+      "state_id": "20260911T042443Z_a35cb1abac587499_png89c0edbec",
+      "source_grid": {
+        "width": 7000,
+        "height": 3500,
+        "geo_transform": [
+          -130.0,
+          0.009999999776482582,
+          0.0,
+          55.0,
+          0.0,
+          -0.009999999776482582
+        ],
+        "projection": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+      },
+      "crop": [
+        6656,
+        512,
+        344,
+        512
+      ],
+      "palette_sha256": "9c0edbecb15256a2a3c0e7e5be934624e20590714d350a8a46dedd6fb13c6ba1",
+      "tiler_sha256": "7e6c0f6962e858a5b9b07a4cce19b1edaa1086c94d840e941f69f91300bab901",
+      "poor_color_match_count_before": 1,
+      "error_max_before": 9,
+      "palette_entries_before": 131,
+      "exception_colors": 1
+    },
+    {
+      "file": "20260911T111239Z-res0-3-3.png",
+      "sha256": "61090ef2e5215b6d36879640698f3a34b2b1be294fd0a0671f27e90f1c20b563",
+      "before_file": "20260911T111239Z-res0-3-3-before.png",
+      "before_sha256": "853665ca0f09988e540dbce52006ae2a8aa4f437589b5c71ef9b642a9ab7b9de",
+      "source_url": "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/CONUS_L2_CREF_QCD_20260911_111239.tif.gz",
+      "source_sha256": "00e128094c364f2f822fe8cf62485d28167d1c5c943d893b13f998897cca276f",
+      "observed_at_utc": "2026-09-11T11:12:39Z",
+      "state_id": "20260911T111239Z_00e128094c364f2f_png89c0edbec",
+      "source_grid": {
+        "width": 7000,
+        "height": 3500,
+        "geo_transform": [
+          -130.0,
+          0.009999999776482582,
+          0.0,
+          55.0,
+          0.0,
+          -0.009999999776482582
+        ],
+        "projection": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+      },
+      "crop": [
+        1536,
+        1536,
+        512,
+        512
+      ],
+      "palette_sha256": "9c0edbecb15256a2a3c0e7e5be934624e20590714d350a8a46dedd6fb13c6ba1",
+      "tiler_sha256": "7e6c0f6962e858a5b9b07a4cce19b1edaa1086c94d840e941f69f91300bab901",
+      "poor_color_match_count_before": 3,
+      "error_max_before": 12,
+      "palette_entries_before": 130,
+      "exception_colors": 3
+    }
+  ]
+}

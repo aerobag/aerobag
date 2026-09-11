@@ -106,7 +106,42 @@ def quantize_rgba_to_fixed_palette_indices(rgba, palette):
     }
 
 
-def save_fixed_palette_png(indices, path, palette):
+def rgb_errors(original, decoded_rgb):
+    errors = np.max(np.abs(original[:, :, :3].astype(np.int16) - decoded_rgb.astype(np.int16)), axis=2)
+    errors[original[:, :, 3] == 0] = 0
+    return errors
+
+
+def verified_png_error_histogram(original, path):
+    with Image.open(path) as image:
+        decoded = np.asarray(image.convert('RGBA'))
+    if original.shape != decoded.shape or not np.array_equal(original[:, :, 3], decoded[:, :, 3]):
+        raise ValueError(f'NEXRAD PNG dimensions or alpha changed: {path}')
+    errors = rgb_errors(original, decoded[:, :, :3])
+    maximum = int(errors.max())
+    if maximum > POOR_COLOR_MATCH_THRESHOLD:
+        raise ValueError(f'NEXRAD PNG color error {maximum} exceeds {POOR_COLOR_MATCH_THRESHOLD}: {path}')
+    return np.bincount(errors[original[:, :, 3] > 0], minlength=256)
+
+
+def quality_from_histogram(histogram):
+    occupied = np.flatnonzero(histogram)
+    count = int(histogram.sum())
+    percentile = 0.0
+    if count:
+        rank = (count - 1) * .95
+        lower, upper = int(np.floor(rank)), int(np.ceil(rank))
+        cumulative = histogram.cumsum()
+        values = np.searchsorted(cumulative, [lower, upper], side='right')
+        percentile = float(values[0] + (values[1] - values[0]) * (rank - lower))
+    return {
+        'palette_error_max': float(occupied[-1]) if count else 0.0,
+        'palette_error_p95': percentile,
+        'poor_color_match_count': int(histogram[POOR_COLOR_MATCH_THRESHOLD + 1:].sum()),
+    }
+
+
+def save_bounded_palette_png(rgba, indices, path, palette):
     used = np.unique(indices)
     if used.size == 0:
         used = np.asarray([TRANSPARENT_INDEX], dtype=np.uint8)
@@ -119,14 +154,28 @@ def save_fixed_palette_png(indices, path, palette):
         remap[global_index] = local_index
     compact = remap[indices]
     local_palette = palette[np.asarray(local_indices, dtype=np.uint8)]
-    flat_palette = local_palette.reshape(-1).tolist()
-    transparency = None
-    if local_indices and local_indices[0] == TRANSPARENT_INDEX:
-        transparency = bytes([0] + [255] * (len(local_indices) - 1))
-
+    bad = rgb_errors(rgba, palette[indices]) > POOR_COLOR_MATCH_THRESHOLD
+    exceptions, inverse = np.unique(rgba[:, :, :3][bad], axis=0, return_inverse=True)
+    partial_alpha = np.any((rgba[:, :, 3] != 0) & (rgba[:, :, 3] != 255))
+    rgba_required = len(local_palette) + len(exceptions) > 256 or partial_alpha
     path.parent.mkdir(parents=True, exist_ok=True)
+    if rgba_required:
+        # A tile that cannot satisfy the bound with 256 entries is lossless,
+        # never a reason to increase the permitted error for the entire frame.
+        Image.fromarray(rgba, 'RGBA').save(path, 'PNG', optimize=True)
+    else:
+        compact[bad] = (len(local_palette) + inverse).astype(np.uint8)
+        local_palette = np.concatenate([local_palette, exceptions])
+        save_indexed_png(compact, local_palette, local_indices[0] == TRANSPARENT_INDEX, path)
+    return verified_png_error_histogram(rgba, path), int(bad.sum()), int(rgba_required)
+
+
+def save_indexed_png(compact, local_palette, has_transparency, path):
+    transparency = None
+    if has_transparency:
+        transparency = bytes([0] + [255] * (len(local_palette) - 1))
     image = Image.fromarray(compact, 'P')
-    image.putpalette(flat_palette)
+    image.putpalette(local_palette.reshape(-1).tolist())
     if transparency is None:
         image.save(path, 'PNG', optimize=True)
     else:
@@ -222,7 +271,10 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
             pixel_lat * stride,
         ]
         level = composite_lat_lon_grid_under_radar(level, level_geo_transform)
-    level_indices, quality = quantize_rgba_to_fixed_palette_indices(level, palette)
+    level_indices, base_quality = quantize_rgba_to_fixed_palette_indices(level, palette)
+    histogram = np.zeros(256, dtype=np.int64)
+    repaired_pixels = 0
+    rgba_tiles = 0
     height, width = level.shape[:2]
     tile_cols = (width + tile_size - 1) // tile_size
     tile_rows = (height + tile_size - 1) // tile_size
@@ -235,7 +287,18 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
             x1 = min(x0 + tile_size, width)
             tile = level_indices[y0:y1, x0:x1]
             tile_path = level_root / str(tile_x) / f'{tile_y}.png'
-            save_fixed_palette_png(tile, tile_path, palette)
+            tile_histogram, repaired, rgba_required = save_bounded_palette_png(
+                level[y0:y1, x0:x1], tile, tile_path, palette)
+            histogram += tile_histogram
+            repaired_pixels += repaired
+            rgba_tiles += rgba_required
+    quality = quality_from_histogram(histogram)
+    quality.update({
+        'base_palette_error_max': base_quality['palette_error_max'],
+        'base_palette_poor_color_match_count': base_quality['poor_color_match_count'],
+        'repaired_pixel_count': repaired_pixels,
+        'rgba_tile_count': rgba_tiles,
+    })
     return {
         'res': res,
         'width': width,
@@ -255,6 +318,7 @@ def main():
     parser.add_argument('--observed-at-utc', required=True)
     parser.add_argument('--source-file', required=True)
     parser.add_argument('--source-sha256', required=True)
+    parser.add_argument('--encoder-sha256', required=True)
     parser.add_argument('--tile-size', type=int, required=True)
     parser.add_argument('--res-level', type=int, action='append', required=True)
     parser.add_argument('--debug-lat-lon-grid', action='store_true')
@@ -281,19 +345,22 @@ def main():
         'palette_error_p95': max((level['quality']['palette_error_p95'] for level in levels), default=0.0),
         'poor_color_match_count': sum(level['quality']['poor_color_match_count'] for level in levels),
         'poor_color_match_threshold': POOR_COLOR_MATCH_THRESHOLD,
+        'repaired_pixel_count': sum(level['quality']['repaired_pixel_count'] for level in levels),
+        'rgba_tile_count': sum(level['quality']['rgba_tile_count'] for level in levels),
     }
     manifest = {
-        'schema_version': 1,
+        'schema_version': 2,
         'product': 'nexrad',
         'state_id': args.state_id,
         'observed_at_utc': args.observed_at_utc,
         'source_file': args.source_file,
         'source_sha256': args.source_sha256,
-        'tile_encoding': 'png8-fixed-palette',
-        'palette': {
-            'transparent_index': TRANSPARENT_INDEX,
-            'opaque_indices': [1, 255],
-            'sha256': palette_sha256,
+        'tile_encoding': 'png-bounded-palette-v1',
+        'encoder_sha256': args.encoder_sha256,
+        'quantization': {
+            'base_palette_sha256': palette_sha256,
+            'max_rgb_channel_error': POOR_COLOR_MATCH_THRESHOLD,
+            'overflow_encoding': 'rgba8',
         },
         'tile_size': args.tile_size,
         'quality': quality,

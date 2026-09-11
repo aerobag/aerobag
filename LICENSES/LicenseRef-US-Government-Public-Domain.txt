@@ -1,0 +1,14 @@
+U.S. Government Public-Domain Data
+
+The files identified with this notice contain data produced or distributed by
+agencies of the United States Government. Works of the United States Government
+are not eligible for copyright protection in the United States under
+17 U.S.C. 105.
+
+Aerobag asserts no copyright in the source data. To the extent a file includes
+material supplied by a third party, rights in that material remain with its
+owner.
+
+The data is provided as-is, without warranty. Modified or repackaged data must
+not be represented as an official, current, or endorsed United States
+Government product.

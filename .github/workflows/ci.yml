@@ -376,7 +376,7 @@ jobs:
       - name: Install Python test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes python3-gdal python3-numpy python3-pypdf python3-pytest
+          sudo apt-get install --yes python3-gdal python3-numpy python3-pil python3-pypdf python3-pytest
       - name: Verify locked fixture contracts
         run: python3 tools/ci/verify_locked_fixture_contracts.py
       - name: Run Python tests

@@ -48,15 +48,35 @@ The Avare-style nominal 16:1 pixel-count reduction is `res2`.
 ## Tile Encoding
 
 NEXRAD source-grid tiles are normal browser-renderable PNG files using
-`png8-fixed-palette` encoding. The generator maps source RGBA colors to the
+`png-bounded-palette-v1` encoding. The generator maps source RGBA colors to the
 checked-in fixed palette from `docs/nexrad/analysis/whole-day-greedy-255-palette.json`,
 with index 0 reserved for transparency. Each tile then remaps those fixed
 indices into the shortest PNG-local palette that represents the colors actually
 used in that tile. This keeps color choice stable across frames while avoiding a
 full 256-entry `PLTE` chunk on empty or low-color tiles.
 
-Future delta transport is deferred to TASK-121. That work should treat the
-palette-index stream as the delta source and will require an explicit client
+Any visible pixel whose nearest base-palette color differs by more than 8 in
+any RGB channel gets its exact source color appended to the tile-local palette.
+Other pixels retain their original quantization. If the exceptions do not fit
+within 256 entries (including transparency), that tile uses lossless RGBA PNG
+instead. Tiles with partial alpha also use RGBA to preserve it exactly.
+Both platforms already decode ordinary PNG; they do not interpret palette indices.
+
+The encoder decodes every written PNG and rejects the build if alpha changes or
+any visible pixel exceeds the bound. Quality metrics describe these delivered
+pixels; per-level `base_palette_*` diagnostics retain the pre-repair error.
+`repaired_pixel_count` and `rgba_tile_count` count repairs and lossless tiles.
+The `palette_error_p95` summary remains the maximum of per-level percentiles.
+
+The state ID suffix is `png2` plus a fingerprint of the embedded encoder,
+base palette, tile size, resolution levels, and debug-grid setting. Changing
+these cannot reuse legacy fixed-palette state URLs for the same NOAA source.
+`encoder_sha256` records the full fingerprint. Grid geometry and PNG tile paths
+are unchanged; no global live-feed version change or platform decoder change
+is needed for this NEXRAD-specific encoding descriptor.
+
+Future delta transport is deferred to TASK-121. That work should take
+tile-local exception palettes and RGBA tiles into account and will require an explicit client
 decoder/reconstruction path; it should not be hidden inside PNG.
 
 ## Tile Math
@@ -97,17 +117,18 @@ levels:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "product": "nexrad",
   "state_id": "...",
   "observed_at_utc": "...",
   "source_file": "CONUS_L2_CREF_QCD_....tif.gz",
   "source_sha256": "...",
-  "tile_encoding": "png8-fixed-palette",
-  "palette": {
-    "transparent_index": 0,
-    "opaque_indices": [1, 255],
-    "sha256": "..."
+  "tile_encoding": "png-bounded-palette-v1",
+  "encoder_sha256": "...",
+  "quantization": {
+    "base_palette_sha256": "...",
+    "max_rgb_channel_error": 8,
+    "overflow_encoding": "rgba8"
   },
   "tile_size": 512,
   "res-levels": [0, 1, 2, 3],

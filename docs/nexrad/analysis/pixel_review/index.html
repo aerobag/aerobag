@@ -1,0 +1,51 @@
+<!-- SPDX-FileCopyrightText: 2026 Aerobag contributors -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NEXRAD | Pixel Review</title>
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+  <header class="masthead">
+    <div><span class="eyebrow">AEROBAG / PRODUCTION</span><h1>NEXRAD pixel review</h1></div>
+    <div class="period"><span id="period"></span><br><a href="review.json">Evidence &amp; measurements JSON</a></div>
+  </header>
+  <section class="summary" aria-label="Recovery summary" id="summary">Loading evidence…</section>
+  <div class="toolbar" id="toolbar">
+    <fieldset class="modes"><legend>View</legend>
+      <label><input type="radio" name="mode" value="pair" checked>Side by side</label>
+      <label><input type="radio" name="mode" value="original">NOAA</label>
+      <label><input type="radio" name="mode" value="compressed">Aerobag</label>
+      <label><input type="radio" name="mode" value="blink">Blink</label>
+    </fieldset>
+    <label>Crop zoom <select id="cropZoom"><option value="1">1×</option><option value="2">2×</option><option value="3" selected>3×</option><option value="4">4×</option><option value="6">6×</option><option value="8">8×</option></select></label>
+    <label><input type="checkbox" id="marks"> Mark flagged pixels</label>
+    <fieldset class="swatches"><legend>Background</legend>
+      <label title="Dark"><input type="radio" name="background" value="#262b30" checked><i style="background:#262b30"></i></label>
+      <label title="Chart gray"><input type="radio" name="background" value="#d8dfe1"><i style="background:#d8dfe1"></i></label>
+      <label title="White"><input type="radio" name="background" value="#ffffff"><i style="background:#ffffff"></i></label>
+    </fieldset>
+    <label>Order <select id="order"><option value="error">Largest error</option><option value="count">Most flagged pixels</option><option value="time">Source time</option></select></label>
+  </div>
+  <main>
+    <section id="frames" aria-label="Recovered frame comparisons"></section>
+    <section class="unavailable" id="unavailable"><h2>Not recovered</h2><div class="table-scroll"><table><thead><tr><th>NOAA source time (UTC)</th><th>First warning (UTC)</th><th>Count</th><th>Max RGB error</th><th>Source ID / status</th></tr></thead><tbody></tbody></table></div></section>
+  </main>
+  <dialog id="viewer">
+    <div class="viewer-head"><div><h2 id="viewerTitle"></h2><span id="viewerInfo"></span></div><button id="closeViewer" aria-label="Close full-frame view" title="Close">×</button></div>
+    <div class="viewer-toolbar">
+      <label>View <select id="viewerMode"><option value="pair">Side by side</option><option value="original">NOAA</option><option value="compressed">Aerobag</option><option value="blink">Blink</option></select></label>
+      <label>Resolution <select id="viewerLevel"><option value="0">res0 · native</option><option value="1">res1 · 2× spacing</option><option value="2">res2 · 4× spacing</option><option value="3">res3 · 8× spacing</option></select></label>
+      <label>Zoom <select id="viewerZoom"><option value="fit">Fit</option><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option><option value="32">32×</option></select></label>
+      <label>Flagged pixel <select id="viewerPixel"></select></label>
+      <label><input type="checkbox" id="viewerMarks"> Marks</label>
+    </div>
+    <div class="canvas-area"><canvas id="fullCanvas"></canvas><div id="canvasStatus" role="status"></div></div>
+    <output id="pixelReadout">—</output>
+  </dialog>
+  <script src="review.js"></script>
+</body>
+</html>

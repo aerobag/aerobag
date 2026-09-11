@@ -120,22 +120,27 @@ for the full tag run.
 
 `--promote` requires a clean `main` synchronized with `origin/main`, and checks
 that the configured candidate is active and qualified on staging and that both
-exact-commit GitHub workflows passed. It commits
-the production pointer change, clears staging, pushes, synchronizes only the
-new release intent, and activates the qualified channel generation. It does not
+exact-commit GitHub workflows passed. It commits the production pointer change,
+clears staging, retains outgoing production in sunset for **14 days**, pushes,
+synchronizes only the new release intent, and activates the qualified channel generation. It does not
 install host packages, refresh products, or synchronously run GC.
 With no staging assignment it exits locally without contacting production.
-Before confirmation it prints a red recommendation to add previous production
-to `sunset`, because installed releases use tag-scoped package and live-feed
-URLs. It also reads the canonical product and live-feed contract registries
-from the production and staging Git tags and identifies contracts changed by
-the candidate. Releases with the JSON client inventory use it; historical tags
+Before confirmation it shows the outgoing tag and exact UTC sunset deadline in
+the note and proposed diff. That same deadline is committed; existing sunset
+entries and deadlines are preserved. No manual desired-state edit is needed.
+Use `--promote --sunset-days 30` to override the default, or explicitly choose
+`--promote --sunset-days 0` to retire outgoing production immediately.
+
+Only immediate retirement prints a red warning about removing installed clients'
+tag-scoped package and live-feed URLs. It also reads the canonical product and
+live-feed contract registries from the production and staging Git tags and
+identifies contracts changed by the candidate. Releases with the JSON client inventory use it; historical tags
 without that file use their own Rust `PRODUCT_CONTRACTS` registry and Python
 `LIVE_FEEDS_CONTRACT_PATH` constant. This is inspection of immutable history,
 not a fallback to today's contract values. This check is source-only and fails
 closed on unreadable Git objects, malformed inventories, or unknown legacy
-layouts. The command does not edit `sunset` or guess its retention
-deadline; use a complete manual desired-state edit to retain installed clients.
+layouts. Retaining the outgoing release avoids this removal warning and does
+not require inspecting old contract inventories.
 
 `--promote --force` is the temporary operator escape hatch when qualification
 infrastructure is unavailable. It bypasses deployed-staging qualification and
@@ -143,7 +148,8 @@ exact-commit GitHub CI only. The exact candidate must still have completed its
 build, have running live feeds, and be the active staging release. The forced
 tag is scoped to one controller invocation, and the promotion commit explicitly
 records that qualification was bypassed. An ordinary `--promote` remains
-fail-closed.
+fail-closed. Forced promotion uses the same default sunset retention and accepts
+the same `--sunset-days` override; `--force` alone does not retire old clients.
 
 Successful forced activation also records `qualification_status: "bypassed"`,
 `qualification_bypassed_at_utc`, and `qualification_bypass_reason` in observed
@@ -200,8 +206,9 @@ commit; otherwise legacy adoption fails rather than guessing which bytes are
 live.
 
 Promotion is another desired-state commit: move the staged tag to `production`,
-clear or replace `staging`, and retain the prior production under `sunset` with
-an explicit expiration when old clients still need its contracts. A qualified
+clear `staging`, and retain the prior production under `sunset` with an explicit
+expiration (14 days from the promotion proposal by default). The next periodic
+reconciliation after that deadline retires the sunset release. A qualified
 promotion is a channel-pointer change and graceful nginx reload, not a rebuild.
 Rollback assigns the retained prior tag to production. GC roots production,
 staging, unexpired sunset releases, and the previous generation.

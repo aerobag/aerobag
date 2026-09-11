@@ -19,7 +19,7 @@ import tempfile
 import time
 import traceback
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -46,6 +46,7 @@ LOCAL_CANDIDATE_QUALIFICATION = (
 FAST_RELEASE_PREFLIGHT = REPO_ROOT / "tools/ci/fast_release_preflight.py"
 QUALIFICATION_POLL_SECONDS = 30
 DEFAULT_WATCH_TIMEOUT_SECONDS = 3600
+DEFAULT_SUNSET_DAYS = 14
 DEFAULT_GITHUB_TOKEN_HELPER = Path(
     "/root/aerobag-credentials/github-ci-reader/with-token"
 )
@@ -81,13 +82,20 @@ def parse_args() -> argparse.Namespace:
         help="inspect a legacy or manually requested hosted candidate run",
     )
     operation.add_argument("--stage", action="store_true")
-    operation.add_argument("--promote", action="store_true")
+    operation.add_argument(
+        "--promote", action="store_true",
+        help="promote staging and retain outgoing production in sunset for 14 days",
+    )
     operation.add_argument("--reconcile", action="store_true")
     operation.add_argument("--qualification-status", action="store_true")
     parser.add_argument(
         "--force",
         action="store_true",
         help="promote a built, active staging release without qualification",
+    )
+    parser.add_argument(
+        "--sunset-days", type=int, metavar="DAYS",
+        help="with --promote, retain outgoing production for DAYS (default: 14; 0 disables retention)",
     )
     parser.add_argument(
         "--watch", action="store_true",
@@ -100,6 +108,11 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.force and not args.promote:
         parser.error("--force requires --promote")
+    if args.sunset_days is not None:
+        if not args.promote or args.sunset_days < 0:
+            parser.error("--sunset-days requires --promote and a non-negative number of days")
+    else:
+        args.sunset_days = DEFAULT_SUNSET_DAYS
     if args.watch and not (args.stage or args.qualification_status):
         parser.error("--watch requires --stage or --qualification-status")
     if args.watch_timeout is not None:
@@ -193,15 +206,34 @@ def stage_document(document: dict[str, Any], tag: str) -> dict[str, Any]:
     return proposed
 
 
-def promotion_document(document: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+def promotion_document(
+    document: dict[str, Any], *, sunset_days: int = DEFAULT_SUNSET_DAYS,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], str, str]:
     desired = releases.parse_desired_releases(document)
     if desired.staging is None:
         raise ManagementError("there is no staging release to promote")
+    if type(sunset_days) is not int or sunset_days < 0:
+        raise ManagementError("sunset retention must be a non-negative number of days")
     old_production = desired.production.tag
     candidate = desired.staging.tag
     proposed = json.loads(json.dumps(document))
     proposed["production"] = {"tag": candidate}
     proposed["staging"] = None
+    if sunset_days:
+        instant = now or datetime.now(timezone.utc)
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ManagementError("promotion time must include a timezone")
+        try:
+            until = instant.astimezone(timezone.utc) + timedelta(days=sunset_days)
+        except OverflowError as error:
+            raise ManagementError("sunset retention deadline is outside the supported date range") from error
+        # Production cannot already be in sunset under the strict input contract.
+        # Existing entries (including expired ones) keep their exact deadlines.
+        proposed.setdefault("sunset", []).append({
+            "tag": old_production,
+            "until_utc": until.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        })
     releases.parse_desired_releases(proposed)
     return proposed, old_production, candidate
 
@@ -348,8 +380,8 @@ def promotion_compatibility_warning(
         )
         warning += f" The staged release also replaces {contracts}."
     return (
-        f"{warning} Suggest adding {old_production} to the sunset list before "
-        "promoting."
+        f"{warning} Use --sunset-days {DEFAULT_SUNSET_DAYS} (the default) to retain "
+        "the outgoing release instead of retiring it immediately."
     )
 
 
@@ -1055,7 +1087,10 @@ def stage(
     return result
 
 
-def promote(config_path: Path, releases_path: Path, *, force: bool = False) -> int:
+def promote(
+    config_path: Path, releases_path: Path, *, force: bool = False,
+    sunset_days: int = DEFAULT_SUNSET_DAYS,
+) -> int:
     assert_clean_checkout("promote")
     git("fetch", "--tags", "origin", capture=False)
     assert_main_not_behind(require_synchronized=True)
@@ -1068,10 +1103,10 @@ def promote(config_path: Path, releases_path: Path, *, force: bool = False) -> i
             "promotion is complete"
         )
 
-    proposed, old_production, candidate = promotion_document(document)
-    compatibility_warning = promotion_compatibility_warning(
-        old_production,
-        changed_contracts_after_promotion(desired),
+    proposed, old_production, candidate = promotion_document(document, sunset_days=sunset_days)
+    retained = next((entry for entry in proposed.get("sunset", []) if entry["tag"] == old_production), None)
+    compatibility_warning = None if retained else promotion_compatibility_warning(
+        old_production, changed_contracts_after_promotion(desired),
     )
     config = deployment.load_config(config_path)
     assert_remote_idle(config)
@@ -1087,7 +1122,8 @@ def promote(config_path: Path, releases_path: Path, *, force: bool = False) -> i
         else f"Promote {candidate}"
     )
     commands = [
-        f"Modify deploy/releases.json to promote {candidate} and clear staging",
+        f"Modify deploy/releases.json to promote {candidate}, clear staging, and "
+        + (f"retain {old_production} in sunset" if retained else f"retire {old_production}"),
         "git add deploy/releases.json",
         f'git commit -m "{commit_message}"',
         "git push origin main",
@@ -1102,8 +1138,10 @@ def promote(config_path: Path, releases_path: Path, *, force: bool = False) -> i
         commands,
         color_diff(releases_path, old_text, new_text),
         note=(
-            "Promotion does not choose or add a sunset retention deadline. The "
-            "compatibility warning below describes the required manual edit."
+            f"Outgoing production {old_production} will remain served in sunset until "
+            f"{retained['until_utc']} ({sunset_days} days). Existing sunset deadlines are unchanged."
+            if retained else
+            f"Sunset retention is disabled (--sunset-days 0); {old_production} will be retired immediately."
         ),
     )
     if force:
@@ -1112,7 +1150,8 @@ def promote(config_path: Path, releases_path: Path, *, force: bool = False) -> i
             f"bypassed for {candidate}. The release must still be built and active "
             "on staging."
         )
-    print_warning(compatibility_warning)
+    if compatibility_warning:
+        print_warning(compatibility_warning)
     print()
     if not confirmed():
         print("aborted")
@@ -1243,6 +1282,7 @@ def main() -> int:
                     DEFAULT_CONFIG,
                     DEFAULT_RELEASES,
                     force=getattr(args, "force", False),
+                    sunset_days=getattr(args, "sunset_days", DEFAULT_SUNSET_DAYS),
                 )
             elif args.reconcile:
                 result = reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)

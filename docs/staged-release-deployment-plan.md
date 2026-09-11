@@ -61,8 +61,10 @@ make and apply its commits, but they do not introduce a second state model:
   and directs the operator to `--reconcile` instead of turning a change command
   into an implicit retry.
 - `tools/prod_manage.py --promote` is a desired-state change. It commits the
-  qualified staging assignment as production, clears staging, and then enters
-  activation-only reconciliation. With no staging assignment it exits locally;
+  qualified staging assignment as production, clears staging, retains outgoing
+  production in sunset for 14 days, and enters activation-only reconciliation.
+  `--sunset-days DAYS` overrides retention; `0` explicitly disables it. Existing
+  sunset entries keep their deadlines. With no staging assignment it exits locally;
   it does not contact production merely to check whether an earlier promotion
   completed.
 - `tools/prod_manage.py --promote --force` explicitly waives qualification for
@@ -383,16 +385,23 @@ that untested bytes were historically staged.
 Promotion is expressed by changing desired state, normally in one commit:
 
 - set `production.tag` to the currently staged tag;
-- set `staging` to `null` or to the next candidate; and
-- add the previous production tag to `sunset` when compatibility service is
-  still required.
+- set `staging` to `null`; and
+- add the previous production tag to `sunset`, retaining its release-scoped
+  package and live-feed endpoints for 14 days by default.
 
-Promotion preflight always recommends retaining previous production because
-installed clients use that release's tag-scoped package and live-feed URLs. It
-also compares the canonical package and live-feed contract registries directly
-across the production and staging Git tags so changed contracts are called out
-explicitly. The retention deadline and desired-state edit remain operator
-decisions.
+`--promote` computes a UTC deadline from the proposal time, displays it in the
+confirmation note and diff, then commits that exact deadline with the promotion.
+It preserves existing sunset entries without extending or pruning their deadlines.
+The reconciler's existing expiry handling stops retaining the release at the
+recorded deadline; another promotion is not needed to expire it.
+
+Use `--promote --sunset-days 30` for a different retention period, or explicitly
+choose immediate retirement with `--promote --sunset-days 0`. Only immediate
+retirement warns about removing the outgoing release's tag-scoped endpoints;
+it also compares the old/new contract inventories to call out contract changes.
+Normal retention needs no manual edit or misleading removal warning, even when
+contracts changed. `--force` bypasses qualification only; the same retention
+default and override apply.
 
 The reconciler recognizes that the desired production release is already built,
 qualified, published, and running. It constructs a new channel generation and

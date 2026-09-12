@@ -5,14 +5,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import argparse
+import importlib.util
 import html
 import json
 import math
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from osgeo import gdal, osr
+from osgeo import gdal
+
+_cutline_spec = importlib.util.spec_from_file_location(
+    "chart_cutlines", Path(__file__).resolve().parents[1]
+    / "product/preprocessor/preprocessor-charts/chart_cutlines.py",
+)
+cutlines = importlib.util.module_from_spec(_cutline_spec)
+_cutline_spec.loader.exec_module(cutlines)
 
 
 DEFAULT_THUMB_WIDTH = 1000
@@ -82,6 +91,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    if "--review-server" in sys.argv:
+        from chart_visual_review import main as review_main
+        review_main([arg for arg in sys.argv[1:] if arg != "--review-server"])
+        return
+    if any(option in sys.argv for option in ("--quality", "--quality-help", "--approve-reference")):
+        spec = importlib.util.spec_from_file_location(
+            "chart_quality", Path(__file__).resolve().parents[1]
+            / "product/preprocessor/preprocessor-charts/chart_quality.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = [arg for arg in sys.argv[1:] if arg != "--quality"]
+        if "--quality-help" in args:
+            args = ["--help"]
+        raise SystemExit(module.main(args))
     gdal.UseExceptions()
     args = parse_args()
     work_dir = args.work_dir.resolve()
@@ -165,20 +189,10 @@ def build_card(
         if aux_path.exists():
             aux_path.unlink()
 
-    polygons = read_geojson_polygons(cutline_path)
-    cutline_srs = geojson_srs(cutline_path, polygons)
-    image_srs = osr.SpatialReference()
-    image_srs.ImportFromWkt(dataset.GetProjection())
-    set_traditional_axis_mapping(cutline_srs)
-    set_traditional_axis_mapping(image_srs)
-    transform = osr.CoordinateTransformation(cutline_srs, image_srs)
-    inverse_gt = gdal.InvGeoTransform(dataset.GetGeoTransform())
-    if inverse_gt is None:
-        raise RuntimeError(f"failed to invert geotransform for {source_path}")
-
+    geometry = cutlines.pixel_geometry(cutline_path, dataset)
     pixel_polygons = [
-        [project_to_pixel(transform, inverse_gt, point) for point in polygon]
-        for polygon in polygons
+        [point[:2] for point in ring.GetPoints()]
+        for polygon in geometry for ring in polygon
     ]
     svg_paths = [svg_path_for_polygon(polygon) for polygon in pixel_polygons if polygon]
     cutline_bounds = bounds_for_polygons(pixel_polygons)
@@ -196,96 +210,6 @@ def build_card(
         cutline_bounds=cutline_bounds,
         cutline_area=cutline_area,
     )
-
-
-def set_traditional_axis_mapping(srs: osr.SpatialReference) -> None:
-    if hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
-        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-
-
-def read_geojson_polygons(path: Path) -> list[list[tuple[float, float]]]:
-    value = json.loads(path.read_text())
-    root_type = value.get("type")
-    if root_type == "FeatureCollection":
-        features = value.get("features", [])
-    elif root_type == "Feature":
-        features = [value]
-    else:
-        raise RuntimeError(f"unsupported GeoJSON root type {root_type!r} in {path}")
-
-    polygons: list[list[tuple[float, float]]] = []
-    for feature in features:
-        geometry = feature.get("geometry") or {}
-        geometry_type = geometry.get("type")
-        coordinates = geometry.get("coordinates")
-        if geometry_type == "Polygon":
-            polygons.append(exterior_ring(coordinates, path))
-        elif geometry_type == "MultiPolygon":
-            for polygon in coordinates or []:
-                polygons.append(exterior_ring(polygon, path))
-        else:
-            raise RuntimeError(f"unsupported geometry type {geometry_type!r} in {path}")
-    return polygons
-
-
-def exterior_ring(coordinates: object, path: Path) -> list[tuple[float, float]]:
-    if not isinstance(coordinates, list) or not coordinates:
-        raise RuntimeError(f"polygon missing exterior ring in {path}")
-    ring = coordinates[0]
-    if not isinstance(ring, list):
-        raise RuntimeError(f"polygon exterior ring was not a list in {path}")
-    points = []
-    for point in ring:
-        if not isinstance(point, list) or len(point) < 2:
-            raise RuntimeError(f"invalid polygon point in {path}: {point!r}")
-        points.append((float(point[0]), float(point[1])))
-    return points
-
-
-def geojson_srs(path: Path, polygons: list[list[tuple[float, float]]]) -> osr.SpatialReference:
-    value = json.loads(path.read_text())
-    crs_name = (
-        (value.get("crs") or {})
-        .get("properties", {})
-        .get("name")
-    )
-    epsg = epsg_from_crs_name(crs_name)
-    if epsg is None:
-        epsg = 3857 if any_projected_coordinate(polygons) else 4326
-    srs = osr.SpatialReference()
-    srs.ImportFromEPSG(epsg)
-    return srs
-
-
-def epsg_from_crs_name(crs_name: object) -> int | None:
-    if not isinstance(crs_name, str):
-        return None
-    if "EPSG" not in crs_name.upper():
-        return None
-    tail = crs_name.replace("::", ":").split(":")[-1]
-    try:
-        return int(tail)
-    except ValueError:
-        return None
-
-
-def any_projected_coordinate(polygons: list[list[tuple[float, float]]]) -> bool:
-    for polygon in polygons:
-        for x, y in polygon:
-            if abs(x) > 180.0 or abs(y) > 90.0:
-                return True
-    return False
-
-
-def project_to_pixel(
-    transform: osr.CoordinateTransformation,
-    inverse_gt: tuple[float, float, float, float, float, float],
-    point: tuple[float, float],
-) -> tuple[float, float]:
-    source_x, source_y, _ = transform.TransformPoint(point[0], point[1])
-    pixel_x = inverse_gt[0] + inverse_gt[1] * source_x + inverse_gt[2] * source_y
-    pixel_y = inverse_gt[3] + inverse_gt[4] * source_x + inverse_gt[5] * source_y
-    return pixel_x, pixel_y
 
 
 def svg_path_for_polygon(polygon: list[tuple[float, float]]) -> str:

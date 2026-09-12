@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "source": "Grand Canyon General Aviation.tif",
+  "source_width": 15066,
+  "source_height": 6071,
+  "insets": [
+    {
+      "id": "Reference 1",
+      "projection_wkt": "PROJCS[\"Lambert Conformal Conic\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"latitude_of_origin\",36.13333],PARAMETER[\"central_meridian\",-112.88333],PARAMETER[\"standard_parallel_1\",45],PARAMETER[\"standard_parallel_2\",33],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "target_family": "TAC",
+      "enabled": true,
+      "boundary": [
+        [
+          13643.0,
+          631.0
+        ],
+        [
+          14956.0,
+          628.0
+        ],
+        [
+          14957.0,
+          2023.0
+        ],
+        [
+          13646.0,
+          2024.0
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            14066.4,
+            717.25
+          ],
+          "latitude": 36.883333333,
+          "longitude": -111.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14070.4,
+            1935.0
+          ],
+          "latitude": 36.65,
+          "longitude": -111.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14066.9,
+            978.5
+          ],
+          "latitude": 36.833333333,
+          "longitude": -111.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14838.4,
+            1410.0
+          ],
+          "latitude": 36.75,
+          "longitude": -111.566666667
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14418.9,
+            1412.0
+          ],
+          "latitude": 36.75,
+          "longitude": -111.666666667
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14068.4,
+            1412.75
+          ],
+          "latitude": 36.75,
+          "longitude": -111.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            13788.65,
+            1414.25
+          ],
+          "latitude": 36.75,
+          "longitude": -111.816666667
+        }
+      ]
+    }
+  ]
+}

@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
 import telemetry_contracts
@@ -506,8 +506,94 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
                 "payload": calendar,
                 "error": calendar_error,
             },
+            "chart_quality": collect_chart_quality(config.artifact_root),
         },
     }
+
+
+def collect_chart_quality(artifact_root: Path) -> list[dict[str, Any]]:
+    root = artifact_root / "state/chart-quality"
+    entries = []
+    for path in sorted(root.glob("*/current.json")):
+        payload, error = read_json_file(path)
+        if not error:
+            error = chart_quality_report_error(payload)
+        entries.append({"family": path.parent.name, "payload": payload, "error": error})
+    return entries
+
+
+def chart_quality_report_error(payload: Any) -> str | None:
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return "Unsupported chart quality report"
+    if payload.get("status") not in {"checking", "ok", "warning", "critical"}:
+        return "Invalid chart quality status"
+    if payload["status"] != "checking":
+        for key in ("warning_count", "critical_count", "unreviewed_count"):
+            if type(payload.get(key)) is not int or payload[key] < 0:
+                return f"Invalid chart quality {key}"
+        expected_status = "critical" if payload["critical_count"] else "warning" if payload["warning_count"] else "ok"
+        if payload["status"] != expected_status or payload["unreviewed_count"] > payload["warning_count"]:
+            return "Chart quality status contradicts its counts"
+    if not isinstance(payload.get("regions"), list):
+        return "Invalid chart quality regions"
+    for region in payload["regions"]:
+        if not isinstance(region, dict) or not isinstance(region.get("scores"), dict):
+            return "Invalid chart quality region scores"
+        for scores in region["scores"].values():
+            if not isinstance(scores, dict) or any(type(v) not in (int, float) or not 0 <= v <= 1 for v in scores.values()):
+                return "Invalid chart quality score"
+    return None
+
+
+def add_chart_quality_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+    reports = facts.get("inputs", {}).get("chart_quality")
+    if reports is None:
+        return
+    if not reports:
+        add_metric(metrics, metric_id="chart_quality.available", label="Chart visual checks",
+                   value=0, unit="reports", severity="warning",
+                   message="No chart visual-reference check has completed yet")
+    for entry in reports:
+        family = entry["family"]
+        report = entry.get("payload")
+        error = entry.get("error") or chart_quality_report_error(report)
+        if error:
+            report = {"status": "critical", "error": error, "critical_count": 1}
+        status = report.get("status")
+        incomplete = status == "checking"
+        critical = report.get("critical_count", 0)
+        warnings = report.get("warning_count", 0)
+        severity = "critical" if status == "critical" or status not in {"ok", "warning", "checking"} else "warning" if status == "warning" or incomplete else "ok"
+        report_id = report.get("report_id", "")
+        valid_id = isinstance(report_id, str) and len(report_id) == 32 and all(c in "0123456789abcdef" for c in report_id)
+        review_url = f"/pipeline-health/chart-quality/{family}/reports/{report_id}/index.html" if valid_id else None
+        add_metric(metrics, metric_id=f"chart_quality.{family}.unresolved", label=f"{family} chart visual checks",
+                   value=critical + warnings, unit="regions", severity=severity, warning_threshold=1,
+                   message=(f"{family}: check incomplete; no verified result for this attempt" if incomplete else
+                            f"{family}: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}"),
+                   details={"review_url": review_url, "last_error": report.get("error"),
+                            "regions": report.get("regions", []), "policy": report.get("policy"),
+                            "source_id": report.get("source_id"), "completed_at": report.get("completed_at")})
+        add_metric(metrics, metric_id=f"chart_quality.{family}.unreviewed", label=f"{family} missing visual references",
+                   value=report.get("unreviewed_count", 0), unit="regions",
+                   severity="warning" if report.get("unreviewed_count", 0) else "ok", warning_threshold=1,
+                   message=f"{family}: {report.get('unreviewed_count', 0)} regions have no approved visual reference")
+        scores = [value for region in report.get("regions", []) for view in region.get("scores", {}).values()
+                  for value in view.values() if isinstance(value, (int, float))]
+        if scores:
+            add_metric(metrics, metric_id=f"chart_quality.{family}.max_changed_fraction", label=f"{family} maximum visual change",
+                       value=max(scores), unit="fraction", severity="ok",
+                       message="Largest changed fraction in a sampled region; see per-view policy in review report")
+
+
+def chart_quality_file(artifact_root: Path, relative: str) -> Path | None:
+    root = (artifact_root / "state/chart-quality").resolve()
+    path = safe_join(root, unquote(relative))
+    if path is None or not path.resolve().is_relative_to(root):
+        return None
+    if path.suffix not in {".html", ".json", ".png"} or not path.is_file():
+        return None
+    return path
 
 
 def collect_product_facts(artifact_root: Path, current_artifacts: Any | None) -> list[dict[str, Any]]:
@@ -551,6 +637,7 @@ def evaluate_health(
     add_input_metrics(metrics, facts)
     add_build_watch_metrics(metrics, facts)
     add_aerobag_cloud_metrics(metrics, facts)
+    add_chart_quality_metrics(metrics, facts)
     channels = facts.get("channels")
     if isinstance(channels, dict):
         production_facts = None
@@ -2308,6 +2395,26 @@ def serve(config: MonitorConfig) -> None:
 
         def _handle(self, send_body: bool) -> None:
             path = urlparse(self.path).path
+            prefix = "/pipeline-health/chart-quality/"
+            if path.startswith(prefix):
+                file = chart_quality_file(config.artifact_root, path[len(prefix):])
+                if file is None:
+                    self._send(404, "not found\n", "text/plain; charset=utf-8", send_body)
+                    return
+                payload = file.read_bytes()
+                content_type = {".html": "text/html; charset=utf-8", ".json": "application/json", ".png": "image/png"}[file.suffix]
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                if send_body:
+                    try:
+                        self.wfile.write(payload)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                return
             if path in {"/", "/pipeline-health/", "/pipeline-health/status.html"}:
                 self._send(200, dashboard_html(), "text/html; charset=utf-8", send_body)
                 return
@@ -2539,6 +2646,9 @@ function formatAge(seconds) {
 }
 function renderMetricDetails(metric) {
   const details = metric?.details;
+  if (typeof details?.review_url === "string" && details.review_url.startsWith("/pipeline-health/chart-quality/")) {
+    return `<a href="${esc(details.review_url)}">Review chart reference / current / differences</a>`;
+  }
   const failures = Array.isArray(details?.failures) ? details.failures : [];
   if (!failures.length && !details?.last_error) return "";
   const rows = failures.map((failure) => `<tr>

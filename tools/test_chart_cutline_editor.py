@@ -47,6 +47,7 @@ class EditorStateTest(unittest.TestCase):
         self.source_path = self.work_dir / "Test TAC.tif"
         self.cutline_path = self.cutline_dir / "Test TAC.geojson"
         self._write_test_raster()
+        self.projection_wkt = gdal.Open(str(self.source_path)).GetProjection()
         self._write_test_cutline()
         self.state = EditorState(
             self.work_dir,
@@ -369,9 +370,12 @@ class EditorStateTest(unittest.TestCase):
         self.assertEqual(
             catalog.family_list(),
             [
-                {"id": "SEC", "label": "Sectional", "chart_count": 1},
-                {"id": "TAC", "label": "TAC", "chart_count": 1},
-                {"id": "FLY", "label": "Flyway", "chart_count": 1},
+                {"id": "SEC", "label": "Sectional", "chart_count": 1,
+                 "inset_targets": [{"id":"TAC","label":"TAC"},{"id":"FLY","label":"Flyway"}]},
+                {"id": "TAC", "label": "TAC", "chart_count": 1,
+                 "inset_targets": [{"id":"TAC","label":"TAC"},{"id":"FLY","label":"Flyway"}]},
+                {"id": "FLY", "label": "Flyway", "chart_count": 1,
+                 "inset_targets": [{"id":"FLY","label":"Flyway"},{"id":"TAC","label":"TAC"}]},
             ],
         )
         payload = catalog.chart_payload("SEC", "Test TAC")
@@ -386,6 +390,7 @@ class EditorStateTest(unittest.TestCase):
             "Test TAC",
             [{
                 "id": "First",
+                "projection_wkt": self.projection_wkt,
                 "enabled": False, "target_family": "TAC",
                 "boundary": [[10, 10], [100, 10], [100, 80], [10, 80]],
                 "control_points": [],
@@ -432,6 +437,7 @@ class EditorStateTest(unittest.TestCase):
             "Test TAC",
             [{
                 "id": "Test inset",
+                "projection_wkt": self.projection_wkt,
                 "enabled": True, "target_family": "TAC",
                 "boundary": [[10, 10], [100, 10], [100, 80], [10, 80]],
                 "control_points": controls,
@@ -447,6 +453,10 @@ class EditorStateTest(unittest.TestCase):
             (self.cutline_dir / "Test TAC.navigable-insets.json").read_text(encoding="utf-8")
         )
         self.assertNotIn("diagnostics", document["insets"][0])
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["insets"][0]["projection_wkt"], self.projection_wkt)
+        self.assertEqual(loaded["regions"][0]["projection_wkt"], self.projection_wkt)
+        self.assertEqual(initial["new_inset_projection_wkt"], self.projection_wkt)
         self.assertNotIn("x", document["insets"][0])
         self.assertEqual(
             document["insets"][0]["boundary"],
@@ -461,12 +471,40 @@ class EditorStateTest(unittest.TestCase):
                 "Test TAC",
                 [{
                     "id": "Outside",
+                    "projection_wkt": self.projection_wkt,
                     "enabled": False, "target_family": "TAC",
                     "boundary": [[-1, 10], [100, 10], [100, 80], [10, 80]],
                     "control_points": [],
                 }],
                 None,
             )
+
+    def test_reference_can_start_map_calibration_without_redrawing_or_losing_reference(self):
+        reference = self.state.save_extract('Test TAC', 'inset',
+            [{'x': 20, 'y': 30, 'width': 40, 'height': 50}], 1210, None)
+        path = self.cutline_dir / 'Test TAC.inset.json'
+        original = path.read_bytes()
+        created = self.state.start_georeferencing('Test TAC', 0, reference['revision'], None)
+        loaded = self.state.navigable_inset_payload('Test TAC')
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(len(loaded['regions']), 1)
+        draft = loaded['regions'][0]
+        self.assertEqual(draft['id'], created['region_id'])
+        self.assertEqual(draft['boundary'], [[20,30],[60,30],[60,80],[20,80]])
+        self.assertEqual(draft['target_family'], 'TAC')
+        self.assertFalse(draft['enabled'])
+        self.assertEqual(draft['projection_wkt'], self.projection_wkt)
+        self.assertFalse(draft['diagnostics']['ready'])
+        again = self.state.start_georeferencing('Test TAC', 0, reference['revision'], loaded['revision'])
+        self.assertEqual(again, created)
+        self.assertEqual(self.state.navigable_inset_payload('Test TAC')['revision'], loaded['revision'])
+        with self.assertRaises(RevisionConflict):
+            self.state.start_georeferencing('Test TAC', 0, reference['revision'], None)
+        with self.assertRaises(RevisionConflict):
+            self.state.start_georeferencing('Test TAC', 0, 'stale', loaded['revision'])
+        with self.assertRaisesRegex(RuntimeError, 'Select a saved reference'):
+            self.state.start_georeferencing('Test TAC', -1, reference['revision'], loaded['revision'])
+        self.assertEqual(self.state.navigable_inset_payload('Test TAC')['revision'], loaded['revision'])
 
     def test_georeference_controls_may_be_outside_cutline_but_not_source_raster(self):
         controls = [
@@ -477,6 +515,7 @@ class EditorStateTest(unittest.TestCase):
         ]
         boundary = [[30, 30], [70, 30], [70, 60], [30, 60]]
         region = {"id": "Margin controls", "enabled": True, "target_family": "TAC",
+                  "projection_wkt": self.projection_wkt,
                   "boundary": boundary, "control_points": controls}
         saved = self.state.save_navigable_insets("Test TAC", [region], None)
         loaded = self.state.navigable_inset_payload("Test TAC")
@@ -493,6 +532,7 @@ class EditorStateTest(unittest.TestCase):
                 "Test TAC",
                 [{
                     "id": "Incomplete",
+                    "projection_wkt": self.projection_wkt,
                     "enabled": True, "target_family": "TAC",
                     "boundary": [[10, 10], [100, 10], [100, 80], [10, 80]],
                     "control_points": [
@@ -508,6 +548,7 @@ class EditorStateTest(unittest.TestCase):
             [
                 {
                     "id": "Draft",
+                    "projection_wkt": self.projection_wkt,
                     "enabled": False, "target_family": "TAC",
                     "boundary": [[10, 20], [100, 20], [100, 90], [10, 90]],
                     "control_points": [
@@ -527,6 +568,7 @@ class EditorStateTest(unittest.TestCase):
             {"kind": "latitude", "pixel": [40, 40], "latitude": None, "longitude": None},
         ]
         region = {"id": "Ticks", "enabled": False, "target_family": "TAC",
+                  "projection_wkt": self.projection_wkt,
                   "boundary": [[10, 10], [100, 10], [100, 80]], "control_points": controls}
         saved = self.state.save_navigable_insets("Test TAC", [region], None)
         self.assertEqual(self.state.navigable_inset_payload("Test TAC")["regions"][0]["control_points"], controls)
@@ -544,6 +586,7 @@ class EditorStateTest(unittest.TestCase):
     def test_output_layer_is_per_inset_and_required(self):
         regions = [
             {"id": name, "enabled": False, "target_family": target,
+             "projection_wkt": self.projection_wkt,
              "boundary": [[10, 10], [100, 10], [100, 80]], "control_points": []}
             for name, target in [("Juneau", "TAC"), ("Traffic Area", "FLY"), ("Glacier", "TAC")]
         ]
@@ -569,9 +612,36 @@ class EditorStateTest(unittest.TestCase):
             {"kind": "intersection", "pixel": [20, 20], "latitude": 42.1, "longitude": -87.9},
             {"kind": "intersection", "pixel": [30, 30], "latitude": 42.2, "longitude": -87.8},
             {"kind": "intersection", "pixel": [40, 40], "latitude": 42.3, "longitude": -87.7},
-        ])
+        ], projection_wkt=self.projection_wkt)
         self.assertFalse(result["ready"])
         self.assertEqual(result["summary"], "Control points are collinear")
+
+    def test_editor_requires_and_preserves_explicit_projection_on_drafts(self):
+        alternate = osr.SpatialReference()
+        alternate.ImportFromEPSG(26916)
+        region = {"id": "Different projection", "enabled": False, "target_family": "TAC",
+                  "boundary": [[10, 10], [100, 10], [100, 80]], "control_points": [],
+                  "projection_wkt": alternate.ExportToWkt()}
+        saved = self.state.save_navigable_insets("Test TAC", [region], None)
+        self.assertEqual(saved["regions"][0]["projection_wkt"], region["projection_wkt"])
+        self.assertEqual(self.state.navigable_inset_payload("Test TAC")["regions"][0]["projection_wkt"],
+                         region["projection_wkt"])
+        path = self.cutline_dir / "Test TAC.navigable-insets.json"
+        original = path.read_bytes()
+        for value in [None, "", "not WKT", 'GEOGCS["broken"]']:
+            with self.subTest(value=value):
+                region["projection_wkt"] = value
+                with self.assertRaisesRegex(RuntimeError, "projection_wkt"):
+                    self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
+                self.assertEqual(path.read_bytes(), original)
+        del region["projection_wkt"]
+        with self.assertRaisesRegex(RuntimeError, "projection_wkt"):
+            self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
+        document = json.loads(original)
+        document["schema_version"] = 1
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(RuntimeError, "unsupported navigable-inset schema"):
+            self.state.navigable_inset_payload("Test TAC")
 
 
 class ProjectedInsetTest(unittest.TestCase):
@@ -609,11 +679,14 @@ class ProjectedInsetTest(unittest.TestCase):
         source.GetRasterBand(1).SetColorTable(colors)
         source.GetRasterBand(1).Fill(0)
         source = None
-        self.inset = {"control_points": self.controls,
+        self.inset = {"control_points": self.controls, "projection_wkt": self.srs.ExportToWkt(),
                       "boundary": [[50, 50], [1550, 50], [50, 1550]]}
 
     def test_curved_graticule_predicts_unsampled_points_and_build_uses_same_fit(self):
-        diagnostics = navigable_inset_diagnostics(self.source, self.controls)
+        self.assert_editor_and_build_match_independent_coordinates()
+
+    def assert_editor_and_build_match_independent_coordinates(self):
+        diagnostics = navigable_inset_diagnostics(self.source, self.controls, projection_wkt=self.inset['projection_wkt'])
         self.assertTrue(diagnostics["ready"])
         self.assertLess(diagnostics["max_error_px"], 0.001)
         self.assertEqual(diagnostics["projection"], "Lambert_Conformal_Conic_2SP")
@@ -657,7 +730,7 @@ class ProjectedInsetTest(unittest.TestCase):
 
     def test_bad_coordinate_remains_a_visible_large_residual(self):
         self.controls[4]["longitude"] += 0.5
-        report = navigable_inset_diagnostics(self.source, self.controls)
+        report = navigable_inset_diagnostics(self.source, self.controls, projection_wkt=self.inset['projection_wkt'])
         self.assertTrue(report["ready"])
         self.assertGreater(report["max_error_px"], 400)
 
@@ -694,40 +767,90 @@ class ProjectedInsetTest(unittest.TestCase):
                 self.assertTrue(ok)
                 np.testing.assert_allclose(actual[:2], [lon, lat], atol=1e-8, rtol=0)
 
+    def test_ticks_on_one_parallel_and_one_meridian_determine_off_cross_locations(self):
+        inverse = gdal.InvGeoTransform(self.truth)
+        # Each tick on a named graticule line supplies BOTH coordinates. All
+        # controls lie on one parallel or one meridian, not a rectangular grid.
+        positions = [(lon, 54) for lon in (-167, -166.75, -166.25, -166)]
+        positions += [(-166.5, lat) for lat in (53.75, 53.875, 54.125, 54.25)]
+        controls = [{'kind': 'intersection', 'longitude': lon, 'latitude': lat,
+                     'pixel': list(gdal.ApplyGeoTransform(inverse, *self.project.TransformPoint(lon, lat)[:2]))}
+                    for lon, lat in positions]
+        self.inset['control_points'] = controls
+        output = self.root / 'cross.vrt'
+        report = inset_georeference.build_inset(self.source, self.inset, output)
+        self.assertTrue(report['ready'], report)
+        self.assertLess(report['max_error_px'], .001)
+        fitted = gdal.Open(str(self.root / 'cross-source.vrt'))
+        transform = gdal.Transformer(fitted, None, ['DST_SRS=EPSG:4326'])
+        for lon, lat in [(-166.8, 54.1), (-166.2, 53.9), (-166.7, 53.8)]:
+            point = gdal.ApplyGeoTransform(inverse, *self.project.TransformPoint(lon, lat)[:2])
+            ok, actual = transform.TransformPoint(False, point[0]-50, point[1]-50)
+            self.assertTrue(ok)
+            np.testing.assert_allclose(actual[:2], [lon, lat], atol=1e-8, rtol=0)
+
     def test_mixed_controls_and_invalid_constraints(self):
         controls = self.perimeter_controls() + self.controls[:2]
-        report = navigable_inset_diagnostics(self.source, controls)
+        report = navigable_inset_diagnostics(self.source, controls, projection_wkt=self.inset['projection_wkt'])
         self.assertTrue(report["ready"], report)
         self.assertLess(report["max_error_px"], 0.001)
         controls[0]["latitude"] += .1
-        report = navigable_inset_diagnostics(self.source, controls)
+        report = navigable_inset_diagnostics(self.source, controls, projection_wkt=self.inset['projection_wkt'])
         self.assertTrue(report["ready"], report)
         self.assertGreater(report["point_errors_px"][0], 100)
         controls[0]["longitude"] = -166
-        report = navigable_inset_diagnostics(self.source, controls)
+        report = navigable_inset_diagnostics(self.source, controls, projection_wkt=self.inset['projection_wkt'])
         self.assertFalse(report["ready"])
         self.assertIn("must not supply longitude", report["summary"])
 
     def test_ticks_need_both_coordinates_and_spatial_spread(self):
         controls = self.perimeter_controls()
-        report = navigable_inset_diagnostics(self.source, [p for p in controls if p["kind"] == "latitude"])
+        report = navigable_inset_diagnostics(self.source, [p for p in controls if p["kind"] == "latitude"], projection_wkt=self.inset['projection_wkt'])
         self.assertFalse(report["ready"])
         self.assertIn("longitude observations", report["summary"])
         for point in controls:
             point["pixel"][0] = 50 if point["kind"] == "latitude" else 1550
-        report = navigable_inset_diagnostics(self.source, controls)
+        report = navigable_inset_diagnostics(self.source, controls, projection_wkt=self.inset['projection_wkt'])
         self.assertFalse(report["ready"])
         self.assertIn("spatial spread", report["summary"])
 
-    def test_missing_projection_fails_explicitly(self):
-        source = gdal.Open(str(self.source), gdal.GA_Update)
-        source.SetProjection("")
-        source = None
-        report = navigable_inset_diagnostics(self.source, self.controls)
-        self.assertFalse(report["ready"])
-        self.assertIn("projected coordinate system", report["summary"])
-        with self.assertRaisesRegex(ValueError, "projected coordinate system"):
+    def test_parent_projection_is_not_inset_projection(self):
+        alternate = osr.SpatialReference()
+        alternate.ImportFromProj4("+proj=lcc +lat_0=25.95 +lon_0=-80.1166666667 "
+                                  "+lat_1=45 +lat_2=33 +datum=NAD83 +units=m")
+        for parent_wkt in [alternate.ExportToWkt(), ""]:
+            with self.subTest(parent_wkt=parent_wkt):
+                source = gdal.Open(str(self.source), gdal.GA_Update)
+                source.SetProjection(parent_wkt)
+                source = None
+                self.assert_editor_and_build_match_independent_coordinates()
+
+    def test_missing_or_invalid_inset_projection_is_not_inherited(self):
+        geographic = osr.SpatialReference()
+        geographic.ImportFromEPSG(4326)
+        for selected in [None, "", "invalid WKT", geographic.ExportToWkt()]:
+            with self.subTest(selected=selected):
+                self.inset["projection_wkt"] = selected
+                report = navigable_inset_diagnostics(self.source, self.controls, projection_wkt=selected)
+                self.assertFalse(report["ready"])
+                self.assertIn("projection_wkt", report["summary"])
+                with self.assertRaisesRegex(ValueError, "projection_wkt"):
+                    inset_georeference.build_inset(self.source, self.inset, self.root / "bad.vrt")
+        del self.inset["projection_wkt"]
+        with self.assertRaisesRegex(ValueError, "projection_wkt"):
             inset_georeference.build_inset(self.source, self.inset, self.root / "bad.vrt")
+
+    def test_wrong_selected_projection_stays_wrong_instead_of_autoselecting_parent(self):
+        wrong = osr.SpatialReference()
+        wrong.ImportFromEPSG(3857)
+        self.inset["projection_wkt"] = wrong.ExportToWkt()
+        report = navigable_inset_diagnostics(self.source, self.controls, projection_wkt=self.inset['projection_wkt'])
+        self.assertTrue(report['ready'], report)
+        self.assertGreater(report['max_error_px'], 1)
+        output = self.root / 'wrong-selected.vrt'
+        self.assertEqual(inset_georeference.build_inset(self.source, self.inset, output), report)
+        fitted = gdal.Open(str(self.root / 'wrong-selected-source.vrt'))
+        self.assertTrue(fitted.GetSpatialRef().IsSame(wrong))
 
     def test_noisy_juneau_marks_converge_without_demanding_zero_residual(self):
         # Captured clicks: the least-squares optimum retains real placement error.
@@ -753,7 +876,7 @@ class ProjectedInsetTest(unittest.TestCase):
                 (3681.5, 4954.25, 58.333333333, -134.25),
             ]
         ]
-        report = navigable_inset_diagnostics(source_path, controls)
+        report = navigable_inset_diagnostics(source_path, controls, projection_wkt=srs.ExportToWkt())
         self.assertTrue(report["ready"], report)
         self.assertAlmostEqual(report["max_error_px"], .743, delta=.002)
 

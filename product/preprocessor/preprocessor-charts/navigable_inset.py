@@ -4,8 +4,8 @@
 
 """One inset georeference for editor diagnostics and production raster warping.
 
-The parent raster supplies only the projection, never the inset's placement.
-Fit pixels to that projected plane, then let PROJ reproject the curved graticule.
+The inset explicitly owns its projection; the parent supplies only source pixels.
+Fit pixels to the selected plane, then let PROJ reproject the curved graticule.
 """
 
 import argparse
@@ -34,6 +34,22 @@ CONTROL_FIELDS = {
 
 class GeoreferenceError(ValueError):
     pass
+
+
+def inset_projection(projection_wkt):
+    """No parent inheritance, EPSG lookup, or best-fit projection selection."""
+    if not isinstance(projection_wkt, str) or not projection_wkt.strip():
+        raise GeoreferenceError("Inset requires an explicit projection_wkt")
+    srs = osr.SpatialReference()
+    try:
+        srs.ImportFromWkt(projection_wkt)
+        srs.Validate()
+    except RuntimeError as error:
+        raise GeoreferenceError("Invalid inset projection_wkt") from error
+    if not srs.IsProjected():
+        raise GeoreferenceError("Inset projection_wkt must describe a projected coordinate system")
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    return srs
 
 
 def normalize_control(point, *, allow_incomplete=False):
@@ -221,7 +237,8 @@ class CoordinateFit:
 
 
 class InsetGeoreference:
-    def __init__(self, source_path, control_points):
+    def __init__(self, source_path, control_points, *, projection_wkt):
+        self.srs = inset_projection(projection_wkt)
         controls = [normalize_control(point) for point in control_points]
         count = sum(len(CONTROL_FIELDS[point["kind"]]) for point in controls)
         if count < MIN_CONSTRAINTS:
@@ -230,12 +247,8 @@ class InsetGeoreference:
                 "(intersection=2, tick=1)"
             )
         dataset = gdal.Open(str(source_path))
-        self.srs = dataset.GetSpatialRef()
         dimensions = np.array([dataset.RasterXSize, dataset.RasterYSize])
         dataset = None
-        if self.srs is None or not self.srs.IsProjected():
-            raise GeoreferenceError("Source chart must supply a projected coordinate system")
-        self.srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
         geographic = osr.SpatialReference()
         geographic.ImportFromEPSG(4326)
         geographic.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
@@ -265,8 +278,9 @@ class InsetGeoreference:
         rms_m = float(np.sqrt(np.mean(np.square(ground_errors))))
         self.diagnostics = {
             "ready": True,
-            "fit": "leave-one-out constrained affine in source chart projection",
+            "fit": "leave-one-out constrained affine in explicit inset projection",
             "projection": self.srs.GetAttrValue("PROJECTION"),
+            "projection_wkt": projection_wkt,
             "constraint_count": count,
             "fit_max_error_px": round(max(fit_errors), 3),
             "max_error_px": round(max(check_errors), 3),
@@ -277,11 +291,11 @@ class InsetGeoreference:
         }
 
 
-def navigable_inset_diagnostics(source_path, control_points):
+def navigable_inset_diagnostics(source_path, control_points, *, projection_wkt):
     try:
         controls = [normalize_control(point, allow_incomplete=True) for point in control_points]
         complete = [point for point in controls if complete_control(point)]
-        return InsetGeoreference(source_path, complete).diagnostics
+        return InsetGeoreference(source_path, complete, projection_wkt=projection_wkt).diagnostics
     except GeoreferenceError as error:
         return {"ready": False, "summary": str(error)}
 
@@ -371,7 +385,7 @@ def build_inset(source_path, inset, output_path):
     """Emit a cropped, georeferenced VRT and its clipped Web Mercator warp."""
     source_path = Path(source_path).resolve()
     output_path = Path(output_path).resolve()
-    fit = InsetGeoreference(source_path, inset["control_points"])
+    fit = InsetGeoreference(source_path, inset["control_points"], projection_wkt=inset.get("projection_wkt"))
     boundary = np.array(inset["boundary"], dtype=float)
     left, top = np.floor(boundary.min(axis=0)).astype(int)
     right, bottom = np.ceil(boundary.max(axis=0)).astype(int)
@@ -412,13 +426,26 @@ def build_inset(source_path, inset, output_path):
     return fit.diagnostics
 
 
+def mask_source_insets(source_path, insets, output_path):
+    source = gdal.Open(str(source_path))
+    options = {"format": "VRT"}
+    if source.GetRasterBand(1).GetColorTable() is not None:
+        options['rgbExpand'] = 'rgb'
+    elif source.RasterCount == 1:
+        options['bandList'] = [1, 1, 1]
+    gdal.Translate(str(output_path), source, **options)
+    source = None
+    return mask_parent_insets(output_path, insets, str(output_path) + '.mask.tif')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--mask-parent", action="store_true")
+    parser.add_argument("--mask-source", action="store_true")
     args = parser.parse_args()
-    build = mask_parent_insets if args.mask_parent else build_inset
+    build = mask_source_insets if args.mask_source else mask_parent_insets if args.mask_parent else build_inset
     print(json.dumps(build(args.source, json.load(sys.stdin), args.output)))
 
 

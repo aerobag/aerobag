@@ -4,12 +4,5 @@
   "source_width": 15066,
   "source_height": 6071,
   "max_output_width": 1210,
-  "regions": [
-    {
-      "x": 13636,
-      "y": 533,
-      "width": 1358,
-      "height": 1513
-    }
-  ]
+  "regions": []
 }

@@ -3762,6 +3762,7 @@ mod tests {
             sec_dir.join("Northwest SEC.geojson"),
             serde_json::json!({
                 "type": "FeatureCollection",
+                "crs": {"type": "name", "properties": {"name": "OGC:CRS84"}},
                 "features": [{
                     "type": "Feature",
                     "properties": {"location": "Northwest SEC.tif"},
@@ -3798,7 +3799,35 @@ mod tests {
             .expect("internal cutline polygon set remains available to offline regions");
         assert_eq!(polygon_set.id, "chart-coverage:sec:nw");
         assert_eq!(polygon_set.polygons.len(), 1);
-        assert_eq!(polygon_set.polygons[0].points[0], [-124.0, 41.0]);
+        // Geographic clipping may rotate the ring and densify edges. Verify
+        // the complete footprint, not the incidental choice of first vertex.
+        let points = &polygon_set.polygons[0].points;
+        assert_eq!(points.first(), points.last());
+        for corner in [
+            [-124.0, 41.0],
+            [-124.0, 49.0],
+            [-104.0, 49.0],
+            [-104.0, 41.0],
+        ] {
+            assert!(points
+                .iter()
+                .any(|p| (p[0] - corner[0]).abs() < 1e-10 && (p[1] - corner[1]).abs() < 1e-10));
+        }
+        for p in points {
+            assert!((-124.0 - 1e-10..=-104.0 + 1e-10).contains(&p[0]));
+            assert!((41.0 - 1e-10..=49.0 + 1e-10).contains(&p[1]));
+            assert!(
+                (p[0] + 124.0).abs() < 1e-10
+                    || (p[0] + 104.0).abs() < 1e-10
+                    || (p[1] - 41.0).abs() < 1e-10
+                    || (p[1] - 49.0).abs() < 1e-10
+            );
+        }
+        let twice_area: f64 = points
+            .windows(2)
+            .map(|edge| edge[0][0] * edge[1][1] - edge[1][0] * edge[0][1])
+            .sum();
+        assert!((twice_area.abs() - 320.0).abs() < 1e-8);
     }
 
     #[test]

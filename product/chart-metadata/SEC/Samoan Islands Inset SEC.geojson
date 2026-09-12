@@ -1,13 +1,53 @@
 {
-"type": "FeatureCollection",
-"name": "Samoan Islands Inset SEC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Samoan Islands Inset SEC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -19258271.907236330211163, -1345708.408409109804779 ],
- [ -18812993.944063238799572, -1345708.408409109804779 ],
- [ -18812993.944063238799572, -1804722.766257292591035 ],
- [ -19258271.907236330211163, -1804722.766257292591035 ],
- [ -19258271.907236330211163, -1345708.408409109804779 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Samoan Islands Inset SEC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Samoan Islands Inset SEC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -19241969.339280218,
+              -1482531.8944922308
+            ],
+            [
+              -18938852.288252857,
+              -1482313.5887379383
+            ],
+            [
+              -18938333.168238178,
+              -1591710.0537951756
+            ],
+            [
+              -18852570.152164735,
+              -1591386.851630667
+            ],
+            [
+              -18852133.224297218,
+              -1652566.3434411199
+            ],
+            [
+              -19243121.735872,
+              -1652316.1904444436
+            ],
+            [
+              -19241969.339280218,
+              -1482531.8944922308
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

@@ -1,0 +1,59 @@
+{
+  "type": "FeatureCollection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "PROJCS[\"US_IFR\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257221999999,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"latitude_of_origin\",39],PARAMETER[\"central_meridian\",-95],PARAMETER[\"standard_parallel_1\",45],PARAMETER[\"standard_parallel_2\",33],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              1239319.9880813095,
+              -315477.4893031861
+            ],
+            [
+              1639452.0517399914,
+              -303109.51015379693
+            ],
+            [
+              1672577.4462040223,
+              -1377507.206528769
+            ],
+            [
+              1272445.3825453403,
+              -1389875.1856781584
+            ],
+            [
+              1239319.9880813095,
+              -315477.4893031861
+            ]
+          ]
+        ]
+      }
+    }
+  ],
+  "source_sheet": {
+    "schema_version": 1,
+    "source": "ENR_L23.tif",
+    "source_width": 24000,
+    "source_height": 8000,
+    "detail_width": 2960,
+    "detail_height": 7654,
+    "pixel_transform": [
+      2123,
+      1,
+      0,
+      160,
+      0,
+      1
+    ],
+    "note": "FAA supplies this detail GeoTIFF with its own georeference. No manual calibration; review the rough cutline and its parent-sheet placement."
+  }
+}

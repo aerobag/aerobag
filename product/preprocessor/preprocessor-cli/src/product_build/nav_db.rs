@@ -1124,6 +1124,10 @@ pub(super) fn build_nav_kv_artifact(
             hash_file(resource_index_path)?,
         ),
         (
+            "chart_metadata".to_string(),
+            hash_tree(&config.chart_metadata_root)?,
+        ),
+        (
             "intermediate_sqlite_db".to_string(),
             hash_file(intermediate_sqlite_db_path)?,
         ),
@@ -2579,107 +2583,10 @@ pub(super) fn read_chart_cutline_polygons(
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
-    let mut paths = fs::read_dir(dir)
-        .with_context(|| format!("failed to read {}", dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to enumerate {}", dir.display()))?;
-    paths.sort();
-    let mut polygons = Vec::new();
-    for path in paths {
-        if path.extension().and_then(|ext| ext.to_str()) != Some("geojson") {
-            continue;
-        }
-        polygons.extend(read_chart_cutline_polygons_from_file(&path)?);
-    }
-    Ok(polygons)
-}
-
-pub(super) fn read_chart_cutline_polygons_from_file(
-    path: &Path,
-) -> anyhow::Result<Vec<RawChartCutlinePolygon>> {
-    let value: serde_json::Value = serde_json::from_slice(
-        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", path.display()))?;
-    let feature_values = match value.get("type").and_then(|value| value.as_str()) {
-        Some("FeatureCollection") => value
-            .get("features")
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default(),
-        Some("Feature") => vec![value],
-        Some(other) => bail!(
-            "unsupported geojson root type {other} in {}",
-            path.display()
-        ),
-        None => bail!("geojson root missing type in {}", path.display()),
-    };
-
-    let mut polygons = Vec::new();
-    for feature in feature_values {
-        let geometry = feature
-            .get("geometry")
-            .context("geojson feature missing geometry")?;
-        let geometry_type = geometry
-            .get("type")
-            .and_then(|value| value.as_str())
-            .context("geojson geometry missing type")?;
-        match geometry_type {
-            "Polygon" => polygons.push(RawChartCutlinePolygon {
-                points: polygon_points_from_geojson_coordinates(
-                    geometry
-                        .get("coordinates")
-                        .context("polygon missing coordinates")?,
-                )?,
-            }),
-            other => bail!(
-                "unsupported cutline geometry type {other} in {}",
-                path.display()
-            ),
-        }
-    }
-    Ok(polygons)
-}
-
-pub(super) fn polygon_points_from_geojson_coordinates(
-    coordinates: &serde_json::Value,
-) -> anyhow::Result<Vec<[f64; 2]>> {
-    let rings = coordinates
-        .as_array()
-        .context("polygon coordinates were not an array")?;
-    let exterior = rings
-        .first()
-        .and_then(|ring| ring.as_array())
-        .context("polygon had no exterior ring")?;
-    exterior
-        .iter()
-        .map(|point| {
-            let point = point.as_array().context("polygon point was not an array")?;
-            let x = point
-                .first()
-                .and_then(|value| value.as_f64())
-                .context("polygon point missing x/lon")?;
-            let y = point
-                .get(1)
-                .and_then(|value| value.as_f64())
-                .context("polygon point missing y/lat")?;
-            Ok(if x.abs() > 180.0 || y.abs() > 90.0 {
-                web_mercator_to_lon_lat(x, y)
-            } else {
-                [x, y]
-            })
-        })
-        .collect()
-}
-
-pub(super) fn web_mercator_to_lon_lat(x: f64, y: f64) -> [f64; 2] {
-    let origin_shift = 20_037_508.342_789_244_f64;
-    let lon = (x / origin_shift) * 180.0;
-    let lat = (y / origin_shift) * 180.0;
-    let lat = 180.0 / std::f64::consts::PI
-        * (2.0 * ((lat * std::f64::consts::PI / 180.0).exp()).atan() - std::f64::consts::PI / 2.0);
-    [lon, lat]
+    Ok(preprocessor_charts::read_chart_cutline_exteriors(dir)?
+        .into_iter()
+        .map(|points| RawChartCutlinePolygon { points })
+        .collect())
 }
 
 pub(super) fn collections_for_cutline_polygon<'a>(

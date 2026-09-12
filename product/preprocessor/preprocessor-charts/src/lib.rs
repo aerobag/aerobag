@@ -37,7 +37,7 @@ pub const WIDE_ANGLE_REGION_ID: &str = "wide";
 pub const CHART_REFERENCE_CATALOG_NAME: &str = "chart-reference-catalog.json";
 const NAVIGABLE_INSET_SUFFIX: &str = ".navigable-insets.json";
 
-/// Sectional sheets contain independently georeferenced TAC and Flyway insets.
+/// Additional archive family required beyond the destination's own sources.
 pub fn navigable_inset_source_family(destination: ChartFamily) -> Option<ChartFamily> {
     match destination {
         ChartFamily::Tac | ChartFamily::Flyway => Some(ChartFamily::Sec),
@@ -153,6 +153,10 @@ enum NavigableInsetTarget {
     Tac,
     #[serde(rename = "FLY")]
     Flyway,
+    #[serde(rename = "ENR_L")]
+    EnrL,
+    #[serde(rename = "ENR_H")]
+    EnrH,
 }
 
 impl NavigableInsetTarget {
@@ -160,6 +164,8 @@ impl NavigableInsetTarget {
         match self {
             Self::Tac => ChartFamily::Tac,
             Self::Flyway => ChartFamily::Flyway,
+            Self::EnrL => ChartFamily::EnrL,
+            Self::EnrH => ChartFamily::EnrH,
         }
     }
 }
@@ -168,6 +174,7 @@ impl NavigableInsetTarget {
 struct NavigableInset {
     id: String,
     target_family: NavigableInsetTarget,
+    projection_wkt: String,
     #[serde(default)]
     enabled: bool,
     boundary: Vec<[f64; 2]>,
@@ -1047,70 +1054,76 @@ fn source_chart_coverage(
     source_chart_id: &str,
 ) -> anyhow::Result<ChartReferenceCoverage> {
     let path = layout_dir.join(format!("{source_chart_id}.geojson"));
-    let document: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", path.display()))?;
-    let crs = document
-        .pointer("/crs/properties/name")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let coordinates_are_lon_lat = match crs {
-        value if value.ends_with("3857") => false,
-        "urn:ogc:def:crs:OGC:1.3:CRS84" => true,
-        _ => bail!(
-            "chart reference coverage requires EPSG:3857 or CRS84 cutline in {}; got {crs:?}",
-            path.display()
-        ),
-    };
-    let coordinates = document
-        .pointer("/features/0/geometry/coordinates")
-        .with_context(|| format!("{} has no polygon coordinates", path.display()))?;
-    let mut mercator_points = Vec::new();
-    collect_coordinate_pairs(coordinates, &mut mercator_points);
-    if mercator_points.is_empty() {
-        bail!("{} has no coordinate pairs", path.display());
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            include_str!("../chart_cutlines.py"),
+            "coverage",
+            "--cutline",
+        ])
+        .arg(&path)
+        .output()
+        .with_context(|| format!("failed to project chart coverage from {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "chart coverage failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
-    let mut coverage = ChartReferenceCoverage {
-        lat_min: f64::INFINITY,
-        lat_max: f64::NEG_INFINITY,
-        lon_min: f64::INFINITY,
-        lon_max: f64::NEG_INFINITY,
-    };
-    for (x, y) in mercator_points {
-        let (lat, lon) = if coordinates_are_lon_lat {
-            (y, x)
-        } else {
-            web_mercator_to_lat_lon(x, y)
-        };
-        coverage.lat_min = coverage.lat_min.min(lat);
-        coverage.lat_max = coverage.lat_max.max(lat);
-        coverage.lon_min = coverage.lon_min.min(lon);
-        coverage.lon_max = coverage.lon_max.max(lon);
-    }
-    Ok(coverage)
+    serde_json::from_slice(&output.stdout).context("invalid projected chart coverage")
 }
 
-fn collect_coordinate_pairs(value: &serde_json::Value, output: &mut Vec<(f64, f64)>) {
-    let Some(values) = value.as_array() else {
-        return;
-    };
-    if values.len() >= 2 {
-        if let (Some(x), Some(y)) = (values[0].as_f64(), values[1].as_f64()) {
-            output.push((x, y));
-            return;
-        }
+/// Geographic exterior footprints for offline-region catalog construction.
+/// The same explicit-CRS reader is used for editing, chart warps and coverage.
+pub fn read_chart_cutline_exteriors(directory: &Path) -> anyhow::Result<Vec<Vec<[f64; 2]>>> {
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            include_str!("../chart_cutlines.py"),
+            "exteriors",
+            "--cutline",
+        ])
+        .arg(directory)
+        .output()
+        .context("failed to project chart footprints")?;
+    if !output.status.success() {
+        bail!(
+            "chart footprint projection failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
-    for child in values {
-        collect_coordinate_pairs(child, output);
-    }
+    serde_json::from_slice(&output.stdout).context("invalid projected chart footprints")
 }
 
-fn web_mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
-    const EARTH_RADIUS_M: f64 = 6_378_137.0;
-    let lon = (x / EARTH_RADIUS_M).to_degrees();
-    let lat = (2.0 * (y / EARTH_RADIUS_M).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees();
-    (lat, lon)
+fn prepare_chart_cutline(
+    work_dir: &Path,
+    cutline: &str,
+    source: &str,
+    label: &str,
+) -> anyhow::Result<String> {
+    let derived = format!(".cutlines/{cutline}");
+    let invocation = ToolInvocation {
+        program: "python3".to_string(),
+        args: vec![
+            "-c".to_string(),
+            include_str!("../chart_cutlines.py").to_string(),
+            "prepare".to_string(),
+            "--cutline".to_string(),
+            cutline.to_string(),
+            "--source".to_string(),
+            source.to_string(),
+            "--output".to_string(),
+            derived.clone(),
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!("cutline-{label}"),
+        env: Vec::new(),
+        stdin_text: None,
+    };
+    let outcome = invocation.run_logged(&work_dir.join(".rust-logs"))?;
+    invocation.ensure_success(&outcome, &format!("failed to prepare cutline {cutline}"))?;
+    Ok(derived)
 }
 
 fn inspect_raster(path: &Path) -> anyhow::Result<RasterInspection> {
@@ -1322,26 +1335,30 @@ fn build_navigable_inset_vrts(
     work_dir: &Path,
     destination: ChartFamily,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    if navigable_inset_source_family(destination).is_none() {
-        return Ok(Vec::new());
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            include_str!("../chart_cutlines.py"),
+            "inset-layouts",
+            "--cutline",
+            ".",
+            "--destination",
+            ChartSpec::for_family(destination).chart_dir_name,
+        ])
+        .current_dir(work_dir)
+        .output()
+        .context("failed to enumerate inset sources")?;
+    if !output.status.success() {
+        bail!(
+            "failed to enumerate inset sources: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
-    let metadata_dir = work_dir.join("SEC");
-    if !metadata_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut metadata_paths = fs::read_dir(&metadata_dir)
-        .with_context(|| format!("failed to read {}", metadata_dir.display()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(NAVIGABLE_INSET_SUFFIX))
-        })
-        .collect::<Vec<_>>();
-    metadata_paths.sort();
+    let metadata_paths: Vec<PathBuf> = serde_json::from_slice(&output.stdout)?;
 
     let mut outputs = Vec::new();
     for metadata_path in metadata_paths {
+        let metadata_path = work_dir.join(metadata_path);
         let layout = read_navigable_inset_layout(&metadata_path)?;
         if !layout
             .insets
@@ -1436,7 +1453,7 @@ fn validate_navigable_inset_layout(
     path: &Path,
     actual_dimensions: (u32, u32),
 ) -> anyhow::Result<()> {
-    if layout.schema_version != 1 {
+    if layout.schema_version != 2 {
         bail!(
             "unsupported navigable-inset schema_version {} in {}",
             layout.schema_version,
@@ -1463,6 +1480,12 @@ fn validate_navigable_inset_layout(
     }
     let mut identifiers = BTreeSet::new();
     for inset in &layout.insets {
+        if inset.projection_wkt.trim().is_empty() {
+            bail!(
+                "navigable inset {:?} needs explicit projection_wkt",
+                inset.id
+            );
+        }
         if inset.id.trim().is_empty() || inset.boundary.len() < 3 {
             bail!(
                 "navigable inset in {} needs an id and at least three boundary points",
@@ -1608,12 +1631,7 @@ fn build_ifr_vrts(
     // Compatibility note: IFR families also depend on legacy VRT stacking order for overlap
     // precedence. Keep the legacy discovery/order contract instead of normalizing it.
     let inputs = ordered_chart_input_names(spec.family, &chart_dir)?;
-    let vrts = inputs
-        .iter()
-        .map(|base_name| work_dir.join(format!("{base_name}.vrt")))
-        .collect::<Vec<_>>();
-
-    let queue = Arc::new(Mutex::new(inputs));
+    let queue = Arc::new(Mutex::new(inputs.clone()));
     let job_count = cpu_jobs.max(1);
     let start = Instant::now();
     let mut handles = Vec::with_capacity(job_count);
@@ -1651,6 +1669,13 @@ fn build_ifr_vrts(
             .map_err(|_| anyhow::anyhow!("vrt worker panicked"))??;
     }
 
+    let mut vrts = Vec::new();
+    for name in inputs {
+        let parts: Vec<PathBuf> =
+            serde_json::from_slice(&fs::read(work_dir.join(format!("{name}.parts.json")))?)?;
+        vrts.extend(parts.into_iter().map(|p| work_dir.join(p)));
+    }
+    vrts.extend(build_navigable_inset_vrts(work_dir, spec.family)?);
     build_main_vrt(work_dir, chart_dir_name, &vrts)?;
     let elapsed_ms = start.elapsed().as_millis();
 
@@ -1712,7 +1737,22 @@ for path in glob.glob("*.geojson", root_dir=chart_dir):
         _ => {}
     }
 
-    Ok(names)
+    // Detailed FAA images must overlay their parent charts, independent of the
+    // inherited family ordering. The source-sheet registration is explicit.
+    let mut details = Vec::new();
+    let mut mains = Vec::new();
+    for name in names {
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(chart_dir.join(format!("{name}.geojson")))?)?;
+        if document.get("source_sheet").is_some() {
+            details.push(name);
+        } else {
+            mains.push(name);
+        }
+    }
+    mains.extend(details);
+
+    Ok(mains)
 }
 
 fn build_one_vfr_vrt(
@@ -1726,6 +1766,12 @@ fn build_one_vfr_vrt(
     let rgb_vrt_name = format!("{base_name}rgb.vrt");
     let vrt_name = format!("{base_name}.vrt");
     let cutline = format!("{chart_dir_name}/{base_name}.geojson");
+    let cutline = prepare_chart_cutline(
+        work_dir,
+        &cutline,
+        &tif_name,
+        &format!("{chart_dir_name}-{worker_index}"),
+    )?;
     let logs_dir = work_dir.join(".rust-logs");
     let family_label = family.capture_label();
 
@@ -1937,41 +1983,114 @@ fn build_one_ifr_vrt(
     worker_index: usize,
 ) -> anyhow::Result<()> {
     let tif_name = resolve_chart_input_filename(work_dir, base_name, "tif")?;
-    let vrt_name = format!("{base_name}.vrt");
     let cutline = format!("{chart_dir_name}/{base_name}.geojson");
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            include_str!("../chart_cutlines.py"),
+            "prepare-parts",
+            "--cutline",
+            &cutline,
+            "--source",
+            &tif_name,
+            "--output",
+            &format!(".cutlines/{cutline}"),
+        ])
+        .current_dir(work_dir)
+        .output()
+        .context("failed to prepare IFR cutline parts")?;
+    if !output.status.success() {
+        bail!(
+            "failed to prepare {cutline}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[derive(Deserialize)]
+    struct Part {
+        cutline: String,
+        bounds: [f64; 4],
+    }
+    let parts: Vec<Part> = serde_json::from_slice(&output.stdout)?;
     let logs_dir = work_dir.join(".rust-logs");
     let family_label = family.capture_label();
-
-    remove_if_exists(work_dir.join(&vrt_name))?;
-
-    let warp = ToolInvocation {
-        program: "gdalwarp".to_string(),
-        args: vec![
-            "-of".to_string(),
-            "vrt".to_string(),
-            "-r".to_string(),
-            "cubic".to_string(),
-            "-dstnodata".to_string(),
-            "51".to_string(),
-            "-t_srs".to_string(),
-            "EPSG:3857".to_string(),
-            "-cutline".to_string(),
-            cutline,
-            "-crop_to_cutline".to_string(),
-            tif_name,
-            vrt_name,
-        ],
-        cwd: work_dir.to_path_buf(),
-        label: format!(
-            "{family_label}-warp-{worker_index}-{}",
-            sanitize_label(base_name)
-        ),
-        env: Vec::new(),
-        stdin_text: None,
-    };
-    let warp_outcome = warp.run_logged(&logs_dir)?;
-    warp.ensure_success(&warp_outcome, &format!("gdalwarp failed for {base_name}"))?;
-
+    let layout_path = work_dir
+        .join(chart_dir_name)
+        .join(format!("{base_name}{NAVIGABLE_INSET_SUFFIX}"));
+    let mut warp_source = tif_name.clone();
+    if layout_path.is_file() {
+        let layout = read_navigable_inset_layout(&layout_path)?;
+        validate_navigable_inset_source(work_dir, &layout, &layout_path)?;
+        if layout.source != tif_name {
+            bail!("inset layout names a different parent source");
+        }
+        let enabled: Vec<_> = layout.insets.iter().filter(|i| i.enabled).collect();
+        if !enabled.is_empty() {
+            warp_source = format!("{base_name}.masked-source.vrt");
+            let mask = ToolInvocation {
+                program: "python3".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    include_str!("../navigable_inset.py").to_string(),
+                    "--mask-source".to_string(),
+                    tif_name.clone(),
+                    warp_source.clone(),
+                ],
+                cwd: work_dir.to_path_buf(),
+                label: format!("{family_label}-inset-exclusion-{worker_index}"),
+                env: Vec::new(),
+                stdin_text: Some(serde_json::to_string(&enabled)?),
+            };
+            let result = mask.run_logged(&logs_dir)?;
+            mask.ensure_success(&result, "failed to mask IFR parent insets")?;
+        }
+    }
+    let mut vrts = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let vrt_name = if index == 0 {
+            format!("{base_name}.vrt")
+        } else {
+            format!("{base_name}.part-{index}.vrt")
+        };
+        vrts.push(vrt_name.clone());
+        remove_if_exists(work_dir.join(&vrt_name))?;
+        let warp = ToolInvocation {
+            program: "gdalwarp".to_string(),
+            args: vec![
+                "-of".to_string(),
+                "vrt".to_string(),
+                "-r".to_string(),
+                "cubic".to_string(),
+                "-dstnodata".to_string(),
+                "51".to_string(),
+                "-t_srs".to_string(),
+                "EPSG:3857".to_string(),
+                "-cutline".to_string(),
+                part.cutline.clone(),
+                // GDAL's automatic crop can wrap a seam endpoint onto the other
+                // hemisphere. The shared projector supplies each bounded extent.
+                "-te".to_string(),
+                part.bounds[0].to_string(),
+                part.bounds[1].to_string(),
+                part.bounds[2].to_string(),
+                part.bounds[3].to_string(),
+                warp_source.clone(),
+                vrt_name,
+            ],
+            cwd: work_dir.to_path_buf(),
+            label: format!(
+                "{family_label}-warp-{worker_index}-{}",
+                sanitize_label(base_name)
+            ),
+            env: Vec::new(),
+            stdin_text: None,
+        };
+        let warp_outcome = warp.run_logged(&logs_dir)?;
+        warp.ensure_success(&warp_outcome, &format!("gdalwarp failed for {base_name}"))?;
+    }
+    fs::write(
+        work_dir.join(format!("{base_name}.parts.json")),
+        serde_json::to_vec(&vrts)?,
+    )?;
     Ok(())
 }
 
@@ -3032,15 +3151,22 @@ mod tests {
             .status()
             .unwrap()
             .success());
+        let projection = Command::new("gdalsrsinfo")
+            .args(["-o", "wkt", "EPSG:26916"])
+            .output()
+            .unwrap();
+        assert!(projection.status.success());
+        let projection_wkt = String::from_utf8(projection.stdout).unwrap();
         fs::write(
             metadata_dir.join("Test SEC.navigable-insets.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "source": "Test SEC.tif",
                 "source_width": 100,
                 "source_height": 80,
                 "insets": [{
                     "id": "Test city",
+                    "projection_wkt": projection_wkt.trim(),
                     "target_family": "TAC",
                     "enabled": true,
                     "boundary": [[10, 10], [90, 10], [10, 70]],
@@ -3057,6 +3183,65 @@ mod tests {
         .unwrap();
 
         temp
+    }
+
+    #[test]
+    fn navigable_inset_uses_selected_projection_and_rejects_missing_projection() {
+        let temp = navigable_inset_fixture();
+        let change_parent = Command::new("/usr/bin/python3")
+            .args(["-c", r#"
+from osgeo import gdal,osr
+srs=osr.SpatialReference(); srs.ImportFromEPSG(3857)
+source=gdal.Open('Test SEC.tif',gdal.GA_Update); source.SetProjection(srs.ExportToWkt()); source=None
+"#])
+            .current_dir(temp.path()).output().unwrap();
+        assert!(change_parent.status.success());
+        let outputs = build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).unwrap();
+        let check = Command::new("/usr/bin/python3")
+            .args([
+                "-c",
+                r#"
+import pathlib
+from osgeo import gdal,osr
+expected=osr.SpatialReference(); expected.ImportFromEPSG(26916)
+fitted=list(pathlib.Path('.').glob('navigable-inset-*-source.vrt'))
+assert len(fitted)==1, fitted
+assert gdal.Open(str(fitted[0])).GetSpatialRef().IsSame(expected)
+"#,
+            ])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            check.status.success(),
+            "{}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        assert_eq!(outputs.len(), 1);
+        let path = temp.path().join("SEC/Test SEC.navigable-insets.json");
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("invalid WKT"),
+        ] {
+            let mut changed = original.clone();
+            changed["insets"][0]["projection_wkt"] = bad;
+            fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert!(build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).is_err());
+        }
+        let mut changed = original.clone();
+        changed["insets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("projection_wkt");
+        fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).is_err());
+        let mut changed = original;
+        changed["schema_version"] = serde_json::json!(1);
+        fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).is_err());
     }
 
     #[test]
@@ -3115,6 +3300,75 @@ mod tests {
         let outputs = build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(inspect_raster(&outputs[0]).unwrap(), inspection);
+    }
+
+    #[test]
+    fn non_sectional_insets_reach_their_mosaics_and_are_removed_from_ifr_parent() {
+        for (family, directory) in [
+            (ChartFamily::Tac, "TAC"),
+            (ChartFamily::EnrL, "ENR_L"),
+            (ChartFamily::EnrH, "ENR_H"),
+        ] {
+            let temp = navigable_inset_fixture();
+            fs::rename(temp.path().join("SEC"), temp.path().join(directory)).unwrap();
+            let path = temp
+                .path()
+                .join(directory)
+                .join("Test SEC.navigable-insets.json");
+            let mut layout: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            layout["insets"][0]["target_family"] = serde_json::json!(directory);
+            fs::write(&path, serde_json::to_vec(&layout).unwrap()).unwrap();
+            let outputs = build_navigable_inset_vrts(temp.path(), family).unwrap();
+            assert_eq!(outputs.len(), 1);
+            if family == ChartFamily::Tac {
+                continue;
+            }
+            fs::write(
+                temp.path().join("chart_cutlines.py"),
+                include_str!("../chart_cutlines.py"),
+            )
+            .unwrap();
+            let setup = Command::new("python3").args(["-c", r#"
+import json,sys
+from pathlib import Path
+from osgeo import gdal
+import chart_cutlines as c
+d=gdal.Open('Test SEC.tif',gdal.GA_Update)
+d.SetGeoTransform((400000,100,0,4800000,0,-100)); d.FlushCache()
+doc={'type':'FeatureCollection','crs':{'type':'name','properties':{'name':'EPSG:3857'}},
+     'features':[{'type':'Feature','properties':{},'geometry':{'type':'Polygon','coordinates':[[]]}}]}
+doc=c.native_document(doc,d,[(0,0),(100,0),(100,80),(0,80)])
+Path(sys.argv[1]+'/Test SEC.geojson').write_text(json.dumps(doc))
+"#, directory]).current_dir(temp.path()).output().unwrap();
+            assert!(
+                setup.status.success(),
+                "{}",
+                String::from_utf8_lossy(&setup.stderr)
+            );
+            let built = super::build_family_vrts(family, temp.path(), 1).unwrap();
+            assert_eq!(built.vrt_count, 2, "ordinary parent plus manual detail");
+            let check = Command::new("python3")
+                .args([
+                    "-c",
+                    r#"
+from osgeo import gdal
+source=gdal.Open('Test SEC.tif'); masked=gdal.Open('Test SEC.masked-source.vrt')
+assert masked.GetRasterBand(1).ReadAsArray(20,20,1,1)[0,0]==51
+assert masked.GetRasterBand(1).ReadAsArray(80,60,1,1)[0,0]==200
+# The extracted detail still reads the original source, not the masked parent.
+assert source.GetRasterBand(1).GetColorTable() is not None
+"#,
+                ])
+                .current_dir(temp.path())
+                .output()
+                .unwrap();
+            assert!(
+                check.status.success(),
+                "{}",
+                String::from_utf8_lossy(&check.stderr)
+            );
+        }
     }
 
     #[test]
@@ -3485,14 +3739,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
+        assert_coverage_close(
             source_chart_coverage(temp.path(), "Las Vegas TAC").unwrap(),
             ChartReferenceCoverage {
                 lat_min: 35.7,
                 lat_max: 36.8,
                 lon_min: -115.6,
                 lon_max: -113.8,
-            }
+            },
         );
     }
 
@@ -3556,15 +3810,94 @@ mod tests {
 
         assert_eq!(catalog.assets.len(), 1);
         assert_eq!(catalog.assets[0].source_chart_id, "Reference Sheet");
-        assert_eq!(
-            catalog.assets[0].source_coverage,
-            Some(ChartReferenceCoverage {
+        assert_coverage_close(
+            catalog.assets[0].source_coverage.unwrap(),
+            ChartReferenceCoverage {
                 lat_min: 60.0,
                 lat_max: 61.0,
                 lon_min: -150.0,
                 lon_max: -149.0,
-            })
+            },
         );
+    }
+
+    fn assert_coverage_close(actual: ChartReferenceCoverage, expected: ChartReferenceCoverage) {
+        for (actual, expected) in [
+            (actual.lat_min, expected.lat_min),
+            (actual.lat_max, expected.lat_max),
+            (actual.lon_min, expected.lon_min),
+            (actual.lon_max, expected.lon_max),
+        ] {
+            assert!((actual - expected).abs() < 1e-10, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn native_cutlines_reach_both_vfr_and_ifr_warps_without_bending_edges() {
+        let temp = TempDir::new("native-chart-cutline");
+        let setup = r#"
+import json, sys
+from pathlib import Path
+from osgeo import gdal, osr
+root = Path(sys.argv[1]); (root / 'SEC').mkdir()
+(root / 'Curved.htm').write_text('<meta name="dc.coverage.x.min" content="-125">\n<meta name="dc.coverage.x.max" content="-65">')
+srs = osr.SpatialReference()
+srs.SetFromUserInput('+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +datum=WGS84 +units=m +no_defs')
+gt = (-2400000, 2000, 0, 1600000, 0, -2000)
+source = gdal.GetDriverByName('GTiff').Create(str(root / 'Curved.tif'), 2400, 1600, 1)
+source.SetProjection(srs.ExportToWkt()); source.SetGeoTransform(gt)
+colors = gdal.ColorTable(); colors.SetColorEntry(1, (180, 200, 220, 255))
+source.GetRasterBand(1).SetColorTable(colors); source.GetRasterBand(1).Fill(1); source = None
+points = [(100,100), (2200,100), (2200,1450), (100,1450), (100,100)]
+(root / 'SEC/Curved.geojson').write_text(json.dumps({
+ 'type':'FeatureCollection', 'crs':{'type':'name','properties':{'name':srs.ExportToWkt()}},
+ 'features':[{'type':'Feature','properties':{},'geometry':{'type':'Polygon',
+ 'coordinates':[[gdal.ApplyGeoTransform(gt,*p) for p in points]]}}]}))
+"#;
+        assert!(Command::new("python3")
+            .args(["-c", setup])
+            .arg(temp.path())
+            .status()
+            .unwrap()
+            .success());
+        let verify = r#"
+import sys, xml.etree.ElementTree as ET
+from osgeo import gdal, ogr
+source = gdal.Open(sys.argv[1])
+geometry = ogr.CreateGeometryFromWkt(ET.fromstring(source.GetMetadata('xml:VRT')[0]).find('.//Cutline').text)
+boundary = geometry.Boundary()
+for x,y in [(1150,100), (2200,700), (1150,1450), (100,700)]:
+ point = ogr.Geometry(ogr.wkbPoint); point.AddPoint_2D(x,y)
+ assert point.Distance(boundary) < .05, (x,y,point.Distance(boundary))
+assert source.ReadAsArray().size > 0
+"#;
+        for vfr in [true, false] {
+            if vfr {
+                super::build_one_vfr_vrt(temp.path(), "Curved", "SEC", ChartFamily::Sec, 0)
+                    .unwrap();
+            } else {
+                super::build_one_ifr_vrt(temp.path(), "Curved", "SEC", ChartFamily::EnrL, 0)
+                    .unwrap();
+            }
+            assert!(
+                Command::new("python3")
+                    .args(["-c", verify])
+                    .arg(temp.path().join("Curved.vrt"))
+                    .status()
+                    .unwrap()
+                    .success(),
+                "vfr={vfr}"
+            );
+        }
+        let footprints = super::read_chart_cutline_exteriors(&temp.path().join("SEC")).unwrap();
+        assert_eq!(footprints.len(), 1);
+        assert!(
+            footprints[0].len() > 4,
+            "geographic footprint must retain curved edges"
+        );
+        assert!(footprints[0]
+            .iter()
+            .all(|p| p[0] < -50.0 && p[0] > -150.0 && p[1] > 0.0 && p[1] < 80.0));
     }
 
     #[test]

@@ -56,6 +56,60 @@ def evaluate_health(
     return pipeline_health.evaluate_health(facts, history, now)
 
 
+class ChartQualityMetricTests(unittest.TestCase):
+    def report(self, status="warning"):
+        return {"schema_version": 1, "family": "SEC", "cycle": "2610", "report_id": "a" * 32,
+                "status": status, "warning_count": int(status == "warning"),
+                "critical_count": int(status == "critical"), "unreviewed_count": 0,
+                "regions": [{"chart": "Test SEC", "scores": {"overview": {"boundary": .2}}}]}
+
+    def metrics(self, report):
+        metrics = []
+        pipeline_health.add_chart_quality_metrics(metrics, {"inputs": {"chart_quality": [
+            {"family": "SEC", "payload": report, "error": None}]}})
+        return {m["id"]: m for m in metrics}
+
+    def test_warning_and_critical_do_not_require_increasing_counts(self):
+        for status in ["warning", "critical"]:
+            for _ in range(3):
+                metric = self.metrics(self.report(status))["chart_quality.SEC.unresolved"]
+                self.assertEqual(metric["severity"], status)
+                self.assertEqual(metric["value"], 1)
+                self.assertIn("/reports/" + "a" * 32, metric["details"]["review_url"])
+
+    def test_incomplete_and_malformed_checks_cannot_be_green(self):
+        self.assertEqual(self.metrics(self.report("checking"))["chart_quality.SEC.unresolved"]["severity"], "warning")
+        for bad in [None, {}, {**self.report(), "warning_count": "bad"}, {**self.report(), "regions": [{}]},
+                    {**self.report("critical"), "status": "ok"}, {**self.report("ok"), "unreviewed_count": 1}]:
+            metric = self.metrics(bad)["chart_quality.SEC.unresolved"]
+            self.assertEqual(metric["severity"], "critical")
+            self.assertEqual(metric["value"], 1)
+
+    def test_collector_sees_unpublished_failed_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "state/chart-quality/SEC/current.json"
+            current.parent.mkdir(parents=True)
+            current.write_text(json.dumps(self.report("critical")))
+            reports = pipeline_health.collect_chart_quality(root)
+            self.assertEqual(reports[0]["payload"]["status"], "critical")
+            self.assertIsNone(reports[0]["error"])
+            self.assertFalse((root / "published").exists())
+
+    def test_review_assets_are_confined_to_report_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "state/chart-quality/SEC/reports/id/index.html"
+            report.parent.mkdir(parents=True)
+            report.write_text("report")
+            secret = root / "secret.json"
+            secret.write_text("secret")
+            (report.parent / "escape.json").symlink_to(secret)
+            self.assertEqual(pipeline_health.chart_quality_file(root, "SEC/reports/id/index.html"), report)
+            for path in ["../../secret.json", "%2e%2e/%2e%2e/secret.json", str(secret), "SEC/reports/id/escape.json", "SEC/.lock"]:
+                self.assertIsNone(pipeline_health.chart_quality_file(root, path))
+
+
 class PipelineHealthTests(unittest.TestCase):
     def test_release_channels_follow_one_active_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

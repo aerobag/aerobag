@@ -9,9 +9,13 @@ Family directories contain:
 - `*.legend.json`: source-pixel rectangles rendered into chart legend sheets.
 - `*.inset.json`: source-pixel rectangles rendered into chart inset sheets.
 - `*.navigable-insets.json`: manually georeferenced source-chart insets added
-  to their explicitly selected TAC or Flyway tile family.
+  to their explicitly selected tile family: TAC/Flyway for VFR sources,
+  IFR-L/IFR-H for the respective enroute sources.
 - `SEC/navigable-inset-candidates.json`: reviewed work queue of useful map
   insets that are not already supplied as standalone TAC products.
+- `visual-references/<region-id>.json`: explicitly approved chart thumbnails,
+  control-point patches, and their cutline/georeference provenance. These are
+  durable source assets, not regenerated cycle outputs.
 
 The collection began with Apps4Av cutlines and is now maintained as an Aerobag
 fork. See `UPSTREAM.md` and the repository's `THIRD_PARTY_NOTICES.md` for that
@@ -20,6 +24,49 @@ lineage.
 Use `tools/chart_cutline_editor.py` to edit neatlines, legends, and inset
 regions. Product preprocessing fingerprints this directory, so committed
 changes invalidate the corresponding chart products.
+
+Cutline edges are straight in their **explicitly recorded CRS**, not necessarily
+in Web Mercator or source pixels. Existing GeoJSON files use EPSG:3857 metres or
+CRS84 longitude/latitude. The editor simplifies dense outlines in the source
+GeoTIFF's native CRS when that reduces the number of handles. These edits save
+the full native CRS (WKT in `crs.properties.name`) and coordinates, not pixel
+positions. Already compact outlines retain their stored CRS and sparse handles;
+the displayed curves are projected separately, not extra handles. A future
+source-image placement change therefore does not move
+the saved geographic boundary. Missing or invalid CRS declarations are errors;
+readers do not guess from coordinate magnitudes.
+
+`preprocessor-charts/chart_cutlines.py` owns reading, projection, simplification,
+and derived geometry for the editor, review tool, chart builder and NAVDB offline
+region footprints. Native simplification produces sparse edit handles: turns of at
+least 30 degrees are pinned, and the remaining spans are simplified to a 0.20
+source-pixel error budget. Curved reprojection is adaptively sampled to 0.025
+source pixels. Opening does not rewrite metadata or approve anything; saving
+stores the outline in the selected editing CRS and invalidates its old review normally.
+Browser drags send coalesced preview requests to this same implementation. Only
+the latest result is drawn, and Save waits for a valid current preview. Both the
+overview and loupe render the projected curves, not straight joins between handles.
+The editor rejects unsupported holes/multiple polygons rather than dropping them;
+the tile builder retains both.
+
+During preprocessing, `.cutlines/` holds disposable, adaptively densified Web
+Mercator geometry. Both VFR and IFR warps use it for clipping **and crop extents**.
+Transforming only the sparse corners is not sufficient for either: straight native
+edges can bow in Mercator, and their extrema need not occur at corners. Never
+copy this derived vertex cloud back into the editable metadata. The same explicit
+projection supplies reference coverage and Offline Packages region outlines.
+Changes to this helper invalidate both chart and NAVDB build caches.
+
+Run the hermetic edit/save/warp, curve-extrema, topology, and simplification tests:
+`/usr/bin/python3 -m pytest tools/test_chart_cutlines.py tools/test_chart_cutline_editor.py`.
+The disposable browser journey, `node tools/test-chart-cutline-browser.mjs`, uses
+synthetic charts to verify four-handle editing, curved previews, save and reload.
+
+New cycles are compared with the last **manually approved** visual reference,
+not with the previous cycle. Missing references require review; strong changes
+to manually placed insets block publication. Reports and unresolved alerts
+appear in Pipeline Health. See [Chart Visual References](../../docs/chart-visual-reference-checks.md)
+for the checker, approval commands, scoring policy, and calibration limitations.
 
 Each inset requires `target_family: "TAC"` or `target_family: "FLY"`; there is
 no document-wide destination or decoder default. `enabled` independently
@@ -44,17 +91,26 @@ The parent output remains three-band RGB, like the other charts in its mosaic.
 The mask is a derived build artifact; source, metadata, and builder fingerprints
 invalidate the chart process cache when any of these change.
 
+Navigable-inset layout schema 2 requires a `projection_wkt` string on **every**
+inset, including drafts: a complete, valid projected CRS in WKT. Schema 1 and
+missing, malformed, or geographic-only projections are rejected; there is no
+builder inheritance or projection search. The editor copies the parent CRS once
+when creating a draft, records that explicit choice, and displays it under
+**Explicit calibration projection**. Saving/reloading preserves that string
+verbatim. To choose another projection, edit the inset's `projection_wkt`, reload,
+and validate against independent graticule marks before approving it.
+
 Navigable inset controls pair source pixels with WGS84 coordinates. Each control
 has an explicit `kind`: `intersection` requires both `latitude` and `longitude`;
 `latitude` and `longitude` ticks supply only their named coordinate (the other
 must be null). Disabled drafts may retain unfinished controls.
 `preprocessor-charts/navigable_inset.py` supplies the **same fit** to
 the editor and the tile builder: fit six affine pixel-to-projected coefficients
-in the source GeoTIFF's CRS (typically Lambert Conformal Conic). Inverse-project
+in the inset's explicit CRS (typically Lambert Conformal Conic). Inverse-project
 each predicted location and minimize errors in only the observed coordinates.
-No coordinate is invented for a one-dimensional tick. Only the parent's
-projection is reused, never its
-main-map placement. GDAL reprojects that fit to Web Mercator. The polygon cutline
+No coordinate is invented for a one-dimensional tick. Neither projection nor
+placement is inherited from the parent at build time. GDAL reprojects that fit
+to Web Mercator. The polygon cutline
 stays in the fitted plane, so it follows the same curved reprojection.
 
 The editor reports leave-one-out errors: fit all but one control, predict the
@@ -64,14 +120,29 @@ unconstrained line. Metre errors are approximate ground distances, not Web
 Mercator distances. The build
 writes the same diagnostics alongside each inset as `*.fit.json`. A typo remains
 a large residual, rather than being hidden by a higher-order polynomial or a
-rubber-sheet fit. Missing projections and degenerate controls fail explicitly.
+rubber-sheet fit. Missing inset projections and degenerate controls fail explicitly.
 Supply at least four latitude and four longitude observations with good spatial
 spread, preferably more. Four intersections supply eight constraints; eight
 single-coordinate ticks do too, provided both coordinates are well distributed.
 Put latitude ticks on opposite left/right edges and longitude ticks on opposite
 top/bottom edges. Rank-deficient arrangements, including leave-one-out subsets,
-are rejected. Verify small residuals before enabling it. The source projection is a hypothesis to validate,
-not proof that every inset uses its parent's projection.
+are rejected. Verify small residuals before enabling it. The initial parent-CRS
+choice is a hypothesis to validate, not proof that every inset uses that CRS.
+
+The September 2026 migration pins the existing parent projections for 14 insets,
+with identical fit results. Miami TAC's Florida Keys inset instead pins the
+Miami Sectional LCC CRS (standard parallels 30 2/3 and 25 1/3 degrees), not the
+parent TAC's 45/33. Unchanged seven-point controls improve from 5.029 to 1.677px
+worst leave-one-out error. Another 23 independently located graticule marks,
+not used in either fit, give RMS 1.618 versus 0.822px. These are chart-graticule
+checks, not certified absolute positional accuracy.
+
+The explicit projection participates in build fingerprints and the approved
+region definition hash. Adding/changing it requires reapproval even with
+unchanged pixels; migrations do not rewrite approvals. Changed source CRS
+metadata also alarms independently of the pixel detector. Printed-geometry
+changes are checked against the approved overview and native control patches;
+the visual detector remains threshold-based, not a guarantee against all drift.
 
 Controls need not be intersections of two full graticule lines. A labelled
 meridian's minute ticks also supply latitude/longitude controls. For example,
@@ -115,3 +186,21 @@ Flyway rather than TAC. It states a 1:150,000 scale and is calibrated using
 its perimeter latitude-only and longitude-only ticks. Its
 "NOT TO BE USED FOR NAVIGATION" label is not evidence that it is unscaled;
 [ordinary FAA Flyway planning charts carry the same restriction](https://www.faa.gov/air_traffic/flight_info/aeronav/productcatalog/PlanningCharts/VFRFlyway/).
+
+## FAA Detail Sources
+
+An FAA-supplied detail GeoTIFF belongs in its publishing family (`ENR_L` or
+`ENR_H`), with an ordinary cutline. It uses its own GeoTIFF georeference, not
+manual inset calibration. The optional top-level `source_sheet` registration
+places its cutline on the printed parent in the sheet reviewer and automatically
+excludes that printed copy from the parent's raster. Its six-element
+`pixel_transform` follows GDAL affine order and maps detail pixels to parent
+pixels; the four stored dimensions reject source-layout changes.
+
+The build splits native-CRS cutlines at the antimeridian before cropping, and
+stacks registered details after ordinary charts. Editing a detail's cutline also
+updates its parent's exclusion. Keep the single authoritative cutline in the
+active family, not a second copy under the unused `ENR_A` directory.
+
+For the current incorporation checklist and operator review steps, see
+[`docs/chart-region-incorporation.md`](../../docs/chart-region-incorporation.md).

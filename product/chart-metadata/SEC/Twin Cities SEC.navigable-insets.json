@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "source": "Twin Cities SEC.tif",
+  "source_width": 17920,
+  "source_height": 12357,
+  "insets": [
+    {
+      "id": "Inset 1",
+      "projection_wkt": "PROJCS[\"Lambert Conformal Conic\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"latitude_of_origin\",46.75],PARAMETER[\"central_meridian\",-97],PARAMETER[\"standard_parallel_1\",46.6666666666667],PARAMETER[\"standard_parallel_2\",41.3333333333333],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "target_family": "TAC",
+      "enabled": true,
+      "boundary": [
+        [
+          231.0,
+          9388.0
+        ],
+        [
+          221.55,
+          11665.95
+        ],
+        [
+          2078.55,
+          11663.7
+        ],
+        [
+          2071.0,
+          9390.0
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            290.8,
+            9475.0
+          ],
+          "latitude": 49.5,
+          "longitude": -95.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            282.55,
+            10791.5
+          ],
+          "latitude": 49.0,
+          "longitude": -95.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            1149.05,
+            9478.0
+          ],
+          "latitude": 49.5,
+          "longitude": -95.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            1149.3,
+            10795.25
+          ],
+          "latitude": 49.0,
+          "longitude": -95.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2007.3,
+            9474.75
+          ],
+          "latitude": 49.5,
+          "longitude": -94.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2015.8,
+            10792.5
+          ],
+          "latitude": 49.0,
+          "longitude": -94.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            278.3,
+            11451.25
+          ],
+          "latitude": 48.75,
+          "longitude": -95.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            1149.05,
+            11453.75
+          ],
+          "latitude": 48.75,
+          "longitude": -95.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2019.8,
+            11451.25
+          ],
+          "latitude": 48.75,
+          "longitude": -94.5
+        }
+      ]
+    }
+  ]
+}

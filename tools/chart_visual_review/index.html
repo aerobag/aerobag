@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: 2026 Aerobag contributors -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="review-token" content="__CSRF__">
+  <title>Chart source-sheet review</title>
+  <style>
+    :root { color-scheme:dark; --bg:#16212b; --panel:#21313e; --line:#52636c; --text:#edf2f5; --accent:#80d5f5; --ok:#9bdaaa; --warning:#f7c552; --bad:#ff8d8d }
+    * { box-sizing:border-box }
+    body { margin:0; height:100dvh; display:grid; grid-template-rows:auto auto 1fr; background:var(--bg); color:var(--text); font:17px sans-serif }
+    a { color:var(--accent) } button,input,select { font:inherit; color:inherit }
+    button,select { border:1px solid var(--line); border-radius:4px; padding:9px 13px; background:var(--panel); cursor:pointer }
+    button:hover:not(:disabled) { border-color:var(--accent) } button:disabled { opacity:.4; cursor:default }
+    button:focus-visible,a:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+    header { padding:12px 18px; display:flex; gap:12px; justify-content:space-between; flex-wrap:wrap; align-items:baseline; border-bottom:1px solid var(--line) }
+    h1 { font-size:23px; margin:0 } #counts { color:var(--accent) }
+    #toolbar { padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line) }
+    .controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px }
+    #approve { color:#13231b; background:var(--ok); font-weight:bold } #reject { color:var(--bad) }
+    #position { margin-left:auto } #note { margin-top:9px; width:min(100%,750px); background:var(--bg); border:1px solid var(--line); border-radius:3px; padding:8px }
+    #message { margin:7px 0 0; min-height:1.3em; font-size:15px; color:var(--accent) } #message.error { color:var(--bad) }
+    #layout { display:grid; grid-template-columns:260px 1fr; min-height:0 }
+    aside { padding:12px; overflow:auto; border-right:1px solid var(--line) }
+    aside label { display:block; margin-bottom:8px } #filter { width:100% } #jump-list { margin-top:12px; display:grid; gap:5px }
+    .jump { text-align:left; font-size:15px; padding:9px; overflow-wrap:anywhere } .jump.selected { border-color:var(--accent); background:#304c5e }
+    .jump small,.card-head .status small { display:block; margin-top:4px; font-size:14px }
+    main { padding:14px 22px 50px; overflow:auto; min-width:0; scroll-behavior:auto }
+    article { margin-bottom:22px; padding:15px; border:2px solid var(--line); border-radius:5px; scroll-margin-top:14px; background:#1a2935 }
+    article.selected { border-color:var(--accent) } article h2 { font-size:21px; margin:0 } .card-head { display:flex; gap:12px; align-items:baseline; justify-content:space-between; flex-wrap:wrap }
+    .status { font-size:15px; font-weight:bold } .approved { color:var(--ok) } .disapproved { color:var(--bad) } .stale,.recheck { color:var(--warning) }
+    .chart-image { display:block; width:auto; height:auto; max-width:100%; max-height:calc(100dvh - 325px); min-height:180px; margin:12px auto; cursor:zoom-in }
+    .expanded .chart-image { width:min(1300px,100%); max-height:none; cursor:zoom-out }
+    .sheet-overview { min-height:180px; background:#101820 }
+    .sheet-overview svg { display:block; width:100%; max-height:max(260px,calc(100dvh - 440px)) }
+    .sheet-overview svg g { cursor:pointer } .sheet-overview svg g.selected path { stroke-width:4 }
+    .sheet-overview svg path { pointer-events:stroke }
+    .overview-error { color:var(--warning) }
+    .sheet-decision { margin:16px 0; padding:14px; border:1px solid var(--line) }
+    .sheet-work { margin-top:12px; display:grid; gap:10px; justify-items:start }
+    .sheet-work p { margin:4px 0; max-width:80ch }
+    .work-note { color:var(--accent) } .work-note:empty { display:none }
+    .add-region summary { cursor:pointer; padding:8px 0 }
+    .sheet-note { display:block; width:100%; margin:10px 0; padding:9px; background:var(--bg); border:1px solid var(--line) }
+    .region-layout { display:grid; grid-template-columns:minmax(230px,1fr) minmax(0,1.5fr); gap:20px; align-items:start }
+    .regions { display:grid; gap:8px } .regions button { text-align:left; border-left:5px solid var(--region-color) }
+    .regions button.selected { outline:2px solid var(--region-color) }
+    .regions small { display:block; margin-top:7px; font-size:14px }
+    .regions strong { color:var(--region-color) } .region-detail h3 { margin:0 }
+    .complete { color:var(--ok) } .incomplete { color:var(--bad) }
+    #active-region { display:block; font-size:15px; margin-top:8px; color:var(--accent) }
+    .prefetch-controls { margin-top:8px; font-size:14px }
+    .prefetch-controls select,.prefetch-controls button { padding:5px 8px }
+    #prefetch-status { color:var(--accent) }
+    .caption { color:#b3c6ce; font-size:14px; margin:8px 0 } .links { display:flex; flex-wrap:wrap; gap:15px; font-size:15px }
+    .stored-note { color:var(--warning); white-space:pre-wrap } #complete { padding:28px 10px }
+    [hidden] { display:none !important }
+    @media(max-width:800px) { #layout,.region-layout { grid-template-columns:1fr } aside { display:none } header { padding:10px } #toolbar { padding:10px } main { padding:10px } #position { margin-left:0 } .chart-image { max-height:60dvh } #mobile-filter { display:block !important } }
+  </style>
+</head>
+<body>
+  <header><h1>Chart source-sheet review</h1><span id="counts">Loading saved review...</span><a href="/api/rejections" target="_blank">Region disapprovals</a><a href="/api/sheet-rejections" target="_blank">Missing-region notes</a></header>
+  <section id="toolbar" aria-label="Review controls">
+    <div class="controls">
+      <button id="previous" disabled>Previous [P]</button>
+      <button id="skip" disabled>Next sheet [N]</button>
+      <button id="approve" disabled>Approve region &amp; Next</button>
+      <button id="reject" disabled>Disapprove region &amp; Next [D]</button>
+      <span id="position"></span>
+      <select id="mobile-filter" aria-label="Review filter" hidden><option value="all">All source sheets</option><option value="pending">To review</option><option value="rejected">Flagged sheets</option></select>
+    </div>
+    <span id="active-region"></span>
+    <input id="note" aria-label="Review note" maxlength="4000" placeholder="Selected region note: saved with Approve / Disapprove.">
+    <p id="message" role="status">Next moves to the next source sheet without approving anything. Region approvals and sheet completeness are separate.</p>
+    <div class="controls prefetch-controls">
+      <label for="prefetch">Preload sheets</label>
+      <select id="prefetch"><option value="0">Visible only</option><option value="10" selected>Next 10</option><option value="all">All sheets (more data)</option></select>
+      <span id="prefetch-status" role="status"></span>
+      <button id="prefetch-retry" hidden>Retry failed loads</button>
+    </div>
+  </section>
+  <div id="layout">
+    <aside aria-label="Complete source sheet list">
+      <label for="filter">Review queue</label>
+      <select id="filter"><option value="all">All source sheets</option><option value="pending">To review</option><option value="rejected">Flagged sheets</option></select>
+      <p class="caption">N next sheet, P previous<br>D disapprove region / next<br>Click a numbered outline or a region button to inspect its candidate.</p>
+      <button id="import">Import latest reports</button>
+      <div id="jump-list"></div>
+    </aside>
+    <main id="cards" aria-label="Scrollable chart candidates">
+      <section id="complete" hidden>
+        <h2>This pass is complete</h2><p id="completion-text"></p>
+        <div class="controls"><button id="show-rejected">Show disapproved</button><button id="show-all">Review all again</button></div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="/review.js"></script>
+</body>
+</html>

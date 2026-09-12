@@ -50,6 +50,10 @@ const state = {
   charts: [],
   chart: null,
   points: [],
+  outline: [],
+  previewCurrent: true,
+  previewError: "",
+  busy: false,
   revision: "",
   selectedIndex: 0,
   dirty: false,
@@ -71,6 +75,24 @@ async function api(url, options) {
   }
   return body;
 }
+
+const preview = latestPreview(
+  (body) => api("/api/preview", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }),
+  (result) => {
+    state.outline = result.outline;
+    state.previewCurrent = true;
+    state.previewError = "";
+    renderOverview();
+  },
+  (error) => {
+    state.outline = [];
+    state.previewError = error.message;
+    showMessage(error.message, true, 0);
+    renderOverview();
+  },
+);
 
 async function initialize() {
   bindControls();
@@ -175,6 +197,7 @@ async function loadFamily(familyId) {
 }
 
 async function loadChart(name) {
+  preview.reset();
   setBusy(true);
   try {
     const chart = await api(
@@ -183,6 +206,9 @@ async function loadChart(name) {
     );
     state.chart = chart;
     state.points = chart.points.map((point) => [point[0], point[1]]);
+    state.outline = chart.outline;
+    state.previewCurrent = true;
+    state.previewError = "";
     state.revision = chart.revision;
     state.selectedIndex = 0;
     state.dirty = false;
@@ -225,7 +251,7 @@ function renderOverview() {
   if (!state.chart) {
     return;
   }
-  elements.overviewPolygon.setAttribute("points", pointsAttribute(state.points));
+  elements.overviewPolygon.setAttribute("points", pointsAttribute(state.outline));
   elements.overviewHandles.replaceChildren();
   const scale = state.overviewBounds.width / Math.max(elements.overviewStage.clientWidth, 1);
   const radius = Math.max(6 * scale, 18);
@@ -253,11 +279,9 @@ function renderLoupeOverlay() {
   }
   const selected = state.points[state.selectedIndex];
   const local = [selected[0] - state.crop.x, selected[1] - state.crop.y];
-  const previous = state.points[(state.selectedIndex - 1 + state.points.length) % state.points.length];
-  const next = state.points[(state.selectedIndex + 1) % state.points.length];
-  const localPrevious = [previous[0] - state.crop.x, previous[1] - state.crop.y];
-  const localNext = [next[0] - state.crop.x, next[1] - state.crop.y];
-  elements.loupeLine.setAttribute("points", pointsAttribute([localPrevious, local, localNext]));
+  elements.loupeLine.setAttribute("points", pointsAttribute(
+    state.outline.map((point) => [point[0] - state.crop.x, point[1] - state.crop.y]),
+  ));
   elements.loupeHandle.setAttribute("cx", String(local[0]));
   elements.loupeHandle.setAttribute("cy", String(local[1]));
   elements.loupeHandle.setAttribute("r", String(7 / state.zoom));
@@ -339,8 +363,8 @@ function positionLoupeImage() {
 
 function configureOverviewBounds() {
   const padding = Math.max(state.chart.width, state.chart.height) * 0.02;
-  const xs = state.points.map((point) => point[0]);
-  const ys = state.points.map((point) => point[1]);
+  const xs = state.outline.map((point) => point[0]);
+  const ys = state.outline.map((point) => point[1]);
   const left = Math.min(0, ...xs) - padding;
   const top = Math.min(0, ...ys) - padding;
   const right = Math.max(state.chart.width, ...xs) + padding;
@@ -377,6 +401,7 @@ function scrollLoupeToPoint() {
 }
 
 function beginOverviewDrag(event) {
+  if (state.busy) return;
   const handle = event.target.closest(".vertexHandle");
   if (!handle) {
     return;
@@ -388,6 +413,7 @@ function beginOverviewDrag(event) {
 }
 
 function beginLoupeDrag(event) {
+  if (state.busy) return;
   if (event.target !== elements.loupeHandle) {
     return;
   }
@@ -401,6 +427,7 @@ function startDrag(surface, event, selectionChanged) {
 }
 
 function continueDrag(event) {
+  if (state.busy) return;
   if (!state.drag || state.drag.pointerId !== event.pointerId) {
     return;
   }
@@ -567,7 +594,7 @@ function redo() {
 }
 
 async function saveChart() {
-  if (!state.chart || !state.dirty) {
+  if (!state.chart || !state.dirty || !state.previewCurrent) {
     return;
   }
   setBusy(true);
@@ -583,10 +610,11 @@ async function saveChart() {
       }),
     });
     state.revision = result.revision;
+    state.outline = result.outline;
     state.dirty = false;
     state.undo = [];
     state.redo = [];
-    updateUiState();
+    renderOverview();
     showMessage("Saved " + state.chart.cutline_file, false);
   } catch (error) {
     showMessage(error.message, true, 0);
@@ -604,29 +632,39 @@ async function reloadChart() {
 
 function markDirty() {
   state.dirty = true;
+  state.previewCurrent = false;
+  state.previewError = "";
+  preview.submit({ family: state.family.id, name: state.chart.name,
+    points: clonePoints(state.points), revision: state.revision });
   updateUiState();
 }
 
 function updateUiState() {
-  elements.saveState.textContent = state.dirty ? "Unsaved" : "Saved";
+  elements.saveState.textContent = !state.dirty ? "Saved" : state.previewError ? "Invalid outline"
+    : state.previewCurrent ? "Unsaved" : "Updating outline";
   elements.saveState.classList.toggle("dirty", state.dirty);
-  elements.saveChart.disabled = !state.dirty;
-  elements.undo.disabled = state.undo.length === 0;
-  elements.redo.disabled = state.redo.length === 0;
-  elements.deleteVertex.disabled = state.points.length <= 3;
-  elements.previousChart.disabled = state.charts.length < 2;
-  elements.nextChart.disabled = state.charts.length < 2;
+  elements.saveChart.disabled = state.busy || !state.dirty || !state.previewCurrent;
+  elements.undo.disabled = state.busy || state.undo.length === 0;
+  elements.redo.disabled = state.busy || state.redo.length === 0;
+  elements.deleteVertex.disabled = state.busy || state.points.length <= 3;
+  elements.previousChart.disabled = state.busy || state.charts.length < 2;
+  elements.nextChart.disabled = state.busy || state.charts.length < 2;
 }
 
 function setBusy(busy) {
+  state.busy = busy;
   elements.familySelect.disabled = busy;
   elements.chartSelect.disabled = busy;
-  elements.saveChart.disabled = busy || !state.dirty;
+  elements.saveChart.disabled = busy || !state.dirty || !state.previewCurrent;
   elements.reloadChart.disabled = busy;
+  for (const control of [elements.pointX, elements.pointY, elements.addVertex, elements.snapVertex]) {
+    control.disabled = busy;
+  }
+  updateUiState();
 }
 
 function handleKeyDown(event) {
-  if (!state.chart || event.target.matches("input, select, textarea")) {
+  if (state.busy || !state.chart || event.target.matches("input, select, textarea")) {
     return;
   }
   const key = event.key.toLowerCase();

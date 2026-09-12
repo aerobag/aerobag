@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
-from osgeo import gdal, osr
+from osgeo import gdal
 
 gdal.UseExceptions()
 
@@ -39,19 +39,13 @@ navigable_inset_diagnostics = inset_georeference.navigable_inset_diagnostics
 try:
     from chart_cutline_audit import (
         DEFAULT_CHART_METADATA_ROOT,
-        geojson_srs,
-        project_to_pixel,
-        read_geojson_polygons,
-        set_traditional_axis_mapping,
+        cutlines,
         slug,
     )
 except ImportError:
     from tools.chart_cutline_audit import (
         DEFAULT_CHART_METADATA_ROOT,
-        geojson_srs,
-        project_to_pixel,
-        read_geojson_polygons,
-        set_traditional_axis_mapping,
+        cutlines,
         slug,
     )
 
@@ -74,7 +68,6 @@ EXTRACT_TYPES = {"legend", "inset"}
 NAVIGABLE_INSET_TYPE = "navigable-inset"
 NAVIGABLE_INSET_SUFFIX = ".navigable-insets.json"
 NAVIGABLE_INSET_CANDIDATES_FILE = "navigable-inset-candidates.json"
-NAVIGABLE_INSET_TARGET_FAMILIES = ("TAC", "FLY")
 
 
 @dataclass(frozen=True)
@@ -112,6 +105,8 @@ class EditorCatalog:
                 "id": family_id,
                 "label": FAMILY_LABELS.get(family_id, family_id),
                 "chart_count": len(state.charts),
+                "inset_targets": [{"id": target, "label": FAMILY_LABELS[target]}
+                                  for target in cutlines.INSET_TARGETS[family_id]],
             }
             for family_id, state in self.families.items()
         ]
@@ -142,6 +137,7 @@ class EditorState:
         self.overview_width = overview_width
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._write_lock = threading.Lock()
+        self._edit_contexts: dict[str, tuple[str, dict]] = {}
         self._overview_locks: dict[str, threading.Lock] = {}
         self.charts = self._discover_charts()
         self.navigable_inset_candidates = self._load_navigable_inset_candidates()
@@ -258,13 +254,16 @@ class EditorState:
 
     def chart_payload(self, name: str) -> dict[str, object]:
         chart = self.chart(name)
-        points = self._pixel_points(chart) if chart.cutline_path is not None else []
+        with self._write_lock:
+            revision = file_revision(chart.cutline_path) if chart.cutline_path else None
+            context = self._edit_context(chart, revision) if chart.cutline_path else {"points": [], "outline": []}
         return {
             "name": chart.name,
             "width": chart.width,
             "height": chart.height,
-            "points": [[x, y] for x, y in points],
-            "revision": file_revision(chart.cutline_path) if chart.cutline_path else None,
+            "points": context["points"],
+            "outline": context["outline"],
+            "revision": revision,
             "overview_url": f"/api/overview?name={quote_query_value(chart.name)}",
             "source_file": chart.source_path.name,
             "cutline_file": chart.cutline_path.name if chart.cutline_path else None,
@@ -350,6 +349,10 @@ class EditorState:
     def navigable_inset_payload(self, name: str) -> dict[str, object]:
         chart = self.chart(name)
         path = self.navigable_inset_path(chart)
+        # Authoring seed only: copying it into a new draft makes the choice explicit.
+        source = gdal.Open(str(chart.source_path))
+        draft_projection = source.GetProjection()
+        source = None
         if not path.is_file():
             return {
                 "name": chart.name,
@@ -357,6 +360,7 @@ class EditorState:
                 "source_width": chart.width,
                 "source_height": chart.height,
                 "regions": [],
+                "new_inset_projection_wkt": draft_projection,
                 "revision": None,
             }
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -367,6 +371,7 @@ class EditorState:
             "source_width": chart.width,
             "source_height": chart.height,
             "regions": [region_with_diagnostics(chart, region) for region in regions],
+            "new_inset_projection_wkt": draft_projection,
             "revision": file_revision(path),
         }
 
@@ -381,7 +386,7 @@ class EditorState:
         if expected_revision is not None and not isinstance(expected_revision, str):
             raise EditorError("navigable-inset save revision must be a string or null")
         document = {
-            "schema_version": 1,
+            "schema_version": cutlines.INSET_LAYOUT_SCHEMA,
             "source": chart.source_path.name,
             "source_width": chart.width,
             "source_height": chart.height,
@@ -390,41 +395,82 @@ class EditorState:
         regions = validate_navigable_inset_document(document, chart, path)
         document["insets"] = regions
         with self._write_lock:
-            current_revision = file_revision(path) if path.is_file() else None
-            if current_revision != expected_revision:
-                raise RevisionConflict(
-                    f"{path.name} changed on disk; reload before saving"
-                )
-            atomic_write_json(path, document)
-            revision = file_revision(path)
+            revision = self._write_navigable_insets(path, document, expected_revision)
         return {
             "revision": revision,
             "regions": [region_with_diagnostics(chart, region) for region in regions],
         }
 
+    def _write_navigable_insets(self, path, document, expected_revision):
+        """Caller holds the editor write lock, including across composed edits."""
+        current_revision = file_revision(path) if path.is_file() else None
+        if current_revision != expected_revision:
+            raise RevisionConflict(f"{path.name} changed on disk; reload before saving")
+        atomic_write_json(path, document)
+        return file_revision(path)
+
+    def start_georeferencing(self, name, index, reference_revision, inset_revision):
+        """Copy a saved reference boundary into a disabled map draft; keep access
+        to the reference image until the operator validates its replacement.
+        """
+        chart = self.chart(name)
+        with self._write_lock:
+            reference = self.extract_payload(name, "inset")
+            if reference["revision"] != reference_revision:
+                raise RevisionConflict("Reference changed; reload before starting georeference")
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(reference["regions"]):
+                raise EditorError("Select a saved reference region first")
+            layout = self.navigable_inset_payload(name)
+            if layout["revision"] != inset_revision:
+                raise RevisionConflict("Map insets changed; reload before starting georeference")
+            x, y, w, h = (reference["regions"][index][k] for k in ("x", "y", "width", "height"))
+            boundary = [[x, y], [x+w, y], [x+w, y+h], [x, y+h]]
+            existing = next((r for r in layout["regions"] if r["boundary"] == boundary), None)
+            if existing:
+                return {"region_id": existing["id"]}
+            used = {r["id"].casefold() for r in layout["regions"]}
+            number = 1
+            while f"Reference {number}".casefold() in used:
+                number += 1
+            draft = {"id": f"Reference {number}", "enabled": False,
+                     "target_family": cutlines.INSET_TARGETS[self.cutline_dir.name][0],
+                     "projection_wkt": layout["new_inset_projection_wkt"],
+                     "boundary": boundary, "control_points": []}
+            path = self.navigable_inset_path(chart)
+            document = {"schema_version": cutlines.INSET_LAYOUT_SCHEMA, "source": chart.source_path.name,
+                        "source_width": chart.width, "source_height": chart.height,
+                        "insets": [*layout["regions"], draft]}
+            document["insets"] = validate_navigable_inset_document(document, chart, path)
+            self._write_navigable_insets(path, document, inset_revision)
+            return {"region_id": draft["id"]}
+
     def navigable_inset_path(self, chart: Chart) -> Path:
         return self.cutline_dir / f"{chart.name}{NAVIGABLE_INSET_SUFFIX}"
 
-    def _pixel_points(self, chart: Chart) -> list[tuple[float, float]]:
+    def _edit_context(self, chart: Chart, revision: str) -> dict:
         if chart.cutline_path is None:
             raise EditorError(f"{chart.name} has no georeferenced cutline")
-        polygons = read_geojson_polygons(chart.cutline_path)
-        if len(polygons) != 1:
-            raise EditorError(
-                f"{chart.cutline_path.name} has {len(polygons)} polygons; editor requires one"
-            )
-        dataset = self._open_dataset(chart)
-        cutline_srs = geojson_srs(chart.cutline_path, polygons)
-        set_traditional_axis_mapping(cutline_srs)
-        image_srs = image_spatial_reference(dataset)
-        transform = osr.CoordinateTransformation(cutline_srs, image_srs)
-        inverse_gt = gdal.InvGeoTransform(dataset.GetGeoTransform())
-        if inverse_gt is None:
-            raise EditorError(f"failed to invert geotransform for {chart.source_path}")
-        points = [project_to_pixel(transform, inverse_gt, point) for point in polygons[0]]
-        if len(points) > 1 and point_distance(points[0], points[-1]) < 0.01:
-            points.pop()
-        return points
+        cached = self._edit_contexts.get(chart.name)
+        if cached is None or cached[0] != revision:
+            cached = (revision, cutlines.edit_geometry(chart.cutline_path, self._open_dataset(chart)))
+            self._edit_contexts[chart.name] = cached
+        return cached[1]
+
+    def preview_points(self, name: str, points_value: object, expected_revision: object) -> dict:
+        chart = self.chart(name)
+        points = validate_pixel_points(points_value, chart)
+        with self._write_lock:
+            if chart.cutline_path is None or file_revision(chart.cutline_path) != expected_revision:
+                raise RevisionConflict("Cutline changed; reload before previewing edits")
+            context = self._edit_context(chart, expected_revision)
+            source = self._open_dataset(chart)
+            document = cutlines.edited_document(context["document"], source, points, context["crs"])
+            return {"outline": self._outline(document, source)}
+
+    @staticmethod
+    def _outline(document, source):
+        geometry = cutlines.pixel_document(document, source)
+        return [p[:2] for p in geometry.GetGeometryRef(0).GetGeometryRef(0).GetPoints()]
 
     def save_points(
         self,
@@ -445,38 +491,14 @@ class EditorState:
                 raise RevisionConflict(
                     f"{chart.cutline_path.name} changed on disk; reload before saving"
                 )
-            document = json.loads(chart.cutline_path.read_text(encoding="utf-8"))
-            feature = single_polygon_feature(document, chart.cutline_path)
-            cutline_points = self._pixel_points_to_cutline(chart, points)
-            closed_ring = [[x, y] for x, y in cutline_points]
-            closed_ring.append(closed_ring[0].copy())
-            feature["geometry"]["coordinates"][0] = closed_ring
+            context = self._edit_context(chart, current_revision)
+            source = self._open_dataset(chart)
+            document = cutlines.edited_document(context["document"], source, points, context["crs"])
+            outline = self._outline(document, source)
             atomic_write_json(chart.cutline_path, document)
             revision = file_revision(chart.cutline_path)
 
-        return {"revision": revision, "points": [[x, y] for x, y in points]}
-
-    def _pixel_points_to_cutline(
-        self,
-        chart: Chart,
-        points: list[tuple[float, float]],
-    ) -> list[tuple[float, float]]:
-        if chart.cutline_path is None:
-            raise EditorError(f"{chart.name} has no georeferenced cutline")
-        dataset = self._open_dataset(chart)
-        polygons = read_geojson_polygons(chart.cutline_path)
-        cutline_srs = geojson_srs(chart.cutline_path, polygons)
-        set_traditional_axis_mapping(cutline_srs)
-        image_srs = image_spatial_reference(dataset)
-        transform = osr.CoordinateTransformation(image_srs, cutline_srs)
-        gt = dataset.GetGeoTransform()
-        result: list[tuple[float, float]] = []
-        for pixel_x, pixel_y in points:
-            image_x = gt[0] + gt[1] * pixel_x + gt[2] * pixel_y
-            image_y = gt[3] + gt[4] * pixel_x + gt[5] * pixel_y
-            cutline_x, cutline_y, _ = transform.TransformPoint(image_x, image_y)
-            result.append((cutline_x, cutline_y))
-        return result
+        return {"revision": revision, "points": [[x, y] for x, y in points], "outline": outline}
 
     def overview_png(self, name: str) -> bytes:
         chart = self.chart(name)
@@ -577,14 +599,6 @@ class EditorState:
         if dataset is None:
             raise EditorError(f"failed to open source chart {chart.source_path}")
         return dataset
-
-
-def image_spatial_reference(dataset: gdal.Dataset) -> osr.SpatialReference:
-    srs = osr.SpatialReference()
-    if srs.ImportFromWkt(dataset.GetProjection()) != 0:
-        raise EditorError("source chart has an invalid projection")
-    set_traditional_axis_mapping(srs)
-    return srs
 
 
 def translate_png_options(
@@ -770,7 +784,7 @@ def validate_navigable_inset_document(
     chart: Chart,
     path: Path,
 ) -> list[dict[str, object]]:
-    if not isinstance(document, dict) or document.get("schema_version") != 1:
+    if not isinstance(document, dict) or document.get("schema_version") != cutlines.INSET_LAYOUT_SCHEMA:
         raise EditorError(f"unsupported navigable-inset schema in {path.name}")
     if document.get("source") != chart.source_path.name:
         raise EditorError(f"navigable-inset source mismatch in {path.name}")
@@ -803,8 +817,11 @@ def validate_navigable_inset_document(
         identifiers.add(identity)
 
         target_family = value.get("target_family")
-        if target_family not in NAVIGABLE_INSET_TARGET_FAMILIES:
-            raise EditorError(f"navigable inset {identifier!r} target_family must be TAC or FLY")
+        allowed = cutlines.INSET_TARGETS.get(path.parent.name)
+        if allowed is None:
+            raise EditorError(f"unsupported source chart family {path.parent.name!r}")
+        if target_family not in allowed:
+            raise EditorError(f"navigable inset {identifier!r} target_family must be {' or '.join(allowed)}")
 
         boundary = validate_pixel_points(value.get("boundary"), chart)
         if len(boundary) < 3:
@@ -836,14 +853,20 @@ def validate_navigable_inset_document(
             )
             for point_index, point in enumerate(controls_value)
         ]
+        projection_wkt = value.get("projection_wkt")
+        try:
+            inset_georeference.inset_projection(projection_wkt)
+        except inset_georeference.GeoreferenceError as error:
+            raise EditorError(f"inset {identifier!r}: {error}") from error
         region: dict[str, object] = {
             "id": identifier,
             "target_family": target_family,
             "enabled": enabled,
             "boundary": [[round(x, 3), round(y, 3)] for x, y in boundary],
             "control_points": control_points,
+            "projection_wkt": projection_wkt,
         }
-        diagnostics = navigable_inset_diagnostics(chart.source_path, control_points)
+        diagnostics = navigable_inset_diagnostics(chart.source_path, control_points, projection_wkt=projection_wkt)
         if enabled:
             if not diagnostics["ready"]:
                 raise EditorError(
@@ -886,7 +909,9 @@ def region_with_diagnostics(chart: Chart, region: dict[str, object]) -> dict[str
     return {
         **region,
         **pixel_polygon_bounds(boundary),
-        "diagnostics": navigable_inset_diagnostics(chart.source_path, region["control_points"]),
+        "diagnostics": navigable_inset_diagnostics(
+            chart.source_path, region["control_points"], projection_wkt=region["projection_wkt"],
+        ),
     }
 
 
@@ -915,24 +940,6 @@ def validate_max_output_width(value: object) -> int:
     if width < 320 or width > 4096:
         raise EditorError("maximum output width must be between 320 and 4096")
     return width
-
-
-def single_polygon_feature(document: object, path: Path) -> dict[str, object]:
-    if not isinstance(document, dict) or document.get("type") != "FeatureCollection":
-        raise EditorError(f"unsupported GeoJSON root in {path.name}")
-    features = document.get("features")
-    if not isinstance(features, list) or len(features) != 1:
-        raise EditorError(f"{path.name} must contain exactly one feature")
-    feature = features[0]
-    if not isinstance(feature, dict):
-        raise EditorError(f"invalid feature in {path.name}")
-    geometry = feature.get("geometry")
-    if not isinstance(geometry, dict) or geometry.get("type") != "Polygon":
-        raise EditorError(f"{path.name} must contain one Polygon")
-    coordinates = geometry.get("coordinates")
-    if not isinstance(coordinates, list) or len(coordinates) != 1:
-        raise EditorError(f"{path.name} must contain one exterior ring and no holes")
-    return feature
 
 
 def atomic_write_json(path: Path, document: object) -> None:
@@ -1119,6 +1126,8 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                 self._send_file(ASSET_DIR / "editor.js", "text/javascript; charset=utf-8")
             elif parsed.path == "/assets/cutline-points.js":
                 self._send_file(ASSET_DIR / "cutline-points.js", "text/javascript; charset=utf-8")
+            elif parsed.path == "/assets/latest-preview.js":
+                self._send_file(ASSET_DIR / "latest-preview.js", "text/javascript; charset=utf-8")
             elif parsed.path == "/assets/coordinate-input.js":
                 self._send_file(ASSET_DIR / "coordinate-input.js", "text/javascript; charset=utf-8")
             elif parsed.path == "/assets/extracts.css":
@@ -1203,6 +1212,8 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                     body.get("revision"),
                 )
                 self._send_json(result)
+            elif parsed.path == "/api/preview":
+                self._send_json(family.preview_points(str(body.get("name", "")), body.get("points"), body.get("revision")))
             elif parsed.path == "/api/snap":
                 result = family.snap_point(
                     str(body.get("name", "")),
@@ -1226,6 +1237,10 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                     body.get("revision"),
                 )
                 self._send_json(result)
+            elif parsed.path == "/api/extract/start-georeferencing":
+                self._send_json(family.start_georeferencing(
+                    str(body.get("name", "")), body.get("index"),
+                    body.get("reference_revision"), body.get("inset_revision")))
             else:
                 self.send_error(404)
         except RevisionConflict as error:

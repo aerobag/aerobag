@@ -1,0 +1,62 @@
+{
+  "type": "FeatureCollection",
+  "name": "Seattle SEC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "PROJCS[\"AK_IFR\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257221999999,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"latitude_of_origin\",51],PARAMETER[\"central_meridian\",-154],PARAMETER[\"standard_parallel_1\",65],PARAMETER[\"standard_parallel_2\",37],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Seattle SEC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              2110610.2036888003,
+              313585.06220919994
+            ],
+            [
+              2295843.2713206,
+              162794.18371009998
+            ],
+            [
+              2216995.7370558,
+              65996.71480939999
+            ],
+            [
+              2031786.0732632002,
+              216816.32511879998
+            ],
+            [
+              2110610.2036888003,
+              313585.06220919994
+            ]
+          ]
+        ]
+      }
+    }
+  ],
+  "source_sheet": {
+    "schema_version": 1,
+    "source": "ENR_AKL01.tif",
+    "source_width": 24000,
+    "source_height": 8000,
+    "detail_width": 6644,
+    "detail_height": 3558,
+    "pixel_transform": [
+      15256,
+      1,
+      0,
+      4240,
+      0,
+      1
+    ],
+    "note": "FAA supplies this detail GeoTIFF with its own georeference. No manual calibration; review the rough cutline and its parent-sheet placement."
+  }
+}

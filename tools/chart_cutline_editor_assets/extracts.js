@@ -37,6 +37,8 @@ const elements = {
   regionHandles: document.querySelector("#regionHandles"),
   regionTitle: document.querySelector("#regionTitle"),
   regionInputs: document.querySelector("#regionInputs"),
+  referenceGeoref: document.querySelector("#referenceGeoref"),
+  startGeoreferencing: document.querySelector("#startGeoreferencing"),
   regionX: document.querySelector("#regionX"),
   regionY: document.querySelector("#regionY"),
   regionWidth: document.querySelector("#regionWidth"),
@@ -60,6 +62,7 @@ const elements = {
   deleteBoundaryPoint: document.querySelector("#deleteBoundaryPoint"),
   snapBoundaryPoint: document.querySelector("#snapBoundaryPoint"),
   fitSummary: document.querySelector("#fitSummary"),
+  insetProjection: document.querySelector("#insetProjection"),
   controlPointSection: document.querySelector("#controlPointSection"),
   georefGuide: document.querySelector("#georefGuide"),
   controlPointList: document.querySelector("#controlPointList"),
@@ -128,7 +131,7 @@ async function initialize() {
     state.extractType = [requestedType, rememberedType, "legend"]
       .find((value) => ["legend", "inset", "navigable-inset"].includes(value));
     elements.extractType.value = state.extractType;
-    state.showAllNavigableCharts = window.localStorage.getItem(
+    state.showAllNavigableCharts = parameters.get('all') === '1' || window.localStorage.getItem(
       "aerobag-show-all-navigable-charts",
     ) === "true";
     elements.showAllCharts.checked = state.showAllNavigableCharts;
@@ -142,9 +145,7 @@ async function initialize() {
     }
     const requested = new URLSearchParams(window.location.search).get("family");
     const remembered = window.localStorage.getItem("aerobag-extract-family");
-    const initial = state.extractType === "navigable-inset"
-      ? "SEC"
-      : [requested, remembered, "TAC", state.families[0].id]
+    const initial = [requested, remembered, "TAC", state.families[0].id]
         .find((id) => state.families.some((family) => family.id === id));
     await loadFamily(initial);
   } catch (error) {
@@ -160,7 +161,7 @@ function bindControls() {
     }
     state.extractType = elements.extractType.value;
     window.localStorage.setItem("aerobag-extract-type", state.extractType);
-    await loadFamily(state.extractType === "navigable-inset" ? "SEC" : state.family.id);
+    await loadFamily(state.family.id);
   });
   elements.familySelect.addEventListener("change", async () => {
     if (!canLeaveDirtyChart()) {
@@ -202,6 +203,7 @@ function bindControls() {
   elements.moveLater.addEventListener("click", () => moveRegion(1));
   elements.reloadLayout.addEventListener("click", reloadLayout);
   elements.saveLayout.addEventListener("click", saveLayout);
+  elements.startGeoreferencing.addEventListener("click", startGeoreferencing);
   [elements.regionX, elements.regionY, elements.regionWidth, elements.regionHeight]
     .forEach((input) => input.addEventListener("change", updateRegionFromInputs));
   elements.maxOutputWidth.addEventListener("change", updateMaxOutputWidth);
@@ -247,6 +249,10 @@ async function loadFamily(familyId) {
       "/api/charts?family=" + encodeURIComponent(familyId) + "&purpose=extract",
     );
     state.family = state.families.find((family) => family.id === familyId);
+    elements.insetTargetFamily.replaceChildren(...state.family.inset_targets.map(target => {
+      const option = document.createElement('option'); option.value = target.id;
+      option.textContent = target.label; return option;
+    }));
     state.charts = result.charts;
     elements.familySelect.value = familyId;
     window.localStorage.setItem("aerobag-extract-family", familyId);
@@ -279,7 +285,7 @@ async function loadFamily(familyId) {
   }
 }
 
-async function loadChart(name) {
+async function loadChart(name, regionId = null) {
   setBusy(true);
   try {
     const familyQuery = "family=" + encodeURIComponent(state.family.id);
@@ -291,10 +297,15 @@ async function loadChart(name) {
         + "&name=" + encodeURIComponent(name);
     const layout = await api(layoutUrl);
     state.chart = chart;
+    state.newInsetProjectionWkt = layout.new_inset_projection_wkt;
     state.regions = layout.regions.map(copyRegion);
     state.revision = layout.revision;
     state.maxOutputWidth = layout.max_output_width || state.maxOutputWidth;
     state.selectedIndex = state.regions.length ? 0 : -1;
+    if (regionId !== null) {
+      state.selectedIndex = state.regions.findIndex(region => region.id === regionId);
+      if (state.selectedIndex < 0) throw new Error("The selected map draft no longer exists. Reload the layout.");
+    }
     state.selectedVertex = 0;
     state.dirty = false;
     state.undo = [];
@@ -309,7 +320,7 @@ async function loadChart(name) {
       : "boundary";
     state.controlPointPickStage = null;
     state.controlPointEditIndex = null;
-    const selectedRegion = state.regions[0];
+    const selectedRegion = state.regions[state.selectedIndex];
     state.previewAnchor = state.insetEditMode === "georef" && selectedRegion
       ? [
           selectedRegion.x + selectedRegion.width / 2,
@@ -341,11 +352,37 @@ async function loadChart(name) {
     window.history.replaceState(null, "", url);
     render();
     updatePreview();
+    return true;
   } catch (error) {
     showMessage(error.message, true, 0);
+    return false;
   } finally {
     setBusy(false);
   }
+}
+
+async function startGeoreferencing() {
+  if (state.busy || state.dirty || state.selectedIndex < 0 || state.extractType !== "inset") return;
+  setBusy(true);
+  try {
+    const layout = await api("/api/navigable-insets?" + new URLSearchParams({family: state.family.id, name: state.chart.name}));
+    const result = await api("/api/extract/start-georeferencing", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({family: state.family.id, name: state.chart.name, index: state.selectedIndex,
+        reference_revision: state.revision, inset_revision: layout.revision}),
+    });
+    state.extractType = "navigable-inset";
+    elements.extractType.value = state.extractType;
+    window.localStorage.setItem("aerobag-extract-type", state.extractType);
+    state.showAllNavigableCharts = elements.showAllCharts.checked = true;
+    const url = new URL(window.location.href);
+    url.searchParams.set("all", "1"); url.searchParams.set("mode", "georef");
+    window.history.replaceState(null, "", url);
+    if (await loadChart(state.chart.name, result.region_id)) {
+      showMessage("Map draft ready. Name it, add control points, and check the fit before enabling. The reference image is unchanged.", false, 0);
+    }
+  } catch (error) { showMessage(error.message, true, 0); }
+  finally { setBusy(false); }
 }
 
 function render() {
@@ -832,7 +869,8 @@ function finishOutline() {
   state.regions.push(withRegionBoundary({
     id: nextInsetId(),
     enabled: false,
-    target_family: "TAC",
+    target_family: state.family.inset_targets[0].id,
+    projection_wkt: state.newInsetProjectionWkt,
     control_points: [],
     diagnostics: incompleteDiagnostics(),
   }, state.draftBoundary));
@@ -1332,6 +1370,7 @@ function updateInputs() {
     elements.insetId.value = "";
     elements.insetEnabled.checked = false;
     elements.insetTargetFamily.value = "";
+    elements.insetProjection.textContent = "";
     elements.boundaryPointX.value = "";
     elements.boundaryPointY.value = "";
     renderControlPointList(null);
@@ -1349,6 +1388,7 @@ function updateInputs() {
     elements.insetId.value = region.id;
     elements.insetEnabled.checked = region.enabled;
     elements.insetTargetFamily.value = region.target_family;
+    elements.insetProjection.textContent = region.projection_wkt;
     elements.boundaryPointTitle.textContent = "Boundary point "
       + (state.selectedVertex + 1) + " of " + region.boundary.length;
     elements.boundaryPointX.value = point[0].toFixed(1);
@@ -1728,9 +1768,12 @@ function updateUiState() {
   const navigable = state.extractType === "navigable-inset";
   const georef = navigable && state.insetEditMode === "georef";
   elements.candidateScope.hidden = !navigable;
-  elements.familySelect.disabled = state.busy || navigable;
+  elements.familySelect.disabled = state.busy;
   elements.navigableControls.hidden = !navigable;
   elements.regionInputs.hidden = navigable;
+  elements.referenceGeoref.hidden = state.extractType !== "inset";
+  elements.startGeoreferencing.disabled = state.busy || state.dirty || !selected;
+  elements.startGeoreferencing.title = state.dirty ? "Save the reference boundary first." : "Open this boundary in the map calibration editor.";
   elements.outputWidthLabel.hidden = navigable;
   elements.previewZoom.hidden = !navigable;
   elements.insetEditMode.hidden = !navigable;
@@ -1803,12 +1846,13 @@ function updateUiState() {
 function setBusy(busy) {
   state.busy = busy;
   elements.extractType.disabled = busy;
-  elements.familySelect.disabled = busy || state.extractType === "navigable-inset";
+  elements.familySelect.disabled = busy;
   elements.chartSelect.disabled = busy;
   elements.showAllCharts.disabled = busy;
   elements.drawRegion.disabled = busy;
   elements.reloadLayout.disabled = busy;
   elements.saveLayout.disabled = busy || !state.dirty || state.draftBoundary !== null;
+  elements.startGeoreferencing.disabled = busy || state.dirty || state.selectedIndex < 0;
 }
 
 function handleKeyDown(event) {

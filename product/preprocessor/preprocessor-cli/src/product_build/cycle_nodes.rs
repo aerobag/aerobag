@@ -170,6 +170,15 @@ pub(super) fn build_chart_process_node(
         &source_fingerprint,
         cpu_jobs,
     )?;
+    // Quality is checked even on a tile-cache hit, and before tiling/publication.
+    // The report is outside disposable render work so failed builds remain inspectable.
+    check_chart_visual_references(
+        config,
+        family,
+        &source_fetch_root,
+        supplemental_source_fetch_record,
+        &source_fingerprint,
+    )?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -231,6 +240,74 @@ pub(super) fn build_chart_process_node(
                 ),
             ]))
         },
+    )
+}
+
+fn check_chart_visual_references(
+    config: &ProductBuildConfig,
+    family: ChartFamily,
+    source_root: &Path,
+    supplemental: Option<&NodeRecord>,
+    source_id: &str,
+) -> anyhow::Result<()> {
+    let report_root = config
+        .build_root
+        .join("state/chart-quality")
+        .join(manifest_chart_name(family));
+    let cycle = config
+        .target_cycle
+        .as_deref()
+        .context("chart quality requires a target cycle")?;
+    let tools_dir = report_root.join("tools");
+    fs::create_dir_all(&tools_dir)?;
+    fs::write(
+        tools_dir.join("chart_cutlines.py"),
+        include_str!("../../../preprocessor-charts/chart_cutlines.py"),
+    )?;
+    let checker = tools_dir.join("chart_quality.py");
+    fs::write(
+        &checker,
+        include_str!("../../../preprocessor-charts/chart_quality.py"),
+    )?;
+    let mut args = vec![
+        checker.display().to_string(),
+        "--source-root".to_string(),
+        source_root.display().to_string(),
+        "--metadata-root".to_string(),
+        config.chart_metadata_root.display().to_string(),
+        "--family".to_string(),
+        manifest_chart_name(family).to_string(),
+        "--cycle".to_string(),
+        cycle.to_string(),
+        "--source-id".to_string(),
+        source_id.to_string(),
+        "--output".to_string(),
+        report_root.display().to_string(),
+    ];
+    if let Some(record) = supplemental {
+        args.extend([
+            "--source-root".to_string(),
+            resolve_artifact_path(config, output_path(record, "source_root")?)
+                .display()
+                .to_string(),
+        ]);
+    }
+    let invocation = preprocessor_tools::ToolInvocation {
+        program: "python3".to_string(),
+        args,
+        cwd: config.chart_metadata_root.clone(),
+        label: format!("chart-visual-check-{}-{cycle}", family_slug(family)),
+        env: Vec::new(),
+        stdin_text: None,
+    };
+    let outcome = invocation.run_logged(&config.build_root.join("logs/chart-quality"))?;
+    invocation.ensure_success(
+        &outcome,
+        &format!(
+            "Chart visual reference check blocked {}: inspect {}",
+            family.capture_label(),
+            report_root.display()
+        ),
     )
 }
 
@@ -1941,6 +2018,18 @@ pub(super) fn chart_process_inputs(
             )),
         ),
         (
+            "chart_visual_references".to_string(),
+            hash_text(include_str!(
+                "../../../preprocessor-charts/chart_quality.py"
+            )),
+        ),
+        (
+            "chart_cutline_geometry".to_string(),
+            hash_text(include_str!(
+                "../../../preprocessor-charts/chart_cutlines.py"
+            )),
+        ),
+        (
             "source_content_fingerprint".to_string(),
             source_content_fingerprint.to_string(),
         ),
@@ -3065,6 +3154,66 @@ mod tests {
             Some(&hash_text(include_str!(
                 "../../../preprocessor-charts/navigable_inset.py"
             )))
+        );
+        assert_eq!(
+            inputs.get("chart_visual_references"),
+            Some(&hash_text(include_str!(
+                "../../../preprocessor-charts/chart_quality.py"
+            )))
+        );
+        assert_eq!(
+            inputs.get("chart_cutline_geometry"),
+            Some(&hash_text(include_str!(
+                "../../../preprocessor-charts/chart_cutlines.py"
+            )))
+        );
+    }
+
+    #[test]
+    fn chart_quality_failure_is_reported_before_tiling_or_publication() {
+        let temp = tempdir().unwrap();
+        let config = test_config(temp.path());
+        fs::create_dir_all(config.chart_metadata_root.join("SEC")).unwrap();
+        fs::write(
+            config.chart_metadata_root.join("SEC/Test SEC.geojson"),
+            b"{}",
+        )
+        .unwrap();
+        let source_root = temp.path().join("source");
+        fs::create_dir_all(&source_root).unwrap();
+        let source_urls = temp.path().join("source_urls.jsonl");
+        fs::write(&source_urls, b"").unwrap();
+        let mut fetch = write_source_fetch_record("synthetic-missing-chart");
+        fetch
+            .outputs
+            .insert("source_root".to_string(), source_root.display().to_string());
+        let result = build_chart_process_node(
+            &config,
+            ChartFamily::Sec,
+            &config.chart_metadata_root,
+            &source_urls,
+            &fetch,
+            None,
+            1,
+        );
+        assert!(result.is_err());
+        let current = config
+            .build_root
+            .join("state/chart-quality/SEC/current.json");
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(current).unwrap()).unwrap();
+        assert_eq!(report["status"], "critical");
+        assert_eq!(report["critical_count"], 1);
+        assert!(
+            !config.packaged_dir.exists(),
+            "must not publish suspect charts"
+        );
+        assert!(
+            !config
+                .build_root
+                .join("cache/nodes/charts-sec-process")
+                .exists(),
+            "quality failure must precede even preparing the render cache"
         );
     }
 

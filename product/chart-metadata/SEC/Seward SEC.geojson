@@ -1,13 +1,77 @@
 {
-"type": "FeatureCollection",
-"name": "Seward SEC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Seward SEC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -16864902.855180948972702, 8399737.889818361029029 ],
- [ -15696048.201851576566696, 8399737.889818361029029 ],
- [ -15696098.92773599736392, 8213784.61079316213727 ],
- [ -16864962.668366078287363, 8213536.957654637284577 ],
- [ -16864902.855180948972702, 8399737.889818361029029 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Seward SEC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Seward SEC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -16976300.684308745,
+              8734634.232773876
+            ],
+            [
+              -15584560.405916885,
+              8725205.353307001
+            ],
+            [
+              -15632140.157368025,
+              8208054.111600933
+            ],
+            [
+              -15799561.7919822,
+              8222009.543208222
+            ],
+            [
+              -15967531.585705597,
+              8232157.739314072
+            ],
+            [
+              -16135876.686980322,
+              8238467.13263658
+            ],
+            [
+              -16304421.904319994,
+              8240917.99458551
+            ],
+            [
+              -16473091.032592004,
+              8239334.937096087
+            ],
+            [
+              -16641599.383890629,
+              8233885.841743569
+            ],
+            [
+              -16846392.525906138,
+              8222238.471238316
+            ],
+            [
+              -16846221.152355224,
+              8215042.7996006925
+            ],
+            [
+              -16975787.012636233,
+              8204738.252978043
+            ],
+            [
+              -16976300.684308745,
+              8734634.232773876
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

@@ -60,6 +60,8 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
         crate_root.join("src/product_build/airway_routing.rs"),
         workspace_root.join("preprocessor-core/src/lib.rs"),
         workspace_root.join("preprocessor-core/src/runway.rs"),
+        workspace_root.join("preprocessor-charts/src/lib.rs"),
+        workspace_root.join("preprocessor-charts/chart_cutlines.py"),
         workspace_root.join("preprocessor-procedure-geometry/src/lib.rs"),
         workspace_root.join("preprocessor-procedure-geometry/src/arinc_ambiguity_resolutions.rs"),
         workspace_root.join("preprocessor-procedure-geometry/src/procedure_geometry.rs"),

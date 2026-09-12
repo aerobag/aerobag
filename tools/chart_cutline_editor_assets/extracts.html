@@ -26,7 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <select id="chartSelect" aria-label="Chart"></select>
     <button id="nextChart" class="iconButton" type="button" title="Next chart" aria-label="Next chart">&#x203a;</button>
     <label id="candidateScope" class="candidateScope" hidden>
-      <input id="showAllCharts" type="checkbox"> All sectionals
+      <input id="showAllCharts" type="checkbox"> All sheets
     </label>
     <div class="toolbarDivider"></div>
     <button id="undo" class="iconButton" type="button" title="Undo" aria-label="Undo">&#x21b6;</button>
@@ -79,6 +79,10 @@ SPDX-License-Identifier: AGPL-3.0-or-later
         <label>Width <input id="regionWidth" type="number" min="1" step="1"></label>
         <label>Height <input id="regionHeight" type="number" min="1" step="1"></label>
       </div>
+      <div id="referenceGeoref" hidden>
+        <button id="startGeoreferencing" type="button">Start georeferencing</button>
+        <p class="muted">Reuse this boundary as a map-inset draft. The reference image stays available; remove it only after the map is calibrated and enabled.</p>
+      </div>
       <section id="navigableControls" class="navigableControls" hidden>
         <div id="insetEditMode" class="segmented insetEditMode" aria-label="Inset editing mode">
           <button type="button" data-mode="boundary" class="insetEditModeButton active">Inset cutlines</button>
@@ -118,6 +122,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
             </div>
             <strong id="georefGuide" class="georefGuide">Click an approximate point in the inset overview.</strong>
           </div>
+          <details>
+            <summary>Explicit calibration projection</summary>
+            <p class="muted">New drafts copy the parent CRS once. The saved projection is never guessed or changed by the builder.</p>
+            <pre id="insetProjection" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+          </details>
           <label>New point:
             <select id="newControlKind" aria-label="New control point type">
               <option value="intersection">Lat/lon intersection</option>
@@ -126,7 +135,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
             </select>
           </label>
           <span class="muted">Degrees or degrees minutes: 58 15 = 58.25; -134 30 = -134.5.
-            Spread ticks across opposite edges; use at least four of each coordinate.</span>
+            Spread marks across the inset; use at least four observations of each coordinate.
+            A tick on a labeled latitude/longitude line gives both coordinates: choose Lat/lon intersection.</span>
           <div id="controlPointList" class="controlPointList"></div>
         </div>
       </section>

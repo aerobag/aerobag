@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "New Orleans SEC.tif",
+  "source_width": 16617,
+  "source_height": 12347,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 10878,
+      "y": 6808,
+      "width": 2693,
+      "height": 3315
+    }
+  ]
+}

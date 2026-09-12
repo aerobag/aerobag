@@ -1,13 +1,57 @@
 {
-"type": "FeatureCollection",
-"name": "Mariana Islands Inset SEC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Mariana Islands Inset SEC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [15918687.183438124135137, 1746891.557075357763097 ],
- [ 16252645.655817944556475, 1746891.557075357763097 ],
- [ 16252645.655817944556475, 1459732.27188049745746 ],
- [ 15918687.183438124135137, 1459732.27188049745746 ],
- [ 15918687.183438124135137, 1746891.557075357763097 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Mariana Islands Inset SEC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]]"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Mariana Islands Inset SEC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              16150207.439400045,
+              1817350.9154181748
+            ],
+            [
+              16313270.153985828,
+              1817760.5863367564
+            ],
+            [
+              16313017.295781467,
+              1459865.7361934627
+            ],
+            [
+              16009398.55729416,
+              1459588.0075983698
+            ],
+            [
+              16009180.11720082,
+              1513501.668738327
+            ],
+            [
+              16049217.625277719,
+              1513934.1412924996
+            ],
+            [
+              16151238.334940413,
+              1605609.8713650897
+            ],
+            [
+              16150207.439400045,
+              1817350.9154181748
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

@@ -8,9 +8,9 @@ Family directories contain:
 - `*.geojson`: chart neatlines used to crop source GeoTIFFs before tiling.
 - `*.legend.json`: source-pixel rectangles rendered into chart legend sheets.
 - `*.inset.json`: source-pixel rectangles rendered into chart inset sheets.
-- `*.navigable-insets.json`: manually georeferenced source-chart insets added
-  to their explicitly selected tile family: TAC/Flyway for VFR sources,
-  IFR-L/IFR-H for the respective enroute sources.
+- `*.navigable-insets.json`: source-pixel exclusions, optionally relocated by a
+  manual georeference into an explicit tile family: TAC/Flyway for VFR sources,
+  IFR-L/IFR-H for the respective enroute sources, or EXCLUDE for no output.
 - `SEC/navigable-inset-candidates.json`: reviewed work queue of useful map
   insets that are not already supplied as standalone TAC products.
 - `visual-references/<region-id>.json`: explicitly approved chart thumbnails,
@@ -64,14 +64,15 @@ synthetic charts to verify four-handle editing, curved previews, save and reload
 
 New cycles are compared with the last **manually approved** visual reference,
 not with the previous cycle. Missing references require review; strong changes
-to manually placed insets block publication. Reports and unresolved alerts
+to manually placed insets quarantine their whole source sheet, allowing other
+sheets to publish. Uncontained checker failures still block publication. Reports and unresolved alerts
 appear in Pipeline Health. See [Chart Visual References](../../docs/chart-visual-reference-checks.md)
 for the checker, approval commands, scoring policy, and calibration limitations.
 
-Each inset requires `target_family: "TAC"` or `target_family: "FLY"`; there is
-no document-wide destination or decoder default. `enabled` independently
-controls inclusion. The editor exposes **Output layer: TAC / Flyway** and
-**Include in build**. One source sheet can contribute to both layers: Juneau
+Each inset requires an explicit `target_family`; there is no document-wide
+destination or decoder default. `enabled` independently controls whether the
+region has any build effect. The editor exposes **Output layer** and
+**Apply to build**. One source sheet can contribute to both layers: Juneau
 and Seward Glacier Area go to TAC, Juneau High Density Traffic Area to Flyway.
 Both destinations use the same georeference/warp builder and filter insets into
 their own mosaics. The process nodes depend on Sectional sources as well as
@@ -80,7 +81,7 @@ remain in the existing Flyway namespace inside the shared TAC download package;
 sharing an archive does not mix the displayed layers.
 
 Enabling an inset also removes that **same source-pixel polygon** from its parent
-Sectional. This is independent of whether the inset goes to TAC or Flyway. The
+chart. This is independent of whether the inset has an output layer. The
 builder adds a tiled, compressed validity mask to the parent's RGB VRT, before both
 the normal neatline warp and any dateline supplement. The original FAA TIFF and
 the edited neatline remain untouched; relocated insets read that original TIFF.
@@ -91,8 +92,19 @@ The parent output remains three-band RGB, like the other charts in its mosaic.
 The mask is a derived build artifact; source, metadata, and builder fingerprints
 invalidate the chart process cache when any of these change.
 
-Navigable-inset layout schema 2 requires a `projection_wkt` string on **every**
-inset, including drafts: a complete, valid projected CRS in WKT. Schema 1 and
+Navigable-inset layout schema 3 adds the explicit `target_family: "EXCLUDE"`
+destination. In the editor choose **Output layer: Exclude only (no output layer)**
+and check **Apply to build**. The polygon is removed from the parent chart, but
+is not rendered into any map layer or extracted as a plate reference. Use it
+for redundant coverage such as the Tampa inset on Jacksonville SEC: the native
+FAA Tampa TAC already covers that whole region at twice the linear resolution.
+An exclusion needs only its source-pixel boundary; it may retain optional
+calibration for inspection, but no georeference is required. It still has a
+reviewed visual fingerprint and participates in source-sheet quarantine if the
+FAA changes its placement. Unchecked exclusions are drafts with no effect.
+
+Schema 3 requires a `projection_wkt` string on every **map-output**
+inset, including drafts: a complete, valid projected CRS in WKT. Older schemas and
 missing, malformed, or geographic-only projections are rejected; there is no
 builder inheritance or projection search. The editor copies the parent CRS once
 when creating a draft, records that explicit choice, and displays it under
@@ -103,7 +115,7 @@ and validate against independent graticule marks before approving it.
 Navigable inset controls pair source pixels with WGS84 coordinates. Each control
 has an explicit `kind`: `intersection` requires both `latitude` and `longitude`;
 `latitude` and `longitude` ticks supply only their named coordinate (the other
-must be null). Disabled drafts may retain unfinished controls.
+must be null). Disabled drafts and exclude-only regions may retain unfinished controls.
 `preprocessor-charts/navigable_inset.py` supplies the **same fit** to
 the editor and the tile builder: fit six affine pixel-to-projected coefficients
 in the inset's explicit CRS (typically Lambert Conformal Conic). Inverse-project

@@ -62,7 +62,7 @@ if mode == 'create':
                        'boundary': [[70, 70], [280, 70], [280, 280], [70, 280]],
                        'control_points': controls} for family in ('TAC', 'FLY')]
             (metadata / 'SEC' / (name + '.navigable-insets.json')).write_text(json.dumps({
-                'schema_version': 2, 'source': name+'.tif', 'source_width': 400, 'source_height': 400,
+                'schema_version': 3, 'source': name+'.tif', 'source_width': 400, 'source_height': 400,
                 'insets': insets}))
     mode = 'approve'
 

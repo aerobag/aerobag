@@ -371,11 +371,14 @@ class EditorStateTest(unittest.TestCase):
             catalog.family_list(),
             [
                 {"id": "SEC", "label": "Sectional", "chart_count": 1,
-                 "inset_targets": [{"id":"TAC","label":"TAC"},{"id":"FLY","label":"Flyway"}]},
+                 "inset_targets": [{"id":"TAC","label":"TAC"},{"id":"FLY","label":"Flyway"},
+                                   {"id":"EXCLUDE","label":"Exclude only (no output layer)"}]},
                 {"id": "TAC", "label": "TAC", "chart_count": 1,
-                 "inset_targets": [{"id":"TAC","label":"TAC"},{"id":"FLY","label":"Flyway"}]},
+                 "inset_targets": [{"id":"TAC","label":"TAC"},{"id":"FLY","label":"Flyway"},
+                                   {"id":"EXCLUDE","label":"Exclude only (no output layer)"}]},
                 {"id": "FLY", "label": "Flyway", "chart_count": 1,
-                 "inset_targets": [{"id":"FLY","label":"Flyway"},{"id":"TAC","label":"TAC"}]},
+                 "inset_targets": [{"id":"FLY","label":"Flyway"},{"id":"TAC","label":"TAC"},
+                                   {"id":"EXCLUDE","label":"Exclude only (no output layer)"}]},
             ],
         )
         payload = catalog.chart_payload("SEC", "Test TAC")
@@ -453,7 +456,7 @@ class EditorStateTest(unittest.TestCase):
             (self.cutline_dir / "Test TAC.navigable-insets.json").read_text(encoding="utf-8")
         )
         self.assertNotIn("diagnostics", document["insets"][0])
-        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["schema_version"], 3)
         self.assertEqual(document["insets"][0]["projection_wkt"], self.projection_wkt)
         self.assertEqual(loaded["regions"][0]["projection_wkt"], self.projection_wkt)
         self.assertEqual(initial["new_inset_projection_wkt"], self.projection_wkt)
@@ -578,6 +581,30 @@ class EditorStateTest(unittest.TestCase):
         controls[0]["longitude"] = None
         region["enabled"] = True
         with self.assertRaisesRegex(RuntimeError, "needs latitude"):
+            self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
+
+    def test_exclude_only_needs_a_boundary_not_a_georeference(self):
+        region = {"id": "Redundant coverage", "enabled": True, "target_family": "EXCLUDE",
+                  "boundary": [[10, 10], [100, 10], [100, 80]], "control_points": []}
+        saved = self.state.save_navigable_insets("Test TAC", [region], None)
+        loaded = self.state.navigable_inset_payload("Test TAC")["regions"][0]
+        self.assertEqual(loaded["target_family"], "EXCLUDE")
+        self.assertTrue(loaded["enabled"])
+        self.assertTrue(loaded["diagnostics"]["ready"])
+        self.assertIn("no georeference", loaded["diagnostics"]["summary"])
+        self.assertNotIn("projection_wkt", loaded)
+        region["target_family"] = "TAC"
+        with self.assertRaisesRegex(RuntimeError, "projection_wkt"):
+            self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
+        region["projection_wkt"] = self.projection_wkt
+        with self.assertRaisesRegex(RuntimeError, "Need at least"):
+            self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
+        region["target_family"] = "EXCLUDE"
+        region["control_points"] = [{"kind": "latitude", "pixel": [20, 20], "latitude": None}]
+        saved = self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
+        self.assertEqual(saved["regions"][0]["control_points"][0]["latitude"], None)
+        region["boundary"][0] = [-1, -1]
+        with self.assertRaisesRegex(RuntimeError, "outside the source"):
             self.state.save_navigable_insets("Test TAC", [region], saved["revision"])
 
     def test_coordinate_entry(self):

@@ -1,7 +1,8 @@
 # Chart Inset Tour
 
-Tour of the September 2026 curation: 15 manually georeferenced insets and
-eight FAA-georeferenced detail sheets. Juneau covers three entries at one stop.
+Tour of the September 2026 curation: 14 published manually georeferenced insets,
+one exclude-only region, and eight FAA-georeferenced detail sheets.
+Juneau covers three entries at one stop.
 The current metadata must be included in a cycle build before this tour can
 validate the latest edits; restarting the app alone does not rebuild chart tiles.
 
@@ -22,7 +23,7 @@ airport in that database. Both use the normal flight-plan coordinate syntax.
 | KIND | Indianapolis inset, from St Louis SEC | TAC |
 | KRRT | Lake of the Woods / Northwest Angle inset, from Twin Cities SEC; pan north from Warroad | TAC |
 | KJAX | Jacksonville inset, from Jacksonville SEC | TAC |
-| KTPA | Tampa inset, also from Jacksonville SEC | TAC |
+| KTPA | Native FAA Tampa TAC; redundant Jacksonville SEC Tampa inset is excluded, not overlaid | TAC |
 | KMTH | Florida Keys inset, from Miami TAC; follow the Keys west toward Key West | TAC |
 | L41 | Marble Canyon inset, from Grand Canyon General Aviation | TAC |
 | KSEA | FAA Seattle detail, ENR_AKH01_SEA | IFR-H |

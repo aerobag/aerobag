@@ -21,10 +21,18 @@ EDIT_TOLERANCE = 0.20
 CORNER_TURN_DEGREES = 30
 MAX_VERTICES = 1_000_000
 MAX_DEPTH = 24
-INSET_LAYOUT_SCHEMA = 2
+INSET_LAYOUT_SCHEMA = 3
 WORLD_WIDTH = 2 * math.pi * 6378137
-INSET_TARGETS = {"SEC": ("TAC", "FLY"), "TAC": ("TAC", "FLY"),
-                 "FLY": ("FLY", "TAC"), "ENR_L": ("ENR_L",), "ENR_H": ("ENR_H",)}
+INSET_EXCLUDE_TARGET = "EXCLUDE"
+INSET_TARGETS = {"SEC": ("TAC", "FLY", INSET_EXCLUDE_TARGET), "TAC": ("TAC", "FLY", INSET_EXCLUDE_TARGET),
+                 "FLY": ("FLY", "TAC", INSET_EXCLUDE_TARGET), "ENR_L": ("ENR_L", INSET_EXCLUDE_TARGET),
+                 "ENR_H": ("ENR_H", INSET_EXCLUDE_TARGET)}
+INSET_TARGET_LABELS = {"TAC": "TAC", "FLY": "Flyway", "ENR_L": "IFR-L", "ENR_H": "IFR-H",
+                       INSET_EXCLUDE_TARGET: "Exclude only (no output layer)"}
+
+
+def inset_requires_georeference(inset):
+    return inset["target_family"] != INSET_EXCLUDE_TARGET
 
 
 def source_sheet(document):

@@ -465,6 +465,7 @@ def check_region(region, source_root, metadata_root, source_id, cycle, output):
 def approve(candidate_path, metadata_root, reviewer):
     if not reviewer.strip():
         raise ValueError("Approval needs the reviewer's name")
+    initialize_rendering()
     candidate = json.loads(Path(candidate_path).read_text())
     matches = [region for region in regions(metadata_root, candidate["family"])
                if region["id"] == candidate["region_id"]]

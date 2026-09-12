@@ -1,21 +1,21 @@
 {
   "approval": {
-    "digest": "bae16fd8cd89c16e936faa22288f329d36c88b430ef4918a80caf46e25586b68",
-    "reviewed_at": "2026-09-12T14:37:32.939136+00:00",
-    "reviewed_by": "jonh"
+    "digest": "bdf4b35232ac2a407af8ccee5c5d9808378c2b8454ceaa080b29192769455105",
+    "reviewed_at": "2026-09-12T19:57:22.755600+00:00",
+    "reviewed_by": "codex (jonh-approved exclude-only destination; pixels verified unchanged)"
   },
-  "definition_hash": "22782c320aefbda519b9ccda8a15cc4438a905d64eeacdbf13fe6e74f83997f6",
+  "definition_hash": "239798d3176d0d40528e6034614dae5cb1a9d347a07f0ef4fd8a545e93b7c932",
   "family": "SEC",
   "recipe": 1,
   "region_id": "a513176aa2dcb2c15e38d287",
   "schema_version": 1,
   "source": {
-    "cycle": "editor-preview",
+    "cycle": "2610",
     "dimensions": [
       16617,
       12412
     ],
-    "identity": "local-review",
+    "identity": "local-exclusion-review",
     "name": "Jacksonville SEC.tif",
     "projection": "PROJCS[\"Lambert Conformal Conic\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"latitude_of_origin\",30.25],PARAMETER[\"central_meridian\",-82],PARAMETER[\"standard_parallel_1\",30.6666666666667],PARAMETER[\"standard_parallel_2\",25.3333333333333],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
     "transform": [

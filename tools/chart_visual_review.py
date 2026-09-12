@@ -110,7 +110,8 @@ class SheetInventory:
                     for index, region in enumerate(document["insets" if suffix == "navigable-insets" else "regions"]):
                         if suffix == "navigable-insets":
                             kind = "inset" if region["enabled"] else "draft"
-                            name = f'{region["id"]} -> {region["target_family"]} ({"enabled" if region["enabled"] else "draft"})'
+                            target = quality.cutlines.INSET_TARGET_LABELS[region["target_family"]]
+                            name = f'{region["id"]} -> {target} ({"enabled" if region["enabled"] else "draft"})'
                             identity = quality.digest([family, parent["chart"], "inset", region["id"]])[:24]
                         else:
                             kind = "reference" if suffix == "inset" else "legend"

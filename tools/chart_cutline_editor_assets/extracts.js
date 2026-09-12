@@ -612,7 +612,8 @@ function renderRegionList() {
     button.disabled = state.draftBoundary !== null;
     const prefix = state.extractType === "navigable-inset" ? region.id + " - " : (index + 1) + ": ";
     const suffix = state.extractType === "navigable-inset"
-      ? " (" + region.target_family + ", " + region.control_points.length + " controls)"
+      ? " (" + state.family.inset_targets.find(target => target.id === region.target_family).label
+        + (region.enabled ? ", applied" : ", draft") + ")"
       : "";
     button.textContent = prefix + region.width + " x " + region.height + suffix;
     button.title = "Region " + (index + 1) + " at " + region.x + ", " + region.y;
@@ -1388,7 +1389,7 @@ function updateInputs() {
     elements.insetId.value = region.id;
     elements.insetEnabled.checked = region.enabled;
     elements.insetTargetFamily.value = region.target_family;
-    elements.insetProjection.textContent = region.projection_wkt;
+    elements.insetProjection.textContent = region.projection_wkt || "No calibration projection.";
     elements.boundaryPointTitle.textContent = "Boundary point "
       + (state.selectedVertex + 1) + " of " + region.boundary.length;
     elements.boundaryPointX.value = point[0].toFixed(1);

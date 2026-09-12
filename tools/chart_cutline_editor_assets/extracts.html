@@ -92,13 +92,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
         <div id="insetIdentity" class="insetIdentity">
           <label>Inset name <input id="insetId" type="text" maxlength="80" placeholder="Milwaukee"></label>
           <label>Output layer
-            <select id="insetTargetFamily">
-              <option value="TAC">TAC</option>
-              <option value="FLY">Flyway</option>
-            </select>
+            <select id="insetTargetFamily"></select>
           </label>
-          <label class="enabledLabel"><input id="insetEnabled" type="checkbox"> Include in build</label>
+          <label class="enabledLabel"><input id="insetEnabled" type="checkbox"> Apply to build</label>
         </div>
+        <p class="muted">Applied insets are cut out of the parent chart. Choose Exclude only for no replacement layer; no geographic control points are needed. Uncheck Apply to build to leave a draft with no effect.</p>
         <div id="boundaryControls" class="boundaryControls">
           <div>
             <strong id="boundaryPointTitle">Boundary point</strong>

@@ -105,7 +105,7 @@ class EditorCatalog:
                 "id": family_id,
                 "label": FAMILY_LABELS.get(family_id, family_id),
                 "chart_count": len(state.charts),
-                "inset_targets": [{"id": target, "label": FAMILY_LABELS[target]}
+                "inset_targets": [{"id": target, "label": cutlines.INSET_TARGET_LABELS[target]}
                                   for target in cutlines.INSET_TARGETS[family_id]],
             }
             for family_id, state in self.families.items()
@@ -822,6 +822,7 @@ def validate_navigable_inset_document(
             raise EditorError(f"unsupported source chart family {path.parent.name!r}")
         if target_family not in allowed:
             raise EditorError(f"navigable inset {identifier!r} target_family must be {' or '.join(allowed)}")
+        requires_georeference = cutlines.inset_requires_georeference(value)
 
         boundary = validate_pixel_points(value.get("boundary"), chart)
         if len(boundary) < 3:
@@ -849,25 +850,27 @@ def validate_navigable_inset_document(
                 chart,
                 identifier,
                 point_index,
-                allow_incomplete=not enabled,
+                allow_incomplete=not enabled or not requires_georeference,
             )
             for point_index, point in enumerate(controls_value)
         ]
         projection_wkt = value.get("projection_wkt")
-        try:
-            inset_georeference.inset_projection(projection_wkt)
-        except inset_georeference.GeoreferenceError as error:
-            raise EditorError(f"inset {identifier!r}: {error}") from error
+        if requires_georeference or projection_wkt is not None:
+            try:
+                inset_georeference.inset_projection(projection_wkt)
+            except inset_georeference.GeoreferenceError as error:
+                raise EditorError(f"inset {identifier!r}: {error}") from error
         region: dict[str, object] = {
             "id": identifier,
             "target_family": target_family,
             "enabled": enabled,
             "boundary": [[round(x, 3), round(y, 3)] for x, y in boundary],
             "control_points": control_points,
-            "projection_wkt": projection_wkt,
         }
-        diagnostics = navigable_inset_diagnostics(chart.source_path, control_points, projection_wkt=projection_wkt)
-        if enabled:
+        if projection_wkt is not None:
+            region["projection_wkt"] = projection_wkt
+        if enabled and requires_georeference:
+            diagnostics = navigable_inset_diagnostics(chart.source_path, control_points, projection_wkt=projection_wkt)
             if not diagnostics["ready"]:
                 raise EditorError(
                     f"enabled navigable inset {identifier!r}: {diagnostics['summary']}"
@@ -911,7 +914,10 @@ def region_with_diagnostics(chart: Chart, region: dict[str, object]) -> dict[str
         **pixel_polygon_bounds(boundary),
         "diagnostics": navigable_inset_diagnostics(
             chart.source_path, region["control_points"], projection_wkt=region["projection_wkt"],
-        ),
+        ) if cutlines.inset_requires_georeference(region) else {
+            "ready": True,
+            "summary": "Exclude only: boundary is removed from the parent; no georeference or output layer required.",
+        },
     }
 
 

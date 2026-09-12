@@ -149,6 +149,8 @@ struct NavigableInsetLayout {
 
 #[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
 enum NavigableInsetTarget {
+    #[serde(rename = "EXCLUDE")]
+    ExcludeOnly,
     #[serde(rename = "TAC")]
     Tac,
     #[serde(rename = "FLY")]
@@ -160,12 +162,13 @@ enum NavigableInsetTarget {
 }
 
 impl NavigableInsetTarget {
-    fn family(self) -> ChartFamily {
+    fn family(self) -> Option<ChartFamily> {
         match self {
-            Self::Tac => ChartFamily::Tac,
-            Self::Flyway => ChartFamily::Flyway,
-            Self::EnrL => ChartFamily::EnrL,
-            Self::EnrH => ChartFamily::EnrH,
+            Self::ExcludeOnly => None,
+            Self::Tac => Some(ChartFamily::Tac),
+            Self::Flyway => Some(ChartFamily::Flyway),
+            Self::EnrL => Some(ChartFamily::EnrL),
+            Self::EnrH => Some(ChartFamily::EnrH),
         }
     }
 }
@@ -174,7 +177,8 @@ impl NavigableInsetTarget {
 struct NavigableInset {
     id: String,
     target_family: NavigableInsetTarget,
-    projection_wkt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projection_wkt: Option<String>,
     #[serde(default)]
     enabled: bool,
     boundary: Vec<[f64; 2]>,
@@ -1363,7 +1367,7 @@ fn build_navigable_inset_vrts(
         if !layout
             .insets
             .iter()
-            .any(|inset| inset.enabled && inset.target_family.family() == destination)
+            .any(|inset| inset.enabled && inset.target_family.family() == Some(destination))
         {
             continue;
         }
@@ -1371,7 +1375,7 @@ fn build_navigable_inset_vrts(
         for inset in layout
             .insets
             .iter()
-            .filter(|inset| inset.enabled && inset.target_family.family() == destination)
+            .filter(|inset| inset.enabled && inset.target_family.family() == Some(destination))
         {
             outputs.push(build_one_navigable_inset_vrt(
                 work_dir,
@@ -1453,7 +1457,7 @@ fn validate_navigable_inset_layout(
     path: &Path,
     actual_dimensions: (u32, u32),
 ) -> anyhow::Result<()> {
-    if layout.schema_version != 2 {
+    if layout.schema_version != 3 {
         bail!(
             "unsupported navigable-inset schema_version {} in {}",
             layout.schema_version,
@@ -1480,7 +1484,13 @@ fn validate_navigable_inset_layout(
     }
     let mut identifiers = BTreeSet::new();
     for inset in &layout.insets {
-        if inset.projection_wkt.trim().is_empty() {
+        let requires_georeference = inset.target_family.family().is_some();
+        if requires_georeference
+            && inset
+                .projection_wkt
+                .as_ref()
+                .is_none_or(|wkt| wkt.trim().is_empty())
+        {
             bail!(
                 "navigable inset {:?} needs explicit projection_wkt",
                 inset.id
@@ -1543,7 +1553,7 @@ fn validate_navigable_inset_layout(
                 match value {
                     Some(value)
                         if required && value.is_finite() && (-limit..=limit).contains(&value) => {}
-                    None if !required || !inset.enabled => {}
+                    None if !required || !inset.enabled || !requires_georeference => {}
                     _ => bail!(
                         "navigable inset {:?} has an invalid or incomplete control point",
                         inset.id
@@ -3160,7 +3170,7 @@ mod tests {
         fs::write(
             metadata_dir.join("Test SEC.navigable-insets.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "source": "Test SEC.tif",
                 "source_width": 100,
                 "source_height": 80,
@@ -3430,6 +3440,53 @@ assert source.GetRasterBand(1).GetColorTable() is not None
         }
     }
 
+    #[test]
+    fn switching_mapped_inset_to_exclude_only_removes_it_from_all_output_layers() {
+        let temp = navigable_inset_fixture();
+        assert_eq!(
+            build_navigable_inset_vrts(temp.path(), ChartFamily::Tac)
+                .unwrap()
+                .len(),
+            1
+        );
+        let path = temp.path().join("SEC/Test SEC.navigable-insets.json");
+        let mut layout: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        layout["insets"][0]["target_family"] = serde_json::json!("EXCLUDE");
+        layout["insets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("projection_wkt");
+        layout["insets"][0]["control_points"] = serde_json::json!([]);
+        fs::write(&path, serde_json::to_vec(&layout).unwrap()).unwrap();
+        super::validate_navigable_inset_source(
+            temp.path(),
+            &super::read_navigable_inset_layout(&path).unwrap(),
+            &path,
+        )
+        .unwrap();
+        for family in [
+            ChartFamily::Sec,
+            ChartFamily::Tac,
+            ChartFamily::Flyway,
+            ChartFamily::EnrL,
+            ChartFamily::EnrH,
+        ] {
+            assert!(
+                build_navigable_inset_vrts(temp.path(), family)
+                    .unwrap()
+                    .is_empty(),
+                "{family:?}"
+            );
+        }
+        layout["schema_version"] = serde_json::json!(2);
+        fs::write(&path, serde_json::to_vec(&layout).unwrap()).unwrap();
+        assert!(
+            build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).is_err(),
+            "old schema must not acquire new semantics"
+        );
+    }
+
     fn assert_parent_excludes_relocated_insets(crosses_dateline: bool) {
         let temp = navigable_inset_fixture();
         // Give the paper sheet a placement unrelated to the inset's fitted position.
@@ -3489,10 +3546,15 @@ assert source.GetRasterBand(1).GetColorTable() is not None
         draft["enabled"] = serde_json::json!(false);
         draft["boundary"] = serde_json::json!([[60, 60], [90, 60], [90, 78], [60, 78]]);
         draft["control_points"] = serde_json::json!([]);
+        let excluded = serde_json::json!({
+            "id": "Redundant coverage", "target_family": "EXCLUDE", "enabled": true,
+            "boundary": [[42, 66], [55, 66], [55, 78], [42, 78]],
+            "control_points": []
+        });
         layout["insets"]
             .as_array_mut()
             .unwrap()
-            .extend([flyway, draft]);
+            .extend([flyway, draft, excluded]);
         fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
 
         let sample = |path: &Path, x: f64, y: f64| {
@@ -3538,6 +3600,7 @@ assert source.GetRasterBand(1).GetColorTable() is not None
             for (x, y, expected, description) in [
                 (20.0, 20.0, "51", "relocated TAC inset"),
                 (5.0, 75.0, "51", "edge-touching Flyway inset"),
+                (50.0, 70.0, "51", "exclude-only region without georeference"),
                 (
                     80.0,
                     60.0,

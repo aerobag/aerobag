@@ -126,6 +126,19 @@ try {
     assert.equal(await page.evaluate("document.querySelector('#insetProjection').textContent"),layout.regions[0].projection_wkt,
       'the displayed projection must survive save/reload');
     await writeFile(resolve(artifacts,`${family}-new-inset.png`),Buffer.from((await page.send('Page.captureScreenshot',{format:'png'})).data,'base64'));
+    await click('#insetTargetFamily');
+    for (const [key,code] of [['End',35],['Enter',13]]) {
+      await page.send('Input.dispatchKeyEvent',{type:'keyDown',key,windowsVirtualKeyCode:code});
+      await page.send('Input.dispatchKeyEvent',{type:'keyUp',key,windowsVirtualKeyCode:code});
+    }
+    assert.equal(await page.evaluate("document.querySelector('#insetTargetFamily').value"),'EXCLUDE');
+    await click('#insetEnabled');
+    await click('#saveLayout');
+    await waitFor(() => page.evaluate("document.querySelector('#saveState').textContent==='Saved'"),3000,'exclude-only boundary without control points not saved');
+    await page.navigate(`${origin}/extracts?type=navigable-inset&family=${family}&chart=Curved&all=1&mode=boundary`);
+    await waitFor(() => page.evaluate("document.querySelector('#insetTargetFamily').value==='EXCLUDE' && document.querySelector('#insetEnabled').checked"),3000,'exclude-only state did not survive reload');
+    assert.match(await page.evaluate("document.querySelector('#regionList').textContent"),/Exclude only/);
+    await writeFile(resolve(artifacts,`${family}-exclude-only.png`),Buffer.from((await page.send('Page.captureScreenshot',{format:'png'})).data,'base64'));
   }
   const referenceUrl = `${origin}/extracts?type=inset&family=TAC&chart=Curved`;
   const referenceReady = () => waitFor(() => page.evaluate("document.querySelector('#startGeoreferencing') && !document.querySelector('#startGeoreferencing').disabled && document.querySelector('#startGeoreferencing').getClientRects().length>0 && document.querySelector('#regionCount').textContent==='1 region' && document.querySelector('#extractType').value==='inset'"),3000,'reference conversion control not ready');

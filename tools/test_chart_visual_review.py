@@ -209,6 +209,24 @@ class ChartVisualReviewTests(ChartFixture):
                 "schema_version": 1, "source": "Test SEC.tif", "source_width": 1000,
                 "source_height": 800, "regions": rectangles}))
 
+    def test_exclude_only_is_labelled_as_no_output_but_remains_reviewable(self):
+        document = json.loads(self.inset_file.read_text())
+        document['insets'][0]['target_family'] = 'EXCLUDE'
+        document['insets'][0]['control_points'] = []
+        document['insets'][0].pop('projection_wkt')
+        self.inset_file.write_text(json.dumps(document))
+        parent = self.store.snapshot()['sheets'][0]
+        region = next(r for r in parent['regions'] if r['kind'] == 'inset')
+        self.assertIn('Exclude only (no output layer)', region['name'])
+        self.assertIn('type=navigable-inset', region['editor_url'])
+        self.store.refresh_sheet(parent)
+        refreshed = self.store.snapshot()['sheets'][0]
+        region = next(r for r in refreshed['regions'] if r['id'] == region['id'])
+        self.assertIsNotNone(region['review_id'])
+        rendered = self.store.inventory.render(refreshed)
+        shape = next(r for r in rendered['regions'] if r['id'] == region['id'])
+        self.assertIn('explicit navigable-inset mask', shape['exclusion'])
+
     def test_whole_sheet_includes_all_definitions_and_distinguishes_extraction_from_exclusion(self):
         self.add_inventory_regions()
         snapshot = self.store.snapshot()

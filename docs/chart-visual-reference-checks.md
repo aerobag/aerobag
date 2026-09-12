@@ -21,7 +21,9 @@ and Pipeline Health reads them independently of successful products.
 - Native-resolution neighborhoods around manually supplied inset controls.
 - Explicit missing-reference, metadata-change, source-geometry, unreadable-image,
   and invalid-reference states. None count as a verified match.
-- The required per-inset `projection_wkt` is part of its approved definition.
+- The required per-map-inset `projection_wkt` is part of its approved definition.
+  Exclude-only regions need no geographic calibration, but their pixel boundaries
+  are fingerprinted with the same critical source-sheet quarantine policy.
   Changing it invalidates approval and stale candidates even if every pixel is
   unchanged. A change in the FAA source's CRS also alarms; it never changes the
   pinned inset projection automatically. Migrating implicit projections to

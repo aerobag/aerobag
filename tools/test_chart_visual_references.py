@@ -6,6 +6,8 @@ import importlib.util
 import copy
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -42,7 +44,7 @@ class ChartFixture(unittest.TestCase):
         self.inset_file = self.metadata / "SEC/Test SEC.navigable-insets.json"
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(3857)
-        self.inset_file.write_text(json.dumps({"schema_version": 2, "source": "Test SEC.tif",
+        self.inset_file.write_text(json.dumps({"schema_version": 3, "source": "Test SEC.tif",
             "source_width": 1000, "source_height": 800, "insets": [{"id": "City", "target_family": "TAC", "enabled": True,
             "projection_wkt": srs.ExportToWkt(),
             "boundary": [[200, 200], [800, 200], [800, 650], [200, 650]],
@@ -82,6 +84,17 @@ class ChartFixture(unittest.TestCase):
 
 
 class ChartVisualReferencesTest(ChartFixture):
+    def test_approval_cli_initializes_its_own_metadata_reader(self):
+        report = self.check()
+        region = self.inset(report)
+        candidate = self.output / 'reports' / report['report_id'] / region['id'] / 'candidate.json'
+        cli = Path(__file__).resolve().parents[1] / 'tools/chart_cutline_audit.py'
+        result = subprocess.run([sys.executable, str(cli), '--approve-reference', str(candidate),
+                                 '--metadata-root', str(self.metadata), '--reviewed-by', 'test operator'],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.inset(self.check())['status'], 'ok')
+
     def test_missing_references_are_unreviewed_not_automatically_approved(self):
         report = self.check()
         self.assertEqual(report["unreviewed_count"], 2)
@@ -95,6 +108,24 @@ class ChartVisualReferencesTest(ChartFixture):
         self.assertEqual(report["status"], "ok", report)
         self.assertTrue(all(value == 0 for r in report["regions"] for v in r["scores"].values() for value in v.values()))
         self.assertEqual(approved, {p: p.read_bytes() for p in approved})
+
+    def test_exclude_only_is_monitored_but_never_counted_as_a_map_output(self):
+        layout = json.loads(self.inset_file.read_text())
+        inset = layout['insets'][0]
+        inset['target_family'] = 'EXCLUDE'
+        inset['control_points'] = []
+        del inset['projection_wkt']
+        self.inset_file.write_text(json.dumps(layout))
+        self.approve_all()
+        self.assertEqual(self.check()['status'], 'ok')
+        (self.metadata / 'TAC').mkdir()
+        selected = quality.publication_regions(self.metadata, 'TAC')
+        self.assertEqual(selected, [])
+        self.assertFalse(quality.publication_decision(self.metadata, 'TAC', selected, [])['has_map_sources'])
+        self.write_source(np.roll(self.original, 30, axis=2))
+        report = self.check()
+        self.assertEqual(self.inset(report)['status'], 'critical')
+        self.assertEqual(report['publication']['quarantined_sources'], ['Test SEC.tif'])
 
     def test_small_label_change_does_not_trip_drift_alarm(self):
         self.approve_all()

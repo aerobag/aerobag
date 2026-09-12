@@ -58,10 +58,30 @@ def evaluate_health(
 
 class ChartQualityMetricTests(unittest.TestCase):
     def report(self, status="warning"):
-        return {"schema_version": 1, "family": "SEC", "cycle": "2610", "report_id": "a" * 32,
+        return {"schema_version": 2, "family": "SEC", "cycle": "2610", "report_id": "a" * 32,
                 "status": status, "warning_count": int(status == "warning"),
                 "critical_count": int(status == "critical"), "unreviewed_count": 0,
-                "regions": [{"chart": "Test SEC", "scores": {"overview": {"boundary": .2}}}]}
+                "regions": [{"chart": "Test SEC", "scores": {"overview": {"boundary": .2}}}],
+                'publication': {'state': 'ready', 'has_map_sources': True,
+                                'quarantined_sources': ['Test SEC.tif'] if status == 'critical' else [],
+                                'excluded_metadata': ['SEC/Test SEC.geojson'] if status == 'critical' else []}}
+
+    def test_partial_publication_is_still_critical_and_names_omissions(self):
+        report = self.report('critical')
+        metric = self.metrics(report)['chart_quality.SEC.unresolved']
+        self.assertEqual(metric['severity'], 'critical')
+        self.assertIn('OMITTED source sheets', metric['message'])
+        self.assertIn('Test SEC.tif', metric['message'])
+        self.assertEqual(metric['details']['publication'], report['publication'])
+
+    def test_publication_decision_is_required_and_cannot_hide_criticals(self):
+        for decision in [None, {}, {'state': 'ready', 'quarantined_sources': []}]:
+            report = self.report('critical')
+            report['publication'] = decision
+            self.assertIsNotNone(pipeline_health.chart_quality_report_error(report))
+        report = self.report('critical')
+        report['publication']['quarantined_sources'] = []
+        self.assertIsNotNone(pipeline_health.chart_quality_report_error(report))
 
     def metrics(self, report):
         metrics = []

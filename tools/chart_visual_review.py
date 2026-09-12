@@ -304,7 +304,7 @@ class ReviewStore:
                 report = json.loads(path.read_text())
                 if report["status"] == "checking":
                     raise ReviewError(f"{family} is still rendering; retry importing when it finishes")
-                if report["schema_version"] != quality.SCHEMA or not hex_id(report["report_id"], 32):
+                if report["schema_version"] != quality.REPORT_SCHEMA or not hex_id(report["report_id"], 32):
                     raise ReviewError(f"Invalid {family} report")
                 reports[family] = report["report_id"]
                 for region in report["regions"]:

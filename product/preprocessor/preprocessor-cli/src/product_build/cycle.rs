@@ -172,14 +172,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(GraphScheduledTask {
                 id: format!("charts-{family_id}-package"),
                 deps: if family == ChartFamily::Tac {
-                    vec![
-                        process_id,
-                        "charts-flyway-process".to_string(),
-                        format!("charts-{family_id}-fetch"),
-                        "charts-sec-fetch".to_string(),
-                    ]
+                    vec![process_id, "charts-flyway-process".to_string()]
                 } else {
-                    vec![process_id, format!("charts-{family_id}-fetch")]
+                    vec![process_id]
                 },
                 weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::ChartPackage { family },
@@ -391,8 +386,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             config.cpu_jobs.clamp(1, 8),
                         )
                         .map(|record| TaskCompletion {
-                            node_records: vec![record],
-                            value: TaskValue::None,
+                            node_records: vec![record.clone()],
+                            value: TaskValue::ChartProcess { record },
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
                     }
@@ -705,16 +700,17 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     }
                     ScheduledTaskKind::ChartPackage { family } => {
                         let family_id = family_slug(family).to_string();
-                        let source_fetch =
-                            match task_values_snapshot.get(&format!("charts-{family_id}-fetch")) {
-                                Some(TaskValue::ChartFetch { record }) => record,
-                                _ => unreachable!("chart fetch dependency should have completed"),
-                            };
-                        let supplemental_source_fetch = if family == ChartFamily::Tac {
-                            match task_values_snapshot.get("charts-sec-fetch") {
-                                Some(TaskValue::ChartFetch { record }) => Some(record),
+                        let process = match task_values_snapshot
+                            .get(&format!("charts-{family_id}-process"))
+                        {
+                            Some(TaskValue::ChartProcess { record }) => record,
+                            _ => unreachable!("chart process dependency should have completed"),
+                        };
+                        let bundled = if family == ChartFamily::Tac {
+                            match task_values_snapshot.get("charts-flyway-process") {
+                                Some(TaskValue::ChartProcess { record }) => Some(record),
                                 _ => {
-                                    unreachable!("sectional fetch dependency should have completed")
+                                    unreachable!("flyway process dependency should have completed")
                                 }
                             }
                         } else {
@@ -728,8 +724,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             chart_versions
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
-                            &source_fetch,
-                            supplemental_source_fetch.as_ref(),
+                            &process,
+                            bundled.as_ref(),
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(TaskCompletion {

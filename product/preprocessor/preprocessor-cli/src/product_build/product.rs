@@ -310,14 +310,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: package_id.clone(),
                     deps: if family == ChartFamily::Tac {
-                        vec![
-                            process_id,
-                            cycle_task_id(cycle, "charts-flyway-process"),
-                            fetch_id,
-                            cycle_task_id(cycle, "charts-sec-fetch"),
-                        ]
+                        vec![process_id, cycle_task_id(cycle, "charts-flyway-process")]
                     } else {
-                        vec![process_id, fetch_id]
+                        vec![process_id]
                     },
                     weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::ChartPackage {
@@ -783,10 +778,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
-                                record,
+                                record.clone(),
                                 &cycle_config.packaged_dir,
                             )],
-                            value: ProductTaskValue::None,
+                            value: ProductTaskValue::ChartProcess { record },
                             completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
@@ -1168,18 +1163,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle.clone());
                         let family_id = family_slug(family).to_string();
-                        let source_fetch = match task_values_snapshot
-                            .get(&cycle_task_id(&cycle, &format!("charts-{family_id}-fetch")))
-                        {
-                            Some(ProductTaskValue::ChartFetch { record }) => record,
-                            _ => bail!("missing chart fetch for cycle {cycle} family {family_id}"),
+                        let process = match task_values_snapshot.get(&cycle_task_id(
+                            &cycle,
+                            &format!("charts-{family_id}-process"),
+                        )) {
+                            Some(ProductTaskValue::ChartProcess { record }) => record,
+                            _ => {
+                                bail!("missing chart process for cycle {cycle} family {family_id}")
+                            }
                         };
-                        let supplemental_source_fetch = if family == ChartFamily::Tac {
+                        let bundled = if family == ChartFamily::Tac {
                             match task_values_snapshot
-                                .get(&cycle_task_id(&cycle, "charts-sec-fetch"))
+                                .get(&cycle_task_id(&cycle, "charts-flyway-process"))
                             {
-                                Some(ProductTaskValue::ChartFetch { record }) => Some(record),
-                                _ => bail!("missing sectional chart fetch for cycle {cycle}"),
+                                Some(ProductTaskValue::ChartProcess { record }) => Some(record),
+                                _ => bail!("missing flyway chart process for cycle {cycle}"),
                             }
                         } else {
                             None
@@ -1193,8 +1191,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .1
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
-                            &source_fetch,
-                            supplemental_source_fetch.as_ref(),
+                            &process,
+                            bundled.as_ref(),
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(ProductTaskCompletion {

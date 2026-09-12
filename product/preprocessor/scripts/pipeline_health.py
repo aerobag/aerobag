@@ -523,7 +523,7 @@ def collect_chart_quality(artifact_root: Path) -> list[dict[str, Any]]:
 
 
 def chart_quality_report_error(payload: Any) -> str | None:
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
         return "Unsupported chart quality report"
     if payload.get("status") not in {"checking", "ok", "warning", "critical"}:
         return "Invalid chart quality status"
@@ -534,6 +534,21 @@ def chart_quality_report_error(payload: Any) -> str | None:
         expected_status = "critical" if payload["critical_count"] else "warning" if payload["warning_count"] else "ok"
         if payload["status"] != expected_status or payload["unreviewed_count"] > payload["warning_count"]:
             return "Chart quality status contradicts its counts"
+        decision = payload.get('publication')
+        if not isinstance(decision, dict) or decision.get('state') not in {'ready', 'blocked'}:
+            return 'Invalid chart publication decision'
+        if decision['state'] == 'blocked':
+            if not isinstance(decision.get('reason'), str) or not decision['reason'] or not payload['critical_count']:
+                return 'Invalid blocked chart publication'
+        else:
+            for field in ('quarantined_sources', 'excluded_metadata'):
+                values = decision.get(field)
+                if not isinstance(values, list) or any(not isinstance(v, str) or not v for v in values):
+                    return 'Invalid chart publication ' + field
+            if type(decision.get('has_map_sources')) is not bool:
+                return 'Invalid chart publication map availability'
+            if bool(decision['quarantined_sources']) != bool(payload['critical_count']):
+                return 'Chart quarantine contradicts critical count'
     if not isinstance(payload.get("regions"), list):
         return "Invalid chart quality regions"
     for region in payload["regions"]:
@@ -567,13 +582,18 @@ def add_chart_quality_metrics(metrics: list[dict[str, Any]], facts: dict[str, An
         report_id = report.get("report_id", "")
         valid_id = isinstance(report_id, str) and len(report_id) == 32 and all(c in "0123456789abcdef" for c in report_id)
         review_url = f"/pipeline-health/chart-quality/{family}/reports/{report_id}/index.html" if valid_id else None
+        decision = report.get('publication', {})
+        quarantined = decision.get('quarantined_sources', [])
+        disposition = ('; OMITTED source sheets and all derived layers/references: ' + ', '.join(quarantined)
+                       if quarantined else '; publication blocked' if decision.get('state') == 'blocked' else '')
         add_metric(metrics, metric_id=f"chart_quality.{family}.unresolved", label=f"{family} chart visual checks",
                    value=critical + warnings, unit="regions", severity=severity, warning_threshold=1,
                    message=(f"{family}: check incomplete; no verified result for this attempt" if incomplete else
-                            f"{family}: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}"),
+                            f"{family}: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}{disposition}"),
                    details={"review_url": review_url, "last_error": report.get("error"),
                             "regions": report.get("regions", []), "policy": report.get("policy"),
-                            "source_id": report.get("source_id"), "completed_at": report.get("completed_at")})
+                            "source_id": report.get("source_id"), "completed_at": report.get("completed_at"),
+                            "publication": decision})
         add_metric(metrics, metric_id=f"chart_quality.{family}.unreviewed", label=f"{family} missing visual references",
                    value=report.get("unreviewed_count", 0), unit="regions",
                    severity="warning" if report.get("unreviewed_count", 0) else "ok", warning_threshold=1,

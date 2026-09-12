@@ -21,6 +21,7 @@ import tempfile
 import uuid
 
 SCHEMA = 1
+REPORT_SCHEMA = 2
 RECIPE = 1
 POLICY = {
     "overview_pixels": 512,
@@ -185,6 +186,59 @@ def source_path(root, name):
     if len(matches) != 1:
         raise ValueError(f"Expected one source for {name}; found {len(matches)}")
     return matches[0]
+
+
+def publication_regions(metadata_root, family, charts=None):
+    """Check every manual calibration on a consumed source, not just this layer's inset.
+
+    A failed TAC inset also invalidates a Flyway sibling and the parent's mask.
+    Selection for the interactive reviewer remains per-output in regions().
+    """
+    selected = regions(metadata_root, family, charts)
+    sources = {r['source'].casefold() for r in selected}
+    by_id = {r['id']: r for r in selected}
+    for owner in cutlines.INSET_TARGETS:
+        if not (Path(metadata_root) / owner).is_dir():
+            continue
+        for region in regions(metadata_root, owner, include_imported=False):
+            if region['kind'] == 'inset' and region['source'].casefold() in sources:
+                by_id[region['id']] = region
+    return sorted(by_id.values(), key=lambda r: r['id'])
+
+
+def publication_decision(metadata_root, family, selected, results):
+    """Produce an explicit build-input exclusion, never relocate or repair pixels."""
+    sources = {r['source'].casefold(): r['source'] for r in results
+               if r['kind'] == 'inset' and r['status'] == 'critical'}
+    uncontained = [r for r in results if r['status'] == 'critical'
+                   and r['source'].casefold() not in sources]
+    if uncontained:
+        return {'state': 'blocked', 'reason': 'Uncontained chart check failure: ' +
+                '; '.join(f"{r['chart']}: {r['message']}" for r in uncontained)}
+    excluded = []
+    for owner in cutlines.INSET_TARGETS:
+        directory = Path(metadata_root) / owner
+        for path in sorted(directory.glob('*')):
+            if path.suffix == '.geojson':
+                source = path.stem + '.tif'
+                dependencies = [source]
+            elif any(path.name.endswith('.' + kind + '.json')
+                     for kind in ('navigable-insets', 'inset', 'legend')):
+                document = json.loads(path.read_text())
+                dependencies = [document['source']]
+                if document.get('coverage_source'):
+                    dependencies.append(document['coverage_source'] + '.tif')
+            else:
+                continue
+            if any(source.casefold() in sources for source in dependencies):
+                excluded.append(str(path.relative_to(metadata_root)))
+    has_map_sources = any(r['source'].casefold() not in sources and
+                          ((r['kind'] == 'cutline' and r['family'] == family) or
+                           (r['kind'] == 'inset' and r['definition']['inset']['target_family'] == family))
+                          for r in selected)
+    return {'state': 'ready', 'has_map_sources': has_map_sources,
+            'quarantined_sources': sorted(sources.values()),
+            'excluded_metadata': sorted(excluded)}
 
 
 def window_for(geometry):
@@ -385,7 +439,7 @@ def render_region(region, candidate, reference, samples, output):
 
 def check_region(region, source_root, metadata_root, source_id, cycle, output):
     output.mkdir(parents=True, exist_ok=True)
-    result = {key: region[key] for key in ("id", "chart", "name", "kind", "family")}
+    result = {key: region[key] for key in ("id", "chart", "name", "kind", "family", "source")}
     family = region["family"]
     try:
         source = gdal.Open(str(source_path(source_root, region["source"])))
@@ -434,28 +488,37 @@ def run_check(source_root, metadata_root, family, output, source_id, cycle, char
         report_id = uuid.uuid4().hex
         report_root = output / "reports" / report_id
         report_root.mkdir(parents=True)
-        report = {"schema_version": SCHEMA, "family": family, "cycle": cycle,
+        report = {"schema_version": REPORT_SCHEMA, "family": family, "cycle": cycle,
                   "source_id": source_id, "report_id": report_id, "started_at": now(),
                   "status": "checking", "policy": POLICY, "regions": []}
         atomic_json(output / "current.json", report)
         try:
             initialize_rendering()
-            selected = regions(metadata_root, family, charts)
+            selected = publication_regions(metadata_root, family, charts)
             if not selected:
                 raise ValueError("No chart regions selected")
             report["regions"] = [check_region(region, source_root, metadata_root, source_id, cycle,
                                                report_root / region["id"]) for region in selected]
             report["status"] = max((r["status"] for r in report["regions"]), key=SEVERITY.get)
+            report['publication'] = publication_decision(metadata_root, family, selected, report['regions'])
         except (ImportError, RuntimeError, ValueError, OSError, KeyError) as error:
             report["status"] = "critical"
             report["error"] = str(error)
+            report['publication'] = {'state': 'blocked', 'reason': str(error)}
         report["completed_at"] = now()
         report["warning_count"] = sum(r["status"] == "warning" for r in report["regions"])
         report["critical_count"] = sum(r["status"] == "critical" for r in report["regions"]) + int("error" in report)
         report["unreviewed_count"] = sum(r["unreviewed"] for r in report["regions"])
         rows = "".join(f'<tr><td class="{r["status"]}">{r["status"]}</td><td><a href="{r["id"]}/index.html">{html.escape(r["chart"])} / {html.escape(r["name"])}</a></td><td>{html.escape(r["message"])}</td></tr>' for r in sorted(report["regions"], key=lambda r: -SEVERITY[r["status"]]))
         title = f'Chart visual checks: {family}, cycle {cycle}'
-        (report_root / "index.html").write_text(html_page(title, f'<p>{html.escape(report.get("error", "References require explicit review; these images are never auto-approved."))}</p><table><tr><th>Status</th><th>Region</th><th>Reason</th></tr>{rows}</table><details><summary>Scoring policy</summary><pre>{html.escape(json.dumps(POLICY, indent=2))}</pre></details>'))
+        decision = report['publication']
+        if decision['state'] == 'blocked':
+            disposition = 'Publication blocked: ' + decision['reason']
+        elif decision['quarantined_sources']:
+            disposition = 'CRITICAL: omitting these source sheets and ALL derived layers/references: ' + ', '.join(decision['quarantined_sources']) + '. Remaining sheets may publish. Manual review required.'
+        else:
+            disposition = 'No source sheets quarantined.'
+        (report_root / "index.html").write_text(html_page(title, f'<p class="{report["status"]}">{html.escape(disposition)}</p><p>References require explicit review; these images are never auto-approved.</p><table><tr><th>Status</th><th>Region</th><th>Reason</th></tr>{rows}</table><details><summary>Publication decision</summary><pre>{html.escape(json.dumps(decision, indent=2))}</pre></details><details><summary>Scoring policy</summary><pre>{html.escape(json.dumps(POLICY, indent=2))}</pre></details>'))
         atomic_json(report_root / "report.json", report)
         atomic_json(output / "current.json", report)
         retained = sorted((p for p in (output / "reports").iterdir() if p != report_root),
@@ -487,8 +550,9 @@ def main(argv=None):
         parser.error("--family, --source-root and --output are required for checks")
     report = run_check(args.source_root, args.metadata_root, args.family, args.output,
                        args.source_id, args.cycle, args.chart)
-    print(json.dumps({key: report[key] for key in ("status", "report_id", "warning_count", "critical_count", "unreviewed_count")}))
-    return 2 if report["status"] == "critical" else 0
+    # stdout is the result of THIS invocation, not the racy monitoring current.json.
+    print(json.dumps(report))
+    return 2 if report['publication']['state'] == 'blocked' else 0
 
 
 if __name__ == "__main__":

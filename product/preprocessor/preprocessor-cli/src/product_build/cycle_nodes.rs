@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use super::chart_quality::check_chart_visual_references;
 use super::weather_cameras::{configured_sources, DEFAULT_TOKEN_FILE};
 use super::*;
 
@@ -163,7 +164,7 @@ pub(super) fn build_chart_process_node(
         source_fetch_record,
         supplemental_source_fetch_record,
     )?;
-    let inputs = chart_process_inputs(
+    let mut inputs = chart_process_inputs(
         family,
         source_repo,
         source_urls,
@@ -172,13 +173,17 @@ pub(super) fn build_chart_process_node(
     )?;
     // Quality is checked even on a tile-cache hit, and before tiling/publication.
     // The report is outside disposable render work so failed builds remain inspectable.
-    check_chart_visual_references(
+    let publication_inputs = check_chart_visual_references(
         config,
         family,
         &source_fetch_root,
         supplemental_source_fetch_record,
         &source_fingerprint,
     )?;
+    inputs.insert(
+        "publication_inputs".to_string(),
+        publication_inputs.fingerprint()?,
+    );
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -190,6 +195,7 @@ pub(super) fn build_chart_process_node(
     let insets_root = work_dir.join("insets");
     let thumbnails_root = work_dir.join("thumbnails");
     let reference_catalog_path = work_dir.join(CHART_REFERENCE_CATALOG_NAME);
+    let publication_inputs_path = work_dir.join("chart-publication-inputs.json");
     run_cached_node(
         prepared,
         inputs,
@@ -199,6 +205,7 @@ pub(super) fn build_chart_process_node(
             insets_root.clone(),
             thumbnails_root.clone(),
             reference_catalog_path.clone(),
+            publication_inputs_path.clone(),
         ],
         |prepared| {
             let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
@@ -207,13 +214,26 @@ pub(super) fn build_chart_process_node(
                 let root = resolve_artifact_path(config, output_path(record, "source_root")?);
                 seed_prefetched_source_tree(&root, &work_dir)?;
             }
-            build_family_vrts(family, &work_dir, cpu_jobs)?;
+            publication_inputs.apply(&work_dir)?;
+            if publication_inputs.has_map_sources {
+                build_family_vrts(family, &work_dir, cpu_jobs)?;
+                build_family_tiles(family, &work_dir, cpu_jobs)?;
+            } else {
+                if tiles_root.exists() {
+                    fs::remove_dir_all(&tiles_root)?;
+                }
+                fs::create_dir_all(&tiles_root)?;
+            }
             build_family_legends(family, &work_dir)?;
             build_family_insets(family, &work_dir)?;
+            fs::create_dir_all(&thumbnails_root)?;
             build_family_reference_catalog(family, &work_dir)?;
-            build_family_tiles(family, &work_dir, cpu_jobs)?;
             prune_chart_render_intermediates(&work_dir)?;
             Ok(BTreeMap::from([
+                (
+                    "publication_inputs".to_string(),
+                    relative_artifact_path(&publication_inputs_path, &config.build_root),
+                ),
                 (
                     "work_dir".to_string(),
                     relative_artifact_path(&work_dir, &config.build_root),
@@ -243,74 +263,6 @@ pub(super) fn build_chart_process_node(
     )
 }
 
-fn check_chart_visual_references(
-    config: &ProductBuildConfig,
-    family: ChartFamily,
-    source_root: &Path,
-    supplemental: Option<&NodeRecord>,
-    source_id: &str,
-) -> anyhow::Result<()> {
-    let report_root = config
-        .build_root
-        .join("state/chart-quality")
-        .join(manifest_chart_name(family));
-    let cycle = config
-        .target_cycle
-        .as_deref()
-        .context("chart quality requires a target cycle")?;
-    let tools_dir = report_root.join("tools");
-    fs::create_dir_all(&tools_dir)?;
-    fs::write(
-        tools_dir.join("chart_cutlines.py"),
-        include_str!("../../../preprocessor-charts/chart_cutlines.py"),
-    )?;
-    let checker = tools_dir.join("chart_quality.py");
-    fs::write(
-        &checker,
-        include_str!("../../../preprocessor-charts/chart_quality.py"),
-    )?;
-    let mut args = vec![
-        checker.display().to_string(),
-        "--source-root".to_string(),
-        source_root.display().to_string(),
-        "--metadata-root".to_string(),
-        config.chart_metadata_root.display().to_string(),
-        "--family".to_string(),
-        manifest_chart_name(family).to_string(),
-        "--cycle".to_string(),
-        cycle.to_string(),
-        "--source-id".to_string(),
-        source_id.to_string(),
-        "--output".to_string(),
-        report_root.display().to_string(),
-    ];
-    if let Some(record) = supplemental {
-        args.extend([
-            "--source-root".to_string(),
-            resolve_artifact_path(config, output_path(record, "source_root")?)
-                .display()
-                .to_string(),
-        ]);
-    }
-    let invocation = preprocessor_tools::ToolInvocation {
-        program: "python3".to_string(),
-        args,
-        cwd: config.chart_metadata_root.clone(),
-        label: format!("chart-visual-check-{}-{cycle}", family_slug(family)),
-        env: Vec::new(),
-        stdin_text: None,
-    };
-    let outcome = invocation.run_logged(&config.build_root.join("logs/chart-quality"))?;
-    invocation.ensure_success(
-        &outcome,
-        &format!(
-            "Chart visual reference check blocked {}: inspect {}",
-            family.capture_label(),
-            report_root.display()
-        ),
-    )
-}
-
 pub(super) fn prune_chart_render_intermediates(work_dir: &Path) -> anyhow::Result<()> {
     prune_chart_render_intermediates_dir(work_dir, false)
 }
@@ -324,7 +276,10 @@ fn prune_chart_render_intermediates_dir(dir: &Path, in_output_dir: bool) -> anyh
             entry.file_name().to_string_lossy().as_ref(),
             "tiles" | "legends" | "insets" | "thumbnails"
         );
-        let is_output_file = entry.file_name().to_string_lossy() == CHART_REFERENCE_CATALOG_NAME;
+        let is_output_file = matches!(
+            entry.file_name().to_str(),
+            Some(CHART_REFERENCE_CATALOG_NAME | "chart-publication-inputs.json")
+        );
         let child_in_output = in_output_dir || is_output_dir;
         if file_type.is_dir() {
             prune_chart_render_intermediates_dir(&path, child_in_output)?;
@@ -451,55 +406,24 @@ pub(super) fn build_chart_package_nodes(
     family: ChartFamily,
     source_urls_dir: &Path,
     version_label: &str,
-    source_fetch_record: &NodeRecord,
-    supplemental_source_fetch_record: Option<&NodeRecord>,
+    process_record: &NodeRecord,
+    bundled_record: Option<&NodeRecord>,
 ) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
     let family_id = family_slug(family).to_string();
     let contract_id = product_contract_id_for_family(&family_id)?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = chart_source_urls_path(source_urls_dir, family);
     let process_node_name = format!("charts-{family_id}-process");
-    let source_fingerprint = combined_chart_source_fingerprint(
-        family,
-        source_fetch_record,
-        supplemental_source_fetch_record,
-    )?;
-    let process_inputs = chart_process_inputs(
-        family,
-        &config.chart_metadata_root,
-        &source_urls_path,
-        &source_fingerprint,
-        config.cpu_jobs.clamp(1, 8),
-    )?;
-    let process_prepared = prepare_node_at(
-        &build_shared_node_dir(config, &process_node_name)?,
-        &process_node_name,
-        &process_inputs,
-    )?;
-    let process_record =
-        load_existing_node_record(&process_prepared.record_path, &process_node_name)?;
+    if process_record.name != process_node_name
+        || (family == ChartFamily::Tac) != bundled_record.is_some()
+    {
+        bail!("incorrect chart render dependency for {family_id}");
+    }
     let work_dir = resolve_artifact_path(config, output_path(&process_record, "work_dir")?);
-    let bundled_process = if family == ChartFamily::Tac {
-        let bundled_family = ChartFamily::Flyway;
-        let bundled_node_name = format!("charts-{}-process", family_slug(bundled_family));
-        let bundled_inputs = chart_process_inputs(
-            bundled_family,
-            &config.chart_metadata_root,
-            &source_urls_path,
-            &combined_chart_source_fingerprint(
-                bundled_family,
-                source_fetch_record,
-                supplemental_source_fetch_record,
-            )?,
-            config.cpu_jobs.clamp(1, 8),
-        )?;
-        let bundled_prepared = prepare_node_at(
-            &build_shared_node_dir(config, &bundled_node_name)?,
-            &bundled_node_name,
-            &bundled_inputs,
-        )?;
-        let bundled_record =
-            load_existing_node_record(&bundled_prepared.record_path, &bundled_node_name)?;
+    let bundled_process = if let Some(bundled_record) = bundled_record {
+        if bundled_record.name != "charts-flyway-process" {
+            bail!("incorrect bundled chart render dependency");
+        }
         let bundled_work_dir =
             resolve_artifact_path(config, output_path(&bundled_record, "work_dir")?);
         Some((bundled_record, bundled_work_dir))
@@ -2012,6 +1936,10 @@ pub(super) fn chart_process_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("cpu_jobs".to_string(), cpu_jobs.to_string()),
         (
+            "chart_publication_policy".to_string(),
+            hash_text(include_str!("chart_quality.rs")),
+        ),
+        (
             "navigable_inset_georeference".to_string(),
             hash_text(include_str!(
                 "../../../preprocessor-charts/navigable_inset.py"
@@ -3166,6 +3094,181 @@ mod tests {
             Some(&hash_text(include_str!(
                 "../../../preprocessor-charts/chart_cutlines.py"
             )))
+        );
+    }
+
+    #[test]
+    fn chart_quality_quarantine_flows_through_real_render_cache_and_packages() {
+        let temp = tempdir().unwrap();
+        let config = test_config(temp.path());
+        let source_root = temp.path().join("source");
+        let checker =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../preprocessor-charts/chart_quality.py");
+        let fixture = |mode: &str| {
+            let output = Command::new("python3")
+                .args(["-c", include_str!("chart_quality_fixture.py")])
+                .arg(temp.path())
+                .arg(&checker)
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        fixture("create");
+        let urls = temp.path().join("urls");
+        for family in [ChartFamily::Sec, ChartFamily::Tac] {
+            let path = chart_source_urls_path(&urls, family);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"").unwrap();
+        }
+        let mut fetch = write_source_fetch_record("same-source-identity");
+        fetch
+            .outputs
+            .insert("source_root".to_string(), source_root.display().to_string());
+        let render = |family| {
+            build_chart_process_node(
+                &config,
+                family,
+                &config.chart_metadata_root,
+                &chart_source_urls_path(&urls, family),
+                &fetch,
+                (family != ChartFamily::Sec).then_some(&fetch),
+                1,
+            )
+            .unwrap()
+        };
+        let work = |record: &NodeRecord| {
+            resolve_artifact_path(&config, output_path(record, "work_dir").unwrap())
+        };
+        let tiles = |record: &NodeRecord| {
+            let directory = work(record).join("tiles");
+            let mut entries = Vec::new();
+            collect_files(&directory, &directory, &mut entries).unwrap();
+            entries
+                .into_iter()
+                .filter(|(name, _)| name.ends_with(".webp"))
+                .map(|(name, _)| name)
+                .collect::<BTreeSet<_>>()
+        };
+        let clean = render(ChartFamily::Sec);
+        let clean_tiles = tiles(&clean);
+        assert!(!clean_tiles.is_empty());
+        assert!(render(ChartFamily::Sec).cache_hit);
+        let clean_tac = render(ChartFamily::Tac);
+        let clean_fly = render(ChartFamily::Flyway);
+        assert!(!tiles(&clean_tac).is_empty());
+        assert!(!tiles(&clean_fly).is_empty());
+
+        fixture("move");
+        // Deliberately keep the fetch identity unchanged: the CURRENT decision
+        // must prevent even an otherwise-identical cache lookup from going green.
+        let quarantined = render(ChartFamily::Sec);
+        assert!(!quarantined.cache_hit);
+        assert_ne!(quarantined.fingerprint, clean.fingerprint);
+        let remaining_tiles = tiles(&quarantined);
+        assert!(
+            !remaining_tiles.is_empty(),
+            "healthy chart must still render"
+        );
+        assert!(remaining_tiles.is_subset(&clean_tiles));
+        assert!(
+            remaining_tiles.len() < clean_tiles.len(),
+            "suspect footprint must disappear"
+        );
+        let report: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                config
+                    .build_root
+                    .join("state/chart-quality/SEC/current.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["status"], "critical");
+        assert_eq!(
+            report["publication"]["quarantined_sources"],
+            serde_json::json!(["Suspect SEC.tif"])
+        );
+        assert!(
+            render(ChartFamily::Sec).cache_hit,
+            "quarantined result can be reused, not the clean one"
+        );
+        let empty_tac = render(ChartFamily::Tac);
+        let empty_fly = render(ChartFamily::Flyway);
+        assert!(tiles(&empty_tac).is_empty());
+        assert!(tiles(&empty_fly).is_empty());
+        assert_ne!(clean_tac.fingerprint, empty_tac.fingerprint);
+        assert_ne!(clean_fly.fingerprint, empty_fly.fingerprint);
+        let (records, _) =
+            build_chart_package_nodes(&config, ChartFamily::Sec, &urls, "2605", &quarantined, None)
+                .unwrap();
+        let package = &records[0];
+        assert_eq!(
+            package.inputs["process_fingerprint"],
+            quarantined.fingerprint
+        );
+        let package_root =
+            resolve_artifact_path(&config, output_path(package, "package_root").unwrap());
+        let mut zip_tiles = BTreeSet::new();
+        for entry in fs::read_dir(&package_root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "zip") {
+                let zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+                for name in zip.file_names().filter(|name| name.ends_with(".webp")) {
+                    zip_tiles.insert(name.strip_prefix("tiles/").unwrap().to_string());
+                }
+            }
+        }
+        assert_eq!(
+            zip_tiles, remaining_tiles,
+            "Android ZIP publication must use exactly the filtered render"
+        );
+        let packaged =
+            resolve_artifact_path(&config, output_path(package, "unpack_source_root").unwrap());
+        let mut entries = Vec::new();
+        collect_files(&packaged, &packaged, &mut entries).unwrap();
+        let packaged_tiles = entries
+            .into_iter()
+            .filter(|(name, _)| name.ends_with(".webp"))
+            .map(|(name, _)| name.strip_prefix("tiles/").unwrap().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            packaged_tiles, remaining_tiles,
+            "web unpacked publication must use exactly the filtered render"
+        );
+        let (bundle, _) = build_chart_package_nodes(
+            &config,
+            ChartFamily::Tac,
+            &urls,
+            "2605",
+            &empty_tac,
+            Some(&empty_fly),
+        )
+        .unwrap();
+        assert_eq!(
+            bundle[0].inputs["bundled_process_fingerprint"],
+            empty_fly.fingerprint
+        );
+
+        let approved_before = hash_tree(&config.chart_metadata_root).unwrap();
+        assert!(
+            source_root.join("Suspect SEC.tif").is_file(),
+            "source cache must remain intact"
+        );
+        fixture("approve");
+        assert_ne!(
+            approved_before,
+            hash_tree(&config.chart_metadata_root).unwrap()
+        );
+        let restored = render(ChartFamily::Sec);
+        assert_eq!(
+            tiles(&restored),
+            clean_tiles,
+            "explicit review restores the omitted footprint"
         );
     }
 

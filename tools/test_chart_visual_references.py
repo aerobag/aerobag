@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import importlib.util
+import copy
 import json
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -101,18 +103,83 @@ class ChartVisualReferencesTest(ChartFixture):
         self.write_source(changed)
         self.assertEqual(self.check()["status"], "ok")
 
-    def test_translation_and_scaling_block_manual_georeferences(self):
+    def test_translation_and_scaling_quarantine_manual_georeferences(self):
         self.approve_all()
         changed = np.zeros_like(self.original)
         changed[:, :, 30:] = self.original[:, :, :-30]
         self.write_source(changed)
         translated = self.check()
         self.assertEqual(self.inset(translated)["status"], "critical", translated)
+        self.assertEqual(translated['publication']['quarantined_sources'], ['Test SEC.tif'])
+        self.assertEqual(translated['publication']['state'], 'ready')
+        self.assertFalse(translated['publication']['has_map_sources'])
         y = np.clip(((np.arange(800) - 400) / 1.10 + 400).astype(int), 0, 799)
         x = np.clip(((np.arange(1000) - 500) / 1.10 + 500).astype(int), 0, 999)
         self.write_source(self.original[:, y[:, None], x[None, :]])
         scaled = self.check()
         self.assertEqual(self.inset(scaled)["status"], "critical", scaled)
+        self.assertEqual(scaled['publication'], translated['publication'])
+
+    def test_quarantine_preserves_other_sheets_and_removes_all_source_outputs(self):
+        shutil.copyfile(self.cutline, self.metadata / 'SEC/Healthy SEC.geojson')
+        shutil.copyfile(self.sources / 'Test SEC.tif', self.sources / 'Healthy SEC.tif')
+        for kind in ('legend', 'inset'):
+            (self.metadata / f'SEC/Test SEC.{kind}.json').write_text(json.dumps({
+                'source': 'Test SEC.tif', 'regions': [{'id': 'reference'}]}))
+        self.approve_all()
+        self.write_source(np.roll(self.original, 30, axis=2))
+        report = self.check()
+        decision = report['publication']
+        self.assertEqual(decision['state'], 'ready')
+        self.assertTrue(decision['has_map_sources'])
+        self.assertEqual(decision['quarantined_sources'], ['Test SEC.tif'])
+        self.assertEqual(decision['excluded_metadata'], [
+            'SEC/Test SEC.geojson', 'SEC/Test SEC.inset.json',
+            'SEC/Test SEC.legend.json', 'SEC/Test SEC.navigable-insets.json'])
+        self.assertTrue(all(r['status'] == 'ok' for r in report['regions'] if r['chart'] == 'Healthy SEC'))
+
+    def test_failed_tac_sibling_quarantines_healthy_flyway_and_parent(self):
+        layout = json.loads(self.inset_file.read_text())
+        sibling = {**copy.deepcopy(layout['insets'][0]), 'id': 'Traffic', 'target_family': 'FLY'}
+        layout['insets'].append(sibling)
+        self.inset_file.write_text(json.dumps(layout))
+        self.approve_all()
+        # Only TAC's definition is suspect; Flyway pixels and calibration still match.
+        layout['insets'][0]['control_points'][0]['latitude'] = 42
+        self.inset_file.write_text(json.dumps(layout))
+        for family in ('SEC', 'TAC', 'FLY'):
+            with self.subTest(family=family):
+                (self.metadata / family).mkdir(exist_ok=True)
+                report = quality.run_check(self.sources, self.metadata, family,
+                                           self.output.parent / family, family, '2611')
+                by_name = {r['name']: r for r in report['regions']}
+                self.assertEqual(by_name['City']['status'], 'critical')
+                self.assertEqual(by_name['Traffic']['status'], 'ok')
+                self.assertEqual(report['publication']['quarantined_sources'], ['Test SEC.tif'])
+                self.assertFalse(report['publication']['has_map_sources'])
+
+    def test_unknown_check_failure_blocks_even_when_other_sheet_is_quarantined(self):
+        self.approve_all()
+        self.write_source(np.roll(self.original, 30, axis=2))
+        (self.metadata / 'SEC/Missing SEC.geojson').write_bytes(self.cutline.read_bytes())
+        report = self.check()
+        self.assertEqual(report['publication']['state'], 'blocked')
+        self.assertIn('Missing SEC', report['publication']['reason'])
+
+    def test_manual_approval_restores_source_without_silently_adopting_bad_reference(self):
+        self.approve_all()
+        self.write_source(np.roll(self.original, 30, axis=2))
+        report = self.check()
+        self.assertEqual(report['publication']['quarantined_sources'], ['Test SEC.tif'])
+        self.assertEqual(self.check()['publication'], report['publication'])
+        # This stands for explicit operator correction/review, never a build action.
+        for region in report['regions']:
+            quality.approve(self.output / 'reports' / report['report_id'] / region['id'] / 'candidate.json',
+                            self.metadata, 'test operator')
+        restored = self.check()
+        self.assertEqual(restored['status'], 'ok')
+        self.assertEqual(restored['publication']['quarantined_sources'], [])
+        self.assertTrue(restored['publication']['has_map_sources'])
 
     def test_control_patch_catches_local_movement_hidden_in_overview(self):
         self.approve_all()

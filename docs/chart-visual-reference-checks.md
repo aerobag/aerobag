@@ -11,8 +11,8 @@ and requires that the candidate's cutline/georeference still matches the repo.
 References live with `product/chart-metadata`, not in the disposable source cache.
 They include PNG views, sampling windows, source geometry/provenance, and a
 versioned rendering recipe. Candidates and before/current/difference reports
-live under artifact `state/chart-quality`. Reports are written before publication
-is blocked, and Pipeline Health reads them independently of successful products.
+live under artifact `state/chart-quality`. Reports are written before rendering,
+and Pipeline Health reads them independently of successful products.
 
 ## Checks
 
@@ -26,8 +26,8 @@ is blocked, and Pipeline Health reads them independently of successful products.
   unchanged. A change in the FAA source's CRS also alarms; it never changes the
   pinned inset projection automatically. Migrating implicit projections to
   explicit metadata requires reapproval, not rewritten approval hashes.
-- Main-map changes request review. Strong manual-inset drift or failed checks
-  block the chart process. Unreviewed initial references warn, so initial rollout
+- Main-map changes request review. Strong manual-inset drift or a failed manual
+  calibration check quarantines the whole source sheet. Unreviewed initial references warn, so initial rollout
   does not silently approve anything or prevent generating review candidates.
 
 The current recipe uses a 512-pixel longest-side overview, 4% context around
@@ -42,6 +42,33 @@ Both reported scores and thresholds are available in the review report.
 TAC/Flyway builds check their Sectional-sourced insets too, using the exact same
 SEC reference as the parent's exclusion. Checks use the builder's source-tree
 overlay order, including duplicate filenames shipped in multiple FAA archives.
+
+## Publication Quarantine
+
+The report protocol is schema 2; approved image references remain schema 1.
+Every consuming family checks **all enabled manual insets on each source it
+uses**, including siblings targeting other layers. A critical manual-inset result
+quarantines that source TIFF: the parent cutline, all sibling overlays, and its
+reference/legend extracts are omitted. This is deliberately not inset relocation:
+an old polygon cannot prove where newly moved pixels are. Independently
+georeferenced FAA detail TIFFs are separate sources, not manual siblings.
+
+The checker returns a typed publication decision with the exact excluded metadata
+and source filenames. The build applies it only to its fresh disposable inputs;
+authored definitions, enabled flags, approval images and source-cache bytes are
+never edited. The decision participates in the render-cache fingerprint. The
+packager consumes that completed render directly, including the TAC/Flyway
+bundle, rather than rediscovering a cache entry. Empty quarantined layers produce
+empty tile sets, never old tiles. Review/approval changes are checked even on cache
+hits. A checked-in corrected and approved definition restores the source on the
+next build; the publisher never approves or guesses on the operator's behalf.
+
+Other sheets may publish while Pipeline Health remains **CRITICAL** and explicitly
+names the omitted source sheets, with before/current/difference reports and the
+complete metadata exclusion list. This reports the latest build decision, not a
+claim that it has already been deployed. Checker-wide failures (such as missing
+GDAL or malformed layout inventory), or critical errors outside any identified
+manual-inset source, still block publication: there is no safe quarantine scope.
 
 Pipeline Health reports unresolved warnings and criticals, not increases over the
 last build. Alerts remain until a new check passes with an explicitly approved

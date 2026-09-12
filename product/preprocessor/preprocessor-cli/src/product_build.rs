@@ -894,6 +894,9 @@ enum TaskValue {
     ChartFetch {
         record: NodeRecord,
     },
+    ChartProcess {
+        record: NodeRecord,
+    },
     CsupFetch {
         record: NodeRecord,
     },
@@ -945,6 +948,9 @@ enum ProductTaskValue {
         bundle_cycle: String,
     },
     ChartFetch {
+        record: NodeRecord,
+    },
+    ChartProcess {
         record: NodeRecord,
     },
     CsupFetch {
@@ -1967,6 +1973,7 @@ mod config;
 pub(crate) use config::default_artifact_write_path;
 use config::*;
 
+mod chart_quality;
 mod cycle_nodes;
 use cycle_nodes::*;
 

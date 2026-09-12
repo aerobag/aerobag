@@ -160,12 +160,8 @@ import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { fetchTextResource } from "./domain/fetchTextResource";
 import { NexradFrameImageCache } from "./domain/nexradFrameCache";
-import {
-  RASTER_TILE_LOAD_RECOVERY_DELAY_MS,
-  classifyRasterTileLoadRecovery,
-  e2eRasterTileStallUrl,
-  rasterTileLoadUrl,
-} from "./domain/rasterTileLoadRecovery";
+import { e2eRasterTileStallUrl } from "./domain/rasterTileLoadRecovery";
+import { RasterTileImage } from "./RasterTileImage";
 import { appPageUrl } from "./domain/webRouteUrl";
 import {
   clampImageViewport,
@@ -5474,11 +5470,9 @@ function MapPage(props: {
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
   const [rasterTileFrame, setRasterTileFrame] = useState<MapDisplayFrame | null>(null);
   const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
-  const [rasterTileLoadAttempts, setRasterTileLoadAttempts] = useState<Map<string, number>>(() => new Map());
   const rasterTileLoadAttemptsRef = useRef<Map<string, number>>(new Map());
   const rasterTileRecoveryCountRef = useRef(0);
   const [e2eRasterTileFaultKeys, setE2eRasterTileFaultKeys] = useState<Set<string>>(() => new Set());
-  const e2eRasterTileFaultKeysRef = useRef<Set<string>>(new Set());
   const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
   const rasterTilePlanRequestRef = useRef<{
@@ -5515,51 +5509,35 @@ function MapPage(props: {
     committed: boolean;
   } | null>(null);
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
-    `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}`,
+    `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}-${tile.src}`,
   []);
-  const recoverRasterTileLoads = useCallback((
-    tileList: RasterRenderTile[],
+  function reportRasterTileRecovery(
+    tile: RasterRenderTile,
+    attempt: number,
     trigger: "error" | "watchdog",
-  ) => {
-    const decision = classifyRasterTileLoadRecovery(
-      tileList.map(rasterTileKey),
-      loadedRasterTileKeysRef.current,
-      failedRasterTileKeys,
-      rasterTileLoadAttemptsRef.current,
-    );
-    if (decision.retry.length > 0) {
-      const nextAttempts = new Map(rasterTileLoadAttemptsRef.current);
-      for (const key of decision.retry) {
-        nextAttempts.set(key, (nextAttempts.get(key) ?? 0) + 1);
-      }
-      rasterTileLoadAttemptsRef.current = nextAttempts;
-      rasterTileRecoveryCountRef.current += 1;
-      setRasterTileLoadAttempts(nextAttempts);
-      debugLog("map.raster.tile.recovery", {
-        trigger,
-        selected_map_id: selectedMap.selected_map_id,
-        retry_count: rasterTileRecoveryCountRef.current,
-        tile_count: decision.retry.length,
-        tile_keys: decision.retry,
-      });
-    }
-    if (decision.exhausted.length > 0) {
-      setFailedRasterTileKeys((current) => {
-        const next = new Set(current);
-        for (const key of decision.exhausted) {
-          next.add(key);
-        }
-        return next.size === current.size ? current : next;
-      });
-      debugLog("map.raster.tile.recovery_exhausted", {
-        trigger,
-        selected_map_id: selectedMap.selected_map_id,
-        tile_count: decision.exhausted.length,
-        tile_keys: decision.exhausted,
-      });
-    }
-    return decision;
-  }, [failedRasterTileKeys, rasterTileKey, selectedMap.selected_map_id]);
+  ) {
+    const key = rasterTileKey(tile);
+    rasterTileLoadAttemptsRef.current.set(key, attempt);
+    rasterTileRecoveryCountRef.current += 1;
+    debugLog("map.raster.tile.recovery", {
+      trigger,
+      selected_map_id: selectedMap.selected_map_id,
+      retry_count: rasterTileRecoveryCountRef.current,
+      tile_count: 1,
+      tile_keys: [key],
+    });
+  }
+
+  function reportRasterTileFailed(tile: RasterRenderTile) {
+    const key = rasterTileKey(tile);
+    setFailedRasterTileKeys((current) => new Set(current).add(key));
+    debugLog("map.raster.tile.recovery_exhausted", {
+      trigger: "error",
+      selected_map_id: selectedMap.selected_map_id,
+      tile_count: 1,
+      tile_keys: [key],
+    });
+  }
   const rasterTilePlanKey = useCallback((
     nextViewport: MapViewportState,
     width: number,
@@ -5654,10 +5632,9 @@ function MapPage(props: {
     const loadedKeyResetEndedAt = performance.now();
     rasterTileImageLoadStartedAtRef.current = performance.now();
     const imageTimingResetEndedAt = performance.now();
-    setFailedRasterTileKeys(new Set());
-    rasterTileLoadAttemptsRef.current = new Map();
-    setRasterTileLoadAttempts(new Map());
-    e2eRasterTileFaultKeysRef.current = new Set();
+    const retainedTileKeys = new Set(nextTileKeys);
+    setFailedRasterTileKeys((current) => new Set([...current].filter((key) => retainedTileKeys.has(key))));
+    rasterTileLoadAttemptsRef.current = new Map([...rasterTileLoadAttemptsRef.current].filter(([key]) => retainedTileKeys.has(key)));
     setE2eRasterTileFaultKeys(new Set());
     const failedStateQueuedAt = performance.now();
     setTiles(nextTiles);
@@ -5739,20 +5716,6 @@ function MapPage(props: {
       queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
     }));
   }, [rasterTileViewport, tiles]);
-
-  useEffect(() => {
-    if (page !== "map" || tiles.length === 0) {
-      return;
-    }
-    const requestId = landedRasterTilePlanRequestIdRef.current;
-    const timeout = window.setTimeout(() => {
-      if (requestId !== landedRasterTilePlanRequestIdRef.current) {
-        return;
-      }
-      recoverRasterTileLoads(tiles, "watchdog");
-    }, RASTER_TILE_LOAD_RECOVERY_DELAY_MS);
-    return () => window.clearTimeout(timeout);
-  }, [page, rasterTileLoadAttempts, recoverRasterTileLoads, tiles]);
 
   function pumpRasterTilePlanQueue() {
     if (rasterTilePlanPumpActiveRef.current) {
@@ -7217,14 +7180,17 @@ function MapPage(props: {
     onFirstVisualReady();
   }
 
-  function reportRasterTileLoaded(tile: RasterRenderTile, loadAttempt: number) {
+  function reportRasterTileLoaded(tile: RasterRenderTile) {
     reportFirstVisualReady();
     const key = rasterTileKey(tile);
-    if ((rasterTileLoadAttemptsRef.current.get(key) ?? 0) !== loadAttempt) {
-      return;
-    }
     loadedRasterTileKeysRef.current.add(key);
     knownLoadedRasterTileKeysRef.current.add(key);
+    setFailedRasterTileKeys((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
     if (page !== "map" || tiles.length === 0) {
       return;
     }
@@ -7245,17 +7211,6 @@ function MapPage(props: {
   }
 
   function reportRasterTileError(tile: RasterRenderTile, loadAttempt: number) {
-    const key = rasterTileKey(tile);
-    if ((rasterTileLoadAttemptsRef.current.get(key) ?? 0) !== loadAttempt) {
-      return;
-    }
-    if (e2eRasterTileFaultKeysRef.current.has(key)) {
-      const remainingFaults = new Set(e2eRasterTileFaultKeysRef.current);
-      remainingFaults.delete(key);
-      e2eRasterTileFaultKeysRef.current = remainingFaults;
-      setE2eRasterTileFaultKeys(remainingFaults);
-    }
-    const decision = recoverRasterTileLoads([tile], "error");
     debugLog("map.raster.tile.error", {
       selected_map_id: selectedMap.selected_map_id,
       selected_family_id: selectedFamily?.id ?? null,
@@ -7268,7 +7223,6 @@ function MapPage(props: {
       package_name: tile.packageName,
       src: tile.src,
       load_attempt: loadAttempt,
-      retrying: decision.retry.includes(key),
     });
   }
 
@@ -7438,7 +7392,7 @@ function MapPage(props: {
       planned_tiles: tiles.length,
       loaded_tile_keys: loadedRasterTileKeysRef.current.size,
       failed_tile_keys: failedRasterTileKeys.size,
-      load_retry_attempts: Object.fromEntries(rasterTileLoadAttempts),
+      load_retry_attempts: Object.fromEntries(rasterTileLoadAttemptsRef.current),
       recovery_count: rasterTileRecoveryCountRef.current,
       images: [...document.querySelectorAll<HTMLImageElement>(".rasterTileLayer .mapTileImage")]
         .map((image) => ({
@@ -7451,7 +7405,7 @@ function MapPage(props: {
     return () => {
       if (window.__aerobagE2e?.raster === raster) delete window.__aerobagE2e.raster;
     };
-  }, [failedRasterTileKeys, rasterTileLoadAttempts, selectedMap.selected_map_id, tiles]);
+  }, [failedRasterTileKeys, selectedMap.selected_map_id, tiles]);
 
   useEffect(() => {
     if (!__AEROBAG_E2E_ENABLED__) return;
@@ -7462,7 +7416,6 @@ function MapPage(props: {
         loadedRasterTileKeysRef.current.delete(key);
         knownLoadedRasterTileKeysRef.current.delete(key);
       }
-      e2eRasterTileFaultKeysRef.current = faultKeys;
       setE2eRasterTileFaultKeys(faultKeys);
       return faultKeys.size;
     };
@@ -7646,16 +7599,15 @@ function MapPage(props: {
             >
               {tiles.map((tile) => {
                 const tileKey = rasterTileKey(tile);
-                const loadAttempt = rasterTileLoadAttempts.get(tileKey) ?? 0;
-                const tileSource = __AEROBAG_E2E_ENABLED__
-                  && loadAttempt === 0
+                const initialSource = __AEROBAG_E2E_ENABLED__
                   && e2eRasterTileFaultKeys.has(tileKey)
                   ? e2eRasterTileStallUrl(tile.src)
-                  : rasterTileLoadUrl(tile.src, loadAttempt);
+                  : tile.src;
                 return (
                   <div
                     key={tileKey}
                     className="mapTile"
+                    data-load-failed={failedRasterTileKeys.has(tileKey) ? "true" : undefined}
                     style={{
                       left: `${tile.left}px`,
                       top: `${tile.top}px`,
@@ -7665,17 +7617,11 @@ function MapPage(props: {
                       zIndex: tile.zIndex,
                     }}
                   >
-                    {failedRasterTileKeys.has(tileKey) ? null : (
-                      <img
-                        key={`${tileKey}:load:${loadAttempt}`}
-                        className="mapTileImage"
-                        src={tileSource}
-                        alt=""
-                        draggable={false}
-                        onLoad={() => reportRasterTileLoaded(tile, loadAttempt)}
-                        onError={() => reportRasterTileError(tile, loadAttempt)}
-                      />
-                    )}
+                    <RasterTileImage src={tile.src} initialSrc={initialSource}
+                      onLoaded={() => reportRasterTileLoaded(tile)}
+                      onFailed={() => reportRasterTileFailed(tile)}
+                      onError={(attempt) => reportRasterTileError(tile, attempt)}
+                      onRecovery={(attempt, trigger) => reportRasterTileRecovery(tile, attempt, trigger)} />
                     {debugState.tile_labels ? (
                       <div className="tileLabel">
                         z{tile.zoom} x{tile.x} y{tile.yTms}

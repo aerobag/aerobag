@@ -5,11 +5,6 @@
 export const RASTER_TILE_LOAD_RECOVERY_DELAY_MS = 1_500;
 export const RASTER_TILE_LOAD_RETRY_LIMIT = 1;
 
-export type RasterTileLoadRecoveryDecision = {
-  retry: string[];
-  exhausted: string[];
-};
-
 const URL_PARSE_BASE = "https://aerobag.invalid/";
 
 function rewriteRasterTileUrl(source: string, rewrite: (url: URL) => void): string {
@@ -23,28 +18,6 @@ function rewriteRasterTileUrl(source: string, rewrite: (url: URL) => void): stri
   }
   const path = `${url.pathname}${url.search}${url.hash}`;
   return source.startsWith("/") ? path : path.slice(1);
-}
-
-export function classifyRasterTileLoadRecovery(
-  tileKeys: readonly string[],
-  loaded: ReadonlySet<string>,
-  failed: ReadonlySet<string>,
-  attempts: ReadonlyMap<string, number>,
-  retryLimit = RASTER_TILE_LOAD_RETRY_LIMIT,
-): RasterTileLoadRecoveryDecision {
-  const retry: string[] = [];
-  const exhausted: string[] = [];
-  for (const key of tileKeys) {
-    if (loaded.has(key) || failed.has(key)) {
-      continue;
-    }
-    if ((attempts.get(key) ?? 0) < retryLimit) {
-      retry.push(key);
-    } else {
-      exhausted.push(key);
-    }
-  }
-  return { retry, exhausted };
 }
 
 export function rasterTileLoadUrl(source: string, attempt: number): string {

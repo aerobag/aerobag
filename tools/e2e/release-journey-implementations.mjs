@@ -222,6 +222,28 @@ async function rasterLoadRecovery(runtime) {
   runtime.check("web.raster-load-recovery", Boolean(recovered), JSON.stringify(recovered));
 }
 
+async function rasterSlowLoads(runtime) {
+  // Cold browser storage and valid HTTP responses delayed beyond the former
+  // two 1.5-second watchdog rounds. Assert visible completion, not retry policy.
+  const rasterDelayMs = 4_500;
+  await setFixtureControl(runtime, { raster_delay_ms: rasterDelayMs });
+  try {
+    await runtime.reset();
+    await acceptDisclaimer(runtime);
+    await runtime.openPage("map");
+    const painted = await runtime.eventually("all delayed chart tiles become visible", async () => {
+      const counts = rasterStateFromProjection(await runtime.driver.readProjection("parity:raster-state:"));
+      return counts?.planned > 0 && counts.loaded === counts.planned && counts.failed === 0 ? counts : null;
+    }, E2E_TIMING.localResourceMs, E2E_TIMING.resourcePollIntervalMs);
+    const responses = (await fixtureRequests(runtime)).filter((request) =>
+      request.raster_delay_ms === rasterDelayMs && request.status === 200 && request.outcome === "finished");
+    runtime.check("web.raster-slow-loads", responses.length > 0, JSON.stringify({ painted, delayed_responses: responses.length }));
+    await runtime.driver.captureFrame(`${runtime.artifactDir}/delayed-tiles-loaded.png`);
+  } finally {
+    await setFixtureControl(runtime, { raster_delay_ms: 0 });
+  }
+}
+
 async function disableCtrBeforeFreePan(runtime, description) {
   const initial = await runtime.driver.readElement("center-here-button");
   if (initial?.pressed !== "true" && initial?.selected !== true && initial?.checked !== true) {
@@ -3513,6 +3535,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.winds-aloft-navkv": windsAloftNavKv,
   "shared.tfr-map-detail": tfrMapDetail,
   "web.raster-load-recovery": rasterLoadRecovery,
+  "web.raster-slow-loads": rasterSlowLoads,
   "shared.cloud-crossfill": cloudCrossfill,
   "shared.cloud-account-upgrade": cloudAccountUpgrade,
   "shared.other-documents": otherDocuments,

@@ -244,6 +244,7 @@ export function createReleaseJourneyFixtureServer(args) {
   const control = {
     publication: "primary",
     artifact_fault: "none",
+    raster_delay_ms: 0,
     dropped_artifact_requests: 0,
     completed_update_artifact_requests: 0,
   };
@@ -307,6 +308,7 @@ export function createReleaseJourneyFixtureServer(args) {
             abortedTransportFaults.clear();
             control.publication = "primary";
             control.artifact_fault = "none";
+            control.raster_delay_ms = 0;
             control.dropped_artifact_requests = 0;
             control.completed_update_artifact_requests = 0;
             recentRequests.splice(0, Math.max(0, recentRequests.length - 1));
@@ -322,6 +324,12 @@ export function createReleaseJourneyFixtureServer(args) {
               throw new Error(`unsupported artifact fault ${update.artifact_fault}`);
             }
             control.artifact_fault = update.artifact_fault;
+          }
+          if (update.raster_delay_ms !== undefined) {
+            if (!Number.isInteger(update.raster_delay_ms) || update.raster_delay_ms < 0 || update.raster_delay_ms > 30_000) {
+              throw new Error("raster_delay_ms must be an integer between 0 and 30000");
+            }
+            control.raster_delay_ms = update.raster_delay_ms;
           }
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.end(JSON.stringify({
@@ -416,6 +424,17 @@ export function createReleaseJourneyFixtureServer(args) {
       const relative = pathname === "/packages"
         ? "current_artifacts.json"
         : pathname.slice("/packages/".length);
+      if (control.raster_delay_ms > 0 && request.method === "GET" && /\/tiles\/.*\.(webp|png)$/.test(relative)) {
+        requestDiagnostic.raster_delay_ms = control.raster_delay_ms;
+        const timer = setTimeout(() => {
+          if (!sendFile(request, response, config.publicationRoot, relative, "public, max-age=31536000, immutable")) {
+            response.statusCode = 404;
+            response.end("not found\n");
+          }
+        }, control.raster_delay_ms);
+        response.once("close", () => clearTimeout(timer));
+        return;
+      }
       if (relative === "current_artifacts.json") {
         sendBytes(request, response, config.publicationVariants[control.publication]);
         return;

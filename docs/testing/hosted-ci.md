@@ -95,6 +95,15 @@ These tests belong to the existing web unit suite and therefore cheap preflight
 and ordinary CI. They test feedback ownership, not actual clipboard permissions
 or browser hit testing; keep representative real-platform journeys for those.
 
+Raster request tests cover both slow success and stalled-request recovery.
+`RasterTileImage.test.tsx` controls DOM load/error events and the recovery clock:
+elapsed time must not cancel pending images, either request can win, and a tile
+fails only after both attempts report errors. The p0 `web.raster-slow-loads`
+journey uses a fresh browser context and delays real fixture tile responses by
+4.5 seconds, then requires every planned tile to render. This reproduced the
+L41 blank-chart bug before the fix; fast local tile loads and the older
+`web.raster-load-recovery` stall test did not cover slow successful transfers.
+
 Harness model tests establish that a journey rejects modeled defects; they do
 not establish that platform navigation or rendering works. New or changed
 journeys require a focused real run on every claimed platform, with matching

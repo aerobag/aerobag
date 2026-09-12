@@ -5,33 +5,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  classifyRasterTileLoadRecovery,
   e2eRasterTileStallUrl,
   rasterTileLoadUrl,
 } from "./rasterTileLoadRecovery";
 
 describe("raster tile load recovery", () => {
-  it("retries only unresolved tiles that retain a recovery attempt", () => {
-    expect(classifyRasterTileLoadRecovery(
-      ["loaded", "failed", "fresh", "retried"],
-      new Set(["loaded"]),
-      new Set(["failed"]),
-      new Map([["retried", 1]]),
-    )).toEqual({
-      retry: ["fresh"],
-      exhausted: ["retried"],
-    });
-  });
-
-  it("never creates an unbounded retry loop", () => {
-    expect(classifyRasterTileLoadRecovery(
-      ["tile"],
-      new Set(),
-      new Set(),
-      new Map([["tile", 7]]),
-    )).toEqual({ retry: [], exhausted: ["tile"] });
-  });
-
   it("cache-busts only recovery attempts while preserving the resource URL", () => {
     const source = "https://example.test/tiles/1/2/3.webp?v=package#tile";
     expect(rasterTileLoadUrl(source, 0)).toBe(source);

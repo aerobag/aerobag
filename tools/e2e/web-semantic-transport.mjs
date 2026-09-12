@@ -521,10 +521,11 @@ export class WebSemanticTransport {
     if (prefix === "parity:raster-state:") {
       return this.evaluateObservation(`(() => {
         const layer = document.querySelector(".rasterTileLayer");
-        const images = [...document.querySelectorAll(".rasterTileLayer .mapTileImage")];
-        const planned = layer?.childElementCount ?? 0;
-        const loaded = images.filter((image) => image.complete && image.naturalWidth > 0).length;
-        const failed = images.filter((image) => image.complete && image.naturalWidth === 0).length;
+        const tiles = [...document.querySelectorAll(".rasterTileLayer .mapTile")];
+        const planned = tiles.length;
+        const loaded = tiles.filter((tile) => [...tile.querySelectorAll("img")]
+          .some((image) => image.complete && image.naturalWidth > 0)).length;
+        const failed = tiles.filter((tile) => tile.dataset.loadFailed === "true").length;
         const metadata = /^parity:raster-state:plan:([^:]+):maps:([^:]+):planned:/.exec(
           layer?.dataset.testid ?? "",
         );

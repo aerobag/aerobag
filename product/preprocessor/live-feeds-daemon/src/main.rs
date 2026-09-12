@@ -3694,6 +3694,24 @@ mod tests {
     }
 
     #[test]
+    fn status_counts_open_streams_not_products_or_past_connections() -> anyhow::Result<()> {
+        let status = DaemonStatus::default();
+        assert_eq!(status.snapshot().active_sse_clients, 0);
+        let first = status.connect_client();
+        let second = status.connect_client();
+        status.register_product("metars", Duration::from_secs(60));
+        status.register_product("nexrad", Duration::from_secs(300));
+        let payload = serde_json::to_value(status.snapshot())?;
+        assert_eq!(payload["schema_version"], 3);
+        assert_eq!(payload["active_sse_clients"], 2);
+        drop(first);
+        assert_eq!(status.snapshot().active_sse_clients, 1);
+        drop(second);
+        assert_eq!(status.snapshot().active_sse_clients, 0);
+        Ok(())
+    }
+
+    #[test]
     fn server_serves_status_json_and_html() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let response = request_once(

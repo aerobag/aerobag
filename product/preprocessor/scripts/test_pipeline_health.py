@@ -1715,6 +1715,7 @@ class LiveFeedRecoveryTests(unittest.TestCase):
         display, warning, critical = TEST_LIVE_FEED_HEALTH_POLICIES[product]
         facts = {"inputs": {"live_feeds_status": {"payload": {
             "schema_version": 3 if "failure_episodes" in status else 2,
+            "active_sse_clients": 0,
             "products": {product: status},
             "product_policies": [{"product_id": product, "display_name": display,
                                   "operator_health": {"warning_after_seconds": warning,
@@ -1807,6 +1808,195 @@ class LiveFeedRecoveryTests(unittest.TestCase):
         metric = self.metrics(status, 0)["failure_duration_seconds"]
         self.assertEqual(metric["value"], 0)
         self.assertEqual(metric["severity"], "ok")
+
+
+class LiveFeedClientMetricsTests(unittest.TestCase):
+    now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+    name = "live_feed.active_sse_clients"
+
+    def channel(self, count: object, port: int = 8100, role: str = "production", schema: int = 3) -> dict:
+        return {
+            "role": role,
+            "tag": f"tag-{port}",
+            "inputs": {
+                "current_artifacts": {"payload": [], "error": None},
+                "product_facts": [],
+                "live_feeds_status": {
+                    "url": f"http://127.0.0.1:{port}/live-feeds/status.json",
+                    "error": None,
+                    "payload": {
+                        "schema_version": schema,
+                        "active_sse_clients": count,
+                        "products": {},
+                        "product_policies": [],
+                    },
+                },
+            },
+        }
+
+    def facts(self, channels: dict) -> dict:
+        return {
+            **calendar_facts([]),
+            "sampled_at_utc": pipeline_health.iso_utc(self.now),
+            "channels": channels,
+        }
+
+    def test_counts_are_scoped_and_total_deduplicates_daemon_aliases(self) -> None:
+        facts = self.facts({
+            "production": self.channel(7),
+            "staging": self.channel(2, 8101, "staging", schema=2),
+            "release-old": self.channel(3, 8102, "sunset"),
+            "release-alias": self.channel(7, role="sunset"),
+        })
+        result = pipeline_health.evaluate_health(facts, [], self.now)
+        total = metric(result, self.name)
+        self.assertEqual(total["value"], 12)
+        self.assertEqual(total["scope"], "global")
+        for scope, expected in [("production", 7), ("staging", 2), ("release-old", 3), ("release-alias", 7)]:
+            item = metric(result, f"channel.{scope}.{self.name}")
+            self.assertEqual(item["value"], expected)
+            self.assertEqual(item["scope"], scope)
+            self.assertEqual(item["release_tag"], facts["channels"][scope]["tag"])
+        for item in result["metrics"]:
+            if item["id"].endswith(self.name):
+                self.assertEqual(item["severity"], "ok")
+                self.assertEqual(item["unit"], "connections")
+                self.assertNotIn("warning_threshold", item)
+                self.assertNotIn("critical_threshold", item)
+        self.assertFalse(any(alert["metric_id"].endswith(self.name) for alert in result["alerts"]))
+
+    def test_zero_and_large_counts_are_informational_in_both_supported_schemas(self) -> None:
+        for schema in [2, 3]:
+            for count in [0, 100_000]:
+                with self.subTest(schema=schema, count=count):
+                    facts = self.facts({"production": self.channel(count, schema=schema)})
+                    result = pipeline_health.evaluate_health(facts, [], self.now)
+                    for name in [self.name, f"channel.production.{self.name}"]:
+                        item = metric(result, name)
+                        self.assertEqual(item["value"], count)
+                        self.assertEqual(item["severity"], "ok")
+
+    def test_missing_invalid_and_unknown_schema_counts_are_not_zero(self) -> None:
+        sources = []
+        for invalid in [None, True, False, -1, 1.5, "2", [], {}]:
+            sources.append(self.channel(invalid)["inputs"]["live_feeds_status"])
+        missing = self.channel(0)["inputs"]["live_feeds_status"]
+        del missing["payload"]["active_sse_clients"]
+        sources.append(missing)
+        for schema in [1, 4, None, "3", 3.0]:
+            sources.append(self.channel(2, schema=schema)["inputs"]["live_feeds_status"])
+        sources.extend([None, {}, {"payload": []}, {"payload": None, "error": "offline"}])
+        stale = self.channel(5)["inputs"]["live_feeds_status"]
+        stale["error"] = "fetch failed"
+        sources.append(stale)
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertIsNone(pipeline_health.live_feed_client_count(source))
+
+    def test_partial_total_stays_unknown_and_does_not_add_an_alarm(self) -> None:
+        for problem in ["offline", "missing_count", "invalid_count", "missing_url", "conflicting_alias", "channel_discovery"]:
+            with self.subTest(problem=problem):
+                old = self.channel(3, 8101, "sunset")
+                source = old["inputs"]["live_feeds_status"]
+                if problem == "offline":
+                    source.update(payload=None, error="connection refused")
+                elif problem == "missing_count":
+                    del source["payload"]["active_sse_clients"]
+                elif problem == "invalid_count":
+                    source["payload"]["active_sse_clients"] = -1
+                elif problem == "missing_url":
+                    source.pop("url")
+                elif problem == "conflicting_alias":
+                    source["url"] = self.channel(7)["inputs"]["live_feeds_status"]["url"]
+                facts = self.facts({"production": self.channel(7), "release-old": old})
+                if problem == "channel_discovery":
+                    facts["inputs"]["release_channels"] = {"error": "unreadable generation"}
+                result = pipeline_health.evaluate_health(facts, [], self.now)
+                total = metric(result, self.name)
+                self.assertIsNone(total["value"])
+                self.assertEqual(total["severity"], "unknown")
+                self.assertEqual(metric(result, f"channel.production.{self.name}")["value"], 7)
+                self.assertNotIn(self.name, pipeline_health.compact_evaluation_metrics(result))
+                self.assertFalse(any(alert["metric_id"].endswith(self.name) for alert in result["alerts"]))
+                if problem == "offline":
+                    self.assertTrue(any(alert["metric_id"] == "channel.release-old.input.live_feeds_status.available"
+                                        for alert in result["alerts"]))
+
+    def test_absent_or_malformed_channels_do_not_report_an_empty_server(self) -> None:
+        for channels in [{}, {"production": None}, {"production": {"inputs": None}}]:
+            result = pipeline_health.evaluate_health(self.facts(channels), [], self.now)
+            self.assertIsNone(metric(result, self.name)["value"])
+
+    def test_standalone_count_uses_the_same_metric_without_a_duplicate_total(self) -> None:
+        facts = {**calendar_facts([]), "inputs": {
+            **calendar_facts([])["inputs"], **self.channel(4)["inputs"],
+        }}
+        result = pipeline_health.evaluate_health(facts, [], self.now)
+        self.assertEqual(metric(result, self.name)["value"], 4)
+        self.assertEqual(sum(item["id"] == self.name for item in result["metrics"]), 1)
+
+    def test_collector_reuses_each_daemon_snapshot_only_within_one_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SimpleNamespace(
+                artifact_root=root, deploy_health_path=root / "health.json",
+                cloud_status_secret_path=root / "secret", cloud_status_url="http://cloud/status",
+                build_watch_url="http://build/status", calendar_path=root / "calendar.json",
+            )
+            sources = [
+                {"id": role, "role": role, "tag": role, "deployment_managed": False,
+                 "current_artifacts_path": root / "current.json",
+                 "live_feeds_endpoint": f"http://127.0.0.1:{port}{suffix}"}
+                for role, port, suffix in [("production", 8100, ""), ("sunset", 8100, "/"), ("staging", 8101, "")]
+            ]
+            for failure in [False, True]:
+                with self.subTest(failure=failure):
+                    snapshots = iter([
+                        (None, "offline") if failure else ({"schema_version": 3, "active_sse_clients": 7}, None),
+                        ({"schema_version": 3, "active_sse_clients": 2}, None),
+                        ({"schema_version": 3, "active_sse_clients": 4}, None),
+                        ({"schema_version": 3, "active_sse_clients": 1}, None),
+                    ])
+
+                    def fetch(url: str, **_kwargs: object) -> tuple:
+                        return next(snapshots) if url.endswith("/live-feeds/status.json") else ({}, None)
+
+                    with patch.object(pipeline_health, "release_channel_sources", return_value=(sources, {})), \
+                         patch.object(pipeline_health, "cloud_status_authorization", return_value=("unused", None)), \
+                         patch.object(pipeline_health, "fetch_json_url", side_effect=fetch) as mocked:
+                        first = pipeline_health.collect_facts(config, self.now)
+                        second = pipeline_health.collect_facts(config, self.now + timedelta(minutes=1))
+                    self.assertEqual(
+                        sum(call.args[0].endswith("/live-feeds/status.json") for call in mocked.call_args_list), 4,
+                    )
+                    for sample in [first, second]:
+                        self.assertEqual(sample["channels"]["production"]["inputs"]["live_feeds_status"],
+                                         sample["channels"]["sunset"]["inputs"]["live_feeds_status"])
+                    self.assertEqual(pipeline_health.live_feed_client_count(
+                        first["channels"]["production"]["inputs"]["live_feeds_status"]), None if failure else 7)
+                    self.assertEqual(pipeline_health.live_feed_client_count(
+                        second["channels"]["production"]["inputs"]["live_feeds_status"]), 4)
+
+    def test_counts_round_trip_through_history_and_graph_with_peaks_and_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = pipeline_health.history_path_for_date(root, self.now.date())
+            for minute, count in [(0, 0), (1, 7), (2, 3), (5, None), (10, 2)]:
+                sampled = self.now + timedelta(minutes=minute)
+                facts = self.facts({"production": self.channel(count)})
+                facts["sampled_at_utc"] = pipeline_health.iso_utc(sampled)
+                result = pipeline_health.evaluate_health(facts, [], sampled)
+                record = pipeline_health.compact_history_record(facts, result)
+                pipeline_health.append_history(path, record)
+            records = pipeline_health.read_history(root, now=sampled).records
+        self.assertEqual(len(records), 5)
+        series = pipeline_health.compact_metric_series(records, now=sampled)
+        for name in [self.name, f"channel.production.{self.name}"]:
+            self.assertEqual(series["series"][name]["first"], [0, None, 2])
+            self.assertEqual(series["series"][name]["last"], [3, None, 2])
+            self.assertEqual(series["series"][name]["min"], [0, None, 2])
+            self.assertEqual(series["series"][name]["max"], [7, None, 2])
+            self.assertEqual(series["series"][name]["severity"], [0, None, 0])
 
 
 if __name__ == "__main__":

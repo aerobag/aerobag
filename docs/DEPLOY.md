@@ -415,6 +415,22 @@ Artifact subtrees are shared through symlinks; discovery files are not.
 
 ## Pipeline health
 
+**Live-feed clients** shows concurrent update connections in each channel scope.
+The global **Live-feed clients (all releases)** row sums production, staging,
+and retained sunset daemons, counting each direct daemon endpoint once even
+when multiple routes refer to it. This measures connected app instances, not
+unique people or active interaction: multiple tabs/devices, idle apps, and test
+clients all count. Aerobag Cloud sync connections are a separate measurement.
+
+The gauges use the existing monitor poll (normally once per minute), 14-day
+history retention, and 24-hour graphs whose five-minute buckets preserve sampled
+minimums and maximums. Short visits between polls can be missed. Missing data
+shows **Unknown** and is not stored as zero; the total is unknown rather than
+silently omitting an unavailable daemon. There are no usage alarm thresholds.
+History begins when the updated monitor is installed; old samples are not
+backfilled. Install with `tools/prod_manage.py --reconcile` after committing and
+pushing; no new app release or live-feed daemon rebuild is needed.
+
 `/pipeline-health/` checks availability of the merged production publication,
 but derives production cycle-product errors and warnings from
 `channel-current/releases/<production-tag>/packages/current_artifacts.json`.

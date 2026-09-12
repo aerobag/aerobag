@@ -357,6 +357,8 @@ def collect_channel_facts(
     config: MonitorConfig,
     source: dict[str, Any],
     release_record: dict[str, Any] | None,
+    *,
+    live_status_cache: dict[str, tuple[Any, str | None]] | None = None,
 ) -> dict[str, Any]:
     current_path = source["current_artifacts_path"]
     current_artifacts, current_error = read_json_file(current_path)
@@ -374,11 +376,17 @@ def collect_channel_facts(
     status_url = source.get("live_feeds_status_url")
     if status_url is None and isinstance(endpoint, str):
         status_url = f"{endpoint.rstrip('/')}/live-feeds/status.json"
-    if not isinstance(status_url, str):
+    if not isinstance(status_url, str) or not status_url:
         live_status, live_error = None, "release has no live-feed endpoint"
         status_url = ""
     else:
-        live_status, live_error = fetch_json_url(status_url)
+        # Channel aliases must use one snapshot of each daemon, including errors.
+        # This cache belongs to one monitor sample, never to the monitor lifetime.
+        if live_status_cache is None:
+            live_status_cache = {}
+        if status_url not in live_status_cache:
+            live_status_cache[status_url] = fetch_json_url(status_url)
+        live_status, live_error = live_status_cache[status_url]
     return {
         "id": source["id"],
         "role": source["role"],
@@ -450,6 +458,7 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
         cloud_status.pop("top_contributors", None)
     build_watch, build_watch_error = fetch_json_url(config.build_watch_url)
     calendar, calendar_error = read_json_file(config.calendar_path)
+    live_status_cache: dict[str, tuple[Any, str | None]] = {}
     return {
         "schema_version": SCHEMA_VERSION,
         "sampled_at_utc": iso_utc(now),
@@ -466,6 +475,7 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
                         and isinstance(release_records.get(source["tag"]), dict)
                         else None
                     ),
+                    live_status_cache=live_status_cache,
                 )
             ]
         },
@@ -582,6 +592,7 @@ def evaluate_health(
             metrics.extend(channel_metrics)
             if role == "production":
                 production_facts = channel_facts
+        add_total_live_feed_client_metric(metrics, facts)
         if production_facts is not None:
             calendar_facts = {
                 "inputs": {
@@ -1035,9 +1046,69 @@ def live_feed_failure_episodes(
     return episodes
 
 
+def live_feed_client_count(source: Any) -> int | None:
+    """Read the existing v2/v3 connection gauge, never substitute zero for a gap."""
+    if not isinstance(source, dict) or source.get("error") is not None:
+        return None
+    payload = source.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    schema = payload.get("schema_version")
+    if type(schema) is not int or schema not in (2, 3):
+        return None
+    count = payload.get("active_sse_clients")
+    return count if type(count) is int and count >= 0 else None
+
+
+def add_live_feed_client_metric(
+    metrics: list[dict[str, Any]], count: int | None, *, total: bool = False,
+) -> None:
+    label = "Live-feed clients (all releases)" if total else "Live-feed clients"
+    explanation = (
+        "Production, staging and sunset daemons counted once each. " if total else ""
+    )
+    add_metric(
+        metrics,
+        metric_id="live_feed.active_sse_clients",
+        label=label,
+        value=count,
+        unit="connections",
+        severity="unknown" if count is None else "ok",
+        message=(
+            ("Connection count unavailable. " if count is None else f"{count} open update streams. ")
+            + explanation
+            + "Connected app instances, not unique people or foreground activity; includes idle apps and tests."
+        ),
+    )
+
+
+def add_total_live_feed_client_metric(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+    channels = facts["channels"]
+    source_status = facts.get("inputs", {}).get("release_channels", {})
+    complete = bool(channels) and isinstance(source_status, dict) and not source_status.get("error")
+    counts: dict[str, int] = {}
+    for channel in channels.values():
+        inputs = channel.get("inputs") if isinstance(channel, dict) else None
+        source = inputs.get("live_feeds_status") if isinstance(inputs, dict) else None
+        url = source.get("url") if isinstance(source, dict) else None
+        count = live_feed_client_count(source)
+        # The controller's direct daemon URL is the identity, not the public
+        # channel/release alias or the number of products on the stream.
+        if not isinstance(url, str) or not url or count is None:
+            complete = False
+            continue
+        if url in counts and counts[url] != count:
+            complete = False
+        counts[url] = count
+    add_live_feed_client_metric(metrics, sum(counts.values()) if complete else None, total=True)
+
+
 def add_live_feed_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime
 ) -> None:
+    add_live_feed_client_metric(
+        metrics, live_feed_client_count(facts["inputs"].get("live_feeds_status")),
+    )
     payload = facts["inputs"]["live_feeds_status"].get("payload")
     products = payload.get("products") if isinstance(payload, dict) else None
     if not isinstance(products, dict):

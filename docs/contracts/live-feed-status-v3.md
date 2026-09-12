@@ -36,3 +36,26 @@ These live-feed status envelopes are not yet part of the release-pinned
 [producer telemetry contracts](../../contracts/telemetry/README.md). This is an
 explicit operational status version, not a claim that all telemetry producers
 have been migrated to that catalog.
+
+## Connected clients (existing v2 and v3 field)
+
+`active_sse_clients` is a nonnegative integer gauge of open live-feed SSE
+streams in this daemon process. Opening a stream increments it; leaving the
+stream handler (including a detected disconnect/write failure) decrements it.
+One stream carries all requested product updates. The count includes idle apps
+and test clients; it is neither unique people nor foreground activity, and an
+undetected disconnect can remain counted until a subsequent write fails.
+
+Pipeline-health records this existing measurement as
+`channel.<scope>.live_feed.active_sse_clients`. Its global
+`live_feed.active_sse_clients` sums distinct direct daemon status URLs in the
+active channel generation (production, staging, and retained sunsets), not
+public route aliases. Each URL is fetched once per monitor sample. Retired,
+unrouted daemons still draining are outside this total.
+
+These are informational usage gauges with no alarm thresholds. Missing,
+invalid, or unsupported-envelope counts are **Unknown**, never zero. The total
+is also unknown if any channel lacks a valid count or daemon identity; partial
+totals are not published as complete. Existing source availability and schema
+checks still report operational failures independently. No producer wire format,
+release-pinned descriptor, or legacy contract binding changes here.

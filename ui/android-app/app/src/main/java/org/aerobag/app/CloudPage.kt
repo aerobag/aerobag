@@ -169,6 +169,7 @@ internal fun CloudPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .testTag("parity:cloud-action-revision:${state.actionRevision}")
                 .padding(
                     start = ThumbGap,
                     end = ThumbGap,
@@ -229,8 +230,7 @@ internal fun CloudPage(
             }
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("parity:cloud-action-revision:${state.actionRevision}"),
+                    .fillMaxWidth(),
             ) {
                 CloudPanelView(
                     panel = state.overallStatus,

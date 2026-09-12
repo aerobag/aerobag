@@ -41,7 +41,10 @@ use crate::{
     NexradAcquisitionPreferences, OfflinePackagePreferences, OfflinePackageSelection,
 };
 
-const CLOUD_PERSISTENCE_VERSION: u32 = 5;
+mod account_format;
+use account_format::{AccountFormat, ObservedRoot};
+
+const CLOUD_PERSISTENCE_VERSION: u32 = 6;
 const CLOUD_ENVELOPE_VERSION: u32 = 1;
 const CLOUD_PAGE_VERSION: u32 = 1;
 const CLOUD_NODE_VERSION: u32 = 1;
@@ -142,6 +145,8 @@ pub(crate) enum CloudAction {
     CloseLinkedAccountDetail,
     BeginUnlinkDevice,
     ConfirmUnlinkDevice,
+    BeginAccountUpgrade,
+    ConfirmAccountUpgrade,
     SyncNow,
 }
 
@@ -301,6 +306,7 @@ struct StagedPublication {
 enum PublicationPurpose {
     CreateAccount,
     Publish,
+    Upgrade,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,6 +361,13 @@ struct CloudProviderFailure {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CloudPersistentState {
     version: u32,
+    // The journey harness changes this while the app is stopped to simulate
+    // installing a newer client. It cannot authorize an account upgrade.
+    #[cfg(feature = "cloud-format-test")]
+    #[serde(default)]
+    test_next_client: bool,
+    #[serde(default = "initial_account_format_version")]
+    records_format: u32,
     #[serde(default)]
     onboarding_intent: Option<CloudOnboardingIntent>,
     #[serde(default)]
@@ -393,6 +406,9 @@ impl Default for CloudPersistentState {
     fn default() -> Self {
         Self {
             version: CLOUD_PERSISTENCE_VERSION,
+            #[cfg(feature = "cloud-format-test")]
+            test_next_client: false,
+            records_format: CLOUD_NODE_VERSION,
             onboarding_intent: None,
             account: None,
             workflow: None,
@@ -416,6 +432,9 @@ impl Default for CloudPersistentState {
 #[derive(Debug, Clone)]
 pub(crate) struct CloudEngine {
     persistent: CloudPersistentState,
+    format: &'static AccountFormat,
+    observed_root: Option<ObservedRoot>,
+    upgrade_from: Option<u32>,
     action_revision: u64,
     provider_request_in_flight: Option<CloudProviderRequest>,
     linked_account_detail: Option<LinkedAccountDetail>,
@@ -431,6 +450,12 @@ enum LinkedAccountDetail {
     BackupCode,
     AddDevice,
     ConfirmUnlink,
+    ConfirmUpgrade { from: u32 },
+}
+
+fn initial_account_format_version() -> u32 {
+    // Local settings predating this field always stored account format 1.
+    1
 }
 
 #[derive(Debug, Clone, Default)]
@@ -485,7 +510,18 @@ impl CloudCompletion {
 }
 
 impl CloudEngine {
-    pub fn new(mut persistent: CloudPersistentState) -> Self {
+    pub fn new(persistent: CloudPersistentState) -> Self {
+        #[cfg(feature = "cloud-format-test")]
+        if persistent.test_next_client {
+            return Self::new_with_format(persistent, &account_format::test_format::NEXT);
+        }
+        Self::new_with_format(persistent, &account_format::CURRENT)
+    }
+
+    fn new_with_format(
+        mut persistent: CloudPersistentState,
+        format: &'static AccountFormat,
+    ) -> Self {
         let persisted_version = persistent.version;
         persistent.version = CLOUD_PERSISTENCE_VERSION;
         if persisted_version < 4 {
@@ -525,6 +561,30 @@ impl CloudEngine {
             persistent.records.deferred_adoption.clear();
             persistent.force_poll = persistent.account.is_some();
         }
+        if matches!(
+            persistent.workflow,
+            Some(
+                CloudWorkflow::AcsCreatePage {
+                    staged: StagedPublication {
+                        purpose: PublicationPurpose::Publish | PublicationPurpose::Upgrade,
+                        ..
+                    },
+                    ..
+                } | CloudWorkflow::AcsCommitRoot {
+                    staged: StagedPublication {
+                        purpose: PublicationPurpose::Publish | PublicationPurpose::Upgrade,
+                        ..
+                    },
+                    ..
+                }
+            )
+        ) {
+            // A persisted publication cannot authorize a write by this new
+            // process. Upgrade consent also deliberately does not survive restart.
+            persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
+                purpose: ReadPurpose::Poll,
+            });
+        }
         if let Some(CloudWorkflow::AcsReadPage { purpose, .. }) = persistent.workflow.as_ref() {
             // A page is valid only for the root snapshot that named it. An app
             // restart may outlive the server's retention of that old page, so
@@ -546,8 +606,11 @@ impl CloudEngine {
                 });
             }
         }
-        Self {
+        let mut engine = Self {
             persistent,
+            format,
+            observed_root: None,
+            upgrade_from: None,
             action_revision: 0,
             provider_request_in_flight: None,
             linked_account_detail: None,
@@ -556,7 +619,11 @@ impl CloudEngine {
             acs_event_stream_connected: false,
             acs_event_stream_next_retry_epoch_ms: None,
             acs_event_stream_consecutive_failures: 0,
+        };
+        if let Err(error) = engine.prepare_local_records() {
+            engine.commit_provider_completion_failure(error);
         }
+        engine
     }
 
     pub fn set_acs_default_base_url(&mut self, base_url: Option<String>) -> AppResult<()> {
@@ -733,10 +800,9 @@ impl CloudEngine {
     }
 
     pub(crate) fn has_linked_account(&self) -> bool {
-        self.persistent
-            .account
-            .as_ref()
-            .is_some_and(|account| account.tip.is_some() && account.acs.is_some())
+        self.persistent.account.as_ref().is_some_and(|account| {
+            (account.tip.is_some() || self.observed_root.is_some()) && account.acs.is_some()
+        })
     }
 
     fn provider_available(&self) -> bool {
@@ -1246,11 +1312,30 @@ impl CloudEngine {
                 self.persistent.next_retry_epoch_ms = None;
                 self.persistent.last_provider_failure = None;
             }
+            CloudAction::BeginAccountUpgrade => {
+                let from = self.upgradeable_account_format()?;
+                self.linked_account_detail = Some(LinkedAccountDetail::ConfirmUpgrade { from });
+            }
+            CloudAction::ConfirmAccountUpgrade => {
+                let from = self.upgradeable_account_format()?;
+                if self.linked_account_detail != Some(LinkedAccountDetail::ConfirmUpgrade { from })
+                {
+                    return Err(cloud_error(
+                        "Review the account upgrade before confirming it",
+                    ));
+                }
+                self.upgrade_from = Some(from);
+                self.linked_account_detail = None;
+                self.persistent.force_poll = true;
+                self.persistent.last_provider_failure = None;
+            }
         }
         Ok(())
     }
 
     fn reset_sync_activity(&mut self) {
+        self.observed_root = None;
+        self.upgrade_from = None;
         self.persistent.last_success_epoch_ms = None;
         self.persistent.last_read_epoch_ms = None;
         self.persistent.last_write_epoch_ms = None;
@@ -1260,6 +1345,86 @@ impl CloudEngine {
         self.acs_event_stream_connected = false;
         self.acs_event_stream_next_retry_epoch_ms = None;
         self.acs_event_stream_consecutive_failures = 0;
+    }
+
+    fn prepare_local_records(&mut self) -> AppResult<()> {
+        if self.persistent.records_format != self.format.version {
+            let mut records = self.persistent.records.clone();
+            self.format
+                .migrate(self.persistent.records_format, &mut records.cached)?;
+            self.format.migrate(
+                self.persistent.records_format,
+                &mut records.deferred_adoption,
+            )?;
+            validate_cloud_records(&records.cached)?;
+            validate_cloud_records(&records.deferred_adoption)?;
+            self.persistent.records = records;
+            self.persistent.records_format = self.format.version;
+        }
+        validate_cloud_records(&self.persistent.records.cached)
+    }
+
+    fn compatibility_detail(&self) -> Option<String> {
+        let version = self.observed_root.as_ref()?.version;
+        let required = self.format.version;
+        if version == required {
+            return None;
+        }
+        let mut detail = if version < required {
+            format!("Your account uses format {version} and this client requires format {required}, so cloud sync is paused. Use the Cloud page to upgrade your account. Local changes stay on this device until sync resumes.")
+        } else {
+            format!("Your account uses format {version} and this client requires format {required}, so cloud sync is paused. Update this application, or reload this tab on web, to resume cloud sync. Local changes stay on this device until sync resumes.")
+        };
+        if let Some(failure) = &self.persistent.last_provider_failure {
+            detail.push_str(&format!(" Last sync attempt failed: {}", failure.detail));
+        }
+        Some(detail)
+    }
+
+    fn upgradeable_account_format(&self) -> AppResult<u32> {
+        let version = self
+            .observed_root
+            .as_ref()
+            .map(|root| root.version)
+            .filter(|version| self.format.can_upgrade(*version))
+            .ok_or_else(|| cloud_error("This client has no migration for the account's format"))?;
+        if self.upgrade_from.is_some() {
+            return Err(cloud_error("Account upgrade is already in progress"));
+        }
+        Ok(version)
+    }
+
+    fn compatibility_panel(&self) -> Option<UiCloudPanel> {
+        let detail = self.compatibility_detail()?;
+        let mut actions = Vec::new();
+        if self.observed_root.as_ref()?.version < self.format.version {
+            let reason = self
+                .upgradeable_account_format()
+                .err()
+                .map(|error| error.message);
+            actions.push(cloud_action(
+                CloudUiActionId::BeginAccountUpgrade,
+                "Upgrade account",
+                reason.is_none(),
+                reason.as_deref().unwrap_or(""),
+            ));
+        }
+        Some(cloud_panel(
+            "account_format",
+            if self.upgrade_from.is_some() {
+                "Upgrading account..."
+            } else {
+                "Cloud sync paused"
+            },
+            if self.upgrade_from.is_some() {
+                UiCloudPanelState::Working
+            } else {
+                UiCloudPanelState::Caution
+            },
+            Some(&detail),
+            actions,
+            None,
+        ))
     }
 
     pub fn perform_ui_action(
@@ -1282,6 +1447,8 @@ impl CloudEngine {
             CloudUiActionId::CloseLinkedDetail => Some(CloudAction::CloseLinkedAccountDetail),
             CloudUiActionId::BeginUnlink => Some(CloudAction::BeginUnlinkDevice),
             CloudUiActionId::ConfirmUnlink => Some(CloudAction::ConfirmUnlinkDevice),
+            CloudUiActionId::BeginAccountUpgrade => Some(CloudAction::BeginAccountUpgrade),
+            CloudUiActionId::ConfirmAccountUpgrade => Some(CloudAction::ConfirmAccountUpgrade),
             CloudUiActionId::SyncNow => Some(CloudAction::SyncNow),
             CloudUiActionId::CopySetupCode => {
                 self.device_setup_code()?;
@@ -1321,6 +1488,42 @@ impl CloudEngine {
         let Some(workflow) = self.persistent.workflow.as_ref() else {
             return Ok(None);
         };
+        if let CloudWorkflow::AcsCreatePage {
+            staged,
+            expected_revision,
+            expected_root_hash,
+        }
+        | CloudWorkflow::AcsCommitRoot {
+            staged,
+            expected_revision,
+            expected_root_hash,
+        } = workflow
+        {
+            let authorized = match staged.purpose {
+                PublicationPurpose::CreateAccount => {
+                    *expected_revision == 0 && expected_root_hash.is_none()
+                }
+                PublicationPurpose::Publish | PublicationPurpose::Upgrade => {
+                    self.observed_root.as_ref().is_some_and(|observed| {
+                        observed.matches(*expected_revision, expected_root_hash.as_deref())
+                            && match staged.purpose {
+                                PublicationPurpose::Publish => {
+                                    observed.version == self.format.version
+                                        && observed.records_verified
+                                }
+                                PublicationPurpose::Upgrade => {
+                                    self.upgrade_from == Some(observed.version)
+                                        && self.format.can_upgrade(observed.version)
+                                }
+                                PublicationPurpose::CreateAccount => false,
+                            }
+                    })
+                }
+            };
+            if !authorized {
+                return Err(cloud_error("Cloud publication has no verified format or upgrade consent for its expected root"));
+            }
+        }
         let operation = operation_for_workflow(workflow, self.persistent.account.as_ref())?;
         let request_id = self.persistent.next_request_id.max(1);
         self.persistent.next_request_id = request_id.saturating_add(1);
@@ -1437,6 +1640,7 @@ impl CloudEngine {
     }
 
     fn commit_provider_completion_failure(&mut self, error: AppError) -> CloudCompletion {
+        self.upgrade_from = None;
         self.persistent.workflow = None;
         self.persistent.next_retry_epoch_ms = None;
         self.persistent.last_provider_failure = Some(CloudProviderFailure {
@@ -1456,14 +1660,38 @@ impl CloudEngine {
         let Some(account) = self.persistent.account.as_ref() else {
             return Ok(());
         };
-        if account.tip.is_none() {
+        if self
+            .observed_root
+            .as_ref()
+            .is_none_or(|root| root.version == self.format.version && !root.records_verified)
+        {
+            self.persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
+                purpose: if account.tip.is_none() {
+                    ReadPurpose::Link
+                } else {
+                    ReadPurpose::Poll
+                },
+            });
             return Ok(());
         }
-        if !self.persistent.records.pending_keys.is_empty() {
+        let compatible = self.compatibility_detail().is_none();
+        if compatible && !self.persistent.records.pending_keys.is_empty() {
             let acs = account
                 .acs
                 .as_ref()
                 .ok_or_else(|| cloud_error("Aerobag Cloud account configuration is missing"))?;
+            if !self.observed_root.as_ref().is_some_and(|observed| {
+                observed.version == self.format.version
+                    && observed.records_verified
+                    && observed.matches(acs.root_revision, acs.root_hash.as_deref())
+            }) {
+                return Err(cloud_error(
+                    "Cannot publish without a verified account format for this root",
+                ));
+            }
+            self.prepare_local_records()?;
+            let account = self.account()?;
+            let acs = account.acs.as_ref().expect("ACS checked above");
             let tip = account.tip.as_ref().expect("tip checked above");
             let staged = self.stage_acs_publication(
                 PublicationPurpose::Publish,
@@ -1478,7 +1706,7 @@ impl CloudEngine {
             });
             return Ok(());
         }
-        let poll_interval_ms = if self.acs_event_stream_connected {
+        let poll_interval_ms = if compatible && self.acs_event_stream_connected {
             ACS_CORRECTNESS_POLL_INTERVAL_MS
         } else {
             CLOUD_POLL_INTERVAL_MS
@@ -1491,7 +1719,11 @@ impl CloudEngine {
         if poll_due {
             self.persistent.force_poll = false;
             self.persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
-                purpose: ReadPurpose::Poll,
+                purpose: if account.tip.is_none() {
+                    ReadPurpose::Link
+                } else {
+                    ReadPurpose::Poll
+                },
             });
         }
         if self.persistent.workflow.is_none()
@@ -1591,9 +1823,16 @@ impl CloudEngine {
                             })?;
                         acs.root_revision = root.revision;
                         acs.root_hash = Some(root.root_hash);
+                        self.observed_root = Some(ObservedRoot {
+                            version: self.format.version,
+                            revision: root.revision,
+                            hash: staged.node_hash.clone(),
+                            records_verified: true,
+                        });
                         self.finish_publication(staged)?;
                     }
                     AcsCompareAndSwapRootResponse::Conflict { .. } => {
+                        self.observed_root = None;
                         self.persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
                             purpose: ReadPurpose::PublishRace,
                         });
@@ -1604,24 +1843,21 @@ impl CloudEngine {
                 let CloudProviderResponse::AcsRoot { root } = response else {
                     return Err(unexpected_response("read ACS root", response));
                 };
-                let Some(root) = root else {
-                    if matches!(purpose, ReadPurpose::Link) {
-                        return Err(cloud_error(
-                            "the Device Setup Code's Sync Account has no published root",
-                        ));
-                    }
-                    self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
-                    self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
-                    self.persistent.workflow = None;
-                    return Ok(CloudCompletion::default());
-                };
+                let root =
+                    root.ok_or_else(|| cloud_error("The Sync Account has no published root"))?;
                 validate_acs_root_snapshot(&root)?;
                 let current = self
                     .account()?
                     .acs
                     .as_ref()
                     .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
-                if current.root_revision == root.revision
+                if self.upgrade_from.is_none()
+                    && self.observed_root.as_ref().is_some_and(|observed| {
+                        observed.version == self.format.version
+                            && observed.records_verified
+                            && observed.matches(root.revision, Some(&root.root_hash))
+                    })
+                    && current.root_revision == root.revision
                     && current.root_hash.as_deref() == Some(root.root_hash.as_str())
                     && !matches!(purpose, ReadPurpose::Link)
                 {
@@ -1630,12 +1866,41 @@ impl CloudEngine {
                     self.persistent.workflow = None;
                     return Ok(CloudCompletion::default());
                 }
-                let node: CloudNode = self.decrypt_acs_value(
+                let value: serde_json::Value = self.decrypt_acs_value(
                     &root.value,
                     "state_node",
                     AcsEncryptedValueKind::Root,
                     ACS_FIXED_ROOT_ID,
                 )?;
+                let version = account_format::read_version(&value)?;
+                self.observed_root = Some(ObservedRoot {
+                    version,
+                    revision: root.revision,
+                    hash: root.root_hash.clone(),
+                    records_verified: false,
+                });
+                self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
+                self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
+                if version != self.format.version {
+                    if self.upgrade_from != Some(version) || !self.format.can_upgrade(version) {
+                        self.upgrade_from = None;
+                        self.persistent.workflow = None;
+                        return Ok(CloudCompletion::default());
+                    }
+                } else {
+                    self.upgrade_from = None;
+                    if matches!(
+                        self.linked_account_detail,
+                        Some(LinkedAccountDetail::ConfirmUpgrade { .. })
+                    ) {
+                        self.linked_account_detail = None;
+                    }
+                }
+                let decoder = self
+                    .format
+                    .find(version)
+                    .expect("format checked before body decoding");
+                let node = (decoder.decode_node)(value)?;
                 validate_acs_node(&root, &node, self.account()?.tip.as_ref(), purpose)?;
                 self.persistent.workflow = Some(CloudWorkflow::AcsReadPage {
                     root,
@@ -1670,13 +1935,48 @@ impl CloudEngine {
                         node.merkle_root_hash
                     )));
                 }
-                let page: CloudPage = self.decrypt_acs_value(
+                let value: serde_json::Value = self.decrypt_acs_value(
                     &object.value,
                     "merkle_page",
                     AcsEncryptedValueKind::Object,
                     &object.object_id,
                 )?;
-                validate_cloud_page(&page)?;
+                let decoder = self
+                    .format
+                    .find(node.version)
+                    .ok_or_else(|| cloud_error("Account format changed during page read"))?;
+                let mut page = (decoder.decode_page)(value)?;
+                if node.version != self.format.version {
+                    if self.upgrade_from != Some(node.version)
+                        || !self.format.can_upgrade(node.version)
+                    {
+                        return Err(cloud_error("Account upgrade is not authorized"));
+                    }
+                    self.format.migrate(node.version, &mut page.records)?;
+                    let parent = VerifiedTip {
+                        node_id: ACS_FIXED_ROOT_ID.to_string(),
+                        node_hash: root.root_hash.clone(),
+                        generation: node.generation,
+                        published_at_epoch_ms: node.published_at_epoch_ms,
+                        merkle_root_id: node.merkle_root_id,
+                        merkle_root_hash: node.merkle_root_hash,
+                        next_slot_id: String::new(),
+                    };
+                    let staged = self.stage_acs_page(
+                        PublicationPurpose::Upgrade,
+                        node.generation.saturating_add(1),
+                        Some(&parent),
+                        now_epoch_ms,
+                        &page,
+                    )?;
+                    self.persistent.workflow = Some(CloudWorkflow::AcsCreatePage {
+                        staged,
+                        expected_revision: root.revision,
+                        expected_root_hash: Some(root.root_hash),
+                    });
+                    return Ok(CloudCompletion::default());
+                }
+                self.prepare_local_records()?;
                 self.account_mut()?.tip = Some(VerifiedTip {
                     node_id: ACS_FIXED_ROOT_ID.to_string(),
                     node_hash: root.root_hash.clone(),
@@ -1697,6 +1997,10 @@ impl CloudEngine {
                 self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
                 self.persistent.workflow = None;
                 let completion = self.reconcile_page(page, purpose)?;
+                self.observed_root
+                    .as_mut()
+                    .expect("root read before page")
+                    .records_verified = true;
                 if !completion.changed_records.is_empty()
                     || matches!(purpose, ReadPurpose::PublishRace)
                 {
@@ -1757,7 +2061,8 @@ impl CloudEngine {
         for (key, remote) in page.records {
             validate_known_record(&key, &remote)?;
             let local = self.persistent.records.cached.get(&key);
-            let remote_wins = matches!(purpose, ReadPurpose::Link)
+            let remote_wins = (matches!(purpose, ReadPurpose::Link)
+                && !self.persistent.records.pending_keys.contains(&key))
                 || local
                     .map(|local| compare_cloud_records(&remote, local))
                     .transpose()?
@@ -1796,8 +2101,20 @@ impl CloudEngine {
         parent: Option<&VerifiedTip>,
         now_epoch_ms: i64,
     ) -> AppResult<StagedPublication> {
-        let page_id = URL_SAFE_NO_PAD.encode(random_bytes::<24>()?);
         let page = page_for_records(&self.persistent.records.cached);
+        self.stage_acs_page(purpose, generation, parent, now_epoch_ms, &page)
+    }
+
+    fn stage_acs_page(
+        &self,
+        purpose: PublicationPurpose,
+        generation: u64,
+        parent: Option<&VerifiedTip>,
+        now_epoch_ms: i64,
+        page: &CloudPage,
+    ) -> AppResult<StagedPublication> {
+        let page_id = URL_SAFE_NO_PAD.encode(random_bytes::<24>()?);
+        let page = (self.format.encode_page)(page)?;
         let page_value = self.encrypt_acs_value(
             &page,
             "merkle_page",
@@ -1810,7 +2127,7 @@ impl CloudEngine {
             .authenticated_hash(AcsEncryptedValueKind::Object, &page_id)
             .map_err(cloud_error)?;
         let node = CloudNode {
-            version: CLOUD_NODE_VERSION,
+            version: self.format.version,
             generation,
             published_at_epoch_ms: Some(now_epoch_ms),
             parent_node_id: parent.map(|tip| tip.node_id.clone()),
@@ -1931,6 +2248,7 @@ impl CloudEngine {
     }
 
     fn finish_publication(&mut self, staged: StagedPublication) -> AppResult<()> {
+        let upgraded = staged.purpose == PublicationPurpose::Upgrade;
         self.account_mut()?.tip = Some(VerifiedTip {
             node_id: staged.node_id,
             node_hash: staged.node_hash,
@@ -1941,11 +2259,17 @@ impl CloudEngine {
             next_slot_id: staged.next_slot_id,
         });
         self.persistent.last_write_epoch_ms = Some(staged.published_at_epoch_ms);
-        if self.persistent.local_revision == staged.local_revision {
+        if !upgraded && self.persistent.local_revision == staged.local_revision {
             self.persistent.records.pending_keys.clear();
         }
         self.persistent.workflow = None;
         self.persistent.force_poll = true;
+        if upgraded {
+            // Adopt only through ordinary reconciliation, after the atomic
+            // cloud-only migration. Local edits were not part of that write.
+            self.upgrade_from = None;
+            self.observed_root = None;
+        }
         Ok(())
     }
 
@@ -2105,7 +2429,10 @@ impl CloudEngine {
             }
         }
 
-        let account_is_pending = account.is_some_and(|account| account.tip.is_none());
+        if let Some(panel) = self.compatibility_panel() {
+            panels.push(panel);
+        }
+        let account_is_pending = account.is_some() && !linked;
         if account_is_pending {
             let creating = intent == Some(CloudOnboardingIntent::CreateAccount);
             let failed = self.persistent.last_provider_failure.is_some();
@@ -2186,6 +2513,16 @@ impl CloudEngine {
     }
 
     fn overall_status_panel(&self, now_epoch_ms: i64) -> UiCloudPanel {
+        if let Some(detail) = self.compatibility_detail() {
+            return cloud_panel(
+                "overall_status",
+                "Cloud sync paused",
+                UiCloudPanelState::Caution,
+                Some(&detail),
+                Vec::new(),
+                None,
+            );
+        }
         if !self.has_linked_account() {
             return cloud_panel(
                 "overall_status",
@@ -2335,6 +2672,14 @@ impl CloudEngine {
             });
         }
 
+        if let Some(detail) = self.compatibility_detail() {
+            return CloudStatusSummary {
+                label: "PAUSED".to_string(),
+                severity: UiStatusSeverity::Caution,
+                detail,
+                facts,
+            };
+        }
         if let Some(failure) = self.persistent.last_provider_failure.as_ref() {
             return CloudStatusSummary {
                 label: if failure.kind == CloudProviderErrorKind::Transient {
@@ -2418,6 +2763,15 @@ impl CloudEngine {
 
     fn linked_account_detail_panel(&self, detail: LinkedAccountDetail) -> UiCloudPanel {
         match detail {
+            LinkedAccountDetail::ConfirmUpgrade { from } => {
+                let reason = self.upgradeable_account_format().err().map(|error| error.message);
+                cloud_panel("confirm_upgrade", "Upgrade this Sync Account?", UiCloudPanelState::Caution,
+                    Some(&format!("Upgrade account format {from} to {}. This cannot be undone. Every other device and browser tab using this account must run a compatible Aerobag version before it can sync again. Update those applications or reload their tabs. Local changes are kept until sync resumes.", self.format.version)),
+                    vec![
+                        cloud_action(CloudUiActionId::CloseLinkedDetail, "Cancel", true, ""),
+                        cloud_action(CloudUiActionId::ConfirmAccountUpgrade, "Upgrade account", reason.is_none(), reason.as_deref().unwrap_or("")),
+                    ], None)
+            },
             LinkedAccountDetail::BackupCode => cloud_panel(
                 "backup_code",
                 "Back up Device Setup Code",
@@ -2476,6 +2830,16 @@ impl CloudEngine {
     }
 
     pub fn status_record(&self, _now_epoch_ms: i64) -> Option<DataStatusRecord> {
+        if let Some(detail) = self.compatibility_detail() {
+            return Some(DataStatusRecord::new(
+                CLOUD_STATUS_ID,
+                "CLOUD",
+                Some("PAUSED".to_string()),
+                UiStatusSeverity::Caution,
+                true,
+                detail,
+            ));
+        }
         let linked = self
             .persistent
             .account
@@ -2502,7 +2866,7 @@ impl CloudEngine {
 
     pub fn device_setup_code(&self) -> AppResult<String> {
         let account = self.account()?;
-        if account.tip.is_none() {
+        if !self.has_linked_account() {
             return Err(cloud_error("cloud account creation has not completed"));
         }
         if let Some(imported) = &account.imported_device_setup_code {
@@ -2732,9 +3096,7 @@ fn validate_acs_node(
     current_tip: Option<&VerifiedTip>,
     purpose: ReadPurpose,
 ) -> AppResult<()> {
-    if node.version != CLOUD_NODE_VERSION
-        || root.value.child_object_ids.as_slice() != [node.merkle_root_id.as_str()]
-    {
+    if root.value.child_object_ids.as_slice() != [node.merkle_root_id.as_str()] {
         return Err(cloud_error(
             "Aerobag Cloud root does not describe one valid state page",
         ));
@@ -2742,8 +3104,12 @@ fn validate_acs_node(
     if matches!(purpose, ReadPurpose::Link) {
         return Ok(());
     }
-    let current_tip = current_tip
-        .ok_or_else(|| cloud_error("Aerobag Cloud account has no previously verified root"))?;
+    let Some(current_tip) = current_tip else {
+        return Ok(());
+    };
+    if current_tip.node_hash == root.root_hash && current_tip.generation == node.generation {
+        return Ok(());
+    }
     if node.generation <= current_tip.generation {
         return Err(cloud_error("Aerobag Cloud root generation did not advance"));
     }
@@ -2764,7 +3130,11 @@ fn validate_cloud_page(page: &CloudPage) -> AppResult<()> {
             page.version
         )));
     }
-    for (key, record) in &page.records {
+    validate_cloud_records(&page.records)
+}
+
+fn validate_cloud_records(records: &BTreeMap<String, CloudRecord>) -> AppResult<()> {
+    for (key, record) in records {
         validate_known_record(key, record)?;
     }
     Ok(())
@@ -3067,6 +3437,7 @@ fn unexpected_response(context: &str, response: CloudProviderResponse) -> AppErr
 
 #[cfg(test)]
 mod tests {
+    mod account_formats;
     use super::*;
     use crate::{planning::RouteComponent, NavRef};
 

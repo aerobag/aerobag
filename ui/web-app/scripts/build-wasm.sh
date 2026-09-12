@@ -66,9 +66,14 @@ case "$PROFILE" in
     ;;
 esac
 
+CARGO_FEATURE_ARGS=()
+if [[ "${AEROBAG_E2E_ENABLED:-0}" == "1" ]]; then
+  CARGO_FEATURE_ARGS=(--features cloud-format-test)
+fi
+
 (
   cd "$CORE_DIR"
-  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build "${CARGO_PROFILE_ARGS[@]}" -p app-wasm --target wasm32-unknown-unknown
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build "${CARGO_PROFILE_ARGS[@]}" "${CARGO_FEATURE_ARGS[@]}" -p app-wasm --target wasm32-unknown-unknown
 )
 
 WASM_INPUT="$RUST_TARGET_DIR/wasm32-unknown-unknown/$CARGO_OUTPUT_PROFILE/app_wasm.wasm"

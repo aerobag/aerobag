@@ -16,7 +16,7 @@ core state, and renders core-provided controls.
 - ACS stores opaque immutable objects and one distinguished mutable account
   root. Compare-and-swap of that root is the publication linearization point.
 - A losing writer reads the winning root, applies the common record merge
-  policy, builds a new root, and retries.
+  policy, builds a new root, and retries only after checking its account format.
 - Normal synchronization follows known object IDs. Listing is reserved for
   recovery, accounting, and garbage collection.
 - SSE notifications are latency hints. Polling and root traversal remain
@@ -67,6 +67,18 @@ derived from the Sync Account secret and signed by core. See
 `crates/product-contracts/src/aerobag_cloud.rs` for the wire contract.
 
 ## Synchronized Records
+
+The encrypted root's `version` declares the entire account data format. A
+client checks it before decoding the body or fetching pages. Ordinary sync
+requires exact equality; a mismatch pauses sync without discarding local work.
+An older account requires an explicit, confirmed upgrade on the Cloud page.
+A newer account requires updating the application (reloading a web tab).
+
+Account upgrades migrate the authoritative cloud snapshot and publish its
+new format and contents in one root CAS. The encrypted server cannot enforce
+the format; every client must check it again after restart or a lost CAS.
+See [Explicit Cloud Account Format Upgrades](refactor/cloud-account-format-upgrades.md)
+for the implementation plan, race/UX tests, and future-format checklist.
 
 Core registers each synchronized record type with:
 

@@ -74,8 +74,17 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
         return page.evaluate(`(() => {
           const state = window.__aerobagE2e?.cloud?.state() ?? null;
           if (!state) return null;
+          const cloud = JSON.parse(localStorage.getItem("aerobag.core.settings.v1"))?.cloud;
           return {
             ...state,
+            local_sync: cloud ? {
+              pending_keys: cloud.records.pending_keys,
+              records_format: cloud.records_format,
+              workflow: cloud.workflow?.state ?? null,
+              last_provider_failure: cloud.last_provider_failure,
+              next_retry_epoch_ms: cloud.next_retry_epoch_ms,
+              root_revision: cloud.account?.acs?.root_revision,
+            } : null,
             application_scripts: Array.from(document.scripts, (script) => script.src)
               .filter(Boolean),
           };

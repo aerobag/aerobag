@@ -111,7 +111,11 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "cloud.accept-code", "cloud.create-account", "cloud.backup-code", "cloud.add-device",
     "cloud.close-detail", "cloud.begin-unlink", "cloud.confirm-unlink", "cloud.sync-now",
     "cloud.copy-code", "cloud.crossfill-plan", "cloud.crossfill-packages", "cloud.reconnect",
-  ], { android_isolated: true }),
+  ], { android_isolated: true, cloud_server: true }),
+  journey("shared.cloud-account-upgrade", "p1", shared, [
+    "cloud.format-paused", "cloud.begin-account-upgrade", "cloud.upgrade-cancel",
+    "cloud.confirm-account-upgrade", "cloud.peer-resumes", "cloud.updated-client-keeps-edits",
+  ], { android_isolated: true, cloud_server: true }),
   journey("shared.prepared-live-feeds", "p1", shared, ["livefeed.metar-taf-pirep-notam"]),
   journey("shared.nexrad-frames", "p1", shared, [
     "livefeed.nexrad-frames",

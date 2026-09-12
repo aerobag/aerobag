@@ -135,6 +135,8 @@
       "close_linked_detail": "cloud.close-detail",
       "begin_unlink": "cloud.begin-unlink",
       "confirm_unlink": "cloud.confirm-unlink",
+      "begin_account_upgrade": "cloud.begin-account-upgrade",
+      "confirm_account_upgrade": "cloud.confirm-account-upgrade",
       "sync_now": "cloud.sync-now",
       "copy_setup_code": "cloud.copy-code"
     }

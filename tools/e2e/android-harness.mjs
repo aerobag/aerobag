@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { journeyById } from "./release-journey-registry.mjs";
 import {
   E2E_TIMING, observeChangedValueUntilStable, observeUntil, performTransition,
   TransientObservationError,
@@ -20,7 +21,7 @@ export const DEBUG_CLEAR_UI_PREFS_EXTRA =
   `${ANDROID_PACKAGE}.extra.DEBUG_CLEAR_UI_PREFS`;
 
 export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = Date.now()) {
-  return journeyId === "shared.cloud-crossfill" ? hostEpochMs : fixtureEpochMs;
+  return journeyById(journeyId)?.cloud_server ? hostEpochMs : fixtureEpochMs;
 }
 
 const ADB_TIMEOUT_MS = 20000;

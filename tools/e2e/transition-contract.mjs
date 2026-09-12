@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { DeadlineExceededError, realScheduler, withinDeadline } from "./deadline.mjs";
+import { setImmediate as yieldToIo } from "node:timers/promises";
 
 export const E2E_TIMING = Object.freeze({
   userResponseTargetMs: 3_000,
@@ -130,6 +131,9 @@ export async function observeUntil(
       try {
         await withinDeadline(description,
           (options) => waitForNextProbe(Math.min(intervalMs, remainingMs), options), deadline, scheduler);
+        // Android's event wait may complete synchronously. Awaiting its resolved
+        // promise alone starves the browser-peer sockets needed for crossfill.
+        await yieldToIo();
       } catch (error) {
         if (error instanceof DeadlineExceededError && error.deadline === deadline) break;
         throw error;

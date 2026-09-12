@@ -4,6 +4,10 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+# Hermetic mixed-version journeys only. Never enable in distributed clients.
+cloud-format-test = []
+
 [dependencies]
 app-ui-contracts = { path = "../app-ui-contracts" }
 airspace-geometry = { path = "../../../../crates/airspace-geometry" }

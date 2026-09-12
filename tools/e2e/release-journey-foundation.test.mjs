@@ -381,7 +381,7 @@ test("grouped P2 journeys leave destructive contract failure last", () => {
   assert.equal(p2.at(-1)?.id, "shared.contract-failures");
 });
 
-test("Android cloud crossfill executes alone in its release shard", () => {
+test("Android cloud journeys each execute alone in their release shard", () => {
   const script = new URL("./release_journey_lab.sh", import.meta.url);
   const shardZero = spawnSync("bash", [script.pathname, "android-shard-list", "p1", "0", "4"], {
     cwd: new URL("../..", import.meta.url),
@@ -402,7 +402,8 @@ test("Android cloud crossfill executes alone in its release shard", () => {
       },
     );
     assert.equal(result.status, 0, result.stderr);
-    assert.doesNotMatch(result.stdout, /shared\.cloud-crossfill/);
+    if (shard === 1) assert.equal(result.stdout.trim(), "shared.cloud-account-upgrade");
+    else assert.doesNotMatch(result.stdout, /shared\.cloud-(crossfill|account-upgrade)/);
   }
 });
 
@@ -5405,11 +5406,12 @@ test("Android Cloud actions use exact selectors and require visible scroll reach
     androidActionCandidates("copy_setup_code"),
     ["parity:cloud-action:copy_setup_code"],
   );
-  for (const actionId of [
-    "begin_setup", "begin_create", "back_setup", "scan_setup_code", "accept_setup_code",
-    "create_account", "backup_setup_code", "add_device", "close_linked_detail",
-    "begin_unlink", "confirm_unlink", "sync_now", "copy_setup_code",
-  ]) {
+  const actions = JSON.parse(readFileSync(new URL(
+    "../../ui/core-rust/schemas/cloud-wire.schema.json", import.meta.url,
+  ), "utf8")).$defs.CloudUiActionId.enum;
+  assert.ok(actions.length > 0);
+  for (const actionId of actions) {
+    assert.deepEqual(androidActionCandidates(actionId), [`parity:cloud-action:${actionId}`]);
     assert.equal(androidElementMayRequireVerticalScroll(actionId), true, actionId);
   }
 });

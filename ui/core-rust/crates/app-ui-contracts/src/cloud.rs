@@ -41,6 +41,8 @@ pub enum CloudUiActionId {
     CloseLinkedDetail,
     BeginUnlink,
     ConfirmUnlink,
+    BeginAccountUpgrade,
+    ConfirmAccountUpgrade,
     SyncNow,
     CopySetupCode,
 }

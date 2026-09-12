@@ -7,7 +7,7 @@ export const UI_CLOUD_PAGE_STATE_WIRE_VERSION = 13 as const;
 
 export type CloudProviderKind = "aerobag_cloud";
 
-export type CloudUiActionId = "begin_setup" | "begin_create" | "back_setup" | "scan_setup_code" | "accept_setup_code" | "create_account" | "backup_setup_code" | "add_device" | "close_linked_detail" | "begin_unlink" | "confirm_unlink" | "sync_now" | "copy_setup_code";
+export type CloudUiActionId = "begin_setup" | "begin_create" | "back_setup" | "scan_setup_code" | "accept_setup_code" | "create_account" | "backup_setup_code" | "add_device" | "close_linked_detail" | "begin_unlink" | "confirm_unlink" | "begin_account_upgrade" | "confirm_account_upgrade" | "sync_now" | "copy_setup_code";
 
 export type CloudUiFieldId = "device_setup_code";
 

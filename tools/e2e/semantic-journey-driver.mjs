@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   adb, androidImeShown, androidNodeLabel, androidTag, clickAndroidSemanticNode,
   displayBoundsFromXml, dumpAndroid, findNode, findNodes, focusAndroidSemanticNode,
@@ -715,11 +715,9 @@ const ANDROID_MAP_SELECTION_ACTION_IDS = new Set([
   "airport_info", "direct_to", "plates", "tfr_text", "wx",
 ]);
 
-const ANDROID_CLOUD_ACTION_IDS = new Set([
-  "begin_setup", "begin_create", "back_setup", "scan_setup_code", "accept_setup_code",
-  "create_account", "backup_setup_code", "add_device", "close_linked_detail",
-  "begin_unlink", "confirm_unlink", "sync_now", "copy_setup_code",
-]);
+const ANDROID_CLOUD_ACTION_IDS = new Set(JSON.parse(readFileSync(
+  new URL("../../ui/core-rust/schemas/cloud-wire.schema.json", import.meta.url), "utf8",
+)).$defs.CloudUiActionId.enum);
 const ANDROID_MAX_VIRTUALIZED_REVEAL_STEPS = 64;
 
 export function androidActionCandidates(actionId) {
@@ -1034,6 +1032,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       "parity:cloud-action-revision:",
       { allowPrefix: true },
     );
+    if (!node) return -1;
     const revision = androidTag(node).match(/:cloud-action-revision:(\d+)(?::|$)/)?.[1];
     return revision == null ? -1 : Number(revision);
   }

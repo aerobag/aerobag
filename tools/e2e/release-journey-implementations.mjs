@@ -3172,6 +3172,102 @@ async function revealCloudAction(runtime, actionId, description) {
   return revealRequiredElement(runtime, cloudActionElementId(runtime, actionId), description);
 }
 
+async function cloudAccountUpgrade(runtime) {
+  const { launchCloudJourneyPeer } = await import("./cloud-journey-peer.mjs");
+  const { simulateCloudClientUpdate } = await import("./cloud-client-update.mjs");
+  const peers = [];
+  const panel = async (id, state = "active") => {
+    const current = await runtime.driver.readElement(cloudPanelElementId(runtime, id));
+    return current?.state === state ? current : null;
+  };
+  const action = async (id, complete) => {
+    await revealCloudAction(runtime, id, `reveal ${id}`);
+    await runtime.action(`cloud upgrade ${id}`, id, { complete: async () => complete() });
+  };
+  await runtime.reset();
+  await acceptDisclaimer(runtime);
+  await runtime.openPage("cloud");
+  await action("begin_create", () => panel("create_account"));
+  await action("create_account", () => panel("linked"));
+  await waitForCloudActive(runtime);
+  await action("add_device", () => panel("add_device"));
+  await revealRequiredElement(runtime, "cloud-setup-code-output", "setup code");
+  const element = await runtime.driver.readElement("cloud-setup-code-output");
+  const code = element?.value || element?.text;
+  if (!code?.startsWith("AB3.")) throw new Error("No Device Setup Code");
+  await action("close_linked_detail", () => panel("linked"));
+  try {
+    for (let index = 0; index < 2; index++) {
+      const peer = await launchCloudJourneyPeer({
+        url: process.env.AEROBAG_E2E_PEER_URL ?? "http://127.0.0.1:8085/",
+        referenceEpochMs: null,
+        requestOriginRoutes: runtime.platform === "android" ? [{
+          sourceOrigin: `http://127.0.0.1:${process.env.AEROBAG_ANDROID_CLOUD_DEVICE_PORT ?? "18094"}`,
+          targetOrigin: `http://127.0.0.1:${process.env.AEROBAG_E2E_CLOUD_PORT ?? "18094"}`,
+        }] : [],
+      });
+      peers.push(peer);
+      await peer.acceptSetupCode(code);
+    }
+    const [older, otherNewer] = peers;
+    await older.appendRoute("KSEA KPAE");
+    await runtime.openPage("flight_plan");
+    await waitForPlanIdents(runtime, ["KSEA", "KPAE"]);
+    await simulateCloudClientUpdate(runtime.driver);
+    await runtime.openPage("cloud");
+    await waitForCloudPanel(runtime, "account_format", "caution");
+    runtime.check("cloud.format-paused", true);
+    await runtime.driver.captureFrame(`${runtime.artifactDir}/cloud-format-paused.png`);
+    await simulateCloudClientUpdate(otherNewer.driver);
+    await otherNewer.waitForState((s) => s.overall_status.title === "Cloud sync paused", "other new client paused");
+    await action("begin_account_upgrade", () => panel("confirm_upgrade", "caution"));
+    runtime.check("cloud.begin-account-upgrade", true);
+    await runtime.driver.captureFrame(`${runtime.artifactDir}/cloud-format-confirmation.png`);
+    await action("close_linked_detail", () => panel("account_format", "caution"));
+    await revealCloudAction(runtime, "sync_now", "sync now action");
+    const beforeSync = await runtime.driver.readCloudActionRevision();
+    await runtime.action("sync now while paused", "sync_now", {
+      complete: async () => {
+        const revision = await runtime.driver.readCloudActionRevision();
+        return revision > beforeSync ? revision : null;
+      },
+    });
+    await runtime.reload("cloud.cancel-does-not-authorize-on-reload");
+    await runtime.openPage("flight_plan");
+    await waitForPlanIdents(runtime, ["KSEA", "KPAE"]);
+    await runtime.openPage("cloud");
+    await waitForCloudPanel(runtime, "account_format", "caution");
+    const oldState = await older.state();
+    runtime.check("cloud.upgrade-cancel", oldState.overall_status.title === "Cloud active");
+    await action("begin_account_upgrade", () => panel("confirm_upgrade", "caution"));
+    await action("confirm_account_upgrade", async () => {
+      const compatibility = await runtime.driver.readElement(cloudPanelElementId(runtime, "account_format"));
+      return !compatibility ? panel("linked") : null;
+    });
+    await waitForCloudActive(runtime);
+    runtime.check("cloud.confirm-account-upgrade", true);
+    await otherNewer.waitForState((s) => s.overall_status.title === "Cloud active", "other new client resumes without confirmation");
+    runtime.check("cloud.peer-resumes", true);
+    await older.driver.openPage("cloud");
+    await older.waitForState((s) => s.overall_status.summary?.includes("Update this application"), "old client update caution");
+    await older.driver.captureFrame(`${runtime.artifactDir}/cloud-old-client-paused.png`);
+    await older.appendRoute("KPLU");
+    await simulateCloudClientUpdate(older.driver);
+    await older.waitForState((s) => s.overall_status.title === "Cloud active", "updated old client resumes");
+    await runtime.openPage("flight_plan");
+    await waitForPlanIdents(runtime, ["KSEA", "KPAE", "KPLU"]);
+    runtime.check("cloud.updated-client-keeps-edits", true);
+  } catch (error) {
+    runtime.result.diagnostics.cloud_upgrade_peers = [];
+    for (const peer of peers) {
+      runtime.result.diagnostics.cloud_upgrade_peers.push(await peer.state());
+    }
+    throw error;
+  } finally {
+    for (const peer of peers) await peer.close();
+  }
+}
+
 async function cloudCrossfill(runtime) {
   const peerUrl = process.env.AEROBAG_E2E_PEER_URL ?? "http://127.0.0.1:8085/";
   let peer = null;
@@ -3418,6 +3514,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.tfr-map-detail": tfrMapDetail,
   "web.raster-load-recovery": rasterLoadRecovery,
   "shared.cloud-crossfill": cloudCrossfill,
+  "shared.cloud-account-upgrade": cloudAccountUpgrade,
   "shared.other-documents": otherDocuments,
   "shared.about-and-saved-state": aboutAndSavedState,
   "web.pointer-details": pointerDetails,

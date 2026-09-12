@@ -237,6 +237,13 @@ console.log(journey.live_feed_profile ?? 'fresh');
 JS
 }
 
+journey_requires_cloud() {
+  node --input-type=module - "$1" <<'JS'
+import { journeyById } from './tools/e2e/release-journey-registry.mjs';
+process.exit(journeyById(process.argv[2])?.cloud_server ? 0 : 1);
+JS
+}
+
 ensure_journey_profile() {
   local profile="$1"
   local health=""
@@ -431,7 +438,7 @@ run_android_test() {
   if [[ -n "$ANDROID_BASELINE_ARCHIVE" ]]; then
     android_baseline_restore "$ANDROID_BASELINE_ARCHIVE"
   fi
-  if [[ "$journey" == "shared.cloud-crossfill" ]]; then
+  if journey_requires_cloud "$journey"; then
     cloud_start
     adb -s "$SERIAL" reverse "tcp:${ANDROID_CLOUD_PORT}" "tcp:${CLOUD_PORT}" >/dev/null
   fi
@@ -473,7 +480,7 @@ run_web_test() {
   profile="$(journey_profile "$journey")"
   ensure_journey_profile "$profile"
   reset_fixture_state
-  if [[ "$journey" == "shared.cloud-crossfill" ]]; then
+  if journey_requires_cloud "$journey"; then
     cloud_start
   fi
   AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-${AEROBAG_E2E_URL:-http://127.0.0.1:8085/}}" \
@@ -655,7 +662,7 @@ case "$command" in
   android-install)
     require_fixture
     journey="${2:-shared.startup-navigation}"
-    if [[ "$journey" == "shared.cloud-crossfill" ]]; then
+    if journey_requires_cloud "$journey"; then
       cloud_start
       adb -s "$SERIAL" reverse "tcp:${ANDROID_CLOUD_PORT}" "tcp:${CLOUD_PORT}" >/dev/null
     fi

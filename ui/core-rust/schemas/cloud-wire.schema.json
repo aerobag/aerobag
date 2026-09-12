@@ -278,6 +278,8 @@
         "close_linked_detail",
         "begin_unlink",
         "confirm_unlink",
+        "begin_account_upgrade",
+        "confirm_account_upgrade",
         "sync_now",
         "copy_setup_code"
       ],

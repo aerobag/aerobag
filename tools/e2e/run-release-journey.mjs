@@ -130,7 +130,7 @@ try {
     await configuredPage.send("Page.addScriptToEvaluateOnNewDocument", {
       source: workerErrorCaptureScript,
     });
-    if (journey.id !== "shared.cloud-crossfill") {
+    if (!journey.cloud_server) {
       await configuredPage.send("Page.addScriptToEvaluateOnNewDocument", {
         source: advancingVirtualClockScript(fixture.capabilities.reference_epoch_ms),
       });

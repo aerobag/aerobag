@@ -248,7 +248,8 @@ val copyRustLibraries = if (androidBuildNativeLibraries) {
             environment("CARGO_TARGET_${target.envPrefix}_RUSTFLAGS", rustFlagsForAndroidTarget(target))
             environment("ANDROID_NDK_ROOT", ndkRoot)
             environment("NDK_HOME", ndkRoot)
-            commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs)
+            val cloudTestFeatures = if (androidE2eEnabled) listOf("--features", "cloud-format-test") else emptyList()
+            commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs + cloudTestFeatures)
         }
         tasks.register<Copy>("copyRust${target.abi.replace("-", "").replace("_", "")}Library") {
             dependsOn(buildTask)

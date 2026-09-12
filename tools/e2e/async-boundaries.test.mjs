@@ -33,6 +33,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+test("synchronous Android observation waits let browser peer I/O progress", async () => {
+  const scheduler = manualScheduler();
+  let peerResponseDelivered = false;
+  setImmediate(() => { peerResponseDelivered = true; });
+  const observed = await observeUntil("peer crossfill", () => peerResponseDelivered, {
+    timeoutMs: 10, scheduler,
+    waitForNextProbe: () => { scheduler.advance(1); },
+  });
+  assert.equal(observed.value, true);
+});
+
 test("an abandoned probe has a real deadline, abort signal, and no late success", async () => {
   const scheduler = manualScheduler();
   const entered = deferred(), late = deferred();

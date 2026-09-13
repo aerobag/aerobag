@@ -155,6 +155,57 @@ class RetirementTests(unittest.TestCase):
         plan = releases.plan_reconciliation(self.instance.desired, self.instance.observed)
         self.assertEqual(plan.actions[0], releases.ReconcileAction("build_release", "old"))
 
+    def test_forgetting_shared_sunset_only_clears_consumer_references(self) -> None:
+        record = self.instance.observed.releases["sunset"]
+        production = self.instance.observed.releases["prod"]
+        provider = releases.LiveFeedInstance(
+            instance_id="prod-instance", release_tag="prod", launch_digest="c" * 64,
+            endpoint="http://127.0.0.1:8101", unit="prod-instance.service",
+            manifest=str(self.root / "pinned/current_artifacts.json"),
+            roots=[str(self.root / "live-feeds/instances/prod-instance")],
+            gc_paths=["pinned/current_artifacts.json"], status="running",
+        )
+        self.instance.observed.live_feed_instances[provider.instance_id] = provider
+        production.live_feed_instance = production.live_feed_provider = provider.instance_id
+        production.live_feed_status = "running"
+        record.live_feed_instance = "sunset-instance"
+        record.live_feed_provider = provider.instance_id
+        record.live_feed_reason = "compatible"
+        record.live_feed_requirements = {"publication": "old"}
+
+        retirement.forget_removed_artifacts(record)
+
+        self.assertIsNone(record.live_feed_instance)
+        self.assertIsNone(record.live_feed_provider)
+        self.assertIsNone(record.live_feed_reason)
+        self.assertIsNone(record.live_feed_requirements)
+        self.assertEqual(production.live_feed_provider, provider.instance_id)
+        self.assertEqual(production.live_feed_status, "running")
+        self.assertIs(self.instance.observed.live_feed_instances[provider.instance_id], provider)
+        self.assertEqual(provider.status, "running")
+        self.assertIsNone(provider.draining_until_utc)
+        self.assertEqual(provider.gc_paths, ["pinned/current_artifacts.json"])
+
+    def test_retirement_removes_only_the_exact_release_requirements_directory(self) -> None:
+        self.activate("prod")
+        requirements = self.root / "state/live-feed-requirements"
+        retired = requirements / "old"
+        sibling = requirements / "old-extra"
+        sibling.mkdir()
+        for directory in (retired, requirements / "prod", sibling):
+            for digest in ("a" * 64, "b" * 64):
+                (directory / f"{digest}.json").write_text("{}")
+        self.assertIn(retired, retirement.release_paths(
+            self.root, self.instance.observed.releases["old"],
+        ))
+
+        self.maintain(self.now)
+
+        self.assertFalse(retired.exists())
+        for directory in (requirements / "prod", sibling):
+            for digest in ("a" * 64, "b" * 64):
+                self.assertTrue((directory / f"{digest}.json").is_file())
+
     def test_all_rapidly_replaced_generations_keep_their_own_non_sliding_grace(self) -> None:
         first = self.activate("older")
         second = self.activate("old", at=self.now + timedelta(minutes=10))

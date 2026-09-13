@@ -25,6 +25,33 @@ env:
   NEXTEST_VERSION: 0.9.140
 
 jobs:
+  live-feed-proxy:
+    name: Live-feed controller proxy cutover
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AEROBAG_ARTIFACT_READ_PATH: ${{ github.workspace }}/.ci/aerobag-no-artifacts
+      AEROBAG_PROXY_SMOKE_ARTIFACT_DIR: ${{ github.workspace }}/test-results/live-feed-proxy/evidence
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install isolated proxy test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nginx python3-pytest
+      - name: Exercise controller activation through real nginx
+        run: /usr/bin/python3 -m pytest tools/ci/live_feed_proxy_smoke.py -v --junitxml=test-results/live-feed-proxy/junit.xml
+      - name: Report individual tests
+        if: ${{ always() }}
+        run: python3 tools/ci/junit_summary.py --title "Live-feed controller proxy cutover" "test-results/live-feed-proxy/junit.xml"
+      - name: Upload proxy evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-feed-proxy-results
+          path: test-results/live-feed-proxy
+          if-no-files-found: warn
+          retention-days: 14
+
   harness-contracts:
     name: Browser E2E harness contracts
     runs-on: ubuntu-latest
@@ -83,6 +110,8 @@ jobs:
             ~/.cargo/git
             .ci/cargo-target/shared
           key: rust-shared-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('crates/Cargo.lock') }}
+      - name: Verify generated contract inventories
+        run: python3 tools/ci/check_generated_contract_inventories.py
       - name: Run shared crate tests
         id: tests
         continue-on-error: true

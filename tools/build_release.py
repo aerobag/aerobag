@@ -28,6 +28,17 @@ ABOUT_DOWNLOAD_PANEL_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_BEGIN -->"
 ABOUT_DOWNLOAD_PANEL_END = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_END -->"
 ABOUT_DOWNLOAD_SCRIPT_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_BEGIN -->"
 ABOUT_DOWNLOAD_SCRIPT_END = "<!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_END -->"
+LIVE_FEED_INVENTORY_SOURCE = Path("crates/product-contracts/contracts/live-feed-compatibility.json")
+
+
+def copy_live_feed_inventory(repo_root: Path, release_root: Path) -> dict | None:
+    """Old releases have no sharing declaration; never substitute today's."""
+    source = repo_root / LIVE_FEED_INVENTORY_SOURCE
+    if not source.is_file():
+        return None
+    destination = release_root / "live-feed-compatibility.json"
+    shutil.copyfile(source, destination)
+    return {"filename": destination.name, "sha256": _sha256(destination)}
 
 
 def parse_args() -> argparse.Namespace:
@@ -165,6 +176,14 @@ def validate_release_directory(path: Path, tag: str, commit: str) -> dict:
         member = path / directory / filename
         if artifact.get("sha256") != _sha256(member):
             raise RuntimeError(f"immutable release {key} mismatch: {member}")
+    if "live_feed_compatibility" in artifacts:
+        artifact = artifacts["live_feed_compatibility"]
+        if (
+            not isinstance(artifact, dict)
+            or artifact.get("filename") != "live-feed-compatibility.json"
+            or artifact.get("sha256") != _sha256(path / "live-feed-compatibility.json")
+        ):
+            raise RuntimeError(f"immutable release live-feed compatibility mismatch: {path}")
     return document
 
 
@@ -327,6 +346,7 @@ def build_release(args: argparse.Namespace) -> Path:
         shutil.copy2(live_binary, binary_dir / live_binary.name)
         preprocessor_binary = args.cargo_target_dir.resolve() / "release/preprocessor-cli"
         shutil.copy2(preprocessor_binary, binary_dir / preprocessor_binary.name)
+        live_feed_inventory = copy_live_feed_inventory(repo_root, temporary_root)
 
         _run(["npm", "run", "install:wasm-opt"], cwd=repo_root / "ui/web-app", env=env)
         _run(["npm", "run", "build:release"], cwd=repo_root / "ui/web-app", env=env)
@@ -379,6 +399,8 @@ def build_release(args: argparse.Namespace) -> Path:
                 },
             },
         }
+        if live_feed_inventory is not None:
+            metadata["artifacts"]["live_feed_compatibility"] = live_feed_inventory
         (temporary_root / "release.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

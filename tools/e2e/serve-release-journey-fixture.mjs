@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { LiveFeedCutoverFixture } from "./live-feed-cutover-fixture.mjs";
 
 const LIVE_FEED_SCHEMA_VERSION = 3;
 const LIVE_FEED_PREFIX = `/live-feeds/v${LIVE_FEED_SCHEMA_VERSION}`;
@@ -225,7 +226,9 @@ export function fixtureServerConfiguration(args) {
   const fixtureRoot = resolve(fixturePath, "..");
   const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
   const publicationRoot = inside(fixtureRoot, fixture.publication_root);
-  const profileRelative = fixture.capabilities?.live_feeds?.[args.liveFeedProfile];
+  const profileRelative = fixture.capabilities?.live_feeds?.[
+    args.liveFeedProfile === "cutover" ? "fresh" : args.liveFeedProfile
+  ];
   const liveFeedRoot = typeof profileRelative === "string" ? inside(fixtureRoot, profileRelative) : null;
   if (!publicationRoot || !existsSync(join(publicationRoot, "current_artifacts.json"))) {
     throw new Error(`fixture publication root is unavailable: ${fixture.publication_root}`);
@@ -254,6 +257,7 @@ export function fixtureServerConfiguration(args) {
 
 export function createReleaseJourneyFixtureServer(args) {
   const config = fixtureServerConfiguration(args);
+  const cutover = args.liveFeedProfile === "cutover" ? new LiveFeedCutoverFixture(config.current) : null;
   const recentRequests = [];
   const abortedTransportFaults = new Set();
   let generation = 0;
@@ -332,6 +336,7 @@ export function createReleaseJourneyFixtureServer(args) {
           const update = JSON.parse(body || "{}");
           if (update.reset === true) {
             generation += 1;
+            cutover?.reset();
             abortedTransportFaults.clear();
             control.publication = "primary";
             control.artifact_fault = "none";
@@ -358,9 +363,14 @@ export function createReleaseJourneyFixtureServer(args) {
             }
             control.raster_delay_ms = update.raster_delay_ms;
           }
+          if (update.live_feed_cutover !== undefined) {
+            if (!cutover) throw new Error("live_feed_cutover requires the cutover profile");
+            cutover.control(update.live_feed_cutover);
+          }
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.end(JSON.stringify({
             ...control,
+            ...(cutover ? { live_feed_cutover: cutover.status() } : {}),
             updated_artifact_filename: config.publicationVariants.updatedArtifactFilename,
             updated_artifact_id: config.publicationVariants.updatedArtifactId,
           }));
@@ -391,6 +401,7 @@ export function createReleaseJourneyFixtureServer(args) {
         cloud_origin: args.cloudOrigin,
         product_count: Object.keys(config.current.products ?? {}).length,
         control,
+        ...(cutover ? { live_feed_cutover: cutover.status() } : {}),
         updated_artifact_filename: config.publicationVariants.updatedArtifactFilename,
       }));
       return;
@@ -416,6 +427,7 @@ export function createReleaseJourneyFixtureServer(args) {
       response.end(JSON.stringify({ schema_version: 1, fixture: true, profile: args.liveFeedProfile }));
       return;
     }
+    if (cutover?.handle(request, response, pathname)) return;
     if (pathname === `${LIVE_FEED_PREFIX}/events`) {
       response.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",

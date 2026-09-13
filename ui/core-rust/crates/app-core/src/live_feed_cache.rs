@@ -2959,6 +2959,10 @@ mod tests {
     }
 
     fn nexrad_version_manifest(version: &str) -> (Vec<u8>, Vec<u8>) {
+        nexrad_version_manifest_with_color(version, [20, 40, 60, 255])
+    }
+
+    fn nexrad_version_manifest_with_color(version: &str, color: [u8; 4]) -> (Vec<u8>, Vec<u8>) {
         let state_manifest = nexrad_state_manifest(version);
         let state_manifest_bytes = serde_json::to_vec(&state_manifest).unwrap();
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -2968,13 +2972,9 @@ mod tests {
         writer.start_file("manifest.json", options).unwrap();
         writer.write_all(&state_manifest_bytes).unwrap();
         writer.start_file("tiles/res0/0/0.png", options).unwrap();
-        writer
-            .write_all(&solid_png(1, 1, [20, 40, 60, 255]))
-            .unwrap();
+        writer.write_all(&solid_png(1, 1, color)).unwrap();
         writer.start_file("tiles/res1/0/0.png", options).unwrap();
-        writer
-            .write_all(&solid_png(1, 1, [20, 40, 60, 255]))
-            .unwrap();
+        writer.write_all(&solid_png(1, 1, color)).unwrap();
         let package = writer.finish().unwrap().into_inner();
         let state_sha256 = canonical_json_sha256(&state_manifest).unwrap();
         let manifest = serde_json::json!({
@@ -3516,6 +3516,112 @@ mod tests {
                 LiveFeedCacheRequestKind::Full { ref product, ref version, .. }
                     if product == "nexrad" && version == "v2"
             )));
+    }
+
+    #[test]
+    fn nexrad_provider_cutover_replaces_history_and_rejects_late_old_tiles() {
+        let registry = live_feed_product_registry();
+        let mut cache = live_feed_cache();
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::FullOffline,
+            offline_profile: NexradOfflineProfile::Offline0,
+            ..NexradAcquisitionDirective::default()
+        });
+        cache
+            .ingest_catalog(&nexrad_catalog_manifest("old-2", &["old-1"]))
+            .unwrap();
+        for version in ["old-1", "old-2"] {
+            let (manifest, _) = nexrad_version_manifest_with_color(version, [0, 0, 255, 255]);
+            cache
+                .ingest_version_manifest("nexrad", version, &manifest)
+                .unwrap();
+        }
+        let old_requests = cache.missing_requests();
+        assert_eq!(old_requests.len(), 2);
+        let late = old_requests
+            .iter()
+            .find(|request| {
+                matches!(&request.kind,
+            LiveFeedCacheRequestKind::Full { version, .. } if version == "old-1")
+            })
+            .unwrap();
+        let late_plan = cache.full_install_plan(&registry, late).unwrap().unwrap();
+        cache.record_request_failure(&late.id, 1_000);
+        let current = old_requests
+            .iter()
+            .find(|request| *request != late)
+            .unwrap();
+        let (_, old_current) = nexrad_version_manifest_with_color("old-2", [0, 0, 255, 255]);
+        cache
+            .install_fetched_payload(
+                &registry,
+                current,
+                LiveFeedFetchedPayload::Bytes(old_current),
+            )
+            .unwrap();
+        cache
+            .acknowledge_install_candidate("nexrad", "old-2")
+            .unwrap();
+        assert_eq!(cache.installed("nexrad").unwrap().version, "old-2");
+
+        // Reconnection supplies an independent history, not a delta of the old server.
+        cache
+            .ingest_catalog(&nexrad_catalog_manifest("new-2", &["new-1"]))
+            .unwrap();
+        let wanted = cache.missing_requests_at_epoch_ms(1_001);
+        assert_eq!(wanted.len(), 2);
+        assert!(wanted.iter().all(|request| !request.url.contains("old-")));
+        for (version, color) in [("new-1", [255, 0, 0, 255]), ("new-2", [0, 255, 0, 255])] {
+            let (manifest, package) = nexrad_version_manifest_with_color(version, color);
+            cache
+                .ingest_version_manifest("nexrad", version, &manifest)
+                .unwrap();
+            let request = cache
+                .missing_requests()
+                .into_iter()
+                .find(|request| {
+                    matches!(&request.kind,
+                LiveFeedCacheRequestKind::Full { version: wanted, .. } if wanted == version)
+                })
+                .unwrap();
+            cache
+                .install_fetched_payload(
+                    &registry,
+                    &request,
+                    LiveFeedFetchedPayload::Bytes(package),
+                )
+                .unwrap();
+            cache
+                .acknowledge_install_candidate("nexrad", version)
+                .unwrap();
+            let installed = cache.installed_payload_bytes("nexrad", version).unwrap();
+            let mut archive = zip::ZipArchive::new(Cursor::new(installed)).unwrap();
+            let mut tile = Vec::new();
+            archive
+                .by_name("tiles/res0/0/0.png")
+                .unwrap()
+                .read_to_end(&mut tile)
+                .unwrap();
+            assert_eq!(
+                image::load_from_memory(&tile)
+                    .unwrap()
+                    .to_rgba8()
+                    .get_pixel(0, 0)
+                    .0,
+                color
+            );
+        }
+        let (_, old_package) = nexrad_version_manifest_with_color("old-1", [0, 0, 255, 255]);
+        let late_state = late_plan
+            .install(LiveFeedFetchedPayload::Bytes(old_package))
+            .unwrap();
+        assert!(cache
+            .commit_prepared_full_install(late, late_state)
+            .is_err());
+        assert!(cache.installed_payload_bytes("nexrad", "old-1").is_err());
+        assert!(cache.installed_payload_bytes("nexrad", "old-2").is_err());
+        assert!(cache.missing_requests_at_epoch_ms(60_000).is_empty());
+        assert_eq!(cache.installed("nexrad").unwrap().version, "new-2");
     }
 
     #[test]

@@ -12,11 +12,13 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from admin_index import admin_index_html
@@ -60,6 +62,11 @@ RUNTIME_SOURCE_PATHS = (
     "crates/product-contracts/src/service_bulletins.rs",
     "crates/product-contracts/src/bin/service-bulletin-contract.rs",
     "tools/live_feed_contract.py",
+    "tools/live_feed_compatibility.py",
+    "tools/live_feed_launch.py",
+    "tools/live_feed_retirement.py",
+    "crates/product-contracts/contracts/live-feed-compatibility.json",
+    "crates/product-contracts/contracts/client-data-contracts.json",
     "product/preprocessor/scripts/pipeline_health.py",
     "product/preprocessor/scripts/telemetry_contracts.py",
     "product/preprocessor/scripts/watch_build_log.py",
@@ -1173,6 +1180,68 @@ fi
 """
 
 
+def deployed_live_feed_targets(artifact_root: Path) -> dict[str, Any]:
+    """Read activated bindings; never resolve new policy during health or repair."""
+    import live_feed_retirement
+    import release_reconciler as releases
+
+    scripts = str(REPO_ROOT / "product/preprocessor/scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import pipeline_health
+
+    generation = releases.current_generation(artifact_root)
+    if generation is None:
+        raise releases.ReleaseConfigError("no active release generation")
+    sources, status = pipeline_health.release_channel_sources(SimpleNamespace(
+        channel_root=generation, standalone_current_artifacts_path=None,
+        standalone_live_feeds_status_url=None,
+    ))
+    if status.get("error"):
+        raise releases.ReleaseConfigError(status["error"])
+    observed = releases.load_observed_state(artifact_root / "state/releases-observed.json")
+    state = observed.to_dict()
+    targets: dict[str, Any] = {}
+    production_unit = None
+    for source in sources:
+        tag = releases._release_tag(source["tag"], "active release")
+        record = observed.releases.get(tag)
+        if record is None:
+            raise releases.ReleaseConfigError(f"active release {tag} is missing from observed state")
+        provider = pipeline_health.resolve_live_feed_provider(source, state)
+        if provider is not None and provider.get("error"):
+            raise releases.ReleaseConfigError(provider["error"])
+        key = None if provider is None else provider["instance_id"]
+        if key is not None:
+            instance = observed.live_feed_instances[key]
+            if instance.status == "removed":
+                raise releases.ReleaseConfigError(f"active provider has been removed: {key}")
+            paths, _environment = live_feed_retirement.instance_paths(
+                artifact_root, instance, Path("/etc/aerobag/live-feeds"),
+            )
+            live_root, unit, owner = paths[0], instance.unit, instance.release_tag
+        else:
+            # Version-1 generations explicitly used each release's own daemon.
+            if (record.live_feed_provider is not None or not record.live_feed_endpoint
+                    or record.live_feed_endpoint != source["live_feeds_endpoint"]):
+                raise releases.ReleaseConfigError(f"unknown legacy live-feed provider for {tag}")
+            live_root = releases.owned_path(artifact_root, f"live-feeds/releases/{tag}")
+            unit, owner = f"aerobag-live-feeds-release@{tag}.service", tag
+        identity = {
+            "instance_id": key, "provider_tag": owner, "endpoint": source["live_feeds_endpoint"],
+            "current_json": str(live_root / LIVE_FEEDS_CONTRACT_PATH / "current.json"),
+        }
+        if unit in targets and any(targets[unit][name] != value for name, value in identity.items()):
+            raise releases.ReleaseConfigError(f"conflicting active provider ownership for {unit}")
+        target = targets.setdefault(unit, {**identity, "releases": []})
+        target["releases"].append(tag)
+        if source["role"] == "production":
+            production_unit = unit
+    if production_unit is None:
+        raise releases.ReleaseConfigError("active generation has no production provider")
+    return {"releases": state, "providers": targets, "production_unit": production_unit}
+
+
 def health_script() -> str:
     return r"""#!/usr/bin/env python3
 from __future__ import annotations
@@ -1181,6 +1250,7 @@ import glob
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1298,21 +1368,20 @@ def main() -> int:
             release_state = json.loads(release_state_path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001
             release_state = {"error": str(exc)}
-    production_release = release_state.get("production")
-    live_current = (
-        artifact_root
-        / "live-feeds/releases"
-        / production_release
-        / "v3/current.json"
-        if isinstance(production_release, str)
-        else artifact_root / "live-feeds/v3/current.json"
-    )
-    release_services = {
-        f"aerobag-live-feeds-release@{tag}.service": service_state(
-            f"aerobag-live-feeds-release@{tag}.service"
-        )
-        for tag in release_state.get("releases", {})
-    }
+    live_current = None
+    providers = {}
+    provider_error = None
+    try:
+        sys.path.insert(0, str(Path(env["SOURCE_ROOT"]) / "tools"))
+        from prod_deployment import deployed_live_feed_targets
+
+        deployed = deployed_live_feed_targets(artifact_root)
+        release_state = deployed["releases"]
+        providers = deployed["providers"]
+        live_current = Path(providers[deployed["production_unit"]]["current_json"])
+    except Exception as exc:  # noqa: BLE001 - report unknown ownership, never guess.
+        provider_error = str(exc)
+    release_services = {unit: service_state(unit) for unit in providers}
     payload = {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -1336,11 +1405,13 @@ def main() -> int:
         "current_artifacts": current_artifacts_summary(current_path),
         "releases": release_state,
         "live_feeds": {
-            "current_json": str(live_current),
-            "current_json_exists": live_current.exists(),
-            "current_json_modified_at_utc": iso_from_mtime(live_current),
-            "current_json_age_seconds": age_seconds(live_current),
+            "current_json": str(live_current) if live_current is not None else None,
+            "current_json_exists": live_current.exists() if live_current is not None else False,
+            "current_json_modified_at_utc": iso_from_mtime(live_current) if live_current is not None else None,
+            "current_json_age_seconds": age_seconds(live_current) if live_current is not None else None,
             "status_url": "/live-feeds/status.json",
+            "providers": providers,
+            "error": provider_error,
         },
         "latest_build_log": latest_build_log(artifact_root),
     }
@@ -2329,13 +2400,29 @@ def start_reconciled_runtime(
 
 
 def start_release_live_feeds(config: dict[str, Any], *, dry_run: bool) -> None:
-    units = [
-        f"aerobag-live-feeds-release@{tag}.service"
-        for tag in publication_refs(config)
-    ]
-    if not units:
-        return
-    command = "systemctl start " + " ".join(shell_quote(unit) for unit in units)
+    command = (
+        "/usr/bin/python3 - " + shell_quote(config["source_root"]) + " "
+        + shell_quote(config["artifact_root"]) + " <<'PY'\n"
+        + textwrap.dedent("""
+            import fcntl
+            import subprocess
+            import sys
+            from pathlib import Path
+
+            sys.path.insert(0, str(Path(sys.argv[1]) / "tools"))
+            from prod_deployment import deployed_live_feed_targets
+
+            root = Path(sys.argv[2])
+            lock_path = root / "locks/release-reconciler.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                deployed = deployed_live_feed_targets(root)
+                units = sorted(deployed["providers"])
+                if units:
+                    subprocess.run(["systemctl", "start", *units], check=True, timeout=60)
+        """).lstrip() + "PY"
+    )
     run_ssh(config, command, dry_run=dry_run)
 
 

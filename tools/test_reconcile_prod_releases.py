@@ -76,6 +76,7 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         self.instance = controller.Controller.__new__(controller.Controller)
         self.instance.args = SimpleNamespace(
             observed=root / "observed.json", force_production_tag="candidate",
+            live_port_base=8100,
             controller_preprocessor=root / "preprocessor-cli",
         )
         self.instance.artifact_root = root
@@ -163,6 +164,55 @@ class ForcedPromotionActivationTests(unittest.TestCase):
             "00000001",
         )
 
+    def assert_every_activation_write_preserves_startup_roots(self, *, rollback: bool) -> None:
+        pin = "live-feed-launches/candidate-catalog-a/packages/current_artifacts.json"
+        path = self.instance.artifact_root / pin
+        path.parent.mkdir(parents=True)
+        path.write_text("[]")
+        previous = (self.instance.artifact_root / "channel-current").resolve()
+        releases.write_generation_gc_roots(self.instance.artifact_root, [
+            *releases._generation_gc_paths(self.instance.artifact_root, previous), pin,
+        ])
+        snapshots = []
+        write_roots = releases.write_generation_gc_roots
+
+        def capture_write(root, paths):
+            write_roots(root, paths)
+            snapshots.append(json.loads((root / releases.RELEASE_GC_ROOTS).read_text())["current_artifacts_paths"])
+
+        if rollback:
+            self.instance.validate_public_production.side_effect = RuntimeError("bad route")
+        with (
+            mock.patch.object(self.instance, "live_feed_gc_paths", return_value=[pin]),
+            mock.patch.object(releases, "write_generation_gc_roots", side_effect=capture_write),
+        ):
+            if rollback:
+                with self.assertRaisesRegex(RuntimeError, "bad route"):
+                    self.instance.activate()
+            else:
+                self.instance.activate()
+        self.assertGreaterEqual(len(snapshots), 4 if rollback else 2)
+        for index, paths in enumerate(snapshots):
+            with self.subTest(write=index, rollback=rollback):
+                self.assertIn(pin, paths)
+        self.assertEqual(
+            (self.instance.artifact_root / "channel-current").resolve().name,
+            "00000001" if rollback else "00000002",
+        )
+
+    def test_activation_never_temporarily_drops_independent_daemon_startup_roots(self) -> None:
+        self.assert_every_activation_write_preserves_startup_roots(rollback=False)
+
+    def test_failed_activation_never_temporarily_drops_independent_daemon_startup_roots(self) -> None:
+        self.assert_every_activation_write_preserves_startup_roots(rollback=True)
+
+    def test_startup_root_failure_after_switch_rolls_back_the_channel(self) -> None:
+        with mock.patch.object(self.instance, "pin_live_feed_gc_roots", side_effect=[RuntimeError("pin failed"), None]):
+            with self.assertRaisesRegex(RuntimeError, "pin failed"):
+                self.instance.activate()
+        self.assertEqual((self.instance.artifact_root / "channel-current").resolve().name, "00000001")
+        self.assertEqual(self.instance.observed.production, "old")
+
     def test_restart_recovers_bypass_after_activation_before_state_write(self) -> None:
         self.record.product_refresh_status = "ready"
         self.record.product_refresh_error = "previous failed attempt"
@@ -195,6 +245,49 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         self.assertEqual(self.record.product_refresh_status, "passed")
         self.assertEqual(self.record.deployment_status, "pending")
         self.assertEqual(self.record.deployment_error, "bad public bytes")
+
+    def test_recovery_validates_binding_snapshot_before_reloading_nginx(self) -> None:
+        with mock.patch.object(self.instance, "save", side_effect=RuntimeError("restart")):
+            with self.assertRaisesRegex(RuntimeError, "restart"):
+                self.instance.activate()
+        self.instance.observed = releases.load_observed_state(self.instance.args.observed)
+        generation = (self.instance.artifact_root / "channel-current").resolve()
+        (generation / "live-feed-bindings.json").unlink()
+        controller._run.reset_mock()
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "missing live-feed bindings"):
+            self.instance.recover_activated_generation()
+        controller._run.assert_not_called()
+
+    def test_recovery_repins_daemon_inputs_before_pending_gc(self) -> None:
+        with mock.patch.object(self.instance, "save", side_effect=RuntimeError("restart")):
+            with self.assertRaisesRegex(RuntimeError, "restart"):
+                self.instance.activate()
+        self.instance.observed = releases.load_observed_state(self.instance.args.observed)
+        pin = "live-feed-launches/candidate-catalog-a/packages/current_artifacts.json"
+        path = self.instance.artifact_root / pin
+        path.parent.mkdir(parents=True)
+        path.write_text("[]")
+        with mock.patch.object(self.instance, "live_feed_gc_paths", return_value=[pin]):
+            self.assertTrue(self.instance.recover_activated_generation())
+        registry = json.loads((self.instance.artifact_root / releases.RELEASE_GC_ROOTS).read_text())
+        self.assertIn(pin, registry["current_artifacts_paths"])
+
+    def test_activation_disconnects_unused_providers_only_after_verified_commit(self) -> None:
+        def retire():
+            self.instance.validate_public_production.assert_called_once()
+            persisted = releases.load_observed_state(self.instance.args.observed)
+            self.assertEqual(persisted.production, "candidate")
+            self.assertEqual(persisted.generation, 2)
+        with mock.patch.object(self.instance, "retire_live_feed_instances", create=True, side_effect=retire) as stop:
+            self.instance.activate()
+        stop.assert_called_once_with()
+
+    def test_failed_activation_never_disconnects_previous_providers(self) -> None:
+        self.instance.validate_public_production.side_effect = RuntimeError("bad route")
+        with mock.patch.object(self.instance, "retire_live_feed_instances", create=True) as stop:
+            with self.assertRaisesRegex(RuntimeError, "bad route"):
+                self.instance.activate()
+        stop.assert_not_called()
 
 
 class MaintenancePolicyTests(unittest.TestCase):
@@ -411,7 +504,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.instance = controller.Controller.__new__(controller.Controller)
         self.instance.args = SimpleNamespace(
             public_origin="https://aerobag.test", observed=self.root / "observed.json",
-            force_production_tag=None,
+            force_production_tag=None, live_port_base=8100,
         )
         self.instance.artifact_root = self.root
         self.instance.desired = releases.DesiredReleases(

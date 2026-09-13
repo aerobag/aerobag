@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,6 +29,8 @@ sys.path.insert(0, str(TOOLS_DIR))
 import build_release as release_builder  # noqa: E402
 import release_reconciler as releases  # noqa: E402
 import release_retirement as retirement  # noqa: E402
+import live_feed_launch  # noqa: E402
+import live_feed_retirement  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,6 +91,8 @@ def allocate_live_feed_endpoint(
         for record in observed.releases.values()
         if record.live_feed_endpoint is not None
     }
+    used.update(int(instance.endpoint.rsplit(":", 1)[1]) for instance in observed.live_feed_instances.values()
+                if instance.status != "removed")
     for port in range(port_base, port_base + 100):
         if port not in used:
             return f"http://127.0.0.1:{port}"
@@ -333,6 +338,38 @@ class Controller:
     def save(self) -> None:
         releases.write_observed_state(self.args.observed, self.observed)
 
+    def live_feed_runtime(self) -> live_feed_launch.LiveFeedRuntime:
+        if not hasattr(self, "_live_feed_runtime"):
+            self._live_feed_runtime = live_feed_launch.LiveFeedRuntime(
+                self.artifact_root, self.observed,
+                port_base=self.args.live_port_base, run=_run, save=self.save,
+            )
+        return self._live_feed_runtime
+
+    def refresh_live_feed_observations(self) -> None:
+        runtime = self.live_feed_runtime()
+        for tag in self.desired.tags():
+            record = self.observed.releases.get(tag)
+            if record is None or record.build_status != "passed":
+                continue
+            requirements = runtime.publication_requirements(record)
+            if requirements is None and record.live_feed_instance is not None:
+                raise releases.ReleaseConfigError(
+                    f"cannot prepare live feeds for release {tag}: current publication "
+                    f"compatibility metadata unavailable ({record.product_manifest})"
+                )
+            if requirements is not None:
+                instance = runtime.prepare(record, requirements)
+                record.live_feed_instance = instance.instance_id
+            record.live_feed_requirements = requirements
+        for instance in self.observed.live_feed_instances.values():
+            if instance.status in {"running", "unavailable"}:
+                runtime.observe(instance)
+
+    def live_feed_gc_paths(self) -> list[str]:
+        return sorted({path for instance in self.observed.live_feed_instances.values()
+                       if instance.status != "removed" for path in instance.gc_paths})
+
     def progress(self, message: str) -> None:
         write_progress(self.artifact_root, message)
 
@@ -389,23 +426,55 @@ class Controller:
         if changed:
             self.save()
 
+    def retire_live_feed_instances(
+        self, *, now: datetime | None = None,
+        env_root: Path = Path("/etc/aerobag/live-feeds"),
+    ) -> None:
+        """Disconnect unused providers only against committed channel ownership."""
+        now = now or datetime.now(timezone.utc)
+        if not self.observed.live_feed_instances or releases.current_generation(self.artifact_root) is None:
+            return
+
+        serving_tags = set(filter(None, [self.observed.production, self.observed.staging, *self.observed.sunset]))
+        active_ids = {record.live_feed_provider for tag, record in self.observed.releases.items()
+                      if tag in serving_tags and record.live_feed_provider is not None}
+        candidate_ids = {record.live_feed_instance for tag, record in self.observed.releases.items()
+                         if tag in self.desired.tags() and record.live_feed_instance is not None}
+
+        def release_instance_gc_roots(instance_ids: set[str]) -> None:
+            registry = self.artifact_root / releases.RELEASE_GC_ROOTS
+            paths = json.loads(registry.read_text())["current_artifacts_paths"] if registry.exists() else []
+            removing = {path for key in instance_ids for path in self.observed.live_feed_instances[key].gc_paths}
+            releases.write_generation_gc_roots(self.artifact_root, [path for path in paths if path not in removing])
+
+        live_feed_retirement.retire_instances(
+            self.artifact_root, self.observed, active_provider_ids=active_ids,
+            candidate_instance_ids=candidate_ids, now=now, save=self.save,
+            release_gc_roots=release_instance_gc_roots, env_root=env_root,
+        )
+
     def maintain_retirement(
         self, *, now: datetime | None = None,
         env_root: Path = Path("/etc/aerobag/live-feeds"),
     ) -> None:
-        """Finish retirement even without a new deployment or product refresh.
-
-        The caller holds the reconciler lock. Fail closed on unsafe paths,
-        missing retained manifests, or a service that cannot be inspected/stopped.
-        """
+        """Finish retirement under the controller lock, retaining rollback inputs."""
         now = now or datetime.now(timezone.utc)
+        if releases.current_generation(self.artifact_root) is None:
+            return
+        self.retire_live_feed_instances(now=now, env_root=env_root)
 
         def retention_plan():
-            return releases.generation_retention(self.artifact_root, now=now, draining_until={
+            drains = {
                 tag: datetime.fromisoformat(record.draining_until_utc.replace("Z", "+00:00"))
                 for tag, record in self.observed.releases.items()
                 if record.draining_until_utc is not None
-            })
+            }
+            for instance in self.observed.live_feed_instances.values():
+                if instance.draining_until_utc is not None:
+                    deadline = datetime.fromisoformat(instance.draining_until_utc.replace("Z", "+00:00"))
+                    drains[instance.release_tag] = max(drains.get(instance.release_tag, deadline), deadline)
+            return releases.generation_retention(self.artifact_root, now=now, draining_until=drains,
+                                                 pinned_gc_paths=self.live_feed_gc_paths())
 
         retention = retention_plan()
         if not retention.retained:
@@ -413,6 +482,8 @@ class Controller:
         protected = set(self.desired.tags()) | set(retention.release_tags) | set(filter(None, [
             self.observed.production, self.observed.staging, *self.observed.sunset,
         ]))
+        protected.update(instance.release_tag for instance in self.observed.live_feed_instances.values()
+                         if instance.status in {"running", "unavailable"})
         self.stop_completed_drains(protected_tags=protected, now=now)
         candidates = []
         recovered_drain = False
@@ -491,6 +562,26 @@ class Controller:
             raise RuntimeError(
                 f"active unrecorded generation {generation} does not match desired state"
             )
+        binding_path = generation / "live-feed-bindings.json"
+        if metadata.get("schema_version") == 2 and not binding_path.is_file():
+            raise releases.ReleaseConfigError("active generation is missing live-feed bindings")
+        if binding_path.is_file():
+            document = json.loads(binding_path.read_text())
+            if document.get("schema_version") != 1:
+                raise releases.ReleaseConfigError("unsupported live-feed binding snapshot")
+            bindings = document.get("releases")
+            serving_tags = set(filter(None, [expected["production"], expected["staging"], *expected["sunset"]]))
+            if not isinstance(bindings, dict) or set(bindings) != serving_tags:
+                raise releases.ReleaseConfigError("active live-feed bindings do not match serving releases")
+            for tag, binding in bindings.items():
+                provider = binding["provider"]
+                if provider is not None and provider not in self.observed.live_feed_instances:
+                    raise releases.ReleaseConfigError(f"active binding refers to unknown daemon {provider}")
+            for tag, binding in bindings.items():
+                provider = binding["provider"]
+                self.observed.releases[tag].live_feed_provider = provider
+                self.observed.releases[tag].live_feed_reason = binding["reason"]
+        self.pin_live_feed_gc_roots()
         _run(["nginx", "-t"])
         _run(["systemctl", "reload", "nginx.service"])
         self.record_qualification_bypass(metadata.get("qualification_bypass"))
@@ -502,6 +593,7 @@ class Controller:
         self.observed.gc_pending = True
         self.invalidate_deployment_checks()
         self.save()
+        self.retire_live_feed_instances()
         return True
 
     def run_pending_gc(self) -> None:
@@ -675,6 +767,9 @@ class Controller:
     def start_live_feeds(self, tag: str) -> None:
         self.progress(f"Starting live feeds for {tag}")
         record = self.observed.releases[tag]
+        if record.live_feed_instance is not None:
+            self.live_feed_runtime().start(self.observed.live_feed_instances[record.live_feed_instance])
+            return
         if record.live_feed_endpoint is None:
             record.live_feed_endpoint = allocate_live_feed_endpoint(
                 self.observed, port_base=self.args.live_port_base
@@ -745,8 +840,7 @@ class Controller:
         candidate = self.observed.releases[tag]
         if (
             candidate.build_status == "passed"
-            and candidate.live_feed_endpoint is not None
-            and candidate.live_feed_status == "running"
+            and releases.dedicated_live_feed_ready(self.observed, tag)
         ):
             return tag
         return None
@@ -777,10 +871,13 @@ class Controller:
         all_tags = set(production_tags)
         if staging_tag is not None:
             all_tags.add(staging_tag)
+        binding_desired = self.desired if staging_tag is not None else replace(self.desired, staging=None)
+        bindings = releases.resolve_live_feed_bindings(binding_desired, self.observed)
+        releases.validate_live_feed_bindings(binding_desired, self.observed, bindings)
         assets = {}
         for tag in all_tags:
             record = self.observed.releases[tag]
-            if record.release_root is None or record.live_feed_endpoint is None:
+            if record.release_root is None or bindings[tag].endpoint is None:
                 raise RuntimeError(f"release {tag} is not ready for activation")
             release_root = Path(record.release_root)
             release_builder.normalize_release_permissions(release_root)
@@ -788,7 +885,7 @@ class Controller:
                 release_root, record.tag, record.commit
             )
             assets[tag] = releases.ReleaseAssets(
-                release_root, record.live_feed_endpoint
+                release_root, bindings[tag].endpoint
             )
 
         generation_number = self.observed.generation + 1
@@ -845,7 +942,7 @@ class Controller:
         (generation / "generation.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "generation": generation_number,
                     "production": self.desired.production.tag,
                     "staging": staging_tag,
@@ -874,19 +971,51 @@ class Controller:
             ),
             encoding="utf-8",
         )
+        releases._write_json(generation / "live-feed-bindings.json", {
+            "schema_version": 1,
+            "releases": {tag: asdict(binding) for tag, binding in sorted(bindings.items())},
+        })
         previous = (
             (self.artifact_root / "channel-current").resolve()
             if (self.artifact_root / "channel-current").is_symlink()
             else None
         )
-        releases.activate_channel_generation(self.artifact_root, generation)
+        # Query actual processes again after generation preparation, not a cached
+        # descriptor or an alias already pointing at some other daemon.
+        provider_ids = {binding.provider for binding in bindings.values() if binding.provider is not None}
+        if provider_ids:
+            for key in provider_ids:
+                self.live_feed_runtime().observe(self.observed.live_feed_instances[key])
+        releases.validate_live_feed_bindings(binding_desired, self.observed, bindings)
+        releases._write_json(generation / "live-feed-evidence.json", {
+            "schema_version": 1,
+            "releases": {
+                tag: {
+                    "requirements": self.observed.releases[tag].live_feed_requirements,
+                    "provider_instance": (
+                        asdict(self.observed.live_feed_instances[binding.provider])
+                        if binding.provider is not None else None
+                    ),
+                    "verification": binding.verification,
+                }
+                for tag, binding in sorted(bindings.items())
+            },
+        })
         try:
+            releases.activate_channel_generation(
+                self.artifact_root, generation, pinned_gc_paths=self.live_feed_gc_paths(),
+            )
+            # Channel changes must preserve each process's independent startup roots.
+            self.pin_live_feed_gc_roots()
             _run(["nginx", "-t"])
             _run(["systemctl", "reload", "nginx.service"])
             self.validate_public_production()
         except BaseException:
             if previous is not None:
-                releases.activate_channel_generation(self.artifact_root, previous)
+                releases.activate_channel_generation(
+                    self.artifact_root, previous, pinned_gc_paths=self.live_feed_gc_paths(),
+                )
+                self.pin_live_feed_gc_roots()
                 _run(["systemctl", "reload", "nginx.service"])
             raise
         self.record_qualification_bypass(qualification_bypass)
@@ -898,6 +1027,10 @@ class Controller:
         self.observed.generation = generation_number
         self.observed.channel_inputs_dirty = False
         self.observed.gc_pending = True
+        for tag, binding in bindings.items():
+            record = self.observed.releases[tag]
+            record.live_feed_provider = binding.provider
+            record.live_feed_reason = binding.reason
         self.invalidate_deployment_checks()
         draining_deadline = (
             datetime.now(timezone.utc) + releases.RELEASE_DRAIN_GRACE
@@ -907,7 +1040,23 @@ class Controller:
         for tag, record in self.observed.releases.items():
             if tag not in all_tags and record.live_feed_status == "running" and record.draining_until_utc is None:
                 record.draining_until_utc = draining_deadline
+        for key, instance in self.observed.live_feed_instances.items():
+            if key in provider_ids:
+                instance.draining_until_utc = None
+            elif instance.status in {"running", "unavailable"} and instance.draining_until_utc is None:
+                instance.draining_until_utc = draining_deadline
         self.save()
+        # Existing SSE connections must reconnect to the newly committed routing;
+        # retaining rollback files does not require an obsolete producer to run.
+        self.retire_live_feed_instances()
+
+    def pin_live_feed_gc_roots(self) -> None:
+        pins = self.live_feed_gc_paths()
+        if not pins:
+            return
+        registry = self.artifact_root / releases.RELEASE_GC_ROOTS
+        paths = json.loads(registry.read_text())["current_artifacts_paths"] if registry.exists() else []
+        releases.write_generation_gc_roots(self.artifact_root, [*paths, *pins])
 
     def invalidate_deployment_checks(self) -> None:
         tags = [self.observed.production, self.observed.staging, *self.observed.sunset]
@@ -1056,6 +1205,10 @@ class Controller:
     def reconcile(self, *, plan_only: bool) -> int:
         for _ in range(100):
             self.adopt_legacy_production_if_exact()
+            if not plan_only:
+                self.refresh_live_feed_observations()
+                self.save()
+                self.pin_live_feed_gc_roots()
             plan = releases.plan_reconciliation(
                 self.desired,
                 self.observed,

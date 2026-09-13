@@ -62,6 +62,12 @@ use product_contracts::{
 };
 use serde::Serialize;
 
+mod compatibility;
+use compatibility::{
+    describe_compatibility, prepare_notam_startup, serve_compatibility_json,
+    CompatibilityRequirements, DaemonCompatibility, LoadedPublication, ProvenancePublisher,
+};
+
 const STATUS_HISTORY_LIMIT: usize = 256;
 const LIVE_FEED_TASK_WORKERS: usize = 4;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
@@ -124,6 +130,7 @@ fn live_feeds_contract_root(live_root: &Path) -> PathBuf {
 
 fn usage() -> &'static str {
     "usage:
+  aerobag-live-feedsd --describe-compatibility <product_artifacts.json>
   aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--nms-notams-config <path> --product-artifacts <path> [--nms-notams-state-root <path>]]
   aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
   aerobag-live-feedsd --check-config --live-root <path> --listen <addr> [--simulation --fixture-root <path>]
@@ -968,7 +975,12 @@ impl DaemonConfig {
 }
 
 fn main() -> anyhow::Result<()> {
-    let config = DaemonConfig::parse(env::args())?;
+    let args = env::args().collect::<Vec<_>>();
+    if let Some(descriptor) = describe_compatibility(&args)? {
+        println!("{descriptor}");
+        return Ok(());
+    }
+    let config = DaemonConfig::parse(args)?;
     validate_config(&config)?;
     if config.check_config {
         println!("OK live-feed daemon config: {config:#?}");
@@ -1046,7 +1058,23 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
         config.service_bulletin_file.clone();
     let status = DaemonStatus::default();
     let connection_gate = ConnectionGate::new(MAX_REQUEST_CONNECTION_THREADS);
-    start_live_feed_driver(&config, broker.clone(), status.clone())?;
+    let publication = if config.simulation.is_none() {
+        config
+            .nms_notams
+            .as_ref()
+            .map(|nms| LoadedPublication::load(&nms.product_artifacts_path))
+            .transpose()?
+    } else {
+        None
+    };
+    let compatibility = DaemonCompatibility::new(publication.as_ref())?;
+    start_live_feed_driver(
+        &config,
+        broker.clone(),
+        status.clone(),
+        publication.as_ref(),
+        compatibility.clone(),
+    )?;
     eprintln!(
         "aerobag-live-feedsd serving {} under /live-feeds/{}/ on http://{}",
         config.live_root.display(),
@@ -1063,9 +1091,12 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
                 let config = config.clone();
                 let broker = broker.clone();
                 let status = status.clone();
+                let compatibility = compatibility.clone();
                 thread::spawn(move || {
                     let _permit = permit;
-                    if let Err(error) = handle_connection(stream, &config, &broker, &status) {
+                    if let Err(error) =
+                        handle_connection(stream, &config, &broker, &status, &compatibility)
+                    {
                         eprintln!("live-feed request failed: {error:#}");
                     }
                 });
@@ -1080,29 +1111,38 @@ fn start_live_feed_driver(
     config: &DaemonConfig,
     broker: BroadcastSseBroker,
     status: DaemonStatus,
+    publication: Option<&LoadedPublication>,
+    compatibility: DaemonCompatibility,
 ) -> anyhow::Result<()> {
     if let Some(simulation) = &config.simulation {
-        return start_simulation_driver(config, simulation, broker, status);
+        return start_simulation_driver(config, simulation, broker, status, &compatibility);
     }
     let live_root = live_feeds_contract_root(&config.live_root);
     let scratch_root = config.scratch_root.join("live-feed-build");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
     let nms_notams = config.nms_notams.clone();
-    let notam_airport_catalog = nms_notams
+    let notam_store = nms_notams
         .as_ref()
-        .map(|config| load_notam_airport_catalog(&config.product_artifacts_path))
-        .transpose()?
-        .map(Arc::new);
+        .map(|nms| {
+            let publication = publication.context("NMS config has no loaded publication")?;
+            Ok::<_, anyhow::Error>(NotamPersistentStore::with_airport_catalog(
+                nms.state_root.join("publication"),
+                Arc::clone(&publication.catalog),
+            ))
+        })
+        .transpose()?;
     let tfr_detail_backfill_state_root = config.tfr_detail_backfill_state_root.clone();
     if let Err(error) =
         prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
     {
         eprintln!("live-feed startup scratch prune failed: {error:#}");
     }
-    let publisher = Arc::new(SerializedLiveFeedPublisher::new(
-        FileLiveFeedPublisher::new(live_root, SystemClock),
-    ));
+    let publisher = Arc::new(SerializedLiveFeedPublisher::new(ProvenancePublisher {
+        publisher: FileLiveFeedPublisher::new(live_root.clone(), SystemClock),
+        notam_store: notam_store.clone(),
+        compatibility: compatibility.clone(),
+    }));
     let notam_state_root_for_enrichment = nms_notams
         .as_ref()
         .map(|nms_notams| nms_notams.state_root.clone());
@@ -1120,10 +1160,22 @@ fn start_live_feed_driver(
     if let Some(nms_notams) = nms_notams {
         let source = QueuedLiveFeedSource::new("notams");
         let publication_state_root = nms_notams.state_root.join("publication");
+        let publication = publication.context("NMS config has no loaded publication")?;
+        let canonical_store = NmsApiCollectorStore::new(&nms_notams.state_root);
+        let publication_store = notam_store
+            .as_ref()
+            .context("NMS config has no projection store")?;
+        prepare_notam_startup(
+            &canonical_store,
+            publication_store,
+            &live_root,
+            &CompatibilityRequirements::from_loaded(publication)?.notam_catalog,
+            &source.sender(),
+        )?;
         start_nms_notams_supervisor(
             nms_notams,
             publication_state_root.clone(),
-            notam_airport_catalog.expect("NMS config has an airport catalog"),
+            Arc::clone(&publication.catalog),
             source.sender(),
             status.clone(),
         );
@@ -1138,6 +1190,7 @@ fn start_live_feed_driver(
     for task in &tasks {
         status.register_product(task.product_id(), task.nominal_interval());
     }
+    compatibility.configure_products(tasks.iter().map(|task| task.product_id()))?;
     for mut task in tasks {
         let publisher = Arc::clone(&publisher);
         let broker = broker.clone();
@@ -1190,6 +1243,7 @@ fn start_simulation_driver(
     simulation: &SimulationConfig,
     broker: BroadcastSseBroker,
     status: DaemonStatus,
+    compatibility: &DaemonCompatibility,
 ) -> anyhow::Result<()> {
     let fixture_root = simulation
         .fixture_root
@@ -1207,6 +1261,7 @@ fn start_simulation_driver(
         .iter()
         .map(|event| event.product.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    compatibility.configure_products(products.iter().map(String::as_str))?;
     let loop_duration = fixture_loop_duration(&timeline, simulation.speedup)?;
     let scratch_root = config.scratch_root.join("live-feed-simulation");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
@@ -1712,6 +1767,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn load_notam_airport_catalog(
     product_artifacts_path: &Path,
 ) -> anyhow::Result<NotamAirportCatalog> {
@@ -1721,7 +1777,14 @@ fn load_notam_airport_catalog(
             product_artifacts_path.display()
         )
     })?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).with_context(|| {
+    load_notam_airport_catalog_bytes(product_artifacts_path, &bytes)
+}
+
+fn load_notam_airport_catalog_bytes(
+    product_artifacts_path: &Path,
+    bytes: &[u8],
+) -> anyhow::Result<NotamAirportCatalog> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).with_context(|| {
         format!(
             "failed to parse product artifacts {}",
             product_artifacts_path.display()
@@ -1737,15 +1800,23 @@ fn load_notam_airport_catalog(
     let mut airport_ids = BTreeSet::new();
     let mut nav_db_count = 0_usize;
     for manifest in manifests {
+        if manifest.schema_version != product_contracts::publication::current::v1::SCHEMA_VERSION {
+            bail!(
+                "unsupported product artifacts schema {}",
+                manifest.schema_version
+            );
+        }
         let unpacked_root = resolve_product_artifact_root(
             product_artifacts_path,
             &manifest.artifact_roots.unpacked,
         )?;
         for bundle_entry in manifest.bundles {
             let bundle_path = unpacked_root.join(safe_relative_path(&bundle_entry.relative_path)?);
-            let bundle: BundleManifest = serde_json::from_slice(
+            let bundle: BundleManifest = versioned_json::decode_exact(
+                "startup publication bundle",
                 &fs::read(&bundle_path)
                     .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+                product_contracts::publication::bundle::v2::SCHEMA_VERSION,
             )
             .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
             for package in bundle
@@ -1757,7 +1828,7 @@ fn load_notam_airport_catalog(
                 let nav_db_root = unpacked_root.join(relative_zip.with_extension(""));
                 let catalog = read_notam_airport_catalog_from_nav_db(&nav_db_root)?;
                 catalog
-                    .validate()
+                    .identity()
                     .map_err(anyhow::Error::msg)
                     .with_context(|| {
                         format!("invalid NOTAM airport catalog in {}", nav_db_root.display())
@@ -1777,7 +1848,7 @@ fn load_notam_airport_catalog(
         schema_version: NotamAirportCatalog::SCHEMA_VERSION,
         airport_ids,
     };
-    catalog.validate().map_err(anyhow::Error::msg)?;
+    catalog.identity().map_err(anyhow::Error::msg)?;
     Ok(catalog)
 }
 
@@ -1999,7 +2070,10 @@ fn queue_nms_notam_state_event(
         observed_at_utc,
     ) {
         Ok(synchronized) => synchronized,
-        Err(error) if is_incompatible_notam_store_schema(&error) => {
+        Err(error)
+            if is_incompatible_notam_store_schema(&error)
+                || preprocessor_live_feeds::notam_store::is_incompatible_notam_catalog(&error) =>
+        {
             eprintln!(
                 "NMS NOTAM derived publication cache is incompatible; rebuilding from canonical state: {error:#}"
             );
@@ -2239,6 +2313,7 @@ fn handle_connection(
     config: &DaemonConfig,
     broker: &BroadcastSseBroker,
     status: &DaemonStatus,
+    compatibility: &DaemonCompatibility,
 ) -> anyhow::Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_millis(
@@ -2264,6 +2339,9 @@ fn handle_connection(
         return write_status(&mut stream, 405, "method not allowed");
     }
     let request_path = target.split('?').next().unwrap_or("/");
+    if request_path == "/live-feeds/compatibility.json" {
+        return serve_compatibility_json(&mut stream, method, compatibility);
+    }
     if request_path == "/live-feeds/status.json" {
         return serve_status_json(&mut stream, method, status);
     }
@@ -3296,7 +3374,7 @@ mod tests {
         Ok(record)
     }
 
-    fn test_nms_record(
+    pub(super) fn test_nms_record(
         nms_id: &str,
         number: &str,
         text: &str,
@@ -4429,16 +4507,14 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn notam_airport_catalog_loads_from_every_published_nav_db() -> anyhow::Result<()> {
-        let temp = tempdir()?;
-        let publication = temp.path().join("published/build/instant");
+    pub(super) fn write_test_publication(root: &Path, ids: &[&str]) -> anyhow::Result<PathBuf> {
+        let publication = root.join("published/build/instant");
         let unpacked = publication.join("unpacked");
         let nav_db = unpacked.join("nav_db_fixture");
         fs::create_dir_all(&nav_db)?;
         let source_catalog = NotamAirportCatalog {
             schema_version: NotamAirportCatalog::SCHEMA_VERSION,
-            airport_ids: BTreeSet::from(["0I8".to_string(), "KGTF".to_string()]),
+            airport_ids: ids.iter().map(|id| id.to_string()).collect(),
         };
         let built = had_nav_kv::build_nav_kv_sorted(
             vec![had_nav_kv::NavKvPair {
@@ -4508,9 +4584,16 @@ mod tests {
             }))?,
         )?;
 
+        Ok(product_artifacts)
+    }
+
+    #[test]
+    fn notam_airport_catalog_loads_from_published_nav_db() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let path = write_test_publication(temp.path(), &["0I8", "KGTF"])?;
         assert_eq!(
-            load_notam_airport_catalog(&product_artifacts)?,
-            source_catalog
+            load_notam_airport_catalog(&path)?.airport_ids,
+            BTreeSet::from(["0I8".to_string(), "KGTF".to_string()])
         );
         Ok(())
     }
@@ -5000,6 +5083,14 @@ mod tests {
     }
 
     fn request_once(root: &Path, request: &str) -> anyhow::Result<String> {
+        request_once_with_compatibility(root, request, DaemonCompatibility::new(None)?)
+    }
+
+    pub(super) fn request_once_with_compatibility(
+        root: &Path,
+        request: &str,
+        compatibility: DaemonCompatibility,
+    ) -> anyhow::Result<String> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let config = DaemonConfig {
@@ -5022,9 +5113,11 @@ mod tests {
         let status = DaemonStatus::default();
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept request");
-            handle_connection(stream, &config, &broker, &status).expect("handle request");
+            handle_connection(stream, &config, &broker, &status, &compatibility)
+                .expect("handle request");
         });
         let mut stream = TcpStream::connect(addr)?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.write_all(request.as_bytes())?;
         stream.shutdown(std::net::Shutdown::Write)?;
         let mut response = String::new();

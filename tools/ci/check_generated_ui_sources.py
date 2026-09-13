@@ -3,13 +3,15 @@
 # SPDX-FileCopyrightText: 2026 Aerobag contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Check generated UI sources without overwriting the working tree."""
+"""Check generated contracts and UI sources without overwriting the working tree."""
 
 from __future__ import annotations
 
 import subprocess
 import tempfile
 from pathlib import Path
+
+import check_generated_contract_inventories
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +40,8 @@ def compare(generated: Path, checked_in: Path) -> list[str]:
 
 
 def main() -> int:
+    if check_generated_contract_inventories.main() != 0:
+        return 1
     with tempfile.TemporaryDirectory(prefix="aerobag-generated-ui-") as directory:
         output = Path(directory)
         subprocess.run([

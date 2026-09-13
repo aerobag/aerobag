@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "protocols": {
+    "directory_package": {
+      "schema_version": 1,
+      "encoding": "zip-stored-or-deflate"
+    },
+    "discovery": {
+      "schema_version": 3,
+      "encoding": "json"
+    },
+    "json_compression": {
+      "schema_version": 1,
+      "encoding": "xz-lzma2"
+    },
+    "navkv": {
+      "schema_version": 4,
+      "encoding": "had-nav-kv-v4"
+    },
+    "navkv_package": {
+      "schema_version": 1,
+      "encoding": "zip-stored-manifest-root-xz-pages"
+    },
+    "navkv_pages": {
+      "schema_version": 1,
+      "encoding": "raw-or-xz-lzma2"
+    },
+    "sse_catalog": {
+      "schema_version": 3,
+      "encoding": "live-feed-catalog"
+    },
+    "sse_current": {
+      "schema_version": 3,
+      "encoding": "live-feed-current"
+    },
+    "sse_framing": {
+      "schema_version": 1,
+      "encoding": "text/event-stream;utf-8"
+    },
+    "sse_service_bulletins": {
+      "schema_version": 1,
+      "encoding": "service-bulletins"
+    },
+    "state_integrity": {
+      "schema_version": 1,
+      "encoding": "sha256-canonical-json-or-navkv-or-notam-state"
+    },
+    "version_manifest": {
+      "schema_version": 3,
+      "encoding": "json"
+    }
+  },
+  "products": {
+    "metars": {
+      "formats": {
+        "delta": {
+          "schema_version": 3,
+          "encoding": "record_json_delta_xz"
+        },
+        "product_manifest": {
+          "schema_version": 9,
+          "encoding": "json"
+        },
+        "snapshot": {
+          "schema_version": 4,
+          "encoding": "json_xz"
+        }
+      },
+      "parameters": {
+        "count_key": "metar_count",
+        "records_key": "metars_by_station",
+        "records_shape": "object"
+      }
+    },
+    "nexrad": {
+      "formats": {
+        "install": {
+          "schema_version": 1,
+          "encoding": "directory_package"
+        },
+        "overflow_tile": {
+          "schema_version": 1,
+          "encoding": "rgba8"
+        },
+        "snapshot": {
+          "schema_version": 2,
+          "encoding": "json"
+        },
+        "tile": {
+          "schema_version": 1,
+          "encoding": "png-bounded-palette-v1"
+        }
+      },
+      "parameters": {
+        "delta": "none",
+        "offline_profile_0": "offline_0",
+        "offline_profile_low1": "offline_low1"
+      }
+    },
+    "notams": {
+      "formats": {
+        "delta": {
+          "schema_version": 3,
+          "encoding": "notam_ordered_delta_xz"
+        },
+        "records": {
+          "schema_version": 7,
+          "encoding": "tagged-json"
+        },
+        "snapshot": {
+          "schema_version": 3,
+          "encoding": "notam_checkpoint_xz"
+        }
+      },
+      "parameters": {}
+    },
+    "obstacles": {
+      "formats": {
+        "delta": {
+          "schema_version": 3,
+          "encoding": "nav_kv_delta_xz"
+        },
+        "install": {
+          "schema_version": 1,
+          "encoding": "nav_kv_package"
+        },
+        "layout": {
+          "schema_version": 2,
+          "encoding": "obstacle-navkv-json"
+        },
+        "snapshot": {
+          "schema_version": 1,
+          "encoding": "nav_kv"
+        },
+        "tile": {
+          "schema_version": 1,
+          "encoding": "json"
+        }
+      },
+      "parameters": {}
+    },
+    "pireps": {
+      "formats": {
+        "delta": {
+          "schema_version": 3,
+          "encoding": "record_json_delta_xz"
+        },
+        "product_manifest": {
+          "schema_version": 1,
+          "encoding": "json"
+        },
+        "snapshot": {
+          "schema_version": 1,
+          "encoding": "json_xz"
+        }
+      },
+      "parameters": {
+        "count_key": "pirep_count",
+        "records_key": "pireps_by_id",
+        "records_shape": "object"
+      }
+    },
+    "tafs": {
+      "formats": {
+        "delta": {
+          "schema_version": 3,
+          "encoding": "record_json_delta_xz"
+        },
+        "product_manifest": {
+          "schema_version": 1,
+          "encoding": "json"
+        },
+        "snapshot": {
+          "schema_version": 1,
+          "encoding": "json_xz"
+        }
+      },
+      "parameters": {
+        "count_key": "taf_count",
+        "records_key": "tafs_by_station",
+        "records_shape": "object"
+      }
+    },
+    "tfrs": {
+      "formats": {
+        "delta": {
+          "schema_version": 3,
+          "encoding": "record_json_delta_xz"
+        },
+        "product_manifest": {
+          "schema_version": 1,
+          "encoding": "json"
+        },
+        "snapshot": {
+          "schema_version": 2,
+          "encoding": "json_xz"
+        }
+      },
+      "parameters": {
+        "count_key": "area_group_count",
+        "record_id_key": "area_id",
+        "records_key": "areas",
+        "records_shape": "array"
+      }
+    },
+    "winds-aloft": {
+      "formats": {
+        "install": {
+          "schema_version": 1,
+          "encoding": "nav_kv_package"
+        },
+        "snapshot": {
+          "schema_version": 1,
+          "encoding": "nav_kv"
+        },
+        "tile": {
+          "schema_version": 1,
+          "encoding": "aerobag-atmosphere-tile-v1-protobuf"
+        }
+      },
+      "parameters": {
+        "array_order": "valid_time,pressure_level,row,column",
+        "delta": "none",
+        "height_units_per_m": "1",
+        "temperature_units_per_c": "100",
+        "wind_units_per_mps": "10"
+      }
+    }
+  }
+}

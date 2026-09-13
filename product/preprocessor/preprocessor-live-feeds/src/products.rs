@@ -16,6 +16,7 @@ use preprocessor_fetch::{
     FetchCacheConfig, FetchCacheMode, NetworkTimeouts, PrefetchRequest,
 };
 use preprocessor_vectors::{build_obstacle_dataset, BuildObstacleDatasetRequest};
+use product_contracts::OBSTACLE_STATE_LAYOUT_VERSION;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -45,7 +46,6 @@ const TFR_GRAPHICS_URL: &str = concat!(
     "maxFeatures=300&outputFormat=application/json&srsname=EPSG:4326"
 );
 const OBSTACLE_DOF_URL: &str = "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP";
-const OBSTACLE_STATE_LAYOUT_VERSION: u32 = 2;
 const NEXRAD_INDEX_URL: &str = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
 
 const GFS_CYCLE_HOURS: i64 = 6;
@@ -277,7 +277,7 @@ pub fn nav_kv_live_feed_state(input: NavKvLiveFeedStateInput) -> BuiltLiveFeedSt
             manifest_value,
         },
         state_sha256: Some(state_sha256),
-        state_payload_kind: Some("nav_kv".to_string()),
+        state_payload_kind: Some(product_contracts::LIVE_FEED_NAV_KV_ENCODING.to_string()),
         status_timestamps: Default::default(),
         temporal_coverage: None,
         delta_policy: DeltaPolicy::NavKv { pairs },
@@ -307,7 +307,7 @@ pub fn nav_kv_snapshot_live_feed_state(
             manifest_value,
         },
         state_sha256: Some(state_sha256),
-        state_payload_kind: Some("nav_kv".to_string()),
+        state_payload_kind: Some(product_contracts::LIVE_FEED_NAV_KV_ENCODING.to_string()),
         status_timestamps: Default::default(),
         temporal_coverage: None,
         delta_policy: DeltaPolicy::None,
@@ -1219,6 +1219,12 @@ pub fn build_nexrad_source_grid_tiles(
         ))
         .arg("--tile-size")
         .arg(NEXRAD_TILE_SIZE.to_string())
+        .arg("--manifest-schema-version")
+        .arg(product_contracts::NEXRAD_MANIFEST_SCHEMA_VERSION.to_string())
+        .arg("--tile-encoding")
+        .arg(product_contracts::NEXRAD_TILE_ENCODING)
+        .arg("--overflow-encoding")
+        .arg(product_contracts::NEXRAD_OVERFLOW_ENCODING)
         .args(debug_lat_lon_grid.then_some("--debug-lat-lon-grid"));
     for res in NEXRAD_RES_LEVELS {
         command.arg("--res-level").arg(res.to_string());

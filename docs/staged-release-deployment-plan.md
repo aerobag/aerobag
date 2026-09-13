@@ -325,14 +325,19 @@ Before promotion:
 ```
 
 Promotion points new production requests at the already-running candidate
-daemon. Existing SSE connections remain attached to the old daemon. The old
-daemon enters a draining state and is stopped after connections close or a
-configured deadline expires.
+daemon. After validated activation commits, a daemon with no remaining
+bindings stops so its SSE clients reconnect through the new routing. Its
+files and startup inputs remain protected for the separate GC grace period.
 
-After promotion, old and new clients using the same exact live-feed contract
-may share the promoted daemon. If that is unsafe, the producer change was not
-actually compatible and requires a new contract path. Different supported
-contract paths retain distinct daemon implementations.
+After promotion, sunset clients may share the promoted daemon when both the
+complete live-feed wire contracts and NOTAM airport-catalog content match.
+Verify the latter against the running daemon's loaded projection, not only
+the current files on disk. A sunset policy permits sharing when these checks
+pass; it does not assert compatibility. A mismatch retains a dedicated daemon.
+Staging remains independent regardless of these checks.
+
+See [Compatible Sunset Live-Feed Sharing](sunset-live-feed-sharing-plan.md) for
+the implementation, lifecycle rules and qualification tests.
 
 Prefer stable nginx configuration that resolves a channel's current Unix
 socket through the generated channel view. Prove with a production-shaped test

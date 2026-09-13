@@ -47,10 +47,14 @@ def cheap_lanes(run_root: Path) -> list[qualification.Lane]:
         "AEROBAG_REPO_ROOT": str(ROOT),
         "AEROBAG_UI_TARGET_ROOT": str(ui_target),
         "AEROBAG_WEB_WORKSPACE_DIR": str(ui_target / "web/workspace"),
+        "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR", str(ui_target / "shared/rust-target")),
     }
     # Share ordinary-CI suite membership with release preflight. No path-based
     # selection: a Rust enum can break a JavaScript harness contract.
     lanes = qualification.ordinary_lanes(run_root)
+    # The explicit real-proxy lane requires nginx and loopback listeners; keep
+    # it in release preflight/full qualification, outside the cheap tools gate.
+    lanes = [lane for lane in lanes if lane.name != "ci-live-feed-proxy"]
     # Each Node lane owns its preparation: never race npm ci or script copying
     # against the parallel web checks, and keep warm harness dependencies reusable.
     lanes = [

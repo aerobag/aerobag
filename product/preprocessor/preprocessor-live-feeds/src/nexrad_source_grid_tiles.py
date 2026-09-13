@@ -320,6 +320,9 @@ def main():
     parser.add_argument('--source-sha256', required=True)
     parser.add_argument('--encoder-sha256', required=True)
     parser.add_argument('--tile-size', type=int, required=True)
+    parser.add_argument('--manifest-schema-version', type=int, required=True)
+    parser.add_argument('--tile-encoding', required=True)
+    parser.add_argument('--overflow-encoding', required=True)
     parser.add_argument('--res-level', type=int, action='append', required=True)
     parser.add_argument('--debug-lat-lon-grid', action='store_true')
     args = parser.parse_args()
@@ -349,18 +352,18 @@ def main():
         'rgba_tile_count': sum(level['quality']['rgba_tile_count'] for level in levels),
     }
     manifest = {
-        'schema_version': 2,
+        'schema_version': args.manifest_schema_version,
         'product': 'nexrad',
         'state_id': args.state_id,
         'observed_at_utc': args.observed_at_utc,
         'source_file': args.source_file,
         'source_sha256': args.source_sha256,
-        'tile_encoding': 'png-bounded-palette-v1',
+        'tile_encoding': args.tile_encoding,
         'encoder_sha256': args.encoder_sha256,
         'quantization': {
             'base_palette_sha256': palette_sha256,
             'max_rgb_channel_error': POOR_COLOR_MATCH_THRESHOLD,
-            'overflow_encoding': 'rgba8',
+            'overflow_encoding': args.overflow_encoding,
         },
         'tile_size': args.tile_size,
         'quality': quality,

@@ -21,7 +21,7 @@ use notam_state::{
     NotamCounters, NotamHash, NotamMutation, NotamRecord, NotamState,
     NOTAM_MERKLE_BUCKETS_PER_GROUP, NOTAM_MERKLE_BUCKET_COUNT, NOTAM_MERKLE_GROUP_COUNT,
 };
-use product_contracts::NotamAirportCatalog;
+use product_contracts::{NotamAirportCatalog, NotamCatalogIdentity};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::Serialize;
 
@@ -42,6 +42,24 @@ const AIRPORT_NOTAM_COUNT_METADATA_KEY: &str = "airport_notam_count";
 const MULTIPLE_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_multiple_effects";
 const OTHER_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_other_effect";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
+const CATALOG_IDENTITY_METADATA_KEY: &str = "notam_catalog_identity_v1";
+
+#[derive(Debug)]
+pub struct IncompatibleNotamCatalog;
+
+impl fmt::Display for IncompatibleNotamCatalog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NOTAM projection catalog provenance is missing, invalid, or differs from the loaded catalog")
+    }
+}
+
+impl Error for IncompatibleNotamCatalog {}
+
+pub fn is_incompatible_notam_catalog(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<IncompatibleNotamCatalog>())
+}
 
 #[derive(Debug)]
 pub struct IncompatibleNotamStoreSchema {
@@ -368,6 +386,7 @@ impl NotamPersistentStore {
         }
 
         let mut connection = self.open_connection()?;
+        self.ensure_projection_writer_catalog(&connection)?;
         let tx = connection
             .transaction()
             .context("failed to start canonical NOTAM synchronization")?;
@@ -536,6 +555,7 @@ impl NotamPersistentStore {
     ) -> anyhow::Result<SynchronizedNotamSummary> {
         validate_canonical_source_batch(batch)?;
         let mut connection = self.open_connection()?;
+        self.ensure_projection_writer_catalog(&connection)?;
         let tx = connection
             .transaction()
             .context("failed to start canonical NOTAM source transaction")?;
@@ -622,6 +642,7 @@ impl NotamPersistentStore {
             bail!("NOTAM raw ingest apply limit must be greater than zero");
         }
         let mut connection = self.open_connection()?;
+        self.ensure_projection_writer_catalog(&connection)?;
         let last_cursor = raw_ingest_cursor(&connection)?;
         let rows = {
             let mut statement = connection
@@ -804,6 +825,7 @@ impl NotamPersistentStore {
         &self,
     ) -> anyhow::Result<Option<RetriedRejectedNotamSummary>> {
         let mut connection = self.open_connection()?;
+        self.ensure_projection_writer_catalog(&connection)?;
         let rejected_rows = {
             let mut statement = connection
                 .prepare(
@@ -1424,7 +1446,44 @@ impl NotamPersistentStore {
             )
             .context("failed to initialize NOTAM sqlite schema")?;
         self.ensure_schema(&mut connection)?;
+        self.ensure_catalog_identity(&connection)?;
         Ok(connection)
+    }
+
+    fn ensure_catalog_identity(&self, connection: &Connection) -> anyhow::Result<()> {
+        let Some(catalog) = &self.airport_catalog else {
+            // Publication readers and acknowledgements do not reproject records.
+            return Ok(());
+        };
+        let expected = catalog.identity().map_err(anyhow::Error::msg)?;
+        let stored: Option<String> = connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                [CATALOG_IDENTITY_METADATA_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let stored = stored
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<NotamCatalogIdentity>(value).ok());
+        if stored.as_ref() != Some(&expected) {
+            return Err(IncompatibleNotamCatalog.into());
+        }
+        Ok(())
+    }
+
+    fn ensure_projection_writer_catalog(&self, connection: &Connection) -> anyhow::Result<()> {
+        if self.airport_catalog.is_none() {
+            let catalog_bound: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM metadata WHERE key = ?1)",
+                [CATALOG_IDENTITY_METADATA_KEY],
+                |row| row.get(0),
+            )?;
+            if catalog_bound {
+                return Err(IncompatibleNotamCatalog.into());
+            }
+        }
+        Ok(())
     }
 
     fn ensure_schema(&self, connection: &mut Connection) -> anyhow::Result<()> {
@@ -1437,7 +1496,32 @@ impl NotamPersistentStore {
             .optional()
             .context("failed to query NOTAM sqlite schema version")?;
         match schema_version.as_deref() {
-            None => self.migrate_incremental_schema(connection),
+            None => {
+                let existing_records: i64 = connection.query_row(
+                    "SELECT (SELECT COUNT(*) FROM current_notams) +
+                            (SELECT COUNT(*) FROM raw_notam_messages) +
+                            (SELECT COUNT(*) FROM notam_client_records) +
+                            (SELECT COUNT(*) FROM metadata) +
+                            (SELECT COUNT(*) FROM notam_merkle_buckets)",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if self.airport_catalog.is_some() && existing_records != 0 {
+                    return Err(IncompatibleNotamCatalog.into());
+                }
+                self.migrate_incremental_schema(connection)?;
+                if let Some(catalog) = &self.airport_catalog {
+                    let identity = catalog.identity().map_err(anyhow::Error::msg)?;
+                    connection.execute(
+                        "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
+                        params![
+                            CATALOG_IDENTITY_METADATA_KEY,
+                            serde_json::to_string(&identity)?
+                        ],
+                    )?;
+                }
+                Ok(())
+            }
             Some("13") => Ok(()),
             Some("7") => self.migrate_incremental_schema(connection),
             Some("6") => {
@@ -3573,6 +3657,190 @@ mod tests {
             })?,
             0
         );
+        Ok(())
+    }
+
+    fn provenance_catalog(airport: &str) -> Arc<NotamAirportCatalog> {
+        Arc::new(NotamAirportCatalog {
+            schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+            airport_ids: BTreeSet::from([airport.to_string()]),
+        })
+    }
+
+    fn provenance_record() -> anyhow::Result<StructuredNotamRecord> {
+        structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("RWY"),
+            "1",
+            Some("N"),
+            "RWY 01 CLSD.",
+        ))?
+        .context("missing canonical NOTAM")
+    }
+
+    #[test]
+    fn catalog_provenance_mismatch_rejects_an_unchanged_source_cursor() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let record = provenance_record()?;
+        let a = provenance_catalog(record.airport_id.as_deref().unwrap());
+        let first = NotamPersistentStore::with_airport_catalog(temp.path(), a.clone());
+        let cursor = CanonicalNotamSourceCursor {
+            epoch: "source".into(),
+            through_sequence: 0,
+        };
+        first.synchronize_canonical_source_snapshot(
+            std::slice::from_ref(&record),
+            "2026-07-24T12:00:00Z",
+            &cursor,
+        )?;
+        let original = first.current_checkpoint()?;
+        assert_eq!(original.records.len(), 1);
+        let second =
+            NotamPersistentStore::with_airport_catalog(temp.path(), provenance_catalog("ZZZZ"));
+        let error = second
+            .apply_canonical_source_batch(
+                &CanonicalNotamSourceBatch {
+                    epoch: cursor.epoch.clone(),
+                    from_sequence: 0,
+                    through_sequence: 0,
+                    changes: Vec::new(),
+                },
+                "2026-07-24T12:03:00Z",
+            )
+            .unwrap_err();
+        assert!(is_incompatible_notam_catalog(&error), "{error:#}");
+        assert!(is_incompatible_notam_catalog(
+            &second.publication_snapshot().unwrap_err()
+        ));
+        assert_eq!(first.current_checkpoint()?, original);
+        assert_eq!(first.canonical_source_cursor()?, Some(cursor));
+        second.rebuild_derived_projection(std::slice::from_ref(&record), "2026-07-24T12:03:00Z")?;
+        assert!(second.current_checkpoint()?.records.is_empty());
+        assert_eq!(second.current_records()?, vec![record]);
+        assert!(is_incompatible_notam_catalog(
+            &first.initialize().unwrap_err()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_catalog_provenance_is_not_assigned_to_existing_bytes() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let record = provenance_record()?;
+        let old = NotamPersistentStore::new(temp.path());
+        old.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
+        let checkpoint = old.current_checkpoint()?;
+        let bound =
+            NotamPersistentStore::with_airport_catalog(temp.path(), provenance_catalog("ZZZZ"));
+        assert!(is_incompatible_notam_catalog(
+            &bound.initialize().unwrap_err()
+        ));
+        assert_eq!(old.current_checkpoint()?, checkpoint);
+        let connection = Connection::open(old.sqlite_path())?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM metadata WHERE key = ?1",
+            [CATALOG_IDENTITY_METADATA_KEY],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        bound.rebuild_derived_projection(std::slice::from_ref(&record), "2026-07-24T12:03:00Z")?;
+        assert!(bound.current_checkpoint()?.records.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_catalog_provenance_is_rejected_without_relabeling() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let record = provenance_record()?;
+        let store =
+            NotamPersistentStore::with_airport_catalog(temp.path(), provenance_catalog("ZZZZ"));
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
+        let connection = Connection::open(store.sqlite_path())?;
+        for invalid in [
+            "null",
+            "{}",
+            r#"{"schema_version":99,"sha256":"abc","airport_count":1}"#,
+        ] {
+            connection.execute(
+                "UPDATE metadata SET value = ?1 WHERE key = ?2",
+                params![invalid, CATALOG_IDENTITY_METADATA_KEY],
+            )?;
+            assert!(is_incompatible_notam_catalog(
+                &store.initialize().unwrap_err()
+            ));
+            let stored: String = connection.query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                [CATALOG_IDENTITY_METADATA_KEY],
+                |row| row.get(0),
+            )?;
+            assert_eq!(stored, invalid);
+        }
+        assert_eq!(
+            NotamPersistentStore::new(temp.path()).current_records()?,
+            vec![record]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_catalog_rebuild_preserves_previous_projection_and_canonical_records(
+    ) -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let record = provenance_record()?;
+        let a = NotamPersistentStore::with_airport_catalog(
+            temp.path(),
+            provenance_catalog(record.airport_id.as_deref().unwrap()),
+        );
+        a.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
+        let before = a.current_checkpoint()?;
+        let b = NotamPersistentStore::with_airport_catalog(temp.path(), provenance_catalog("ZZZZ"));
+        let error = b
+            .rebuild_derived_projection(&[record.clone(), record.clone()], "2026-07-24T12:03:00Z")
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("duplicate NOTAM"));
+        assert_eq!(a.current_checkpoint()?, before);
+        assert_eq!(a.current_records()?, vec![record]);
+        assert!(is_incompatible_notam_catalog(&b.initialize().unwrap_err()));
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_catalog_rebuild_is_not_loaded_as_the_projection() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let record = provenance_record()?;
+        let a = NotamPersistentStore::with_airport_catalog(
+            temp.path(),
+            provenance_catalog(record.airport_id.as_deref().unwrap()),
+        );
+        a.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
+        let staged = NotamPersistentStore::with_airport_catalog(
+            temp.path().join(".projection-rebuild-interrupted"),
+            provenance_catalog("ZZZZ"),
+        );
+        staged
+            .synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:03:00Z")?;
+        let b = NotamPersistentStore::with_airport_catalog(temp.path(), provenance_catalog("ZZZZ"));
+        assert!(is_incompatible_notam_catalog(&b.initialize().unwrap_err()));
+        assert_eq!(a.current_records()?, vec![record]);
+        assert_eq!(a.current_checkpoint()?.records.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn catalogless_writer_cannot_mutate_a_catalog_bound_projection() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let record = provenance_record()?;
+        let bound =
+            NotamPersistentStore::with_airport_catalog(temp.path(), provenance_catalog("ZZZZ"));
+        bound.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
+        let reader = NotamPersistentStore::new(temp.path());
+        assert!(reader.current_checkpoint()?.records.is_empty());
+        let error = reader
+            .synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:03:00Z")
+            .unwrap_err();
+        assert!(is_incompatible_notam_catalog(&error));
+        assert!(bound.current_checkpoint()?.records.is_empty());
         Ok(())
     }
 

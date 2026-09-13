@@ -36,7 +36,10 @@ pub use product_contracts::live_feeds::v3::{
 use product_contracts::{
     live_feed_product_policy,
     live_feeds::v3::{NEXRAD_OFFLINE_PROFILE_0, NEXRAD_OFFLINE_PROFILE_LOW1},
-    versioned_json, LIVE_FEED_PRODUCT_POLICIES,
+    versioned_json, LIVE_FEED_DIRECTORY_PACKAGE_ENCODING, LIVE_FEED_JSON_ENCODING,
+    LIVE_FEED_JSON_XZ_ENCODING, LIVE_FEED_NAV_KV_DELTA_ENCODING, LIVE_FEED_NAV_KV_ENCODING,
+    LIVE_FEED_NAV_KV_PACKAGE_ENCODING, LIVE_FEED_NOTAM_CHECKPOINT_ENCODING,
+    LIVE_FEED_NOTAM_DELTA_ENCODING, LIVE_FEED_PRODUCT_POLICIES, LIVE_FEED_RECORD_DELTA_ENCODING,
 };
 use rayon::prelude::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -1132,7 +1135,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         }
         request.state_payload_kind = request
             .state_payload_kind
-            .or_else(|| Some("json_xz".to_string()));
+            .or_else(|| Some(LIVE_FEED_JSON_XZ_ENCODING.to_string()));
         self.publish_state_common(state_path, None, request)
     }
 
@@ -1158,12 +1161,12 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         if !state_path.is_file() {
             copy_file_if_missing(&manifest_path, &state_path)?;
         }
-        if request.state_payload_kind.as_deref() == Some("nav_kv") {
+        if request.state_payload_kind.as_deref() == Some(LIVE_FEED_NAV_KV_ENCODING) {
             xz_nav_kv_state_dir_pages(&state_dir, &request.state_value)?;
         }
         request.state_payload_kind = request
             .state_payload_kind
-            .or_else(|| Some("json".to_string()));
+            .or_else(|| Some(LIVE_FEED_JSON_ENCODING.to_string()));
         self.publish_state_common(state_path, Some(state_dir), request)
     }
 
@@ -1316,7 +1319,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             delta_ref = Some(LiveDeltaRef {
-                kind: Some("record_json_delta_xz".to_string()),
+                kind: Some(LIVE_FEED_RECORD_DELTA_ENCODING.to_string()),
                 from_version: previous.current.clone(),
                 from_state_sha256: previous.state_sha256.clone(),
                 to_version: version.clone(),
@@ -1376,7 +1379,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 let bytes = fs::read(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
                 delta_ref = Some(LiveDeltaRef {
-                    kind: Some("record_json_delta_xz".to_string()),
+                    kind: Some(LIVE_FEED_RECORD_DELTA_ENCODING.to_string()),
                     from_version: previous.current.clone(),
                     from_state_sha256: previous.state_sha256.clone(),
                     to_version: version.clone(),
@@ -1450,7 +1453,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             delta_ref = Some(LiveDeltaRef {
-                kind: Some("nav_kv_delta_xz".to_string()),
+                kind: Some(LIVE_FEED_NAV_KV_DELTA_ENCODING.to_string()),
                 from_version: previous.current.clone(),
                 from_state_sha256: previous.state_sha256.clone(),
                 to_version: version.clone(),
@@ -1475,8 +1478,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             None
         } else if let Some(state_root) = state_root.as_ref() {
             let install_kind = match state_ref.kind.as_deref() {
-                Some("nav_kv") => "nav_kv_package",
-                _ => "directory_package",
+                Some(LIVE_FEED_NAV_KV_ENCODING) => LIVE_FEED_NAV_KV_PACKAGE_ENCODING,
+                _ => LIVE_FEED_DIRECTORY_PACKAGE_ENCODING,
             };
             Some(self.write_install_state_package(
                 &product,
@@ -1758,7 +1761,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             ));
             let bytes = write_immutable_xz_json_pretty_file(&path, delta)?;
             delta_ref = Some(LiveDeltaRef {
-                kind: Some("notam_ordered_delta_xz".to_string()),
+                kind: Some(LIVE_FEED_NOTAM_DELTA_ENCODING.to_string()),
                 from_version: delta.from_state_id.clone(),
                 from_state_sha256: delta.from_state_id.clone(),
                 to_version: delta.to_state_id.clone(),
@@ -2005,7 +2008,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             .join(format!("{}.json.xz", checkpoint.state_id));
         let bytes = write_immutable_xz_json_pretty_file(&state_path, &checkpoint)?;
         Ok(LivePayloadRef {
-            kind: Some("notam_checkpoint_xz".to_string()),
+            kind: Some(LIVE_FEED_NOTAM_CHECKPOINT_ENCODING.to_string()),
             url: live_feeds_relative_url(&self.root, &state_path)?,
             bytes: bytes.len() as u64,
             blob_sha256: sha256_hex(&bytes),
@@ -2129,7 +2132,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         let package_dir = self.root.join("packages").join(product);
         let package_path = package_dir.join(format!("{version}.zip"));
         if !package_path.is_file() {
-            if kind == "nav_kv_package" {
+            if kind == LIVE_FEED_NAV_KV_PACKAGE_ENCODING {
                 let (manifest, root, pages) = read_nav_kv_members_from_dir(product, state_root)?;
                 let bytes = nav_kv_package::write_stored_xz_package_bytes_with_encoder(
                     &manifest,
@@ -2187,7 +2190,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             profiles.insert(
                 profile.to_string(),
                 LivePayloadRef {
-                    kind: Some("directory_package".to_string()),
+                    kind: Some(LIVE_FEED_DIRECTORY_PACKAGE_ENCODING.to_string()),
                     url: live_feeds_relative_url(&self.root, &package_path)?,
                     bytes: bytes.len() as u64,
                     blob_sha256: sha256_hex(&bytes),
@@ -2673,7 +2676,7 @@ fn validate_notam_delta_chain(
     let mut head = deltas[0].from_state_sha256.as_str();
     let mut checkpoint_reachable = head == checkpoint_state_id;
     for delta in deltas {
-        if delta.kind.as_deref() != Some("notam_ordered_delta_xz") {
+        if delta.kind.as_deref() != Some(LIVE_FEED_NOTAM_DELTA_ENCODING) {
             bail!("NOTAM retained delta {} has wrong kind", delta.url);
         }
         if delta.from_version != head || delta.from_state_sha256 != head {
@@ -2770,7 +2773,7 @@ fn validate_notam_materialized_chain(
     live_root: &Path,
     manifest: &LiveFeedVersionManifest,
 ) -> anyhow::Result<()> {
-    if manifest.state.kind.as_deref() != Some("notam_checkpoint_xz") {
+    if manifest.state.kind.as_deref() != Some(LIVE_FEED_NOTAM_CHECKPOINT_ENCODING) {
         bail!("published NOTAM state is not a checkpoint");
     }
     let checkpoint: NotamCheckpoint = read_verified_notam_blob(

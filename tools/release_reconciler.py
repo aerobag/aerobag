@@ -13,6 +13,7 @@ prove release semantics without mutating a host.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -20,13 +21,16 @@ import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+import live_feed_compatibility as compatibility
 
-DESIRED_SCHEMA_VERSION = 1
-OBSERVED_SCHEMA_VERSION = 1
+
+DESIRED_SCHEMA_VERSION = 2
+OBSERVED_SCHEMA_VERSION = 2
 CHANNEL_GENERATION_SCHEMA_VERSION = 1
 RELEASE_LIVE_FEEDS_STATE_ENV = "AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT"
 RECONCILIATION_PROGRESS_RELATIVE_PATH = "state/release-reconciliation-progress"
@@ -77,10 +81,16 @@ class ReleaseBinding:
     tag: str
 
 
+class LiveFeedsPolicy(str, Enum):
+    DEDICATED = "dedicated"
+    SHARE_IF_COMPATIBLE = "share_if_compatible"
+
+
 @dataclass(frozen=True)
 class SunsetBinding:
     tag: str
     until_utc: str
+    live_feeds: LiveFeedsPolicy = LiveFeedsPolicy.SHARE_IF_COMPATIBLE
 
 
 @dataclass(frozen=True)
@@ -135,9 +145,10 @@ def parse_desired_releases(value: Any) -> DesiredReleases:
         "release desired state",
         {"schema_version", "production", "staging", "sunset"},
     )
-    if document.get("schema_version") != DESIRED_SCHEMA_VERSION:
+    version = document.get("schema_version")
+    if type(version) is not int or version not in (1, DESIRED_SCHEMA_VERSION):
         raise ReleaseConfigError(
-            f"release desired state requires schema_version {DESIRED_SCHEMA_VERSION}"
+            f"release desired state requires schema_version 1 or {DESIRED_SCHEMA_VERSION}"
         )
     if "production" not in document:
         raise ReleaseConfigError("release desired state production is required")
@@ -153,17 +164,27 @@ def parse_desired_releases(value: Any) -> DesiredReleases:
     seen_sunset: set[str] = set()
     for index, item in enumerate(sunset_value):
         context = f"sunset[{index}]"
-        entry = _object(item, context, {"tag", "until_utc"})
+        fields = {"tag", "until_utc"}
+        if version == DESIRED_SCHEMA_VERSION:
+            fields.add("live_feeds")
+        entry = _object(item, context, fields)
         if "tag" not in entry or "until_utc" not in entry:
             raise ReleaseConfigError(f"{context} requires tag and until_utc")
         tag = _release_tag(entry["tag"], f"{context}.tag")
         if tag in seen_sunset:
             raise ReleaseConfigError(f"sunset contains duplicate release {tag}")
         seen_sunset.add(tag)
+        try:
+            policy = LiveFeedsPolicy(entry.get("live_feeds", "share_if_compatible"))
+        except (ValueError, TypeError) as error:
+            raise ReleaseConfigError(
+                f"{context}.live_feeds must be dedicated or share_if_compatible"
+            ) from error
         sunset.append(
             SunsetBinding(
                 tag=tag,
                 until_utc=_parse_utc(entry["until_utc"], f"{context}.until_utc"),
+                live_feeds=policy,
             )
         )
     if production.tag in seen_sunset:
@@ -183,6 +204,16 @@ def parse_desired_releases(value: Any) -> DesiredReleases:
         staging=staging,
         sunset=tuple(sunset),
     )
+
+
+def migrate_desired_releases(value: Any) -> dict[str, Any]:
+    """Write explicit v2 policies without changing deadlines or caller input."""
+    desired = parse_desired_releases(value)
+    document = json.loads(json.dumps(value))
+    document["schema_version"] = DESIRED_SCHEMA_VERSION
+    for entry, binding in zip(document.get("sunset", []), desired.sunset):
+        entry["live_feeds"] = binding.live_feeds.value
+    return document
 
 
 def load_desired_releases(path: Path) -> DesiredReleases:
@@ -234,6 +265,54 @@ def resolve_desired_tags(repo_root: Path, desired: DesiredReleases) -> dict[str,
 
 
 @dataclass
+class LiveFeedInstance:
+    instance_id: str
+    release_tag: str
+    launch_digest: str
+    endpoint: str
+    unit: str
+    manifest: str
+    roots: list[str] = field(default_factory=list)
+    gc_paths: list[str] = field(default_factory=list)
+    manifest_sha256: str | None = None
+    evidence: dict[str, Any] | None = None
+    status: str = "pending"
+    draining_until_utc: str | None = None
+
+    @classmethod
+    def from_dict(cls, value: Any, context: str) -> "LiveFeedInstance":
+        document = _object(value, context, set(cls.__dataclass_fields__))
+        required = {
+            "instance_id", "release_tag", "launch_digest", "endpoint", "unit", "manifest",
+        }
+        if required - document.keys():
+            raise ReleaseConfigError(f"{context} is missing {', '.join(sorted(required - document.keys()))}")
+        for name in required:
+            if not isinstance(document[name], str) or not document[name].strip():
+                raise ReleaseConfigError(f"{context}.{name} must be a non-empty string")
+        _release_tag(document["release_tag"], f"{context}.release_tag")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", document["instance_id"]):
+            raise ReleaseConfigError(f"{context}.instance_id must be a safe instance identifier")
+        status = document.get("status", "pending")
+        if not isinstance(status, str) or status not in {
+            "pending", "running", "unavailable", "failed", "stopped", "removed",
+        }:
+            raise ReleaseConfigError(f"{context}.status is unknown")
+        digest = document.get("manifest_sha256")
+        if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise ReleaseConfigError(f"{context}.manifest_sha256 must be lowercase SHA-256 hex")
+        for name in ("roots", "gc_paths"):
+            roots = document.get(name, [])
+            if not isinstance(roots, list) or any(not isinstance(root, str) or not root for root in roots):
+                raise ReleaseConfigError(f"{context}.{name} must be a string array")
+        if document.get("evidence") is not None and not isinstance(document["evidence"], dict):
+            raise ReleaseConfigError(f"{context}.evidence must be an object or null")
+        if document.get("draining_until_utc") is not None:
+            _parse_utc(document["draining_until_utc"], f"{context}.draining_until_utc")
+        return cls(**document)
+
+
+@dataclass
 class ObservedRelease:
     tag: str
     tag_object: str
@@ -251,6 +330,10 @@ class ObservedRelease:
     release_root: str | None = None
     live_feed_endpoint: str | None = None
     live_feed_status: str = "pending"
+    live_feed_requirements: dict[str, Any] | None = None
+    live_feed_instance: str | None = None
+    live_feed_provider: str | None = None
+    live_feed_reason: str | None = None
     qualification_record: str | None = None
     qualification_bypassed_at_utc: str | None = None
     qualification_bypass_reason: str | None = None
@@ -280,6 +363,10 @@ class ObservedRelease:
                 "release_root",
                 "live_feed_endpoint",
                 "live_feed_status",
+                "live_feed_requirements",
+                "live_feed_instance",
+                "live_feed_provider",
+                "live_feed_reason",
                 "qualification_record",
                 "qualification_bypassed_at_utc",
                 "qualification_bypass_reason",
@@ -292,12 +379,18 @@ class ObservedRelease:
         missing = sorted(required - set(document))
         if missing:
             raise ReleaseConfigError(f"{context} is missing {', '.join(missing)}")
+        if document.get("live_feed_requirements") is not None and not isinstance(document["live_feed_requirements"], dict):
+            raise ReleaseConfigError(f"{context}.live_feed_requirements must be an object or null")
+        for name in ("live_feed_instance", "live_feed_provider", "live_feed_reason"):
+            if document.get(name) is not None and (not isinstance(document[name], str) or not document[name]):
+                raise ReleaseConfigError(f"{context}.{name} must be a non-empty string or null")
         return cls(**document)
 
 
 @dataclass
 class ObservedState:
     releases: dict[str, ObservedRelease] = field(default_factory=dict)
+    live_feed_instances: dict[str, LiveFeedInstance] = field(default_factory=dict)
     production: str | None = None
     staging: str | None = None
     sunset: list[str] = field(default_factory=list)
@@ -319,6 +412,7 @@ class ObservedState:
             {
                 "schema_version",
                 "releases",
+                "live_feed_instances",
                 "production",
                 "staging",
                 "sunset",
@@ -329,13 +423,22 @@ class ObservedState:
                 "gc_pending",
             },
         )
-        if document.get("schema_version") != OBSERVED_SCHEMA_VERSION:
+        version = document.get("schema_version")
+        if type(version) is not int or version not in (1, OBSERVED_SCHEMA_VERSION):
             raise ReleaseConfigError(
-                f"release observed state requires schema_version {OBSERVED_SCHEMA_VERSION}"
+                f"release observed state requires schema_version 1 or {OBSERVED_SCHEMA_VERSION}"
             )
+        if version == 1 and "live_feed_instances" in document:
+            raise ReleaseConfigError("live_feed_instances requires observed schema_version 2")
         releases_value = document.get("releases", {})
         if not isinstance(releases_value, dict):
             raise ReleaseConfigError("release observed state releases must be an object")
+        if version == 1:
+            for record in releases_value.values():
+                if isinstance(record, dict) and {
+                    "live_feed_instance", "live_feed_provider", "live_feed_requirements", "live_feed_reason",
+                } & record.keys():
+                    raise ReleaseConfigError("live-feed instance metadata requires observed schema_version 2")
         parsed = {
             tag: ObservedRelease.from_dict(record, f"releases[{tag!r}]")
             for tag, record in releases_value.items()
@@ -343,6 +446,23 @@ class ObservedState:
         for tag, record in parsed.items():
             if tag != record.tag:
                 raise ReleaseConfigError(f"release key {tag} does not match record tag {record.tag}")
+        instance_values = document.get("live_feed_instances", {})
+        if not isinstance(instance_values, dict):
+            raise ReleaseConfigError("release observed state live_feed_instances must be an object")
+        instances = {
+            key: LiveFeedInstance.from_dict(item, f"live_feed_instances[{key!r}]")
+            for key, item in instance_values.items()
+        }
+        for key, instance in instances.items():
+            if key != instance.instance_id:
+                raise ReleaseConfigError(f"live feed instance key {key} does not match instance_id")
+        for tag, record in parsed.items():
+            for name in ("live_feed_instance", "live_feed_provider"):
+                key = getattr(record, name)
+                if key is not None and key not in instances:
+                    raise ReleaseConfigError(f"releases[{tag!r}].{name} references missing instance {key}")
+            if record.live_feed_instance is not None and instances[record.live_feed_instance].release_tag != tag:
+                raise ReleaseConfigError(f"release {tag} own instance belongs to another release")
         sunset = document.get("sunset", [])
         if not isinstance(sunset, list) or not all(isinstance(tag, str) for tag in sunset):
             raise ReleaseConfigError("release observed state sunset must be a string array")
@@ -351,6 +471,7 @@ class ObservedState:
             raise ReleaseConfigError("release observed state generation must be non-negative")
         return cls(
             releases=parsed,
+            live_feed_instances=instances,
             production=document.get("production"),
             staging=document.get("staging"),
             sunset=list(sunset),
@@ -368,6 +489,9 @@ class ObservedState:
             "schema_version": OBSERVED_SCHEMA_VERSION,
             "releases": {
                 tag: asdict(record) for tag, record in sorted(self.releases.items())
+            },
+            "live_feed_instances": {
+                key: asdict(instance) for key, instance in sorted(self.live_feed_instances.items())
             },
             "production": self.production,
             "staging": self.staging,
@@ -408,6 +532,20 @@ def write_observed_state(path: Path, state: ObservedState) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def live_feed_health_targets(
+    desired: DesiredReleases, observed: ObservedState,
+) -> dict[str, tuple[str, ...]]:
+    """Attribute dependent releases to actual providers, not retained daemons."""
+    targets: dict[str, list[str]] = {}
+    for tag in desired.tags():
+        record = observed.releases.get(tag)
+        key = None if record is None else (record.live_feed_provider or record.live_feed_instance)
+        instance = observed.live_feed_instances.get(key) if key is not None else None
+        unit = instance.unit if instance is not None else f"aerobag-live-feeds-release@{tag}.service"
+        targets.setdefault(unit, []).append(tag)
+    return {unit: tuple(tags) for unit, tags in targets.items()}
+
+
 def verify_release_identity(resolved: ResolvedTag, observed: ObservedRelease) -> None:
     if resolved.tag != observed.tag:
         raise ReleaseConfigError(
@@ -440,6 +578,139 @@ class ReconciliationPlan:
         return not self.actions and self.blocked_reason is None
 
 
+@dataclass(frozen=True)
+class ResolvedLiveFeedBinding:
+    release_tag: str
+    provider: str | None
+    provider_tag: str
+    endpoint: str | None
+    reason: str
+    verification: str
+
+    @property
+    def shared(self) -> bool:
+        return self.provider_tag != self.release_tag
+
+
+def dedicated_live_feed_ready(observed: ObservedState, tag: str) -> bool:
+    record = observed.releases.get(tag)
+    if record is None:
+        return False
+    if record.live_feed_instance is None:
+        # Legacy fields describe only the release's own daemon, never its alias.
+        return bool(record.live_feed_endpoint) and record.live_feed_status == "running"
+    instance = observed.live_feed_instances.get(record.live_feed_instance)
+    return (
+        instance is not None and instance.release_tag == tag
+        and bool(instance.endpoint) and instance.status == "running"
+        and instance.draining_until_utc is None
+    )
+
+
+def _live_feed_binding(
+    observed: ObservedState, tag: str, provider_tag: str, reason: str,
+) -> ResolvedLiveFeedBinding:
+    record = observed.releases.get(tag)
+    provider = observed.releases.get(provider_tag)
+    key = None if provider is None else provider.live_feed_instance
+    instance = observed.live_feed_instances.get(key) if key is not None else None
+    endpoint = (
+        instance.endpoint if instance is not None else
+        provider.live_feed_endpoint if provider is not None and key is None else None
+    )
+    # Freeze values, not references into mutable observations. Revalidation must
+    # catch process restarts and evidence replacement even on an unchanged port.
+    inputs = {
+        "release": None if record is None else {
+            "tag": record.tag, "commit": record.commit,
+            "manifest": record.product_manifest, "requirements": record.live_feed_requirements,
+        },
+        "provider": None if provider is None else {
+            "tag": provider.tag, "commit": provider.commit,
+            "manifest": provider.product_manifest, "requirements": provider.live_feed_requirements,
+        },
+        "instance": None if instance is None else {
+            **asdict(instance), "evidence": compatibility.verification_evidence(instance.evidence),
+        },
+        "legacy_endpoint": endpoint if key is None else None,
+        "legacy_status": provider.live_feed_status if provider is not None and key is None else None,
+    }
+    verification = hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return ResolvedLiveFeedBinding(tag, key, provider_tag, endpoint, reason, verification)
+
+
+def resolve_live_feed_bindings(
+    desired: DesiredReleases, observed: ObservedState,
+) -> dict[str, ResolvedLiveFeedBinding]:
+    """Resolve proposed aliases without changing active bindings or doing I/O."""
+    production_tag = desired.production.tag
+    bindings = {
+        production_tag: _live_feed_binding(observed, production_tag, production_tag, "dedicated: production"),
+    }
+    if desired.staging is not None:
+        tag = desired.staging.tag
+        bindings[tag] = _live_feed_binding(observed, tag, tag, "dedicated: staging isolation")
+    production = observed.releases.get(production_tag)
+    production_instance = (
+        observed.live_feed_instances.get(production.live_feed_instance)
+        if production is not None and production.live_feed_instance is not None else None
+    )
+    for sunset in desired.sunset:
+        tag = sunset.tag
+        provider_tag = tag
+        if sunset.live_feeds == LiveFeedsPolicy.DEDICATED:
+            reason = "dedicated: policy"
+        elif not dedicated_live_feed_ready(observed, production_tag):
+            reason = "dedicated: production provider is not ready"
+        else:
+            record = observed.releases.get(tag)
+            decision = compatibility.compare_live_feed_compatibility(
+                None if record is None else record.live_feed_requirements,
+                None if production_instance is None else production_instance.evidence,
+            )
+            reason = f"dedicated: {decision.reason}"
+            if decision.compatible and production_instance is not None:
+                evidence = production_instance.evidence
+                if (
+                    evidence["release_tag"] != production_tag
+                    or evidence["launch_instance_id"] != production_instance.instance_id
+                    or evidence["startup_publication"] != {
+                        "path": production_instance.manifest, "sha256": production_instance.manifest_sha256,
+                    }
+                ):
+                    decision = compatibility.CompatibilityDecision(False, "production instance identity differs")
+                    reason = f"dedicated: {decision.reason}"
+            if decision.compatible:
+                provider_tag = production_tag
+                reason = f"shared with {production_tag}"
+        bindings[tag] = _live_feed_binding(observed, tag, provider_tag, reason)
+    return bindings
+
+
+def validate_live_feed_bindings(
+    desired: DesiredReleases, observed: ObservedState,
+    proposed: dict[str, ResolvedLiveFeedBinding],
+) -> None:
+    """Require the same complete decision and ready providers before activation."""
+    current = resolve_live_feed_bindings(desired, observed)
+    if current != proposed:
+        raise ReleaseConfigError("live-feed binding evidence changed before activation")
+    for tag, binding in current.items():
+        if not dedicated_live_feed_ready(observed, binding.provider_tag):
+            raise ReleaseConfigError(f"live-feed provider for {tag} is not ready")
+        if binding.shared and binding.provider_tag != desired.production.tag:
+            raise ReleaseConfigError(f"live-feed provider for {tag} is not production")
+
+
+def _binding_changed(observed: ObservedState, binding: ResolvedLiveFeedBinding) -> bool:
+    record = observed.releases.get(binding.release_tag)
+    if record is None:
+        return True
+    if binding.provider is None and record.live_feed_provider is None:
+        return False
+    return record.live_feed_provider != binding.provider or record.live_feed_reason != binding.reason
+
+
 def _desired_sunset_tags(desired: DesiredReleases) -> list[str]:
     return [binding.tag for binding in desired.sunset]
 
@@ -451,12 +722,14 @@ def plan_reconciliation(
     force_production_tag: str | None = None,
 ) -> ReconciliationPlan:
     production_tags = [desired.production.tag, *_desired_sunset_tags(desired)]
+    bindings = resolve_live_feed_bindings(desired, observed)
     for tag in production_tags:
         record = observed.releases.get(tag)
         if record is None or record.build_status != "passed":
             return ReconciliationPlan([ReconcileAction("build_release", tag)])
-        if record.live_feed_endpoint is None or record.live_feed_status != "running":
-            return ReconciliationPlan([ReconcileAction("start_live_feeds", tag)])
+        provider_tag = bindings[tag].provider_tag
+        if not dedicated_live_feed_ready(observed, provider_tag):
+            return ReconciliationPlan([ReconcileAction("start_live_feeds", provider_tag)])
 
     production_tag = desired.production.tag
     if observed.production != production_tag:
@@ -486,6 +759,9 @@ def plan_reconciliation(
     if observed.sunset != desired_sunset:
         return ReconciliationPlan([ReconcileAction("activate_generation")])
 
+    if any(_binding_changed(observed, bindings[tag]) for tag in production_tags):
+        return ReconciliationPlan([ReconcileAction("activate_generation")])
+
     # Serving an already-promoted release is not staging qualification. Refresh
     # its deployment evidence (and retained clients' evidence) before spending
     # time on a new staging build. Legacy observed records default to pending.
@@ -498,12 +774,9 @@ def plan_reconciliation(
         staging_record = observed.releases.get(staging_tag)
         if staging_record is None or staging_record.build_status != "passed":
             return ReconciliationPlan([ReconcileAction("build_release", staging_tag)])
-        if (
-            staging_record.live_feed_endpoint is None
-            or staging_record.live_feed_status != "running"
-        ):
+        if not dedicated_live_feed_ready(observed, staging_tag):
             return ReconciliationPlan([ReconcileAction("start_live_feeds", staging_tag)])
-        if observed.staging != staging_tag:
+        if observed.staging != staging_tag or _binding_changed(observed, bindings[staging_tag]):
             return ReconciliationPlan([ReconcileAction("activate_generation", staging_tag)])
         if staging_record.qualification_status != "passed":
             return ReconciliationPlan([ReconcileAction("qualify_release", staging_tag)])
@@ -870,9 +1143,28 @@ class GenerationRetention:
     release_tags: frozenset[str]
 
 
+def _launch_gc_path(build_root: Path, value: str) -> str:
+    if not isinstance(value, str):
+        raise ReleaseConfigError("invalid live-feed launch GC root path")
+    relative = Path(value)
+    parts = relative.parts
+    if (
+        relative.as_posix() != value or relative.is_absolute() or len(parts) != 4
+        or parts[0] != "live-feed-launches" or parts[2:] != ("packages", "current_artifacts.json")
+        or any(part in {".", ".."} for part in parts)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", parts[1])
+    ):
+        raise ReleaseConfigError(f"invalid live-feed launch GC root path: {value}")
+    path = owned_path(build_root, relative)
+    if not path.is_file():
+        raise ReleaseConfigError(f"missing live-feed launch GC root: {path}")
+    return value
+
+
 def generation_retention(
     build_root: Path, *, now: datetime | None = None,
     draining_until: dict[str, datetime] | None = None,
+    pinned_gc_paths: Iterable[str] = (),
 ) -> GenerationRetention:
     """Plan bounded generation retention; migrate old GC roots conservatively.
 
@@ -881,9 +1173,10 @@ def generation_retention(
     Unrooted historical/abandoned generations need no additional grace.
     """
     now = now or datetime.now(timezone.utc)
+    pinned = {_launch_gc_path(build_root, value) for value in pinned_gc_paths}
     active = current_generation(build_root)
     if active is None:
-        return GenerationRetention((), (), (), frozenset())
+        return GenerationRetention((), (), tuple(sorted(pinned)), frozenset())
     registry = owned_path(build_root, RELEASE_GC_ROOTS)
     rooted = set()
     if registry.exists():
@@ -897,6 +1190,9 @@ def generation_retention(
             if not isinstance(value, str):
                 raise ReleaseConfigError("invalid release GC root path")
             parts = Path(value).parts
+            if parts and parts[0] == "live-feed-launches":
+                _launch_gc_path(build_root, value)
+                continue
             if len(parts) < 3 or parts[0] != "channel-generations" or ".." in parts or parts[-1] != "current_artifacts.json":
                 raise ReleaseConfigError(f"invalid release GC root path: {value}")
             owned_path(build_root, Path(*parts[:2]))
@@ -939,7 +1235,7 @@ def generation_retention(
                         until = deadline
                         _retire_generation(generation, until)
         (retained if until is not None and until > now else expired).append(generation)
-    paths = sorted({path for generation in retained for path in _generation_gc_paths(build_root, generation)})
+    paths = sorted(pinned | {path for generation in retained for path in _generation_gc_paths(build_root, generation)})
     tags = set()
     for value in paths:
         parts = Path(value).parts
@@ -957,6 +1253,7 @@ def write_generation_gc_roots(build_root: Path, paths: Iterable[str]) -> None:
 
 def activate_channel_generation(
     build_root: Path, generation_root: Path, *, now: datetime | None = None,
+    pinned_gc_paths: Iterable[str] = (),
 ) -> None:
     """Atomically direct new requests at a complete generation.
 
@@ -971,7 +1268,7 @@ def activate_channel_generation(
         raise ReleaseConfigError(f"unsafe generation target: {generation_root}")
     new_roots = _generation_gc_paths(build_root, generation_root)
     now = now or datetime.now(timezone.utc)
-    retention = generation_retention(build_root, now=now)
+    retention = generation_retention(build_root, now=now, pinned_gc_paths=pinned_gc_paths)
     current_link = build_root / "channel-current"
     previous_generation = current_generation(build_root)
     if previous_generation is not None and previous_generation != generation_root:

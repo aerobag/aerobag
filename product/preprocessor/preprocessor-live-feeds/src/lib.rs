@@ -13,7 +13,9 @@ use preprocessor_data::faa_procedure_id_candidate_groups;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use product_contracts::{
     AirportNotamEffect, NotamAirportCatalog, ProcedurePublishedName, ProcedureRendezvousKey,
-    ProcedureRendezvousKind,
+    ProcedureRendezvousKind, METAR_PRODUCT_CONTRACT_VERSION, METAR_SNAPSHOT_SCHEMA_VERSION,
+    PIREP_PRODUCT_CONTRACT_VERSION, TAF_PRODUCT_CONTRACT_VERSION, TFR_MANIFEST_SCHEMA_VERSION,
+    TFR_PRODUCT_CONTRACT_VERSION,
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -29,9 +31,6 @@ pub mod simulation;
 pub mod tfr_detail_backfill;
 mod winds_aloft;
 
-const METAR_PRODUCT_CONTRACT_VERSION: u32 = 9;
-const TAF_PRODUCT_CONTRACT_VERSION: u32 = 1;
-const PIREP_PRODUCT_CONTRACT_VERSION: u32 = 1;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]
@@ -1032,7 +1031,7 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
     write_json_pretty(
         &structured_json_path,
         &StructuredTfrDataset {
-            schema_version: 2,
+            schema_version: TFR_PRODUCT_CONTRACT_VERSION,
             version_label: request.version_label.clone(),
             notam_count: entries.len(),
             area_group_count: structured_areas.len(),
@@ -1042,7 +1041,7 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
     write_json_pretty(
         &manifest_path,
         &TfrManifest {
-            schema_version: 1,
+            schema_version: TFR_MANIFEST_SCHEMA_VERSION,
             version_label: request.version_label.clone(),
             generated_at_utc: request.generated_at_utc.to_rfc3339(),
             files: TfrManifestFiles {
@@ -1140,7 +1139,7 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     write_json_pretty(
         &structured_json_path,
         &StructuredMetarDataset {
-            schema_version: 4,
+            schema_version: METAR_SNAPSHOT_SCHEMA_VERSION,
             version_label: request.version_label.clone(),
             generated_at_utc: content_timestamp_text.clone(),
             observed_at_utc: content_timestamp_text.clone(),
@@ -1207,7 +1206,7 @@ pub fn build_taf_dataset(request: &BuildTafRequest) -> anyhow::Result<BuildTafRe
     write_json_pretty(
         &structured_json_path,
         &StructuredTafDataset {
-            schema_version: 1,
+            schema_version: TAF_PRODUCT_CONTRACT_VERSION,
             version_label: request.version_label.clone(),
             taf_count,
             tafs_by_station: model.tafs_by_station.clone(),
@@ -1271,7 +1270,7 @@ pub fn build_pirep_dataset(request: &BuildPirepRequest) -> anyhow::Result<BuildP
     write_json_pretty(
         &structured_json_path,
         &StructuredPirepDataset {
-            schema_version: 1,
+            schema_version: PIREP_PRODUCT_CONTRACT_VERSION,
             version_label: request.version_label.clone(),
             generated_at_utc: content_timestamp_text.clone(),
             observed_at_utc: content_timestamp_text.clone(),
@@ -3852,6 +3851,84 @@ mod tests {
     use std::io::{BufWriter, Write};
     use std::process::Command;
     use tempfile::{NamedTempFile, TempDir};
+
+    #[test]
+    fn record_product_bytes_match_complete_compatibility_inventory() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let input = temp.path().join("input");
+        fs::create_dir(&input)?;
+        let xml = input.join("empty.xml");
+        fs::write(&xml, "<response><data num_results=\"0\"></data></response>")?;
+        fs::write(input.join("list.json"), "[]")?;
+        let time = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")?.with_timezone(&Utc);
+        let metars = build_metar_dataset(&BuildMetarRequest {
+            metar_xml_path: xml.clone(),
+            output_dir: temp.path().join("metars"),
+            version_label: "synthetic".into(),
+            generated_at_utc: time,
+        })?;
+        let tafs = build_taf_dataset(&BuildTafRequest {
+            taf_xml_path: xml.clone(),
+            output_dir: temp.path().join("tafs"),
+            version_label: "synthetic".into(),
+            generated_at_utc: time,
+        })?;
+        let pireps = build_pirep_dataset(&BuildPirepRequest {
+            pirep_xml_path: xml,
+            output_dir: temp.path().join("pireps"),
+            version_label: "synthetic".into(),
+            generated_at_utc: time,
+        })?;
+        let tfrs = build_tfr_dataset(&BuildTfrRequest {
+            input_dir: input,
+            output_dir: temp.path().join("tfrs"),
+            version_label: "synthetic".into(),
+            generated_at_utc: time,
+            notams_by_fdc_id: BTreeMap::new(),
+        })?;
+        let inventory = product_contracts::live_feed_compatibility_descriptor();
+        for (id, snapshot, manifest) in [
+            ("metars", metars.structured_json_path, metars.manifest_path),
+            ("tafs", tafs.structured_json_path, tafs.manifest_path),
+            ("pireps", pireps.structured_json_path, pireps.manifest_path),
+            ("tfrs", tfrs.structured_json_path, tfrs.manifest_path),
+        ] {
+            let contract = &inventory.products[id];
+            let state: Value = serde_json::from_slice(&fs::read(snapshot)?)?;
+            let manifest: Value = serde_json::from_slice(&fs::read(manifest)?)?;
+            assert_eq!(
+                state["schema_version"], contract.formats["snapshot"].schema_version,
+                "{id}"
+            );
+            assert_eq!(
+                manifest["schema_version"], contract.formats["product_manifest"].schema_version,
+                "{id}"
+            );
+            assert!(
+                state.get(&contract.parameters["records_key"]).is_some(),
+                "{id}"
+            );
+            assert!(
+                state.get(&contract.parameters["count_key"]).is_some(),
+                "{id}"
+            );
+            let wire = nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&state)?)
+                .map_err(anyhow::Error::msg)?;
+            let (decoded, prepared) = app_core::live_feeds::prepare_live_feed_state_resource(
+                &format!("live_feeds/state/{id}/synthetic"),
+                &wire,
+            )?;
+            assert_eq!(
+                decoded, state,
+                "core must consume the emitted {id} snapshot"
+            );
+            assert_eq!(
+                app_core::live_feeds::decode_prepared_live_feed(&prepared)?.product,
+                id
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn compact_notam_timestamp_accepts_estimated_suffix() -> anyhow::Result<()> {

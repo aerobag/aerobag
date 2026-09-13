@@ -1792,7 +1792,7 @@ class ReleaseProductDiagnosticsTests(unittest.TestCase):
         self.channels = self.root / "channel-current"
         self.channels.mkdir()
         (self.channels / "generation.json").write_text(json.dumps({
-            "production": "new", "staging": None, "sunset": ["old"],
+            "schema_version": 1, "production": "new", "staging": None, "sunset": ["old"],
         }), encoding="utf-8")
         (self.channels / "live-feed-routes.json").write_text(json.dumps({
             "production": "http://127.0.0.1:8100",
@@ -1999,6 +1999,249 @@ class LiveFeedRecoveryTests(unittest.TestCase):
         self.assertEqual(metric["severity"], "ok")
 
 
+class LiveFeedBindingCollectionTests(unittest.TestCase):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.generation = self.root / "channel-generations/00000002"
+        self.generation.mkdir(parents=True)
+        self.channel_root = self.root / "channel-current"
+        self.channel_root.symlink_to(self.generation, target_is_directory=True)
+        self.config = SimpleNamespace(
+            artifact_root=self.root, data_root=self.root, channel_root=self.channel_root,
+            standalone_current_artifacts_path=None, standalone_live_feeds_status_url=None,
+            deploy_health_path=self.root / "health.json", cloud_status_secret_path=self.root / "secret",
+            cloud_status_url="http://cloud/status", build_watch_url="http://build/status",
+            calendar_path=self.root / "calendar.json",
+        )
+        self.metadata = {"schema_version": 2, "generation": 2, "production": "prod",
+                         "staging": "stage", "sunset": ["old", "older"]}
+        self.routes = {"schema_version": 1, "production": "http://127.0.0.1:8100",
+                       "staging": "http://127.0.0.1:8101", "releases": {
+                           tag: f"http://127.0.0.1:{8101 if tag == 'stage' else 8100}"
+                           for tag in ["prod", "stage", "old", "older"]}}
+        self.bindings = {"schema_version": 1, "releases": {
+            tag: {"release_tag": tag, "provider": "stage-instance" if tag == "stage" else "prod-instance",
+                  "provider_tag": "stage" if tag == "stage" else "prod",
+                  "endpoint": endpoint, "reason": "compatible" if tag in {"old", "older"} else "dedicated",
+                  "verification": "a" * 64}
+            for tag, endpoint in self.routes["releases"].items()}}
+        self.observed = {"schema_version": 2, "releases": {
+            tag: {"tag": tag, "commit": tag, "release_root": str(self.root / tag),
+                  "build_status": "passed", "qualification_status": "passed",
+                  "deployment_status": "passed", "live_feed_status": "stopped",
+                  "live_feed_instance": f"{tag}-redundant", "live_feed_provider": f"{tag}-redundant"}
+            for tag in self.routes["releases"]}, "live_feed_instances": {
+                "prod-instance": {"instance_id": "prod-instance", "release_tag": "prod", "status": "running",
+                                  "endpoint": self.routes["production"], "launch_digest": "b" * 64,
+                                  "manifest_sha256": "c" * 64},
+                "stage-instance": {"instance_id": "stage-instance", "release_tag": "stage", "status": "running",
+                                   "endpoint": self.routes["staging"]},
+            }}
+        for channel in ["production", "staging", "releases/prod", "releases/old", "releases/older"]:
+            path = self.generation / channel / "packages/current_artifacts.json"
+            path.parent.mkdir(parents=True)
+            path.write_text("[]")
+
+    def write_metadata(self) -> None:
+        for name, document in [("generation.json", self.metadata), ("live-feed-routes.json", self.routes),
+                               ("live-feed-bindings.json", self.bindings)]:
+            (self.generation / name).write_text(json.dumps(document))
+        state = self.root / "state/releases-observed.json"
+        state.parent.mkdir(exist_ok=True)
+        state.write_text(json.dumps(self.observed))
+
+    def collect(self, *, failed_probe: bool = False) -> dict:
+        self.write_metadata()
+
+        def fetch(url: str, **kwargs) -> tuple:
+            if failed_probe and url == self.routes["production"] + "/live-feeds/status.json":
+                return None, "connection refused"
+            return {"schema_version": 3, "active_sse_clients": 2 if ":8101/" in url else 7,
+                    "products": {}, "product_policies": []}, None
+
+        with patch.object(pipeline_health, "cloud_status_authorization", return_value=("unused", None)), \
+             patch.object(pipeline_health, "fetch_json_url", side_effect=fetch) as requests, \
+             patch.object(pipeline_health, "collect_telemetry_expectations", return_value={"contracts": {}}) as telemetry:
+            result = pipeline_health.collect_facts(self.config, self.now)
+        self.probes = [call.args[0] for call in requests.call_args_list
+                       if call.args[0].endswith("/live-feeds/status.json")]
+        self.telemetry_calls = telemetry.call_args_list
+        return result
+
+    def test_active_bindings_share_one_probe_without_replacing_consumer_product_identity(self) -> None:
+        facts = self.collect()
+        self.assertEqual(self.probes, [self.routes["production"] + "/live-feeds/status.json",
+                                      self.routes["staging"] + "/live-feeds/status.json"])
+        result = pipeline_health.evaluate_health(facts, [], self.now)
+        for scope in ["production", "release-old", "release-older"]:
+            self.assertEqual(metric(result, f"channel.{scope}.release.live_feed_status")["severity"], "ok")
+            provider = facts["channels"][scope]["live_feed_provider"]
+            self.assertEqual(provider["instance_id"], "prod-instance")
+            self.assertEqual(provider["verification"], "a" * 64)
+        self.assertEqual(metric(result, "live_feed.active_sse_clients")["value"], 9)
+        old_call = next(call for call in self.telemetry_calls if call.args[0]["tag"] == "old")
+        self.assertEqual(old_call.args[1], self.observed["releases"]["old"])
+        old = facts["channels"]["release-old"]
+        self.assertIn("releases/old/packages", old["inputs"]["current_artifacts"]["path"])
+        self.assertEqual(old["release_state"]["live_feed_status"], "stopped")
+
+    def test_same_tag_new_instance_does_not_replace_the_still_bound_instance(self) -> None:
+        self.observed["live_feed_instances"]["prod-redundant"] = {
+            "instance_id": "prod-redundant", "release_tag": "prod", "status": "failed",
+            "endpoint": "http://127.0.0.1:8109",
+        }
+        facts = self.collect()
+        self.assertNotIn("http://127.0.0.1:8109/live-feeds/status.json", self.probes)
+        self.assertEqual(facts["channels"]["production"]["live_feed_provider"]["instance_id"], "prod-instance")
+
+    def test_failed_shared_probe_is_attributed_to_all_dependents_but_not_staging(self) -> None:
+        result = pipeline_health.evaluate_health(self.collect(failed_probe=True), [], self.now)
+        self.assertEqual(len(self.probes), 2)
+        for scope in ["production", "release-old", "release-older"]:
+            name = f"channel.{scope}.input.live_feeds_status.available"
+            self.assertTrue(any(alert["metric_id"] == name for alert in result["alerts"]))
+        self.assertEqual(metric(result, "channel.staging.input.live_feeds_status.available")["severity"], "ok")
+
+    def test_missing_bound_instance_is_a_failure_without_fallback_to_release_status(self) -> None:
+        del self.observed["live_feed_instances"]["prod-instance"]
+        for record in self.observed["releases"].values():
+            record["live_feed_status"] = "running"
+        result = pipeline_health.evaluate_health(self.collect(), [], self.now)
+        for scope in ["production", "release-old", "release-older"]:
+            item = metric(result, f"channel.{scope}.release.live_feed_status")
+            self.assertEqual(item["severity"], "critical")
+            self.assertIn("absent from observed state", item["message"])
+
+    def test_instance_identity_mismatch_is_a_failure_even_if_endpoint_answers(self) -> None:
+        self.observed["live_feed_instances"]["prod-instance"]["endpoint"] = "http://127.0.0.1:8109"
+        result = pipeline_health.evaluate_health(self.collect(), [], self.now)
+        self.assertEqual(metric(result, "channel.release-old.release.live_feed_status")["severity"], "critical")
+        self.assertIn("identity disagrees", metric(result, "channel.production.release.live_feed_status")["message"])
+
+    def test_dedicated_sunset_uses_own_instance_and_resolution_reason(self) -> None:
+        binding = self.bindings["releases"]["old"]
+        binding.update(provider="old-instance", provider_tag="old", endpoint="http://127.0.0.1:8102",
+                       reason="dedicated: NOTAM catalog differs")
+        self.routes["releases"]["old"] = binding["endpoint"]
+        self.observed["live_feed_instances"]["old-instance"] = {
+            "instance_id": "old-instance", "release_tag": "old", "endpoint": binding["endpoint"], "status": "running",
+        }
+        result = pipeline_health.evaluate_health(self.collect(), [], self.now)
+        self.assertEqual(len(self.probes), 3)
+        item = metric(result, "channel.release-old.release.live_feed_status")
+        self.assertEqual(item["severity"], "ok")
+        self.assertIn("NOTAM catalog differs", item["message"])
+        self.assertIn("dedicated to old", item["message"])
+
+    def test_new_generation_missing_sidecar_fails_closed(self) -> None:
+        self.write_metadata()
+        (self.generation / "live-feed-bindings.json").unlink()
+        sources, status = pipeline_health.release_channel_sources(self.config)
+        self.assertEqual(sources, [])
+        self.assertIn("live-feed-bindings.json", status["error"])
+
+    def test_invalid_binding_schema_does_not_select_legacy_routes(self) -> None:
+        for version in [None, True, 2, "1"]:
+            with self.subTest(version=version):
+                self.bindings["schema_version"] = version
+                self.write_metadata()
+                sources, status = pipeline_health.release_channel_sources(self.config)
+                self.assertEqual(sources, [])
+                self.assertIn("binding schema", status["error"])
+
+    def test_incomplete_binding_table_fails_closed(self) -> None:
+        del self.bindings["releases"]["older"]
+        self.write_metadata()
+        sources, status = pipeline_health.release_channel_sources(self.config)
+        self.assertEqual(sources, [])
+        self.assertIn("do not match", status["error"])
+
+    def test_staging_cannot_share_production(self) -> None:
+        self.bindings["releases"]["stage"].update(provider="prod-instance", provider_tag="prod")
+        self.write_metadata()
+        sources, status = pipeline_health.release_channel_sources(self.config)
+        self.assertEqual(sources, [])
+        self.assertIn("invalid shared", status["error"])
+
+    def test_binding_route_disagreement_fails_closed(self) -> None:
+        self.bindings["releases"]["old"]["endpoint"] = "http://127.0.0.1:8199"
+        self.write_metadata()
+        sources, status = pipeline_health.release_channel_sources(self.config)
+        self.assertEqual(sources, [])
+        self.assertIn("disagrees with active route", status["error"])
+
+    def test_production_release_alias_must_match_its_bound_provider(self) -> None:
+        self.routes["releases"]["prod"] = "http://127.0.0.1:8199"
+        self.write_metadata()
+        sources, status = pipeline_health.release_channel_sources(self.config)
+        self.assertEqual(sources, [])
+        self.assertIn("disagrees with active route", status["error"])
+
+
+class LiveFeedProviderMetricsTests(unittest.TestCase):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+
+    def channel(self) -> dict:
+        return {
+            "tag": "old", "role": "sunset",
+            "release_state": {
+                "build_status": "passed", "qualification_status": "passed",
+                "deployment_status": "passed", "live_feed_status": "stopped",
+            },
+            "live_feed_provider": {
+                "instance_id": "prod-catalog-a", "release_tag": "prod", "status": "running",
+                "endpoint": "http://127.0.0.1:8100", "reason": "compatible",
+                "launch_digest": "a" * 64, "manifest_sha256": "b" * 64, "error": None,
+            },
+        }
+
+    def metrics(self, channel: dict) -> dict:
+        items = []
+        pipeline_health.add_channel_release_metrics(items, channel, self.now)
+        return {item["id"]: item for item in items}
+
+    def test_shared_sunset_does_not_expect_its_redundant_daemon_running(self) -> None:
+        channel = self.channel()
+        item = self.metrics(channel)["release.live_feed_status"]
+        self.assertEqual(item["severity"], "ok")
+        self.assertEqual(item["value"], "running")
+        self.assertIn("shared with prod", item["message"])
+        self.assertIn("compatible", item["message"])
+        self.assertEqual(item["details"]["provider"], channel["live_feed_provider"])
+        self.assertEqual(channel["release_state"]["live_feed_status"], "stopped")
+
+    def test_shared_provider_failure_is_not_hidden_by_consumer_daemon_state(self) -> None:
+        channel = self.channel()
+        channel["release_state"]["live_feed_status"] = "running"
+        channel["live_feed_provider"]["status"] = "failed"
+        item = self.metrics(channel)["release.live_feed_status"]
+        self.assertEqual(item["severity"], "critical")
+        self.assertEqual(item["value"], "failed")
+
+    def test_provider_identity_error_is_critical_even_when_instance_is_running(self) -> None:
+        channel = self.channel()
+        channel["live_feed_provider"]["error"] = "binding endpoint does not match observed instance"
+        item = self.metrics(channel)["release.live_feed_status"]
+        self.assertEqual(item["severity"], "critical")
+        self.assertIn("binding endpoint does not match observed instance", item["message"])
+
+    def test_sharing_does_not_suppress_consumer_release_checks(self) -> None:
+        channel = self.channel()
+        channel["release_state"].update(
+            build_status="failed", deployment_status="failed", product_refresh_status="failed",
+            product_refresh_error="sunset product publication failed",
+        )
+        items = self.metrics(channel)
+        self.assertEqual(items["release.build_status"]["severity"], "critical")
+        self.assertEqual(items["release.qualification_status"]["severity"], "critical")
+        self.assertEqual(items["release.product_refresh"]["severity"], "warning")
+        self.assertEqual(items["release.live_feed_status"]["severity"], "ok")
+
+
 class LiveFeedClientMetricsTests(unittest.TestCase):
     now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
     name = "live_feed.active_sse_clients"
@@ -2165,6 +2408,49 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
                         first["channels"]["production"]["inputs"]["live_feeds_status"]), None if failure else 7)
                     self.assertEqual(pipeline_health.live_feed_client_count(
                         second["channels"]["production"]["inputs"]["live_feeds_status"]), 4)
+
+    def test_shared_provider_failure_alerts_every_dependent_release_from_one_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current = root / "current.json"
+            current.write_text("[]")
+            config = SimpleNamespace(
+                artifact_root=root, data_root=root, deploy_health_path=root / "health.json",
+                cloud_status_secret_path=root / "secret", cloud_status_url="http://cloud/status",
+                build_watch_url="http://build/status", calendar_path=root / "calendar.json",
+            )
+            sources = [
+                {"id": scope, "role": role, "tag": scope, "deployment_managed": False,
+                 "current_artifacts_path": current,
+                 "live_feeds_endpoint": f"http://127.0.0.1:{port}"}
+                for scope, role, port in [
+                    ("production", "production", 8100), ("release-old", "sunset", 8100),
+                    ("release-older", "sunset", 8100), ("staging", "staging", 8101),
+                ]
+            ]
+
+            def fetch(url: str, **_kwargs: object) -> tuple:
+                if url == "http://127.0.0.1:8100/live-feeds/status.json":
+                    return None, "connection refused"
+                return {}, None
+
+            with patch.object(pipeline_health, "release_channel_sources", return_value=(sources, {})), \
+                 patch.object(pipeline_health, "cloud_status_authorization", return_value=("unused", None)), \
+                 patch.object(pipeline_health, "fetch_json_url", side_effect=fetch) as mocked:
+                facts = pipeline_health.collect_facts(config, self.now)
+            self.assertEqual(
+                [call.args[0] for call in mocked.call_args_list
+                 if call.args[0].endswith("/live-feeds/status.json")],
+                ["http://127.0.0.1:8100/live-feeds/status.json",
+                 "http://127.0.0.1:8101/live-feeds/status.json"],
+            )
+            result = pipeline_health.evaluate_health(facts, [], self.now)
+        for scope in ["production", "release-old", "release-older"]:
+            name = f"channel.{scope}.input.live_feeds_status.available"
+            self.assertEqual(metric(result, name)["severity"], "critical")
+            self.assertTrue(any(alert["metric_id"] == name and alert["scope"] == scope
+                                for alert in result["alerts"]))
+        self.assertEqual(metric(result, "channel.staging.input.live_feeds_status.available")["severity"], "ok")
 
     def test_counts_round_trip_through_history_and_graph_with_peaks_and_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

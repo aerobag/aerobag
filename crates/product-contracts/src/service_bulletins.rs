@@ -101,6 +101,11 @@ pub struct BulletinHint {
     pub revision: u64,
 }
 
+impl BulletinHint {
+    /// Compatibility metadata for the existing hint shape, not an on-wire field.
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
 pub fn epoch_ms(value: &str) -> Result<i64, String> {
     if !value.ends_with('Z') {
         return Err("bulletin timestamps must use UTC Z notation".into());

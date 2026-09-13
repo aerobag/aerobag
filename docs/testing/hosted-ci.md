@@ -170,6 +170,23 @@ uses them. For example, only the plate screenshot journey installs
 `python3-pil` in ordinary E2E; the heavy NEXRAD replay also declares it because
 the source-grid tiler imports Pillow.
 
+The named `Live-feed controller proxy cutover` CI job installs nginx and pytest
+and explicitly runs `tools/ci/live_feed_proxy_smoke.py`. It exercises real
+controller activation, generated routing, direct provider revalidation, nginx
+reload/rollback and SSE/HTTP cutover against independent synthetic daemons.
+It uses only loopback listeners and private PID/config/log/temp paths, never
+host systemd. Set `AEROBAG_TEST_NGINX` to an extracted executable, or install
+`nginx` on PATH for local release preflight and full qualification. Their
+`ci-live-feed-proxy` lane requires it; cheap preflight excludes that lane and
+generic Python discovery does not select the smoke script. Failure evidence is
+retained under `AEROBAG_PROXY_SMOKE_ARTIFACT_DIR` (a fresh temporary directory by
+default) and uploaded with individual JUnit results by the hosted job.
+
+Cheap preflight uses the checkout's `ui-target/shared/rust-target` by default,
+or an explicit `CARGO_TARGET_DIR`. Do not share Cargo's executable output
+directory between concurrent checkouts: a fresh fingerprint can otherwise run
+the other checkout's most recently linked generator binary.
+
 ## Fixture Ownership
 
 `test-artifacts.lock.json` is the authority for the artifact repository commit,

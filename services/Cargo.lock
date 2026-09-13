@@ -433,6 +433,13 @@ name = "had-key"
 version = "0.1.0"
 
 [[package]]
+name = "had-nav-kv"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,6 +678,7 @@ dependencies = [
  "base64",
  "chrono",
  "had-key",
+ "had-nav-kv",
  "prost",
  "serde",
  "serde_json",

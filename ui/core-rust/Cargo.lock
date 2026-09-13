@@ -944,6 +944,7 @@ dependencies = [
  "base64",
  "chrono",
  "had-key",
+ "had-nav-kv",
  "prost",
  "serde",
  "serde_json",

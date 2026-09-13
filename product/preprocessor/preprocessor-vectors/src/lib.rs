@@ -1450,7 +1450,7 @@ pub fn build_obstacle_dataset(
                 &mut had_pairs,
                 obstacle_tile_key(tile.z, tile.x, tile.y),
                 &PointTileFile {
-                    schema_version: 1,
+                    schema_version: product_contracts::OBSTACLE_TILE_SCHEMA_VERSION,
                     layer: "obstacle".to_string(),
                     z: tile.z,
                     x: tile.x,
@@ -1550,7 +1550,7 @@ pub fn build_obstacle_dataset(
     write_json_pretty(
         &manifest_path,
         &ObstacleHadManifest {
-            schema_version: 1,
+            schema_version: product_contracts::OBSTACLE_MANIFEST_SCHEMA_VERSION,
             product_id: "obstacles".to_string(),
             version_label: request.version_label.clone(),
             generated_at_utc: request.generated_at_utc,

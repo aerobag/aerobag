@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import subprocess
 import sys
 import tempfile
@@ -19,9 +20,63 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 import release_reconciler as releases  # noqa: E402
+from test_live_feed_compatibility import provider, requirement  # noqa: E402
 
 
 class DesiredReleaseTests(unittest.TestCase):
+    def policy_document(self, version: int = 2) -> dict:
+        return {
+            "schema_version": version, "production": {"tag": "prod"},
+            "staging": {"tag": "stage"},
+            "sunset": [{"tag": "old", "until_utc": "2026-10-01T00:00:00Z"}],
+        }
+
+    def test_missing_sunset_policy_defaults_to_sharing_in_both_versions(self) -> None:
+        for version in (1, 2):
+            with self.subTest(version=version):
+                desired = releases.parse_desired_releases(self.policy_document(version))
+                self.assertEqual(desired.sunset[0].live_feeds, releases.LiveFeedsPolicy.SHARE_IF_COMPATIBLE)
+
+    def test_dedicated_is_an_explicit_sunset_opt_out(self) -> None:
+        document = self.policy_document()
+        document["sunset"][0]["live_feeds"] = "dedicated"
+        self.assertEqual(releases.parse_desired_releases(document).sunset[0].live_feeds, releases.LiveFeedsPolicy.DEDICATED)
+
+    def test_unknown_or_malformed_policies_are_rejected(self) -> None:
+        for policy in (None, True, 1, [], {}, "share", "SHARE_IF_COMPATIBLE"):
+            with self.subTest(policy=policy), self.assertRaises(releases.ReleaseConfigError):
+                document = self.policy_document()
+                document["sunset"][0]["live_feeds"] = policy
+                releases.parse_desired_releases(document)
+
+    def test_policy_is_rejected_on_production_and_staging(self) -> None:
+        for channel in ("production", "staging"):
+            with self.subTest(channel=channel), self.assertRaisesRegex(releases.ReleaseConfigError, "unknown field"):
+                document = self.policy_document()
+                document[channel]["live_feeds"] = "dedicated"
+                releases.parse_desired_releases(document)
+
+    def test_v1_does_not_silently_accept_v2_fields(self) -> None:
+        document = self.policy_document(1)
+        document["sunset"][0]["live_feeds"] = "dedicated"
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "unknown field"):
+            releases.parse_desired_releases(document)
+
+    def test_desired_schema_version_requires_known_integer(self) -> None:
+        for version in (None, True, 1.0, "2", 0, 3):
+            with self.subTest(version=version), self.assertRaisesRegex(releases.ReleaseConfigError, "schema_version"):
+                releases.parse_desired_releases(self.policy_document(version))
+
+    def test_migration_is_explicit_idempotent_and_does_not_mutate_input(self) -> None:
+        document = self.policy_document(1)
+        before = json.dumps(document)
+        migrated = releases.migrate_desired_releases(document)
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["sunset"][0]["live_feeds"], "share_if_compatible")
+        self.assertEqual(migrated["sunset"][0]["until_utc"], document["sunset"][0]["until_utc"])
+        self.assertEqual(releases.migrate_desired_releases(migrated), migrated)
+        self.assertEqual(json.dumps(document), before)
+
     def test_rejects_the_same_release_in_production_and_staging(self) -> None:
         with self.assertRaisesRegex(releases.ReleaseConfigError, "production and staging"):
             releases.parse_desired_releases(
@@ -397,7 +452,294 @@ class ReconciliationPlannerTests(unittest.TestCase):
         )
 
 
+class LiveFeedBindingPlannerTests(unittest.TestCase):
+    desired = ReconciliationPlannerTests.desired
+    observed_release = ReconciliationPlannerTests.observed_release
+
+    def state(self, sunset: tuple[str, ...] = ("old",), staging: str | None = "stage"):
+        desired = self.desired("prod", staging, sunset)
+        observed = releases.ObservedState(production="prod", staging=staging, sunset=list(sunset), generation=2)
+        for tag in desired.tags():
+            record = self.observed_release(tag)
+            record.live_feed_endpoint = None
+            record.live_feed_status = "migrated"
+            record.live_feed_requirements = requirement(tag)
+            evidence = provider(tag)
+            instance = releases.LiveFeedInstance(
+                instance_id=evidence["launch_instance_id"], release_tag=tag, launch_digest="d" * 64,
+                endpoint=f"http://127.0.0.1:{8100 + len(observed.releases)}",
+                unit=f"aerobag-live-feeds-release@{tag}-instance.service",
+                manifest=evidence["startup_publication"]["path"],
+                manifest_sha256=evidence["startup_publication"]["sha256"],
+                evidence=evidence, status="stopped" if tag in sunset else "running",
+            )
+            record.live_feed_instance = instance.instance_id
+            observed.releases[tag] = record
+            observed.live_feed_instances[instance.instance_id] = instance
+        self.activate(desired, observed)
+        return desired, observed
+
+    def activate(self, desired, observed):
+        for tag, binding in releases.resolve_live_feed_bindings(desired, observed).items():
+            observed.releases[tag].live_feed_provider = binding.provider
+            observed.releases[tag].live_feed_reason = binding.reason
+
+    def own(self, observed, tag):
+        return observed.live_feed_instances[observed.releases[tag].live_feed_instance]
+
+    def test_compatible_sunset_shares_without_starting_its_own_daemon(self) -> None:
+        desired, observed = self.state()
+        bindings = releases.resolve_live_feed_bindings(desired, observed)
+        self.assertEqual(bindings["old"].provider, "prod-instance")
+        self.assertEqual(bindings["old"].reason, "shared with prod")
+        self.assertEqual(self.own(observed, "old").status, "stopped")
+        self.assertTrue(releases.plan_reconciliation(desired, observed).converged)
+
+    def test_staging_always_uses_a_separate_own_instance(self) -> None:
+        desired, observed = self.state()
+        bindings = releases.resolve_live_feed_bindings(desired, observed)
+        self.assertEqual(bindings["stage"].provider, "stage-instance")
+        self.assertFalse(bindings["stage"].shared)
+        self.own(observed, "stage").status = "stopped"
+        plan = releases.plan_reconciliation(desired, observed)
+        self.assertEqual(plan.actions, [releases.ReconcileAction("start_live_feeds", "stage")])
+
+    def test_opt_out_prepares_previously_stopped_own_instance_before_activation(self) -> None:
+        _, observed = self.state()
+        desired = releases.DesiredReleases(
+            releases.ReleaseBinding("prod"), releases.ReleaseBinding("stage"),
+            (releases.SunsetBinding("old", "2026-10-01T00:00:00Z", releases.LiveFeedsPolicy.DEDICATED),),
+        )
+        plan = releases.plan_reconciliation(desired, observed)
+        self.assertEqual(plan.actions, [releases.ReconcileAction("start_live_feeds", "old")])
+        self.own(observed, "old").status = "running"
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("activate_generation")])
+        self.activate(desired, observed)
+        self.assertTrue(releases.plan_reconciliation(desired, observed).converged)
+
+    def test_missing_requirement_is_dedicated_not_a_failed_deployment(self) -> None:
+        desired, observed = self.state()
+        observed.releases["old"].live_feed_requirements = None
+        binding = releases.resolve_live_feed_bindings(desired, observed)["old"]
+        self.assertFalse(binding.shared)
+        self.assertIn("metadata unavailable", binding.reason)
+        plan = releases.plan_reconciliation(desired, observed)
+        self.assertIsNone(plan.blocked_reason)
+        self.assertEqual(plan.actions, [releases.ReconcileAction("start_live_feeds", "old")])
+
+    def test_unready_compatibility_is_dedicated_without_restart_loop(self) -> None:
+        desired, observed = self.state()
+        self.own(observed, "prod").evidence["ready"] = False
+        self.own(observed, "old").status = "running"
+        self.activate(desired, observed)
+        self.assertFalse(releases.resolve_live_feed_bindings(desired, observed)["old"].shared)
+        self.assertTrue(releases.plan_reconciliation(desired, observed).converged)
+
+    def test_both_incompatible_shared_sunsets_restart_dedicated_before_activation(self) -> None:
+        desired, observed = self.state(("old", "older"))
+        self.own(observed, "prod").evidence["notam_catalog"]["sha256"] = "e" * 64
+        for tag in ("old", "older"):
+            plan = releases.plan_reconciliation(desired, observed)
+            self.assertIsNone(plan.blocked_reason)
+            self.assertEqual(plan.actions, [releases.ReconcileAction("start_live_feeds", tag)])
+            self.own(observed, tag).status = "running"
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("activate_generation")])
+        self.activate(desired, observed)
+        self.assertTrue(releases.plan_reconciliation(desired, observed).converged)
+
+    def test_failed_required_dedicated_instance_never_activates(self) -> None:
+        desired, observed = self.state()
+        self.own(observed, "prod").evidence = None
+        self.own(observed, "old").status = "failed"
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("start_live_feeds", "old")])
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "not ready"):
+            releases.validate_live_feed_bindings(desired, observed, releases.resolve_live_feed_bindings(desired, observed))
+
+    def test_no_transitive_sharing_through_a_compatible_sunset(self) -> None:
+        desired, observed = self.state(("old", "older"))
+        self.own(observed, "prod").evidence["notam_catalog"]["sha256"] = "e" * 64
+        self.own(observed, "old").status = "running"
+        bindings = releases.resolve_live_feed_bindings(desired, observed)
+        self.assertEqual(bindings["older"].provider_tag, "older")
+        self.assertFalse(bindings["older"].shared)
+
+    def test_rollback_prepares_previously_shared_release_as_production(self) -> None:
+        _, observed = self.state()
+        desired = self.desired("old", None, ("prod",))
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("start_live_feeds", "old")])
+        self.own(observed, "old").status = "running"
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("activate_generation", "old")])
+
+    def test_same_tag_replacement_prepares_new_instance_before_binding_change(self) -> None:
+        desired, observed = self.state()
+        replacement = copy.deepcopy(self.own(observed, "prod"))
+        replacement.instance_id = "prod-replacement"
+        replacement.status = "pending"
+        replacement.evidence["launch_instance_id"] = replacement.instance_id
+        observed.live_feed_instances[replacement.instance_id] = replacement
+        observed.releases["prod"].live_feed_instance = replacement.instance_id
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("start_live_feeds", "prod")])
+        replacement.status = "running"
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("activate_generation")])
+
+    def test_expiring_one_sunset_does_not_remove_shared_provider_health_target(self) -> None:
+        _, observed = self.state(("old", "older"))
+        desired = self.desired("prod", "stage", ("older",))
+        targets = releases.live_feed_health_targets(desired, observed)
+        self.assertEqual(targets[self.own(observed, "prod").unit], ("prod", "older"))
+        self.assertEqual(len(targets), 2)
+        self.assertIn("old", observed.releases)
+
+    def test_ordinary_product_advance_does_not_invalidate_activation(self) -> None:
+        desired, observed = self.state()
+        proposed = releases.resolve_live_feed_bindings(desired, observed)
+        self.own(observed, "prod").evidence["published_state_id"] = "state-2"
+        releases.validate_live_feed_bindings(desired, observed, proposed)
+
+    def test_process_restart_invalidates_activation_even_on_same_endpoint(self) -> None:
+        desired, observed = self.state()
+        proposed = releases.resolve_live_feed_bindings(desired, observed)
+        self.own(observed, "prod").evidence["process_instance_id"] = "process-2"
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "changed"):
+            releases.validate_live_feed_bindings(desired, observed, proposed)
+
+    def test_publication_change_invalidates_activation_even_when_catalog_matches(self) -> None:
+        desired, observed = self.state()
+        proposed = releases.resolve_live_feed_bindings(desired, observed)
+        observed.releases["old"].live_feed_requirements["startup_publication"]["sha256"] = "e" * 64
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "changed"):
+            releases.validate_live_feed_bindings(desired, observed, proposed)
+
+    def test_missing_binding_in_complete_table_rejects_activation(self) -> None:
+        desired, observed = self.state()
+        proposed = releases.resolve_live_feed_bindings(desired, observed)
+        del proposed["stage"]
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "changed"):
+            releases.validate_live_feed_bindings(desired, observed, proposed)
+
+    def test_observed_instance_model_round_trip_does_not_recreate_legacy_daemons(self) -> None:
+        _, observed = self.state()
+        restored = releases.ObservedState.from_dict(observed.to_dict())
+        self.assertEqual(restored.to_dict(), observed.to_dict())
+        self.assertIsNone(restored.releases["old"].live_feed_endpoint)
+        self.assertEqual(restored.releases["old"].live_feed_provider, "prod-instance")
+        self.assertEqual(restored.releases["old"].live_feed_instance, "old-instance")
+
+    def test_v1_observed_state_remains_explicitly_legacy_without_guessed_instances(self) -> None:
+        document = {
+            "schema_version": 1, "production": "prod",
+            "releases": {"prod": {
+                "tag": "prod", "commit": "a" * 40, "tag_object": "b" * 40,
+                "build_status": "passed", "qualification_status": "passed",
+                "live_feed_endpoint": "http://127.0.0.1:8100", "live_feed_status": "running",
+            }},
+        }
+        observed = releases.ObservedState.from_dict(document)
+        self.assertEqual(observed.live_feed_instances, {})
+        self.assertIsNone(observed.releases["prod"].live_feed_requirements)
+        self.assertEqual(observed.to_dict()["schema_version"], 2)
+        self.assertTrue(releases.dedicated_live_feed_ready(observed, "prod"))
+
+    def test_v1_observed_state_rejects_v2_instance_metadata(self) -> None:
+        _, observed = self.state()
+        document = observed.to_dict()
+        document["schema_version"] = 1
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "schema_version 2"):
+            releases.ObservedState.from_dict(document)
+        del document["live_feed_instances"]
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "schema_version 2"):
+            releases.ObservedState.from_dict(document)
+
+    def test_observed_state_rejects_missing_or_wrong_instance_ownership(self) -> None:
+        _, observed = self.state()
+        for field, value in (("live_feed_instance", "missing"), ("live_feed_provider", "missing"), ("live_feed_instance", "old-instance")):
+            with self.subTest(field=field, value=value), self.assertRaises(releases.ReleaseConfigError):
+                document = observed.to_dict()
+                document["releases"]["prod"][field] = value
+                releases.ObservedState.from_dict(document)
+
+    def test_observed_state_rejects_malformed_instance_metadata(self) -> None:
+        _, observed = self.state()
+        for field, value in (
+            ("instance_id", "../outside"), ("status", []), ("status", "unknown"),
+            ("manifest_sha256", "A" * 64), ("gc_paths", [None]), ("roots", "path"),
+        ):
+            with self.subTest(field=field, value=value), self.assertRaises(releases.ReleaseConfigError):
+                document = observed.to_dict()
+                document["live_feed_instances"]["prod-instance"][field] = value
+                releases.ObservedState.from_dict(document)
+
+    def test_wrong_launch_release_or_startup_publication_cannot_approve_sharing(self) -> None:
+        for key, value in (
+            ("release_tag", "different"), ("launch_instance_id", "different"),
+            ("startup_publication", {"path": "/other.json", "sha256": "e" * 64}),
+        ):
+            with self.subTest(key=key):
+                desired, observed = self.state()
+                self.own(observed, "prod").evidence[key] = value
+                result = releases.resolve_live_feed_bindings(desired, observed)["old"]
+                self.assertFalse(result.shared)
+                self.assertIn("instance identity differs", result.reason)
+
+    def test_instance_state_is_authoritative_over_stale_legacy_fields(self) -> None:
+        desired, observed = self.state()
+        record = observed.releases["prod"]
+        record.live_feed_endpoint = "http://127.0.0.1:9999"
+        record.live_feed_status = "running"
+        self.own(observed, "prod").status = "stopped"
+        self.assertFalse(releases.dedicated_live_feed_ready(observed, "prod"))
+        self.assertEqual(releases.plan_reconciliation(desired, observed).actions, [releases.ReconcileAction("start_live_feeds", "prod")])
+
 class ChannelGenerationTests(unittest.TestCase):
+    def test_generation_activation_and_registry_preserve_explicit_launch_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pin = "live-feed-launches/prod-digest/packages/current_artifacts.json"
+            pinned = root / pin
+            pinned.parent.mkdir(parents=True)
+            pinned.write_text("[]")
+            generation = root / "channel-generations/1"
+            generation.mkdir(parents=True)
+            (generation / "current_artifacts.json").write_text("[]")
+            (generation / "gc-root-manifests.json").write_text(json.dumps({
+                "schema_version": 1, "current_artifacts_paths": ["current_artifacts.json"],
+            }))
+            releases.activate_channel_generation(root, generation, pinned_gc_paths=[pin])
+            retention = releases.generation_retention(root, pinned_gc_paths=[pin])
+            self.assertIn(pin, retention.gc_paths)
+            registry = json.loads((root / releases.RELEASE_GC_ROOTS).read_text())
+            self.assertIn(pin, registry["current_artifacts_paths"])
+            self.assertNotIn(pin, releases.generation_retention(root).gc_paths)
+
+    def test_launch_gc_pin_is_retained_without_an_active_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pin = "live-feed-launches/prod-digest/packages/current_artifacts.json"
+            path = root / pin
+            path.parent.mkdir(parents=True)
+            path.write_text("{}")
+            retention = releases.generation_retention(root, pinned_gc_paths=[pin, pin])
+            self.assertEqual(retention.gc_paths, (pin,))
+            self.assertEqual(retention.retained, ())
+
+    def test_launch_gc_pin_rejects_missing_traversal_and_symlink_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for pin in (
+                "/live-feed-launches/prod/packages/current_artifacts.json",
+                "live-feed-launches/../packages/current_artifacts.json",
+                "live-feed-launches/prod/other/current_artifacts.json",
+                "live-feed-launches/prod/packages/current_artifacts.json",
+                "live-feed-launches/./prod/packages/current_artifacts.json",
+                "channel-generations/1/packages/current_artifacts.json",
+            ):
+                with self.subTest(pin=pin), self.assertRaises(releases.ReleaseConfigError):
+                    releases.generation_retention(root, pinned_gc_paths=[pin])
+            (root / "external").mkdir()
+            (root / "live-feed-launches").symlink_to(root / "external", target_is_directory=True)
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "symlink"):
+                releases.generation_retention(root, pinned_gc_paths=["live-feed-launches/prod/packages/current_artifacts.json"])
+
     def test_discovery_prefers_controlling_release_without_discarding_distinct_contract_sets(self) -> None:
         def manifest(tag, contracts):
             return releases.ChannelManifest(tag, Path(tag), {"contracts": contracts}, ())

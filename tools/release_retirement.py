@@ -27,6 +27,7 @@ def release_paths(root: Path, record: releases.ObservedRelease) -> list[Path]:
         for namespace in (
             "live-feeds/releases", "scratch/live-feeds/releases",
             "state/live-feeds/releases", "state/deployment-checks",
+            "state/live-feed-requirements",
         )
     ), releases.owned_path(root, f"state/release-build-results/{tag}.json")]
 
@@ -57,4 +58,8 @@ def forget_removed_artifacts(record: releases.ObservedRelease) -> None:
     record.product_refresh_error = None
     record.live_feed_status = "stopped"
     record.live_feed_endpoint = None
+    record.live_feed_requirements = None
+    record.live_feed_instance = None
+    record.live_feed_provider = None
+    record.live_feed_reason = None
     record.draining_until_utc = None

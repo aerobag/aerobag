@@ -17,10 +17,26 @@ import check_generated_ui_sources
 
 
 class CheapPreflightTests(unittest.TestCase):
+    def test_cargo_outputs_default_to_the_checkout_cache_and_allow_explicit_override(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(cheap_preflight.os.environ, {}, clear=True):
+            lanes = cheap_preflight.cheap_lanes(Path(directory))
+            for lane in lanes:
+                self.assertEqual(lane.env["CARGO_TARGET_DIR"],
+                                 str(Path(lane.env["AEROBAG_UI_TARGET_ROOT"]) / "shared/rust-target"))
+            cheap_preflight.os.environ["CARGO_TARGET_DIR"] = str(Path(directory) / "explicit")
+            for lane in cheap_preflight.cheap_lanes(Path(directory)):
+                self.assertEqual(lane.env["CARGO_TARGET_DIR"], str(Path(directory) / "explicit"))
+
     def test_all_inexpensive_ci_suites_are_unconditional_and_hermetic(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lanes = {lane.name: lane for lane in cheap_preflight.cheap_lanes(root)}
+            self.assertNotIn("ci-live-feed-proxy", lanes)
+            self.assertEqual(
+                lanes["ci-generated-ui"].env["CARGO_TARGET_DIR"],
+                lanes["ci-rust-core"].env["CARGO_TARGET_DIR"],
+            )
+            self.assertNotIn("live_feed_proxy_smoke.py", lanes["ci-python"].command[-1])
             self.assertEqual(set(lanes), {
                 "ci-actionlint", "ci-reuse", "ci-rust-format", "ci-harness-contracts",
                 "ci-rust-shared", "ci-rust-core", "ci-rust-services", "ci-rust-preprocessor",
@@ -42,6 +58,8 @@ class CheapPreflightTests(unittest.TestCase):
             self.assertEqual(release_harness.env["AEROBAG_WEB_WORKSPACE_DIR"],
                              str(root / "harness-workspace"))
             workflow = (cheap_preflight.ROOT / ".github/workflows/ci.yml").read_text()
+            self.assertIn("check_generated_contract_inventories.py", lanes["ci-rust-shared"].command[-1])
+            self.assertIn("run: python3 tools/ci/check_generated_contract_inventories.py", workflow)
             self.assertIn("run: ./ui/web-app/scripts/run-target-workspace.sh inner:test:harness", workflow)
             self.assertIn("--workspace", lanes["ci-rust-core"].command[-1])
             self.assertNotIn("-E ", lanes["ci-rust-core"].command[-1])

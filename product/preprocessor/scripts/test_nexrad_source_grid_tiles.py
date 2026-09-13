@@ -172,11 +172,16 @@ def test_manifest_describes_the_delivered_encoding(tmp_path, monkeypatch):
     output.mkdir()
     source_hash = hashlib.sha256(source_gz.read_bytes()).hexdigest()
     encoder_hash = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
+    compatibility = json.loads((ROOT / 'crates/product-contracts/contracts/live-feed-compatibility.json').read_text())
+    formats = compatibility['products']['nexrad']['formats']
     monkeypatch.setattr(sys, 'argv', [
         str(SOURCE), '--palette', str(PALETTE), '--source-gz', str(source_gz),
         '--output-dir', str(output), '--state-id', 'test-state',
         '--observed-at-utc', CASES[1]['observed_at_utc'], '--source-file', source_gz.name,
         '--source-sha256', source_hash, '--encoder-sha256', encoder_hash,
+        '--manifest-schema-version', str(formats['snapshot']['schema_version']),
+        '--tile-encoding', formats['tile']['encoding'],
+        '--overflow-encoding', formats['overflow_tile']['encoding'],
         '--tile-size', '512', '--res-level', '0', '--res-level', '1',
         '--res-level', '2', '--res-level', '3',
     ])

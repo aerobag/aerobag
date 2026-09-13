@@ -7,6 +7,7 @@ import {
   E2E_TIMING, TerminalObservationError, TransientObservationError,
 } from "./transition-contract.mjs";
 import { semanticOptionSelected } from "./release-journey-runtime.mjs";
+import { liveFeedProviderCutover } from "./live-feed-cutover-journey.mjs";
 
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
@@ -3553,6 +3554,10 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.altitude-planner": altitudePlanner,
   "shared.replay-track-up": replayTrackUp,
   "shared.prepared-live-feeds": preparedLiveFeeds,
+  "shared.live-feed-provider-cutover": (runtime) => liveFeedProviderCutover(runtime, {
+    acceptDisclaimer, appendRoute, setLayerVisible, selectAirportFromMapSearch,
+    closeMapDetail, setFixtureControl, fixtureHealth, planRows,
+  }),
   "shared.nexrad-frames": nexradFrames,
   "shared.obstacles-navkv": obstaclesNavKv,
   "shared.winds-aloft-navkv": windsAloftNavKv,

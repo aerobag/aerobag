@@ -14,6 +14,7 @@ import hmac
 import json
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -329,6 +330,12 @@ def release_channel_sources(
             }
             for tag in sunset
         )
+        try:
+            bindings = read_live_feed_bindings(generation_root, metadata, routes, assignments)
+        except ValueError as error:
+            return [], {"path": str(generation_root), "error": str(error), "deployment_managed": True}
+        for source in assignments:
+            source["live_feed_binding"] = bindings.get(source["tag"])
         return assignments, {
             "path": str(generation_root),
             "payload": metadata,
@@ -362,12 +369,90 @@ def release_channel_sources(
     return [], {"path": str(config.channel_root), "error": errors}
 
 
+def read_live_feed_bindings(
+    generation_root: Path, metadata: dict[str, Any], routes: dict[str, Any], sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    version = metadata.get("schema_version")
+    if type(version) is not int or version not in {1, 2}:
+        raise ValueError("unsupported channel generation schema_version")
+    path = generation_root / "live-feed-bindings.json"
+    if version == 1 and not path.exists():
+        return {}  # Generations predating provider bindings contain dedicated routes.
+    document, error = read_json_file(path)
+    if error:
+        raise ValueError(error)
+    if (not isinstance(document, dict) or type(document.get("schema_version")) is not int
+            or document["schema_version"] != 1 or not isinstance(document.get("releases"), dict)):
+        raise ValueError("invalid live-feed binding schema")
+    bindings = document["releases"]
+    if set(bindings) != {source["tag"] for source in sources}:
+        raise ValueError("live-feed bindings do not match channel releases")
+    for source in sources:
+        tag = source["tag"]
+        binding = bindings[tag]
+        if (not isinstance(binding, dict)
+                or set(binding) != {"release_tag", "provider", "provider_tag", "endpoint", "reason", "verification"}
+                or binding.get("release_tag") != tag
+                or any(not isinstance(binding.get(key), str) or not binding[key]
+                       for key in ("provider_tag", "endpoint", "reason", "verification"))
+                or (binding.get("provider") is not None
+                    and (not isinstance(binding["provider"], str) or not binding["provider"]))
+                or not re.fullmatch(r"[0-9a-f]{64}", binding["verification"])):
+            raise ValueError(f"invalid live-feed binding for {tag}")
+        if (binding["endpoint"] != source["live_feeds_endpoint"]
+                or binding["endpoint"] != routes["releases"].get(tag)):
+            raise ValueError(f"live-feed binding endpoint disagrees with active route for {tag}")
+        if binding["provider_tag"] != tag:
+            production = bindings.get(metadata["production"])
+            if (source["role"] != "sunset" or binding["provider_tag"] != metadata["production"]
+                    or binding["provider"] is None or not isinstance(production, dict)
+                    or binding["provider"] != production.get("provider")
+                    or binding["endpoint"] != production.get("endpoint")):
+                raise ValueError(f"invalid shared live-feed provider for {tag}")
+    return bindings
+
+
+def resolve_live_feed_provider(source: dict[str, Any], observed: Any) -> dict[str, Any] | None:
+    binding = source.get("live_feed_binding")
+    if binding is None:
+        return None
+    provider = {
+        "instance_id": binding["provider"], "release_tag": binding["provider_tag"],
+        "endpoint": binding["endpoint"], "reason": binding["reason"],
+        "verification": binding["verification"], "status": None, "error": None,
+    }
+    instance_id = binding["provider"]
+    if instance_id is None:
+        records = observed.get("releases", {}) if isinstance(observed, dict) else {}
+        record = records.get(binding["provider_tag"]) if isinstance(records, dict) else None
+        if not isinstance(record, dict) or record.get("live_feed_endpoint") != binding["endpoint"]:
+            provider["error"] = "legacy provider is missing or disagrees with active binding"
+        else:
+            provider["status"] = record.get("live_feed_status")
+        return provider
+    if (not isinstance(observed, dict) or type(observed.get("schema_version")) is not int
+            or observed["schema_version"] != 2):
+        provider["error"] = "instance provider requires observed state schema_version 2"
+        return provider
+    instances = observed.get("live_feed_instances")
+    instance = instances.get(instance_id) if isinstance(instances, dict) else None
+    if not isinstance(instance, dict):
+        provider["error"] = f"bound live-feed instance {instance_id} is absent from observed state"
+    elif (instance.get("instance_id") != instance_id or instance.get("release_tag") != binding["provider_tag"]
+          or instance.get("endpoint") != binding["endpoint"]):
+        provider["error"] = "bound live-feed instance identity disagrees with active binding"
+    else:
+        provider.update({key: instance.get(key) for key in ("status", "launch_digest", "manifest_sha256")})
+    return provider
+
+
 def collect_channel_facts(
     config: MonitorConfig,
     source: dict[str, Any],
     release_record: dict[str, Any] | None,
     *,
     live_status_cache: dict[str, tuple[Any, str | None]] | None = None,
+    live_feed_provider: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current_path = source["current_artifacts_path"]
     current_artifacts, current_error = read_json_file(current_path)
@@ -402,6 +487,7 @@ def collect_channel_facts(
         "tag": source["tag"],
         "deployment_managed": source["deployment_managed"],
         "release_state": release_record,
+        "live_feed_provider": live_feed_provider,
         "telemetry": collect_telemetry_expectations(source, release_record),
         "inputs": {
             "current_artifacts": {
@@ -485,6 +571,7 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
                         else None
                     ),
                     live_status_cache=live_status_cache,
+                    live_feed_provider=resolve_live_feed_provider(source, release_state),
                 )
             ]
         },
@@ -1016,12 +1103,17 @@ def add_channel_release_metrics(
         )
         return
     role = channel.get("role")
+    provider = channel.get("live_feed_provider")
     for field, label in [
         ("build_status", "release build"),
         ("qualification_status", "deployed release checks"),
         ("live_feed_status", "release live-feed daemon"),
     ]:
         value = record.get(field)
+        provider_metric = field == "live_feed_status" and isinstance(provider, dict)
+        if provider_metric:
+            value = provider.get("status")
+            label = "live-feed provider"
         # Keep the existing metric ID / deep links, but use current channel
         # evidence rather than a staging receipt invalidated by product refresh.
         # Older controller snapshots have no deployment fields yet.
@@ -1042,6 +1134,15 @@ def add_channel_release_metrics(
         else:
             severity = "critical"
         message = f"{label}: {value}"
+        if provider_metric:
+            owner = provider.get("release_tag")
+            mode = f"shared with {owner}" if owner != channel.get("tag") else f"dedicated to {owner}"
+            message += f"; {mode}; instance {provider.get('instance_id')}"
+            if provider.get("reason"):
+                message += f"; {provider['reason']}"
+            if provider.get("error"):
+                severity = "critical"
+                message += f"; {provider['error']}"
         if deployment_checks and value == "pending":
             age = attempt_age_seconds(record.get("deployment_pending_since_utc"), now)
             if record.get("deployment_error"):
@@ -1065,6 +1166,7 @@ def add_channel_release_metrics(
             value=value,
             severity=severity,
             message=message,
+            details={"provider": provider} if provider_metric else None,
         )
 
     refresh = record.get("product_refresh_status")

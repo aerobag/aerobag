@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, redirect_stdout
+import fcntl
 import io
 import json
 import os
@@ -22,6 +23,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 import prod_deployment as deploy_prod  # noqa: E402
+import release_reconciler as releases  # noqa: E402
 
 
 class ProductPublicationTests(unittest.TestCase):
@@ -333,25 +335,24 @@ class ProductPublicationTests(unittest.TestCase):
         )
         self.assertNotIn("checkout --detach HEAD", command)
 
-    def test_runtime_repair_starts_every_desired_release_daemon(self) -> None:
+    def test_runtime_repair_reads_remote_provider_bindings_under_the_controller_lock(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         with (
             mock.patch.object(
                 deploy_prod,
                 "publication_refs",
-                return_value=["2026-08-20.1", "2026-08-22.1"],
+                side_effect=AssertionError("desired publication tags do not own active daemons"),
             ),
             mock.patch.object(deploy_prod, "run_ssh") as run_ssh,
         ):
             deploy_prod.start_release_live_feeds(config, dry_run=False)
 
         command = run_ssh.call_args.args[1]
-        self.assertIn(
-            "aerobag-live-feeds-release@2026-08-20.1.service", command
-        )
-        self.assertIn(
-            "aerobag-live-feeds-release@2026-08-22.1.service", command
-        )
+        self.assertIn("deployed_live_feed_targets(root)", command)
+        self.assertIn("release-reconciler.lock", command)
+        self.assertIn("fcntl.LOCK_EX | fcntl.LOCK_NB", command)
+        self.assertIn(config["artifact_root"], command)
+        self.assertNotIn("publication_refs", command)
 
     def test_managed_release_deploy_wraps_controller_with_runtime_services(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
@@ -848,6 +849,196 @@ class AerobagCloudProductionTests(unittest.TestCase):
             config["cloud_server_secret_source"] = str(secret)
             with self.assertRaisesRegex(SystemExit, "exactly 32 bytes"):
                 deploy_prod.install_cloud_server_secret(config, dry_run=False)
+
+
+class ResolvedLiveFeedRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.generation = self.root / "channel-generations/00000002"
+        self.generation.mkdir(parents=True)
+        (self.root / "channel-current").symlink_to(self.generation, target_is_directory=True)
+        self.observed = releases.ObservedState(production="prod", staging="stage", sunset=["old", "older"])
+        for tag in ["prod", "stage", "old", "older", "retired"]:
+            self.observed.releases[tag] = releases.ObservedRelease(tag=tag, tag_object="a" * 40, commit="b" * 40)
+        self.production = self.add_instance("prod", "a", 8100)
+        self.staging = self.add_instance("stage", "b", 8101)
+        self.redundant = self.add_instance("old", "c", 8102, "stopped")
+        self.observed.releases["old"].live_feed_provider = self.production.instance_id
+        self.observed.releases["older"].live_feed_provider = self.production.instance_id
+        self.add_instance("retired", "d", 8103, "removed")
+        self.metadata = {"schema_version": 2, "generation": 2, "production": "prod",
+                         "staging": "stage", "sunset": ["old", "older"]}
+        self.bindings = {"schema_version": 1, "releases": {
+            tag: {"release_tag": tag, "provider": provider.instance_id, "provider_tag": provider.release_tag,
+                  "endpoint": provider.endpoint, "reason": "compatible" if tag in {"old", "older"} else "dedicated",
+                  "verification": "e" * 64}
+            for tag, provider in [("prod", self.production), ("stage", self.staging),
+                                  ("old", self.production), ("older", self.production)]}}
+        self.routes = {"schema_version": 1, "production": self.production.endpoint,
+                       "staging": self.staging.endpoint, "releases": {
+                           tag: binding["endpoint"] for tag, binding in self.bindings["releases"].items()}}
+        self.write_state()
+
+    def add_instance(self, tag: str, digest: str, port: int, status: str = "running") -> releases.LiveFeedInstance:
+        key = f"{tag}-{digest * 16}"
+        roots = [self.root / namespace / key for namespace in (
+            "live-feeds/instances", "scratch/live-feeds/instances", "state/live-feeds/instances", "live-feed-launches",
+        )]
+        for root in roots:
+            root.mkdir(parents=True)
+        current = roots[0] / "v3/current.json"
+        current.parent.mkdir()
+        current.write_text("{}")
+        manifest = roots[-1] / "packages/product_artifacts.json"
+        manifest.parent.mkdir()
+        manifest.write_text("{}")
+        (manifest.parent / "current_artifacts.json").write_text("[]")
+        instance = releases.LiveFeedInstance(
+            instance_id=key, release_tag=tag, launch_digest=digest * 64,
+            unit=f"aerobag-live-feeds-release@{key}.service", endpoint=f"http://127.0.0.1:{port}",
+            manifest=str(manifest), roots=[str(root) for root in roots],
+            gc_paths=[str((manifest.parent / "current_artifacts.json").relative_to(self.root))], status=status,
+        )
+        self.observed.live_feed_instances[key] = instance
+        self.observed.releases[tag].live_feed_instance = key
+        self.observed.releases[tag].live_feed_provider = key
+        return instance
+
+    def write_state(self) -> None:
+        releases.write_observed_state(self.root / "state/releases-observed.json", self.observed)
+        for name, document in [("generation.json", self.metadata), ("live-feed-bindings.json", self.bindings),
+                               ("live-feed-routes.json", self.routes)]:
+            (self.generation / name).write_text(json.dumps(document))
+
+    def repair_script(self) -> str:
+        config = {"source_root": str(deploy_prod.REPO_ROOT), "artifact_root": str(self.root)}
+        with mock.patch.object(deploy_prod, "run_ssh") as ssh:
+            deploy_prod.start_release_live_feeds(config, dry_run=False)
+        return ssh.call_args.args[1].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+
+    def repair(self) -> None:
+        with mock.patch.object(sys, "argv", ["-", str(deploy_prod.REPO_ROOT), str(self.root)]):
+            exec(compile(self.repair_script(), "remote-runtime-repair", "exec"), {"__name__": "repair_test"})
+
+    def health(self) -> tuple[dict, mock.Mock]:
+        namespace = {"__name__": "health_test"}
+        exec(compile(deploy_prod.health_script(), "generated-health", "exec"), namespace)
+        namespace["read_env"] = lambda: {
+            "SOURCE_ROOT": str(deploy_prod.REPO_ROOT), "ARTIFACT_ROOT": str(self.root), "DATA_ROOT": str(self.root),
+        }
+        namespace["DEPLOYED_REV_FILE"] = self.root / "absent-revision"
+        namespace["DEPLOY_CONFIG_FILE"] = self.root / "absent-config"
+        service = mock.Mock(return_value={"active": "active", "enabled": "enabled"})
+        namespace["service_state"] = service
+        self.assertEqual(namespace["main"](), 0)
+        return json.loads((self.root / "health/status.json").read_text()), service
+
+    def test_repair_starts_each_bound_provider_once_without_redundant_or_retired_daemons(self) -> None:
+        with mock.patch.object(deploy_prod.subprocess, "run") as run, \
+             mock.patch.object(releases, "resolve_live_feed_bindings", side_effect=AssertionError("do not replan")):
+            self.repair()
+        run.assert_called_once_with(
+            ["systemctl", "start", *sorted([self.production.unit, self.staging.unit])], check=True, timeout=60,
+        )
+
+    def test_same_tag_pending_candidate_does_not_replace_the_activated_provider(self) -> None:
+        candidate = self.add_instance("prod", "f", 8110, "pending")
+        self.write_state()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            self.repair()
+        self.assertIn(self.production.unit, run.call_args.args[0])
+        self.assertNotIn(candidate.unit, run.call_args.args[0])
+        payload, _service = self.health()
+        self.assertEqual(payload["live_feeds"]["current_json"], str(Path(self.production.roots[0]) / "v3/current.json"))
+
+    def test_health_uses_instance_current_file_and_attributes_shared_consumers(self) -> None:
+        payload, service = self.health()
+        live = payload["live_feeds"]
+        self.assertIsNone(live["error"])
+        self.assertTrue(live["current_json_exists"])
+        self.assertEqual(live["current_json"], str(Path(self.production.roots[0]) / "v3/current.json"))
+        self.assertEqual(live["providers"][self.production.unit]["releases"], ["prod", "old", "older"])
+        self.assertEqual(service.call_args_list.count(mock.call(self.production.unit)), 1)
+        self.assertNotIn(mock.call(self.redundant.unit), service.call_args_list)
+        self.assertNotIn("aerobag-live-feeds-release@retired.service", payload["services"])
+        self.assertEqual(set(live["providers"]), {self.production.unit, self.staging.unit})
+
+    def test_unknown_provider_blocks_all_starts_and_is_reported_without_a_guessed_health_path(self) -> None:
+        del self.observed.live_feed_instances[self.production.instance_id]
+        self.write_state()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "missing instance"):
+                self.repair()
+        run.assert_not_called()
+        payload, service = self.health()
+        self.assertIn("missing instance", payload["live_feeds"]["error"])
+        self.assertIsNone(payload["live_feeds"]["current_json"])
+        self.assertEqual(payload["live_feeds"]["providers"], {})
+        self.assertFalse(any("live-feeds-release@" in call.args[0] for call in service.call_args_list))
+
+    def test_missing_required_binding_sidecar_does_not_start_tag_named_fallbacks(self) -> None:
+        (self.generation / "live-feed-bindings.json").unlink()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "live-feed-bindings.json"):
+                self.repair()
+        run.assert_not_called()
+
+    def test_removed_active_provider_is_not_restarted(self) -> None:
+        self.production.status = "removed"
+        self.write_state()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "has been removed"):
+                self.repair()
+        run.assert_not_called()
+
+    def test_unexpected_provider_unit_is_not_executed(self) -> None:
+        self.production.unit = "aerobag-live-feeds.service"
+        self.write_state()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "unexpected.*unit"):
+                self.repair()
+        run.assert_not_called()
+
+    def test_instance_endpoint_disagreement_does_not_start_an_unverified_provider(self) -> None:
+        self.production.endpoint = "http://127.0.0.1:8199"
+        self.write_state()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "identity disagrees"):
+                self.repair()
+        run.assert_not_called()
+
+    def test_no_active_generation_does_not_guess_daemon_ownership(self) -> None:
+        (self.root / "channel-current").unlink()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            with self.assertRaisesRegex(releases.ReleaseConfigError, "no active release generation"):
+                self.repair()
+        run.assert_not_called()
+
+    def test_repair_refuses_to_race_the_release_reconciler(self) -> None:
+        lock_path = self.root / "locks/release-reconciler.lock"
+        lock_path.parent.mkdir()
+        with lock_path.open("a+") as lock, mock.patch.object(deploy_prod.subprocess, "run") as run:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                self.repair()
+        run.assert_not_called()
+
+    def test_legacy_generation_uses_only_its_explicit_release_owned_routes(self) -> None:
+        self.metadata.update(schema_version=1, staging=None, sunset=[])
+        self.routes.update(staging=None, releases={"prod": self.production.endpoint})
+        self.observed.releases["prod"].live_feed_instance = None
+        self.observed.releases["prod"].live_feed_provider = None
+        self.observed.releases["prod"].live_feed_endpoint = self.production.endpoint
+        self.write_state()
+        (self.generation / "live-feed-bindings.json").unlink()
+        with mock.patch.object(deploy_prod.subprocess, "run") as run:
+            self.repair()
+        run.assert_called_once_with(["systemctl", "start", "aerobag-live-feeds-release@prod.service"],
+                                    check=True, timeout=60)
+        payload, _service = self.health()
+        self.assertEqual(payload["live_feeds"]["current_json"], str(self.root / "live-feeds/releases/prod/v3/current.json"))
 
 
 if __name__ == "__main__":

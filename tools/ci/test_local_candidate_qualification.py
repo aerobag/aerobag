@@ -53,6 +53,16 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertEqual(args.repetitions, 5)
         self.assertEqual(args.android_workers, 4)
 
+    def test_release_preflight_includes_real_proxy_as_an_explicit_bounded_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lanes = {lane.name: lane for lane in qualification.ordinary_lanes(root)}
+            proxy = lanes["ci-live-feed-proxy"]
+            self.assertIn("tools/ci/live_feed_proxy_smoke.py", proxy.command)
+            self.assertEqual(proxy.timeout_seconds, 120)
+            self.assertEqual(proxy.env["AEROBAG_PROXY_SMOKE_ARTIFACT_DIR"], str(root / "live-feed-proxy"))
+            self.assertNotIn("live_feed_proxy_smoke.py", lanes["ci-python"].command[-1])
+
     def test_single_pass_runs_every_lane_and_preserves_isolated_gui_phases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

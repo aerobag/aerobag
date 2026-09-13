@@ -492,6 +492,13 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
         Lane("ci-actionlint", ("go", "run", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.7")),
         Lane("ci-reuse", (str(ROOT / "scripts/check-licenses.sh"),)),
         Lane("ci-rust-format", (str(ROOT / "scripts/check-rust-format.sh"),)),
+        Lane("ci-live-feed-proxy", (
+            "/usr/bin/python3", "-m", "pytest", "tools/ci/live_feed_proxy_smoke.py", "-v",
+            f"--junitxml={run_root / 'live-feed-proxy-results/junit.xml'}",
+        ), env={
+            "AEROBAG_ARTIFACT_READ_PATH": str(empty_artifacts),
+            "AEROBAG_PROXY_SMOKE_ARTIFACT_DIR": str(run_root / "live-feed-proxy"),
+        }, timeout_seconds=120),
         Lane("ci-harness-contracts", (
             str(ROOT / "ui/web-app/scripts/run-target-workspace.sh"), "inner:test:harness",
         ), env={
@@ -500,7 +507,7 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
         }, timeout_seconds=300),
         Lane(
             "ci-rust-shared",
-            bash("cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),
+            bash("python3 ../tools/ci/check_generated_contract_inventories.py && cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),
             ROOT / "crates",
         ),
         Lane(

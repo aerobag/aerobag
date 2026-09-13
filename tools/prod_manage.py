@@ -194,13 +194,11 @@ def load_release_document(path: Path) -> dict[str, Any]:
 
 
 def serialize_release_document(document: dict[str, Any]) -> str:
-    releases.parse_desired_releases(document)
-    return json.dumps(document, indent=2, sort_keys=True) + "\n"
+    return json.dumps(releases.migrate_desired_releases(document), indent=2, sort_keys=True) + "\n"
 
 
 def stage_document(document: dict[str, Any], tag: str) -> dict[str, Any]:
-    releases.parse_desired_releases(document)
-    proposed = json.loads(json.dumps(document))
+    proposed = releases.migrate_desired_releases(document)
     proposed["staging"] = {"tag": tag}
     releases.parse_desired_releases(proposed)
     return proposed
@@ -217,7 +215,7 @@ def promotion_document(
         raise ManagementError("sunset retention must be a non-negative number of days")
     old_production = desired.production.tag
     candidate = desired.staging.tag
-    proposed = json.loads(json.dumps(document))
+    proposed = releases.migrate_desired_releases(document)
     proposed["production"] = {"tag": candidate}
     proposed["staging"] = None
     if sunset_days:
@@ -233,6 +231,7 @@ def promotion_document(
         proposed.setdefault("sunset", []).append({
             "tag": old_production,
             "until_utc": until.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "live_feeds": releases.LiveFeedsPolicy.SHARE_IF_COMPATIBLE.value,
         })
     releases.parse_desired_releases(proposed)
     return proposed, old_production, candidate
@@ -581,7 +580,7 @@ def remote_runtime_failures(
         "aerobag-build-product.timer",
         "aerobag-health.timer",
         "aerobag-cloud-backup.timer",
-        *(f"aerobag-live-feeds-release@{tag}.service" for tag in desired.tags()),
+        *releases.live_feed_health_targets(desired, observed),
     ]
     checks.extend(
         (
@@ -682,7 +681,7 @@ def assert_staging_is_ready(
         raise ManagementError(
             f"staging release {desired.staging.tag} has not completed its build"
         )
-    if record.live_feed_endpoint is None or record.live_feed_status != "running":
+    if not releases.dedicated_live_feed_ready(observed, desired.staging.tag):
         raise ManagementError(
             f"staging release {desired.staging.tag} does not have running live feeds"
         )

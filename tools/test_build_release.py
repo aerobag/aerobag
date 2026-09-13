@@ -23,11 +23,94 @@ import build_release  # noqa: E402
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def _release_with_declared_inventory(self, root):
+        for directory in ("web", "downloads", "bin"):
+            (root / directory).mkdir()
+        (root / "web/index.html").write_bytes(b"web")
+        artifacts = {}
+        for key, directory, filename in (
+            ("apk", "downloads", "app.apk"),
+            ("live_feeds_binary", "bin", "aerobag-live-feedsd"),
+            ("preprocessor_binary", "bin", "preprocessor-cli"),
+        ):
+            member = root / directory / filename
+            member.write_bytes(filename.encode())
+            artifacts[key] = {"filename": filename, "sha256": build_release._sha256(member)}
+        for directory in ("web", "downloads"):
+            artifacts[directory] = {"sha256": build_release.directory_sha256(root / directory)}
+        artifacts["live_feed_compatibility"] = build_release.copy_live_feed_inventory(build_release.REPO_ROOT, root)
+        metadata = {"tag": "inventory-test", "commit": "b" * 40, "artifacts": artifacts}
+        (root / "release.json").write_text(json.dumps(metadata))
+        build_release.normalize_release_permissions(root)
+        self.assertEqual(build_release.validate_release_directory(root, metadata["tag"], metadata["commit"]), metadata)
+        return metadata
+
+    def test_release_validation_rejects_tampered_declared_inventory_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self._release_with_declared_inventory(root)
+            inventory = root / "live-feed-compatibility.json"
+            changed = json.loads(inventory.read_text())
+            changed["products"]["metars"]["formats"]["snapshot"]["schema_version"] += 1
+            inventory.write_text(json.dumps(changed))
+            with self.assertRaisesRegex(RuntimeError, "live-feed compatibility mismatch"):
+                build_release.validate_release_directory(root, metadata["tag"], metadata["commit"])
+
+    def test_release_validation_rejects_tampered_inventory_hash_declaration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self._release_with_declared_inventory(root)
+            metadata["artifacts"]["live_feed_compatibility"]["sha256"] = "0" * 64
+            (root / "release.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(RuntimeError, "live-feed compatibility mismatch"):
+                build_release.validate_release_directory(root, metadata["tag"], metadata["commit"])
+
+    def test_release_validation_rejects_missing_declared_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self._release_with_declared_inventory(root)
+            (root / "live-feed-compatibility.json").unlink()
+            with self.assertRaises(FileNotFoundError):
+                build_release.validate_release_directory(root, metadata["tag"], metadata["commit"])
+
+    def test_release_validation_rejects_inventory_filename_substitution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self._release_with_declared_inventory(root)
+            for filename in ("other.json", "../live-feed-compatibility.json", "/live-feed-compatibility.json"):
+                with self.subTest(filename=filename):
+                    metadata["artifacts"]["live_feed_compatibility"]["filename"] = filename
+                    (root / "release.json").write_text(json.dumps(metadata))
+                    with self.assertRaisesRegex(RuntimeError, "live-feed compatibility mismatch"):
+                        build_release.validate_release_directory(root, metadata["tag"], metadata["commit"])
+
+    def test_live_feed_inventory_is_copied_from_the_exact_release_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            output = root / "release"
+            output.mkdir()
+            inventory = source / build_release.LIVE_FEED_INVENTORY_SOURCE
+            inventory.parent.mkdir(parents=True)
+            inventory.write_text('{"schema_version":1,"contracts":{"test":7}}\n')
+            artifact = build_release.copy_live_feed_inventory(source, output)
+            self.assertEqual((output / artifact["filename"]).read_bytes(), inventory.read_bytes())
+            self.assertEqual(artifact["sha256"], build_release._sha256(inventory))
+
+    def test_pre_feature_release_does_not_inherit_controller_live_feed_contracts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertIsNone(build_release.copy_live_feed_inventory(root / "source", root / "release"))
+            self.assertFalse((root / "release").exists())
+
     def test_build_pins_telemetry_beside_binary_identities_and_reuses_immutable_release(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"
             shutil.copytree(build_release.REPO_ROOT / "contracts/telemetry", source / "contracts/telemetry")
+            inventory_source = source / build_release.LIVE_FEED_INVENTORY_SOURCE
+            inventory_source.parent.mkdir(parents=True)
+            shutil.copyfile(build_release.REPO_ROOT / build_release.LIVE_FEED_INVENTORY_SOURCE, inventory_source)
             args = SimpleNamespace(
                 repo_root=source, tag="test-release", commit="a" * 40,
                 artifact_root=root / "artifacts", cargo_target_dir=root / "cargo",
@@ -64,6 +147,10 @@ class ReleaseBuildTests(unittest.TestCase):
             metadata = build_release.validate_release_directory(built, args.tag, args.commit)
             self.assertEqual(metadata["telemetry_contracts"], build_release.telemetry_contracts.producer_pins(source / "contracts/telemetry"))
             self.assertIn("sha256", metadata["artifacts"]["preprocessor_binary"])
+            self.assertEqual(metadata["artifacts"]["live_feed_compatibility"], {
+                "filename": "live-feed-compatibility.json", "sha256": build_release._sha256(inventory_source),
+            })
+            self.assertEqual((built / "live-feed-compatibility.json").read_bytes(), inventory_source.read_bytes())
             with patch.object(build_release.subprocess, "run", return_value=SimpleNamespace(stdout=args.commit)), patch.object(build_release, "_run") as rebuild:
                 self.assertEqual(build_release.build_release(args), built)
                 rebuild.assert_not_called()

@@ -29,11 +29,11 @@ import release_reconciler as releases  # noqa: E402
 
 def desired_document(*, staging: str | None = None) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "production": {"tag": "2026-08-20.1"},
         "staging": None if staging is None else {"tag": staging},
         "sunset": [
-            {"tag": "2026-08-01.1", "until_utc": "2026-09-01T00:00:00Z"}
+            {"tag": "2026-08-01.1", "until_utc": "2026-09-01T00:00:00Z", "live_feeds": "share_if_compatible"}
         ],
     }
 
@@ -359,6 +359,30 @@ class OperationLogTests(unittest.TestCase):
 
 
 class DesiredStateBehaviorTests(unittest.TestCase):
+    def test_stage_migrates_all_legacy_sunsets_to_explicit_sharing(self) -> None:
+        document = desired_document()
+        document["schema_version"] = 1
+        del document["sunset"][0]["live_feeds"]
+        proposed = prod_manage.stage_document(document, "candidate")
+        self.assertEqual(proposed["schema_version"], 2)
+        self.assertEqual(proposed["sunset"][0]["live_feeds"], "share_if_compatible")
+        self.assertNotIn("live_feeds", document["sunset"][0])
+
+    def test_promotion_preserves_existing_opt_out_and_defaults_outgoing_to_sharing(self) -> None:
+        document = desired_document(staging="candidate")
+        document["sunset"][0]["live_feeds"] = "dedicated"
+        proposed, _, _ = prod_manage.promotion_document(document)
+        self.assertEqual(proposed["sunset"][0], document["sunset"][0])
+        self.assertEqual(proposed["sunset"][-1]["live_feeds"], "share_if_compatible")
+
+    def test_default_promotion_migrates_legacy_sunsets_too(self) -> None:
+        document = desired_document(staging="candidate")
+        document["schema_version"] = 1
+        del document["sunset"][0]["live_feeds"]
+        proposed, _, _ = prod_manage.promotion_document(document)
+        self.assertEqual(proposed["schema_version"], 2)
+        self.assertEqual([entry["live_feeds"] for entry in proposed["sunset"]], ["share_if_compatible"] * 2)
+
     def test_next_release_name_increments_only_the_current_utc_day(self) -> None:
         self.assertEqual(
             prod_manage.next_release_name(
@@ -397,7 +421,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         self.assertEqual(proposed["production"], {"tag": candidate})
         self.assertIsNone(proposed["staging"])
         self.assertEqual(proposed["sunset"], [
-            *original["sunset"], {"tag": old, "until_utc": "2026-08-26T18:42:05Z"},
+            *original["sunset"], {"tag": old, "until_utc": "2026-08-26T18:42:05Z", "live_feeds": "share_if_compatible"},
         ])
         self.assertEqual(json.dumps(original), before)
         self.assertIsNot(proposed["sunset"][0], original["sunset"][0])
@@ -407,7 +431,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
             desired_document(staging="2026-08-22.1"), sunset_days=30,
             now=datetime(2026, 12, 31, 22, 30, 0, 123456, tzinfo=timezone(timedelta(hours=-5))),
         )
-        self.assertEqual(proposed["sunset"][-1], {"tag": old, "until_utc": "2027-01-31T03:30:00Z"})
+        self.assertEqual(proposed["sunset"][-1], {"tag": old, "until_utc": "2027-01-31T03:30:00Z", "live_feeds": "share_if_compatible"})
 
     def test_promotion_adds_sunset_when_the_optional_list_is_absent(self) -> None:
         original = desired_document(staging="2026-08-22.1")
@@ -440,7 +464,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         next_stage = prod_manage.stage_document(first, "2026-08-23.1")
         second, old, _ = prod_manage.promotion_document(next_stage, now=now + timedelta(days=1))
         self.assertEqual(second["sunset"], [
-            *first["sunset"], {"tag": old, "until_utc": "2026-08-27T00:00:00Z"},
+            *first["sunset"], {"tag": old, "until_utc": "2026-08-27T00:00:00Z", "live_feeds": "share_if_compatible"},
         ])
 
     def test_invalid_retention_and_naive_clocks_fail_before_mutation(self) -> None:
@@ -642,6 +666,25 @@ pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
 
 
 class PromotionGateTests(unittest.TestCase):
+    def test_staging_readiness_uses_own_instance_after_legacy_migration(self) -> None:
+        observed = self.observed()
+        tag = observed.staging
+        record = observed.releases[tag]
+        instance = releases.LiveFeedInstance(
+            f"{tag}-instance", tag, "digest", record.live_feed_endpoint,
+            f"aerobag-live-feeds-release@{tag}-instance.service", "/startup.json",
+            status="running",
+        )
+        observed.live_feed_instances[instance.instance_id] = instance
+        record.live_feed_instance = instance.instance_id
+        record.live_feed_endpoint = None
+        record.live_feed_status = "migrated"
+        with mock.patch.object(prod_manage, "load_remote_observed", return_value=observed):
+            self.assertEqual(prod_manage.assert_staging_is_ready({}, self.desired()), (observed, record))
+            instance.status = "stopped"
+            with self.assertRaisesRegex(prod_manage.ManagementError, "running live feeds"):
+                prod_manage.assert_staging_is_ready({}, self.desired())
+
     def desired(self) -> releases.DesiredReleases:
         return releases.parse_desired_releases(
             desired_document(staging="2026-08-22.1")
@@ -1505,7 +1548,7 @@ class PromoteCommandTests(unittest.TestCase):
         print_warning.assert_not_called()
         written = json.loads(write.call_args.args[1])
         self.assertEqual(written["sunset"], [
-            *document["sunset"], {"tag": "2026-08-20.1", "until_utc": "2026-09-15T18:42:05Z"},
+            *document["sunset"], {"tag": "2026-08-20.1", "until_utc": "2026-09-15T18:42:05Z", "live_feeds": "share_if_compatible"},
         ])
         self.assertIn("2026-09-15T18:42:05Z", proposal.call_args.kwargs["note"])
         self.assertIn("2026-09-15T18:42:05Z", proposal.call_args.args[2])

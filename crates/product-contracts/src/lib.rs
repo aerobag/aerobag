@@ -10,8 +10,10 @@ mod aerobag_cloud;
 mod aircraft;
 mod airway_routing;
 mod atmosphere;
+mod live_feed_compatibility;
 mod live_feed_policy;
 pub mod live_feeds;
+mod notam_catalog_identity;
 pub mod publication;
 pub mod versioned_json;
 
@@ -19,7 +21,9 @@ pub use aerobag_cloud::*;
 pub use aircraft::*;
 pub use airway_routing::*;
 pub use atmosphere::*;
+pub use live_feed_compatibility::*;
 pub use live_feed_policy::*;
+pub use notam_catalog_identity::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductContract {

@@ -150,8 +150,23 @@ export type FlightDataColumn = {
 };
 
 export type FlightDataBannerModel = {
+  barometer_editor?: BarometerEditor | null;
   cells: FlightDataCell[];
 };
+
+export type BarometerEditor = {
+  close_label: string;
+  error?: string | null;
+  input: string;
+  input_revision: number;
+  label: string;
+  nearest_detail?: string | null;
+  nearest_enabled: boolean;
+  nearest_label: string;
+  title: string;
+};
+
+export type BarometerCommand = { available: boolean; kind: "observe"; observed_epoch_ms: number; pressure_hpa?: number | null; received_epoch_ms: number } | { input: string; kind: "set_setting" } | { kind: "use_nearest" } | { kind: "close_editor" };
 
 export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";
 

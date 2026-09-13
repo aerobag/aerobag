@@ -71,7 +71,9 @@ internal fun FlightDataBanner(
     uiTheme: UiTheme,
     modifier: Modifier = Modifier,
     onCellActivated: (String) -> Unit,
+    onBarometerCommand: (org.aerobag.app.generated.BarometerCommand) -> Unit,
 ) {
+    banner.barometerEditor?.let { BarometerSettingTray(it, onBarometerCommand) }
     val cells = banner.cells
     if (cells.isEmpty() || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
         return

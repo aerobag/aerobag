@@ -409,6 +409,8 @@ interface NativeBridge {
         actionId: String,
     ): String
 
+    fun performBarometerCommandInSessionJson(handle: Long, commandJson: String): String
+
     fun performFlightDataBannerCellActionInSessionJson(
         handle: Long,
         cellId: String,
@@ -1080,6 +1082,8 @@ object NativeBindings : NativeBridge {
         handle: Long,
         actionId: String,
     ): String
+
+    external override fun performBarometerCommandInSessionJson(handle: Long, commandJson: String): String
 
     external override fun performFlightDataBannerCellActionInSessionJson(
         handle: Long,

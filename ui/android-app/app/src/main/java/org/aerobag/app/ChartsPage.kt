@@ -819,6 +819,7 @@ internal fun ChartsPage(
                 onCellActivated = { cellId ->
                     applySessionCommand { uiSession.performFlightDataBannerCellAction(cellId) }
                 },
+                onBarometerCommand = { command -> applySessionCommand { uiSession.performBarometerCommand(command) } },
                 modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
             )
         }

@@ -1748,6 +1748,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun performBarometerCommand(command: org.aerobag.app.generated.BarometerCommand): UiSessionSnapshot {
+        return runPagedSnapshot("performBarometerCommand") {
+            bridge.performBarometerCommandInSessionJson(handle, json.encodeToString(command))
+        }
+    }
+
     fun performFlightPlanColumnAction(actionId: String): UiSessionSnapshot {
         return runPagedSnapshot("performFlightPlanColumnAction") {
             bridge.performFlightPlanColumnActionInSessionJson(handle, actionId)
@@ -4342,6 +4348,7 @@ private fun WireFlightDataColumn.toUi() = FlightDataColumn(
 
 private fun WireFlightDataBannerModel.toUi() = FlightDataBannerModel(
     cells = cells.map { it.toUi() },
+    barometerEditor = barometerEditor,
 )
 
 private fun FlightDataColumn.toWire() = WireFlightDataColumn(

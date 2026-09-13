@@ -4,6 +4,8 @@
 
 package org.aerobag.app
 
+import androidx.lifecycle.repeatOnLifecycle
+
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -3194,6 +3196,16 @@ internal fun AerobagApp(
         if (page != AppPage.Charts) return@LaunchedEffect
         derivedChartPageState = withContext(Dispatchers.IO) {
             uiSession.deriveChartPageState()
+        }
+    }
+    val barometerLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(uiSession, barometerLifecycle) {
+        barometerLifecycle.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            AndroidBarometerSource(appContext).observations().collect { observation ->
+                applyBackgroundSessionCommand("observeBarometer", "AerobagBarometer") {
+                    uiSession.performBarometerCommand(observation)
+                }
+            }
         }
     }
     LaunchedEffect(uiSession) {

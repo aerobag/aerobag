@@ -1244,6 +1244,7 @@ mod tests {
 
     fn banner() -> FlightDataBannerModel {
         FlightDataBannerModel {
+            barometer_editor: None,
             cells: vec![
                 FlightDataCell {
                     id: "altitude".to_string(),

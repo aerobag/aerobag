@@ -3615,6 +3615,9 @@ internal fun MapExplorerPage(
                         uiSession.performFlightDataBannerCellAction(cellId)
                     }
                 },
+                onBarometerCommand = { command ->
+                    applySessionCommand("performBarometerCommand") { uiSession.performBarometerCommand(command) }
+                },
                 modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
             )
             Row(

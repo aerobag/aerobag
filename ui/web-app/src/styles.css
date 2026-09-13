@@ -2008,6 +2008,30 @@ button {
   z-index: var(--z-modal-content);
 }
 
+.chartTray.barometerSettingTray {
+  top: 50%;
+  left: 50%;
+  width: calc(var(--thumb) * 3);
+  max-width: calc(100vw - var(--thumb-gap) * 2);
+  transform: translate(-50%, -50%);
+  color: var(--theme-panel-fg);
+  background: var(--theme-panel-bg);
+}
+
+.barometerSettingTray input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--thumb);
+  font-size: calc(var(--thumb) * 0.5);
+  color: var(--theme-panel-fg);
+  background: var(--theme-text-input-bg);
+}
+
+.barometerSettingTray [role="alert"] {
+  color: var(--theme-data-status-warning-stroke);
+}
+
 .chartTray.isOpen {
   transform: translateX(0);
   opacity: 1;

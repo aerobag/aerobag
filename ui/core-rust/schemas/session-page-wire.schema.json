@@ -1,5 +1,139 @@
 {
   "$defs": {
+    "BarometerCommand": {
+      "description": "Device observations and UI inputs are interpreted by the same core-owned altimeter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "observe",
+              "type": "string"
+            },
+            "observed_epoch_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "pressure_hpa": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "received_epoch_ms": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "available",
+            "observed_epoch_ms",
+            "received_epoch_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "set_setting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "use_nearest",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "close_editor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "BarometerCommand",
+      "x-discriminator": "kind"
+    },
+    "BarometerEditor": {
+      "additionalProperties": false,
+      "properties": {
+        "close_label": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "type": "string"
+        },
+        "input_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "nearest_detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nearest_enabled": {
+          "type": "boolean"
+        },
+        "nearest_label": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "label",
+        "input",
+        "input_revision",
+        "nearest_label",
+        "nearest_enabled",
+        "close_label"
+      ],
+      "type": "object"
+    },
     "ClientBuildInfo": {
       "additionalProperties": false,
       "properties": {
@@ -53,6 +187,16 @@
     "FlightDataBannerModel": {
       "additionalProperties": false,
       "properties": {
+        "barometer_editor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BarometerEditor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cells": {
           "items": {
             "$ref": "#/$defs/FlightDataCell"
@@ -2087,6 +2231,8 @@
     "FlightDataCell",
     "FlightDataColumn",
     "FlightDataBannerModel",
+    "BarometerEditor",
+    "BarometerCommand",
     "UiStatusSeverity",
     "UiStatusActionStyle",
     "UiStatusAction",

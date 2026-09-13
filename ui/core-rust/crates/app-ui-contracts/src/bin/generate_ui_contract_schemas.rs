@@ -50,6 +50,7 @@ fn session_schema() -> Value {
     add_definition::<session::FlightPlanControlUiView>(&mut root, "FlightPlanControlUiView");
     add_definition::<session::FlightDataColumn>(&mut root, "FlightDataColumn");
     add_definition::<session::FlightDataBannerModel>(&mut root, "FlightDataBannerModel");
+    add_definition::<session::BarometerCommand>(&mut root, "BarometerCommand");
     add_definition::<session::MapLayerId>(&mut root, "MapLayerId");
     add_definition::<session::DebugFlagId>(&mut root, "DebugFlagId");
     root
@@ -195,6 +196,8 @@ fn main() {
                 "FlightDataCell",
                 "FlightDataColumn",
                 "FlightDataBannerModel",
+                "BarometerEditor",
+                "BarometerCommand",
                 "UiStatusSeverity",
                 "UiStatusActionStyle",
                 "UiStatusAction",
@@ -245,7 +248,10 @@ fn main() {
                 "ClientBuildInfo",
                 "PlatformCapabilities",
             ],
-            tagged_unions: &[("UiStatusPlatformEffect", "kind")],
+            tagged_unions: &[
+                ("UiStatusPlatformEffect", "kind"),
+                ("BarometerCommand", "kind"),
+            ],
             schema: session_schema,
         },
         ContractSchema {

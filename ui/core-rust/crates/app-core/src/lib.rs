@@ -11,6 +11,7 @@ pub mod airport_info;
 mod airway_picker;
 mod airway_routing;
 pub mod altitude_planner;
+mod barometer;
 pub mod chart_page;
 pub mod cloud;
 mod cloud_acs;
@@ -87,6 +88,7 @@ pub use altitude_planner::{
 pub use app_ui_contracts::session::{
     UiNavigationPageId, UiNavigationPageOption, UiNavigationPageState,
 };
+pub use barometer::{BarometerCommand, BarometerEditor, BarometerReading};
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
     derive_chart_page_state_from_collections, route_airport_ids_from_plan, ChartAssetRecord,
@@ -320,8 +322,8 @@ pub use session::{
     map_selection_action_decision_in_session, navigation_page_state_for_platform,
     nexrad_acquisition_directive_in_session, nexrad_tile_bytes_in_session,
     open_chart_airport_in_session, pause_playback_in_session,
-    perform_aircraft_library_action_in_session, perform_cloud_ui_action_in_session,
-    perform_flight_data_banner_cell_action_in_session,
+    perform_aircraft_library_action_in_session, perform_barometer_command_in_session,
+    perform_cloud_ui_action_in_session, perform_flight_data_banner_cell_action_in_session,
     perform_flight_plan_column_action_in_session, perform_flight_plan_command_in_session,
     perform_map_selection_ui_action_in_session, perform_ownship_text_action_in_session,
     perform_settings_action_in_session, perform_status_action_in_session,

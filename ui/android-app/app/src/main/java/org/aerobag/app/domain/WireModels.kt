@@ -30,7 +30,7 @@ data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
     val aircraft_plan_view_path: String = "",
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
-    val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(),
+    val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(cells = emptyList()),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_report: WireContentReport? = null,
 )
@@ -1448,10 +1448,7 @@ data class WireAirportRunwayPatternUiView(
 typealias WireFlightDataCell = org.aerobag.app.generated.FlightDataCell
 typealias WireFlightDataColumn = org.aerobag.app.generated.FlightDataColumn
 
-@Serializable
-data class WireFlightDataBannerModel(
-    val cells: List<WireFlightDataCell> = emptyList(),
-)
+typealias WireFlightDataBannerModel = org.aerobag.app.generated.FlightDataBannerModel
 
 @Serializable
 data class WireFlightPlanWeatherBadgeUiView(

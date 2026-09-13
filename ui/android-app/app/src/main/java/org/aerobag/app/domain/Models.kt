@@ -480,6 +480,7 @@ data class FlightDataColumn(
 
 data class FlightDataBannerModel(
     val cells: List<FlightDataCell> = emptyList(),
+    val barometerEditor: org.aerobag.app.generated.BarometerEditor? = null,
 )
 
 data class FlightPlanWeatherBadgeUiView(

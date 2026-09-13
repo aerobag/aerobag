@@ -7500,6 +7500,12 @@ function MapPage(props: {
                     props.onSessionSnapshot(snapshot, "flight_data_cell_action");
                   });
                 }}
+                onBarometerCommand={(command) => {
+                  if (!uiSession) return;
+                  void uiSession.performBarometerCommand(command).then((snapshot) => {
+                    props.onSessionSnapshot(snapshot, "barometer_action");
+                  });
+                }}
               />
             </Profiler>
           )}
@@ -8505,13 +8511,14 @@ function NavElementButton(props: {
   );
 }
 
-function FlightDataBanner(props: {
+export function FlightDataBanner(props: {
   banner: FlightDataBannerModel;
   edge: FlightDataBannerEdge;
   edgeColumnCount?: number;
   edgeLayout?: boolean;
   lowered?: boolean;
   onCellActivated: (cellId: string) => void;
+  onBarometerCommand: (command: import("./generated/sessionPageWire").BarometerCommand) => void;
 }) {
   const cells = props.banner.cells;
   if (cells.length === 0) {
@@ -8523,6 +8530,10 @@ function FlightDataBanner(props: {
       ? ` isEdgeColumns${props.edgeColumnCount}`
       : "";
   return (
+    <>
+    {props.banner.barometer_editor ? (
+      <BarometerSettingTray editor={props.banner.barometer_editor} onCommand={props.onBarometerCommand} />
+    ) : null}
     <div
       className={`flightDataBanner${props.edgeLayout ? ` isEdgeLayout${edgeClass}` : ""}${edgeColumnClass}${props.lowered ? " isLowered" : ""}`}
       aria-label="Flight data"
@@ -8553,7 +8564,43 @@ function FlightDataBanner(props: {
         </div>
       ))}
     </div>
+    </>
   );
+}
+
+function BarometerSettingTray(props: {
+  editor: import("./generated/sessionPageWire").BarometerEditor;
+  onCommand: (command: import("./generated/sessionPageWire").BarometerCommand) => void;
+}) {
+  // This is only the DOM edit buffer; core parses input and controls the tray lifetime.
+  const [input, setInput] = useState(props.editor.input);
+  // A core-requested replacement (NEAREST) is distinct from echoed typing.
+  const inputRevision = useRef(props.editor.input_revision);
+  useEffect(() => {
+    if (inputRevision.current !== props.editor.input_revision) {
+      inputRevision.current = props.editor.input_revision;
+      setInput(props.editor.input);
+    }
+  }, [props.editor.input_revision, props.editor.input]);
+  const close = () => props.onCommand({ kind: "close_editor" });
+  return <>
+    <TrayScrim ariaLabel={props.editor.close_label} onClose={close} />
+    <section className="chartTray chartTrayPortal isOpen barometerSettingTray" role="dialog" aria-modal="true" aria-label={props.editor.title}>
+      <strong>{props.editor.title}</strong>
+      <label>{props.editor.label}
+        <input data-testid="barometer-setting" inputMode="decimal" value={input}
+          onChange={(event) => {
+            setInput(event.target.value);
+            props.onCommand({ kind: "set_setting", input: event.target.value });
+          }} />
+      </label>
+      {props.editor.error ? <p role="alert">{props.editor.error}</p> : null}
+      <button className="trayButton" data-testid="barometer-nearest" disabled={!props.editor.nearest_enabled}
+        onClick={() => props.onCommand({ kind: "use_nearest" })}>{props.editor.nearest_label}</button>
+      {props.editor.nearest_detail ? <p>{props.editor.nearest_detail}</p> : null}
+      <button className="trayButton" data-testid="barometer-close" onClick={close}>{props.editor.close_label}</button>
+    </section>
+  </>;
 }
 
 function FlightDataCellContents(props: { cell: FlightDataBannerModel["cells"][number] }) {

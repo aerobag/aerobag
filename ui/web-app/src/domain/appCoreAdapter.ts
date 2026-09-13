@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { UiAirwayRouteDragPhase } from "../generated/sessionPageWire";
+import type { BarometerCommand, UiAirwayRouteDragPhase } from "../generated/sessionPageWire";
 import type {
   AltitudeComparisonPanelUiView,
   AppUiState,
@@ -859,6 +859,7 @@ export interface UiSession {
   performFlightPlanColumnAction(actionId: string): Promise<UiSessionSnapshot>;
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
   performFlightDataBannerCellAction(cellId: string): Promise<UiSessionSnapshot>;
+  performBarometerCommand(command: BarometerCommand): Promise<UiSessionSnapshot>;
   statusActionDecision(actionId: string): Promise<UiStatusActionDecision>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   mapSelectionActionDecision(actionUid: string): Promise<MapSelectionActionDecision>;
@@ -1058,6 +1059,10 @@ type WasmModule = {
   perform_flight_data_banner_cell_action_in_session(
     sessionHandle: number,
     cellId: string,
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_barometer_command_in_session(
+    sessionHandle: number,
+    commandJson: string,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_flight_plan_column_action_in_session(
     sessionHandle: number,
@@ -1794,6 +1799,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       performFlightDataBannerCellAction: async (cellId) => {
         return runSessionMutation(() =>
           this.module.perform_flight_data_banner_cell_action_in_session(handle, cellId),
+        );
+      },
+      performBarometerCommand: async (command) => {
+        return runSessionMutation(() =>
+          this.module.perform_barometer_command_in_session(handle, JSON.stringify(command)),
         );
       },
       performFlightPlanColumnAction: async (actionId) => {

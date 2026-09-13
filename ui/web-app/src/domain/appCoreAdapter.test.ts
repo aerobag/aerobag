@@ -221,6 +221,7 @@ describe("loadBestAvailableAdapter", () => {
       perform_flight_plan_command_in_session: async () => mutationOutcomeJson(),
       perform_time_display_action_in_session: async () => mutationOutcomeJson(),
       perform_flight_data_banner_cell_action_in_session: async () => mutationOutcomeJson(),
+      perform_barometer_command_in_session: async () => mutationOutcomeJson(),
       perform_flight_plan_column_action_in_session: async () => mutationOutcomeJson(),
       query_flight_plan_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       status_action_decision_in_session: async () => JSON.stringify({

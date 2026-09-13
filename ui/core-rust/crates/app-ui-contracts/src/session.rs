@@ -149,6 +149,41 @@ pub struct FlightDataColumn {
 #[serde(deny_unknown_fields)]
 pub struct FlightDataBannerModel {
     pub cells: Vec<FlightDataCell>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barometer_editor: Option<BarometerEditor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BarometerEditor {
+    pub title: String,
+    pub label: String,
+    pub input: String,
+    pub input_revision: u64,
+    pub error: Option<String>,
+    pub nearest_label: String,
+    pub nearest_enabled: bool,
+    pub nearest_detail: Option<String>,
+    pub close_label: String,
+}
+
+/// Device observations and UI inputs are interpreted by the same core-owned altimeter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BarometerCommand {
+    Observe {
+        available: bool,
+        pressure_hpa: Option<f64>,
+        observed_epoch_ms: i64,
+        received_epoch_ms: i64,
+    },
+    SetSetting {
+        input: String,
+    },
+    UseNearest,
+    CloseEditor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

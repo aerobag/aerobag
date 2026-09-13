@@ -47,6 +47,7 @@ pub struct FlightTimeFuelEstimate {
 
 #[derive(Debug, Clone, Default)]
 pub struct FlightDataBannerInput {
+    pub barometer: Option<crate::BarometerReading>,
     pub altitude_ft: Option<f64>,
     pub agl_ft: Option<f64>,
     pub vertical_speed_fpm: Option<f64>,
@@ -61,6 +62,7 @@ pub struct FlightDataBannerInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlightDataBannerField {
+    Barometer,
     Altitude,
     AboveGroundLevel,
     GroundSpeed,
@@ -86,7 +88,12 @@ struct FlightDataBannerCellDefinition {
 
 pub(crate) const FLIGHT_DATA_AGL_CELL_ID: &str = "agl";
 
-const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 14] = [
+const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 15] = [
+    banner_cell(
+        FlightDataBannerField::Barometer,
+        crate::barometer::BAROMETER_CELL_ID,
+        "BARO ft",
+    ),
     banner_cell(FlightDataBannerField::Altitude, "altitude", "MSL ft"),
     banner_cell(
         FlightDataBannerField::AboveGroundLevel,
@@ -217,10 +224,22 @@ impl FlightDataComputer {
         });
 
         FlightDataBannerModel {
+            barometer_editor: input
+                .barometer
+                .as_ref()
+                .and_then(|reading| reading.editor.clone()),
             cells: FLIGHT_DATA_BANNER_CELLS
                 .iter()
+                .filter(|definition| {
+                    definition.field != FlightDataBannerField::Barometer
+                        || input.barometer.is_some()
+                })
                 .map(|definition| {
                     let value = match definition.field {
+                        FlightDataBannerField::Barometer => input
+                            .barometer
+                            .as_ref()
+                            .and_then(|reading| reading.altitude_ft.map(format_feet)),
                         FlightDataBannerField::Altitude => input.altitude_ft.map(format_feet),
                         FlightDataBannerField::AboveGroundLevel => input.agl_ft.map(format_feet),
                         FlightDataBannerField::GroundSpeed => {
@@ -277,6 +296,12 @@ impl FlightDataComputer {
                         ));
                     } else if definition.field == FlightDataBannerField::NexradAge {
                         cell.action = input.nexrad_action.clone();
+                    } else if definition.field == FlightDataBannerField::Barometer {
+                        cell.action = Some(flight_data_cell_action(
+                            crate::barometer::BAROMETER_CELL_ID,
+                            "Set barometric altimeter",
+                            None,
+                        ));
                     }
                     cell
                 })

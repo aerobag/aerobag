@@ -40,6 +40,7 @@ pub(crate) struct PlanPreviewPointer {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct SituationModel {
+    barometer: crate::barometer::Barometer,
     ownship: OwnshipState,
     playback: PlaybackSessionState,
     plan_preview: PlanPreviewState,
@@ -80,6 +81,15 @@ pub(crate) struct SituationController {
 }
 
 impl SituationController {
+    pub fn barometer(&self) -> &crate::barometer::Barometer {
+        &self.model.barometer
+    }
+
+    pub fn barometer_mut(&mut self) -> &mut crate::barometer::Barometer {
+        self.note_change();
+        &mut self.model.barometer
+    }
+
     pub fn new(ownship: OwnshipState) -> Self {
         Self {
             model: SituationModel {

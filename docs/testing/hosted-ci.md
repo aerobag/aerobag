@@ -59,6 +59,18 @@ The Node harness contracts also have a standalone ordinary-CI job. They run
 without waiting for the web build or launching a browser. The full release
 preflight retains all ordinary-CI checks, including app builds and startup smoke.
 
+Streaming fixture proxies must propagate cancellation in both directions.
+`cloud-proxy.test.mjs` uses tiny local HTTP servers and explicit connection/data/
+close handshakes to exercise reloads, aborts before headers/during uploads,
+upstream failures, and intact ordinary responses. A completed GET request is
+not the end of its SSE response. The cloud fixture once kept abandoned upstream
+streams alive across browser reloads, filled the real server's four-connection
+account quota, and caused reconnects to receive 429s. Test that disconnects
+release the upstream slot without waiting for a heartbeat; do not raise quotas
+or journey timeouts to conceal leaks. Separate Chrome peers must also use
+separate netlogs, never overwrite the main browser's inherited netlog. The
+account-upgrade journey retains peer network errors and individual netlogs.
+
 Cheap preflight, fast/full release preflight, and the hosted harness job all use
 `ui/web-app/scripts/run-target-workspace.sh inner:test:harness`. This prepares
 lockfile-controlled dependencies and exports their workspace before selecting

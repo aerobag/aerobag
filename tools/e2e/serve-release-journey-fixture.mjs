@@ -104,22 +104,38 @@ function sendBytes(request, response, bytes, contentTypeValue = "application/jso
   else response.end(bytes);
 }
 
-function proxyCloudRequest(request, response, cloudOrigin) {
+export function proxyCloudRequest(request, response, cloudOrigin) {
   const target = new URL(request.url ?? "/cloud/", cloudOrigin);
-  const upstream = httpRequest(target, {
-    method: request.method,
-    headers: { ...request.headers, host: target.host },
-  }, (upstreamResponse) => {
-    response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
-    upstreamResponse.pipe(response);
-  });
-  upstream.on("error", (error) => {
+  const fail = (error) => {
+    if (response.destroyed) return;
     if (response.headersSent) {
       response.destroy(error);
       return;
     }
     response.statusCode = 502;
     response.end(`cloud proxy failed: ${error.message}\n`);
+  };
+  const upstream = httpRequest(target, {
+    method: request.method,
+    headers: { ...request.headers, host: target.host },
+  }, (upstreamResponse) => {
+    if (response.destroyed) {
+      upstreamResponse.destroy();
+      return;
+    }
+    upstreamResponse.on("error", fail);
+    response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+    upstreamResponse.pipe(response);
+  });
+  upstream.on("error", fail);
+  request.on("error", (error) => upstream.destroy(error));
+  request.on("aborted", () => upstream.destroy());
+  // pipe() does not forward cancellation to its source. In particular, an SSE
+  // GET's request body is already complete while its response is still live.
+  // Own the upstream lifetime through the *response*, not request.close: every
+  // browser reload must release its server-side connection/quota slot.
+  response.on("close", () => {
+    if (!response.writableFinished) upstream.destroy();
   });
   request.pipe(upstream);
 }

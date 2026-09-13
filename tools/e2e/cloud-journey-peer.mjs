@@ -19,7 +19,7 @@ export function rewriteRequestOrigin(url, sourceOrigin, targetOrigin) {
   return `${new URL(targetOrigin).origin}${original.pathname}${original.search}${original.hash}`;
 }
 
-export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOriginRoutes = [] }) {
+export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOriginRoutes = [], netLogPath = null }) {
   const userDataDir = await mkdtemp(join(tmpdir(), "aerobag-cloud-journey-peer-"));
   let chrome, browser;
   const close = async () => {
@@ -28,11 +28,16 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
     await rm(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   };
   try {
-    chrome = await launchChrome({ userDataDir, width: 1000, height: 900 });
+    // Peers are separate Chrome processes: never let them overwrite the main
+    // browser's netlog (inherited through AEROBAG_CHROME_NET_LOG).
+    chrome = await launchChrome({ userDataDir, width: 1000, height: 900, netLogPath });
     browser = await connectToBrowser(chrome.endpoint);
     const page = await browser.createPage();
     await page.send("Page.enable");
     await page.send("Runtime.enable");
+    // Keep transport diagnostics passive; netlogs cover page/worker traffic
+    // without enabling DevTools Network instrumentation during qualification.
+    await page.send("Log.enable");
     if (referenceEpochMs != null) {
       await page.send("Page.addScriptToEvaluateOnNewDocument", {
         source: advancingVirtualClockScript(referenceEpochMs),
@@ -71,7 +76,7 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
       driver,
 
       async state() {
-        return page.evaluate(`(() => {
+        const state = await page.evaluate(`(() => {
           const state = window.__aerobagE2e?.cloud?.state() ?? null;
           if (!state) return null;
           const cloud = JSON.parse(localStorage.getItem("aerobag.core.settings.v1"))?.cloud;
@@ -89,6 +94,7 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
               .filter(Boolean),
           };
         })()`);
+        return { ...state, net_log: netLogPath, browser_diagnostics: page.diagnostics.slice(-200) };
       },
 
       async waitForState(predicate, description, timeoutMs = E2E_TIMING.cloudConsistencyMs) {

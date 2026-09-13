@@ -3244,6 +3244,7 @@ async function cloudAccountUpgrade(runtime) {
       const peer = await launchCloudJourneyPeer({
         url: process.env.AEROBAG_E2E_PEER_URL ?? "http://127.0.0.1:8085/",
         referenceEpochMs: null,
+        netLogPath: `${runtime.artifactDir}/cloud-upgrade-peer-${index}-netlog.json`,
         requestOriginRoutes: runtime.platform === "android" ? [{
           sourceOrigin: `http://127.0.0.1:${process.env.AEROBAG_ANDROID_CLOUD_DEVICE_PORT ?? "18094"}`,
           targetOrigin: `http://127.0.0.1:${process.env.AEROBAG_E2E_CLOUD_PORT ?? "18094"}`,

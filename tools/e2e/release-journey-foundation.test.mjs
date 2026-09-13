@@ -1326,6 +1326,9 @@ test("selected tray options retain option identity instead of returning launcher
       },
       async readProjection(prefix) {
         if (prefix === "parity:plate-folder-tile:") return [];
+        if (prefix === "parity:plate-viewport:") return [{
+          id: "parity:plate-viewport:chart:chart-reference:tac:legend:seattle:zoom:1",
+        }];
         assert.equal(prefix, "parity:tray-option:");
         return optionsOpen ? [option] : [];
       },
@@ -1335,7 +1338,7 @@ test("selected tray options retain option identity instead of returning launcher
       },
     },
     async eventually(description, observe) {
-      assert.equal(description, "selected plate SEATTLE TAC LEGEND presentation");
+      assert.equal(description, "selected plate chart-reference:tac:legend:seattle presentation");
       return observe();
     },
     async action(description, id, { complete }) {
@@ -1370,55 +1373,98 @@ test("selected tray options retain option identity instead of returning launcher
   ]);
 });
 
-test("selected plate waits for folder state and opens its tile", async () => {
-  const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");
-  const calls = [];
-  let folderReads = 0;
-  const tile = {
-    id: "parity:plate-folder-tile:chart-reference:tac:legend:seattle",
-    text: "SEATTLE TAC LEGEND",
-  };
-  const runtime = {
-    platform: "android",
-    driver: {
-      async readElement(id) {
-        if (id === "plate-chart-button") return { text: "SEATTLE TAC LEGEND" };
-        if (id === "plate-folder-button") {
-          folderReads += 1;
-          return folderReads < 2 ? null : { selected: true, checked: true };
-        }
-        throw new Error(`unexpected element ${id}`);
-      },
-      async readProjection(prefix) {
-        assert.equal(prefix, "parity:plate-folder-tile:");
-        return [tile];
-      },
-    },
-    async eventually(description, observe) {
-      if (description === "selected plate SEATTLE TAC LEGEND presentation") {
-        assert.equal(await observe(), null);
-        return observe();
-      }
-      assert.equal(description, "plate folder tile matching SEATTLE TAC LEGEND");
-      return observe();
-    },
-    async action(description, id, { complete }) {
-      calls.push([description, id]);
-      return complete();
-    },
-  };
+for (const platform of ["web", "android"]) {
+  for (const selectionTiming of ["already-selected", "selected-during-navigation", "new-selection"]) {
+    for (const preparedBehindFolder of [false, true]) {
+      test(`${platform}: ${selectionTiming} plate must open its document (prepared behind folder: ${preparedBehindFolder})`, async () => {
+        const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");
+        const calls = [];
+        let selected = selectionTiming === "already-selected";
+        let optionsOpen = false;
+        let folderOpen = true;
+        let presentationReads = 0;
+        let viewportReads = 0;
+        const chartId = "chart-reference:tac:legend:seattle";
+        const label = "SEATTLE TAC LEGEND";
+        const trayPrefix = platform === "web" ? "tray-option-" : "parity:tray-option:";
+        const tilePrefix = platform === "web" ? "plate-folder-tile:" : "parity:plate-folder-tile:";
+        const option = { id: `${trayPrefix}${chartId}`, text: label };
+        const tile = { id: `${tilePrefix}${chartId}`, text: label };
+        const runtime = {
+          platform,
+          driver: {
+            async readElement(id) {
+              if (id === "plate-chart-button") return { text: selected ? label : "PREVIOUS CHART" };
+              throw new Error(`unexpected element ${id}`);
+            },
+            async readProjection(prefix) {
+              if (prefix === trayPrefix) return optionsOpen ? [option] : [];
+              if (prefix === tilePrefix) {
+                presentationReads++;
+                // During navigation neither presentation is ready yet. Absence of
+                // folder tiles must not be interpreted as document readiness.
+                return presentationReads > 1 && folderOpen ? [tile] : [];
+              }
+              assert.equal(prefix, "parity:plate-viewport:");
+              viewportReads++;
+              // A stale viewport for another chart is not the desired document.
+              // Once navigation has revealed the folder, web may prepare the target
+              // viewport behind it. That still must not satisfy tile-click completion.
+              const viewportChart = folderOpen && !(preparedBehindFolder && presentationReads > 1)
+                ? "old-chart" : chartId;
+              return [{ id: `parity:plate-viewport:chart:${viewportChart}:zoom:1` }];
+            },
+            async back() {
+              assert.equal(optionsOpen, true);
+              optionsOpen = false;
+            },
+          },
+          async eventually(description, observe) {
+            assert.equal(description, `selected plate ${chartId} presentation`);
+            assert.equal(await observe(), null);
+            return observe();
+          },
+          async action(description, id, { complete }) {
+            calls.push(id);
+            if (id === "plate-chart-button") {
+              optionsOpen = true;
+              if (selectionTiming === "selected-during-navigation") selected = true;
+            } else if (id === `tray-option:${chartId}`) {
+              assert.equal(optionsOpen, true);
+              optionsOpen = false;
+              selected = true;
+            } else {
+              assert.equal(id, `plate-folder-tile:${chartId}`);
+              assert.equal(optionsOpen, false);
+              assert.equal(folderOpen, true);
+              assert.equal(await complete(), null); // still a folder, still not done
+              folderOpen = false;
+            }
+            const result = await complete();
+            assert.ok(result);
+            return result;
+          },
+          async revealProjectionMatching() { return option; },
+          async transition(description, { ready, act, complete }) {
+            assert.ok(await ready());
+            await act();
+            return complete();
+          },
+        };
 
-  const selected = await selectTrayOptionMatching(
-    runtime,
-    "plate-chart-button",
-    "SEATTLE TAC LEGEND",
-  );
-  assert.equal(selected, tile);
-  assert.deepEqual(calls, [[
-    "select plate SEATTLE TAC LEGEND",
-    "plate-folder-tile:chart-reference:tac:legend:seattle",
-  ]]);
-});
+        const result = await selectTrayOptionMatching(runtime, "plate-chart-button", label);
+        assert.equal(result, option); // retain chart identity, never the launcher
+        assert.equal(folderOpen, false);
+        assert.ok(viewportReads >= 2);
+        assert.deepEqual(calls, [
+          "plate-chart-button",
+          ...(selectionTiming === "new-selection" ? [`tray-option:${chartId}`] : []),
+          `plate-folder-tile:${chartId}`,
+        ]);
+      });
+    }
+  }
+}
 
 test("projection identity is always a string for projection rows and rendered controls", () => {
   assert.equal(projectionId("parity:one"), "parity:one");

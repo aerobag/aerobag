@@ -156,6 +156,7 @@ import {
 import { resolveSituationOverlay } from "./domain/situationGeometry";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
+import { MapSelectionRequests } from "./domain/mapSelectionRequests";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { fetchTextResource } from "./domain/fetchTextResource";
@@ -4715,7 +4716,7 @@ function MapPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const clickCandidateRef = useRef<{ pointerId: number; start: ScreenPoint; latest: ScreenPoint } | null>(null);
-  const mapSelectionRequestGenerationRef = useRef(0);
+  const mapSelectionRequests = useRef(new MapSelectionRequests()).current;
   const gestureActiveRef = useRef(false);
   const viewportGestureUntilRef = useRef(0);
   const followSyncSerialRef = useRef(0);
@@ -5393,9 +5394,8 @@ function MapPage(props: {
     const layoutInvalidatesSelection = layoutBasis.width !== surfaceSize.width
       || layoutBasis.height !== surfaceSize.height
       || layoutBasis.uiSession !== uiSession;
-    if (viewportInvalidatesSelection || layoutInvalidatesSelection) {
-      mapSelectionRequestGenerationRef.current += 1;
-    }
+    if (viewportInvalidatesSelection) mapSelectionRequests.viewportChanged();
+    if (layoutInvalidatesSelection) cancelMapSelectionRequests();
     mapSelectionLayoutBasisRef.current = {
       width: surfaceSize.width,
       height: surfaceSize.height,
@@ -6280,12 +6280,13 @@ function MapPage(props: {
   const {binding: mapGeometry, bindContent: bindMapContent} = useMapGeometryBinding(
     viewport, surfaceSize.width, surfaceSize.height, containerRef, viewportRef, mapUpDegRef, mapContentTransformRef,
   );
-  useEffect(() => {
-    mapSelectionRequestGenerationRef.current += 1;
+  useLayoutEffect(() => {
+    cancelMapSelectionRequests();
     hoverWeatherRequestSerialRef.current += 1;
     if (!mapInteraction.inspect) setMapSelection(null);
     if (!mapInteraction.hover_weather) setHoverWeather(null);
-  }, [mapInteraction.mode]);
+    return () => mapSelectionRequests.cancel();
+  }, [mapInteraction.mode, page, uiSession]);
 
   const overlayTransform = useMemo(() => {
     if (!mapOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -6462,7 +6463,7 @@ function MapPage(props: {
   }
 
   function updateViewport(next: MapViewportState, options: { deferReactCommit?: boolean } = {}) {
-    mapSelectionRequestGenerationRef.current += 1;
+    mapSelectionRequests.viewportChanged();
     viewportRef.current = next;
     applyImperativeMapContentTransform();
     if (options.deferReactCommit) {
@@ -6475,6 +6476,7 @@ function MapPage(props: {
   }
 
   function noteViewportGesture(durationMs = 300) {
+    cancelMapSelectionRequests();
     viewportGestureUntilRef.current = Math.max(viewportGestureUntilRef.current, Date.now() + durationMs);
     if (!gestureActiveRef.current) {
       onViewportGestureActivity();
@@ -6488,6 +6490,7 @@ function MapPage(props: {
     if (gestureActiveRef.current === active) {
       return;
     }
+    if (active) cancelMapSelectionRequests();
     gestureActiveRef.current = active;
     onViewportGestureActiveChange(active);
   }
@@ -6871,23 +6874,21 @@ function MapPage(props: {
         mapUpDegRef.current,
       );
       const click = worldToLatLon(world.x, world.y);
-      const selectionGeneration = ++mapSelectionRequestGenerationRef.current;
-      void uiSession
-        .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click)
-        .then((result) => {
-          if (selectionGeneration !== mapSelectionRequestGenerationRef.current) {
-            return;
-          }
+      void mapSelectionRequests.run(
+        "point",
+        () => uiSession.queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click),
+        (result) => {
           setMapSelection({
             point: clickCandidate.latest,
             result,
             selectedItem: mapSelectionItemById(result, result.initial_selected_item_id ?? null),
             detailModal: null,
           });
-        })
-        .catch((error) => {
+        },
+        (error) => {
           debugLog("map.selection.failed", { error: errorMessage(error) });
-        });
+        },
+      );
     } else if (activePointersRef.current.size === 0) {
       clickCandidateRef.current = null;
     }
@@ -6965,61 +6966,68 @@ function MapPage(props: {
     syncFollowStateForViewport(nextViewport);
   }
 
-  async function recenterOnNavRef(navRef: NavRef) {
-    const position = await props.appCoreAdapter.resolveNavRefPosition(navRef);
-    const centerWorld = latLonToWorld(position.lat, position.lon);
-    const nextViewport = {
-      ...viewportRef.current,
-      centerWorldX: centerWorld.x,
-      centerWorldY: centerWorld.y,
-    };
-    updateViewport(nextViewport);
-    syncFollowStateForViewport(nextViewport);
-    return { position, viewport: nextViewport };
+  function cancelMapSelectionRequests() {
+    mapSelectionRequests.cancel();
+    setChartSearch((current) => current.loading ? { ...current, loading: false } : current);
   }
 
-  async function inspectNavRef(navRef: NavRef) {
-    if (!uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-      await recenterOnNavRef(navRef);
-      return;
-    }
-    const generation = ++mapSelectionRequestGenerationRef.current;
-    const inspection = await uiSession.queryMapSelectionForNavRef(
-      viewportRef.current,
-      surfaceSize.width,
-      surfaceSize.height,
-      navRef,
-    );
-    if (generation !== mapSelectionRequestGenerationRef.current) return;
-    const position = inspection.position;
-    const centerWorld = latLonToWorld(position.lat, position.lon);
-    const nextViewport = {
-      ...viewportRef.current,
-      centerWorldX: centerWorld.x,
-      centerWorldY: centerWorld.y,
-      zoom: inspection.target_zoom,
-    };
-    debugLog("chart.search.inspect_nav_ref", {
-      nav_ref: navRef,
-      position,
-      target_zoom: inspection.target_zoom,
-      selected_item_id: inspection.selected_item_id ?? null,
-    });
-    updateViewport(nextViewport);
-    syncFollowStateForViewport(nextViewport);
-    const point = worldToScreen(
-      nextViewport,
-      latLonToWorld(position.lat, position.lon),
-      surfaceSize.width,
-      surfaceSize.height,
-      mapUpDegRef.current,
-    );
-    const selectedItem = mapSelectionItemById(inspection.selection, inspection.selected_item_id ?? null);
-    if (mapInteraction.inspect) setMapSelection({
-      point,
-      result: inspection.selection,
-      selectedItem,
-      detailModal: null,
+  function inspectNavRef(resolveNavRef: () => Promise<NavRef | null>) {
+    setChartSearch((current) => ({ ...current, loading: true, error: null }));
+    return mapSelectionRequests.run("nav-ref", async (isCurrent) => {
+      // Identifier resolution and inspection are one user intent. A slow Enter
+      // search must not overtake a newer suggestion click (or a changed query).
+      const navRef = await resolveNavRef();
+      if (!isCurrent()) return null;
+      if (!navRef) throw new Error(`No waypoint match for ${chartSearch.query}`);
+      const inspection = uiSession && surfaceSize.width > 0 && surfaceSize.height > 0
+        ? await uiSession.queryMapSelectionForNavRef(
+          viewportRef.current, surfaceSize.width, surfaceSize.height, navRef,
+        )
+        : {
+          position: await props.appCoreAdapter.resolveNavRefPosition(navRef),
+          target_zoom: viewportRef.current.zoom,
+          selection: null,
+          selected_item_id: null,
+        };
+      return { navRef, ...inspection };
+    }, (inspection) => {
+      if (!inspection) return;
+      const position = inspection.position;
+      const centerWorld = latLonToWorld(position.lat, position.lon);
+      const nextViewport = {
+        ...viewportRef.current,
+        centerWorldX: centerWorld.x,
+        centerWorldY: centerWorld.y,
+        zoom: inspection.target_zoom,
+      };
+      debugLog("chart.search.inspect_nav_ref", {
+        nav_ref: inspection.navRef,
+        position,
+        target_zoom: inspection.target_zoom,
+        selected_item_id: inspection.selected_item_id ?? null,
+      });
+      updateViewport(nextViewport);
+      syncFollowStateForViewport(nextViewport);
+      const point = worldToScreen(
+        nextViewport,
+        latLonToWorld(position.lat, position.lon),
+        surfaceSize.width,
+        surfaceSize.height,
+        mapUpDegRef.current,
+      );
+      if (mapInteraction.inspect && inspection.selection) setMapSelection({
+        point,
+        result: inspection.selection,
+        selectedItem: mapSelectionItemById(inspection.selection, inspection.selected_item_id ?? null),
+        detailModal: null,
+      });
+      // Success feedback is committed under the same ownership check as the
+      // selection; a canceled request must not clear somebody else's search.
+      setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] });
+    }, (error) => {
+      setChartSearch((current) => ({
+        ...current, loading: false, error: `Search failed: ${errorMessage(error)}`,
+      }));
     });
   }
 
@@ -7149,27 +7157,7 @@ function MapPage(props: {
     if (!query.trim()) {
       return;
     }
-    setChartSearch((current) => ({ ...current, loading: true, error: null }));
-    void (async () => {
-      const navRef = await props.appCoreAdapter.resolveWaypointIdentifier(query);
-      if (!navRef) {
-        setChartSearch((current) => ({
-          ...current,
-          loading: false,
-          error: `No waypoint match for ${query}`,
-          suggestions: [],
-        }));
-        return;
-      }
-      await inspectNavRef(navRef);
-      setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] });
-    })().catch((error) => {
-      setChartSearch((current) => ({
-        ...current,
-        loading: false,
-        error: `Search failed: ${errorMessage(error)}`,
-      }));
-    });
+    void inspectNavRef(() => props.appCoreAdapter.resolveWaypointIdentifier(query));
   }
 
   function reportFirstVisualReady() {
@@ -7500,7 +7488,10 @@ function MapPage(props: {
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {mapInteraction.inspect && mapSelection ? (
           <>
-            <TrayScrim ariaLabel="Close map selection" onClose={() => setMapSelection(null)} />
+            <TrayScrim ariaLabel="Close map selection" onClose={() => {
+              cancelMapSelectionRequests();
+              setMapSelection(null);
+            }} />
             {mapSelection.detailModal?.kind === "weather" ? (
               <WeatherDetailModal detail={mapSelection.detailModal.detail} />
             ) : mapSelection.detailModal?.kind === "airport" ? (
@@ -8323,21 +8314,18 @@ function MapPage(props: {
           />
           <ChartSearchBox
             state={chartSearch}
-            onQueryChange={(query) => setChartSearch((current) => ({ ...current, query, open: true }))}
+            onQueryChange={(query) => {
+              cancelMapSelectionRequests();
+              setChartSearch((current) => ({ ...current, query, open: true }));
+            }}
             onFocus={() => setChartSearch((current) => ({ ...current, open: true }))}
-            onClose={() => setChartSearch((current) => ({ ...current, open: false }))}
+            onClose={() => {
+              cancelMapSelectionRequests();
+              setChartSearch((current) => ({ ...current, open: false }));
+            }}
             onSubmit={submitChartSearch}
             onSelect={(suggestion) => {
-              setChartSearch((current) => ({ ...current, loading: true, error: null }));
-              void inspectNavRef(navRefFromWaypointSuggestion(suggestion.nav_ref))
-                .then(() => setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] }))
-                .catch((error) => {
-                  setChartSearch((current) => ({
-                    ...current,
-                    loading: false,
-                    error: `Search failed: ${errorMessage(error)}`,
-                  }));
-                });
+              void inspectNavRef(async () => navRefFromWaypointSuggestion(suggestion.nav_ref));
             }}
           />
           <button
@@ -8362,6 +8350,7 @@ function MapPage(props: {
               if (!uiSession) {
                 return;
               }
+              cancelMapSelectionRequests();
               followTargetGateRef.current.clear();
               const nextSnapshot = mapFollowUiState.following
                 ? uiSession.disengageMapFollow(viewportRef.current)
@@ -8381,6 +8370,7 @@ function MapPage(props: {
             mapUpDeg={plannedMapUpDeg}
             magneticVariationDeg={ownship.magnetic_variation_deg}
             onToggle={() => {
+              cancelMapSelectionRequests();
               onMapOrientationModeChange(mapOrientationMode === "north" ? "track" : "north");
             }}
           />

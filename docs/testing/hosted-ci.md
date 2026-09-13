@@ -95,6 +95,23 @@ These tests belong to the existing web unit suite and therefore cheap preflight
 and ordinary CI. They test feedback ownership, not actual clipboard permissions
 or browser hit testing; keep representative real-platform journeys for those.
 
+`mapSelectionRequests.test.ts` controls worker completion across automatic
+viewport movement, newer point/search requests, explicit cancellation, and late
+success/error feedback. The web controller distinguishes frame-bound point hit
+tests from named search intent: ownship-follow may invalidate the former, never
+silently the latter. Search resolution, selection and feedback share one owner;
+manual gestures, edited/dismissed search, mode/session/page changes and unmount
+cancel it. Keep the App wiring checks as well as these executable owner tests.
+
+Plate journey helpers must prove the requested document's rendered viewport,
+not merely its selected launcher label. That label can exist in folder mode or
+arrive during navigation. The foundation tests exercise all three selection
+paths (already selected, selected during navigation, newly selected) on both
+platforms, with delayed presentation and a stale other-chart viewport. Missing
+folder controls/tiles are not positive evidence that the viewer is ready;
+conversely, web can prepare the correct viewport behind an open folder. Require
+both the grid closing and the requested viewport, including after a tile click.
+
 Raster request tests cover both slow success and stalled-request recovery.
 `RasterTileImage.test.tsx` controls DOM load/error events and the recovery clock:
 elapsed time must not cancel pending images, either request can win, and a tile

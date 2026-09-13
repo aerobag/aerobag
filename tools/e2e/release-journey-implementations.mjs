@@ -940,18 +940,12 @@ export async function selectTrayOptionMatching(runtime, launcherId, needle) {
     if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
     return entry;
   };
+  const finishSelection = async (entry) => {
+    if (launcherId === "plate-chart-button") await ensurePlateDocumentOpen(runtime, entry);
+    return entry;
+  };
   const selected = await runtime.driver.readElement(launcherId);
   if (selected?.text?.toUpperCase().includes(needle.toUpperCase())) {
-    if (launcherId === "plate-chart-button") {
-      const folderButton = await runtime.eventually(
-        `selected plate ${needle} presentation`,
-        () => runtime.driver.readElement("plate-folder-button"),
-        E2E_TIMING.localReadyMs,
-      );
-      if (folderButton.selected === true || folderButton.checked === true) {
-        return selectPlateFolderTileMatching(runtime, needle);
-      }
-    }
     let entry = (await visibleTrayOptions(runtime))
       .find((option) => option.text?.toUpperCase().includes(needle.toUpperCase())) ?? null;
     if (!entry) {
@@ -961,7 +955,7 @@ export async function selectTrayOptionMatching(runtime, launcherId, needle) {
       entry = await revealMatchingOption();
     }
     await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
-    return entry;
+    return finishSelection(entry);
   }
 
   await runtime.action(`open ${launcherId} options`, launcherId, {
@@ -971,7 +965,7 @@ export async function selectTrayOptionMatching(runtime, launcherId, needle) {
   const refreshed = await runtime.driver.readElement(launcherId);
   if (refreshed?.text?.toUpperCase().includes(needle.toUpperCase())) {
     await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
-    return entry;
+    return finishSelection(entry);
   }
   await runtime.action(`select ${needle} from ${launcherId}`, `tray-option:${trayOptionId(entry)}`, {
     complete: async () => {
@@ -979,7 +973,34 @@ export async function selectTrayOptionMatching(runtime, launcherId, needle) {
       return launcher?.text?.toUpperCase().includes(needle.toUpperCase()) ? launcher : null;
     },
   });
-  return entry;
+  return finishSelection(entry);
+}
+
+async function ensurePlateDocumentOpen(runtime, entry) {
+  const chartId = plateChartId(entry);
+  // A selected title survives folder mode and can arrive partway through page
+  // navigation. Neither that title nor a temporarily absent folder control
+  // proves the document is open. Wait for positive rendered evidence of one
+  // of the two presentations, on every selection path.
+  const presentation = await runtime.eventually(`selected plate ${chartId} presentation`, async () => {
+    const tiles = await runtime.driver.readProjection(runtime.platform === "web"
+      ? "plate-folder-tile:" : "parity:plate-folder-tile:");
+    const tile = tiles.find((candidate) => plateChartId(candidate) === chartId);
+    if (tile) return { tile };
+    const viewport = tiles.length === 0 ? await plateViewport(runtime, chartId) : null;
+    return viewport ? { viewport } : null;
+  }, E2E_TIMING.localRenderMs);
+  if (presentation.tile) {
+    await runtime.action(`open selected plate ${entry.text}`, `plate-folder-tile:${chartId}`, {
+      complete: async () => {
+        // Web can keep a prepared viewport behind the folder grid. Require
+        // the grid to close as well as the correct document to initialize.
+        const tiles = await runtime.driver.readProjection(runtime.platform === "web"
+          ? "plate-folder-tile:" : "parity:plate-folder-tile:");
+        return tiles.length === 0 ? plateViewport(runtime, chartId) : null;
+      },
+    });
+  }
 }
 
 function procedureChoiceId(entry) {

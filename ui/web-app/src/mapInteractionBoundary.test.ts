@@ -31,7 +31,7 @@ describe("map interaction boundaries", () => {
     expect(hover).toContain("!mapInteraction.hover_weather");
     expect(appSource).toContain("if (!mapInteraction.inspect) setMapSelection(null)");
     expect(appSource).toContain("if (!mapInteraction.hover_weather) setHoverWeather(null)");
-    expect(functionSource("inspectNavRef")).toContain("if (mapInteraction.inspect) setMapSelection");
+    expect(functionSource("inspectNavRef")).toContain("if (mapInteraction.inspect && inspection.selection) setMapSelection");
   });
 
   it("routes production map orientation through the planned map-up value", () => {
@@ -154,9 +154,29 @@ describe("map interaction boundaries", () => {
     const releaseSource = functionSource("handlePointerRelease");
     const viewportSource = functionSource("updateViewport");
 
-    expect(releaseSource).toContain("mapSelectionRequestGenerationRef.current");
-    expect(releaseSource).toContain("selectionGeneration !== mapSelectionRequestGenerationRef.current");
-    expect(viewportSource).toContain("mapSelectionRequestGenerationRef.current += 1");
+    expect(releaseSource).toContain("mapSelectionRequests.run(");
+    expect(releaseSource).toContain('"point"');
+    expect(viewportSource).toContain("mapSelectionRequests.viewportChanged()");
+    expect(viewportSource).not.toContain("cancelMapSelectionRequests()");
+  });
+
+  it("owns named lookup and feedback together, separately from map-frame changes", () => {
+    const search = sourceBetween("function inspectNavRef", "function mapSelectionItemById");
+    expect(search).toContain('mapSelectionRequests.run("nav-ref"');
+    expect(search).toContain("const navRef = await resolveNavRef()");
+    expect(search).toContain("if (!isCurrent()) return null");
+    expect(search).toContain("queryMapSelectionForNavRef");
+    expect(search).toContain("setMapSelection(");
+    expect(search).toContain('setChartSearch({ query: "", open: false');
+    const box = sourceBetween("<ChartSearchBox", 'className={`centerHereButton');
+    expect(box).not.toContain(".then(");
+    expect(box).toContain("cancelMapSelectionRequests()");
+    expect(functionSource("submitChartSearch")).toContain("inspectNavRef(() =>");
+    expect(functionSource("noteViewportGesture")).toContain("cancelMapSelectionRequests()");
+    expect(functionSource("setViewportGestureActive")).toContain("if (active) cancelMapSelectionRequests()");
+    expect(appSource).toContain("if (layoutInvalidatesSelection) cancelMapSelectionRequests()");
+    expect(appSource).toContain("return () => mapSelectionRequests.cancel()");
+    expect(appSource).toContain("[mapInteraction.mode, page, uiSession]");
   });
 
   it("refreshes NEXRAD for viewport changes before the first frame lands", () => {

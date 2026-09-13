@@ -6,6 +6,8 @@ package org.aerobag.app
 
 import android.location.Location
 import androidx.core.location.LocationCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.SituationSample
@@ -14,6 +16,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -35,11 +38,14 @@ class AndroidGpsSampleTest {
     }
 
     @Test
-    fun ellipsoidOnlyFixKeepsPositionButDoesNotInventMslAltitude() {
+    fun ellipsoidOnlyFusedFixGetsGeoidCorrectedMslAltitude() {
         val sample = sample(ellipsoidM = 77.6, mslM = null, mslAccuracyM = 0.64f)
-        assertNull(sample.altitudeMslFt)
-        assertNull(sample.verticalAccuracyM)
+        // Android's framework and backported geoid grids can differ slightly
+        // from the phone's newer model; allow one metre, not ellipsoid height.
+        assertEquals(329.23, requireNotNull(sample.altitudeMslFt), 3.3)
         assertEquals(LatLonPoint(47.67845, -122.30912), sample.position)
+        assertEquals(1_000L, sample.eventTimeEpochMs)
+        assertEquals(1_100L, sample.receivedTimeEpochMs)
     }
 
     @Test
@@ -98,6 +104,8 @@ class AndroidGpsSampleTest {
             if (mslM != null) LocationCompat.setMslAltitudeMeters(this, mslM)
             if (mslAccuracyM != null) LocationCompat.setMslAltitudeAccuracyMeters(this, mslAccuracyM)
         }
-        return location.toSituationSample(1_100L)
+        return runBlocking(Dispatchers.IO) {
+            location.toSituationSample(RuntimeEnvironment.getApplication(), 1_100L)
+        }
     }
 }

@@ -27,22 +27,45 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.OwnshipSourcePowerState
 import org.aerobag.app.domain.SituationControlInput
 
 class AerobagGpsService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var finalStatusPublished = false
+    private val sampleScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private data class ReceivedLocation(val location: Location, val receivedEpochMs: Long)
+    private val pendingLocations = Channel<ReceivedLocation>(Channel.CONFLATED)
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            result.locations.forEach(::publishLocation)
+            result.lastLocation?.let {
+                pendingLocations.trySend(ReceivedLocation(Location(it), System.currentTimeMillis()))
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        // Cold geoid asset reads must not block UI or accumulate a queue of old fixes.
+        sampleScope.launch {
+            for ((location, receivedEpochMs) in pendingLocations) {
+                val sample = withContext(Dispatchers.IO) {
+                    location.toSituationSample(applicationContext, receivedEpochMs)
+                }
+                val label = if (location.hasAccuracy()) "GPS fix ${location.accuracy.toInt()} m" else "GPS fix"
+                AndroidGpsSource.publishStatus(AndroidGpsSource.connectedStatus(label))
+                AndroidGpsSource.publishSample(sample)
+            }
+        }
         ensureNotificationChannel()
     }
 
@@ -83,6 +106,7 @@ class AerobagGpsService : Service() {
     }
 
     override fun onDestroy() {
+        stopSampleProcessing()
         fusedLocationClient.removeLocationUpdates(locationCallback)
         if (!finalStatusPublished) {
             AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
@@ -132,19 +156,15 @@ class AerobagGpsService : Service() {
     }
 
     private fun publishFinalStatus(status: org.aerobag.app.domain.OwnshipSourceStatusUpdate) {
+        stopSampleProcessing()
         finalStatusPublished = true
         AndroidGpsSource.publishStatus(status)
     }
 
-    private fun publishLocation(location: Location) {
-        val now = System.currentTimeMillis()
-        val accuracyLabel = if (location.hasAccuracy()) {
-            "GPS fix ${location.accuracy.toInt()} m"
-        } else {
-            "GPS fix"
-        }
-        AndroidGpsSource.publishStatus(AndroidGpsSource.connectedStatus(accuracyLabel))
-        AndroidGpsSource.publishSample(location.toSituationSample(now))
+    private fun stopSampleProcessing() {
+        pendingLocations.close()
+        // Cancellation also prevents an in-flight geoid read publishing after pause.
+        sampleScope.cancel()
     }
 
     private fun hasPreciseLocationPermission(): Boolean =

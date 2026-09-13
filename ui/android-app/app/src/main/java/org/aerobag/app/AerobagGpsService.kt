@@ -27,11 +27,8 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.OwnshipSourcePowerState
 import org.aerobag.app.domain.SituationControlInput
-import org.aerobag.app.domain.SituationSample
 
 class AerobagGpsService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -147,22 +144,7 @@ class AerobagGpsService : Service() {
             "GPS fix"
         }
         AndroidGpsSource.publishStatus(AndroidGpsSource.connectedStatus(accuracyLabel))
-        AndroidGpsSource.publishSample(
-            SituationSample(
-                sourceId = AndroidGpsSource.SourceId,
-                sourceKind = OwnshipSourceKind.DeviceGps,
-                eventTimeEpochMs = location.time.takeIf { it > 0L } ?: now,
-                receivedTimeEpochMs = now,
-                position = LatLonPoint(lat = location.latitude, lon = location.longitude),
-                horizontalAccuracyM = location.horizontalAccuracyMIfPresent(),
-                verticalAccuracyM = location.verticalAccuracyMIfPresent(),
-                trackDegTrue = location.bearingIfPresent(),
-                headingDegTrue = location.bearingIfPresent(),
-                groundSpeedKt = location.speedKtIfPresent(),
-                altitudeMslFt = location.altitudeFtIfPresent(),
-                pressureAltitudeFt = null,
-            ),
-        )
+        AndroidGpsSource.publishSample(location.toSituationSample(now))
     }
 
     private fun hasPreciseLocationPermission(): Boolean =
@@ -259,25 +241,6 @@ class AerobagGpsService : Service() {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-    private fun Location.bearingIfPresent(): Double? =
-        if (hasBearing()) bearing.toDouble() else null
-
-    private fun Location.speedKtIfPresent(): Double? =
-        if (hasSpeed()) speed.toDouble() * MetersPerSecondToKnots else null
-
-    private fun Location.altitudeFtIfPresent(): Double? =
-        if (hasAltitude()) altitude * MetersToFeet else null
-
-    private fun Location.horizontalAccuracyMIfPresent(): Double? =
-        if (hasAccuracy()) accuracy.toDouble() else null
-
-    private fun Location.verticalAccuracyMIfPresent(): Double? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && hasVerticalAccuracy()) {
-            verticalAccuracyMeters.toDouble()
-        } else {
-            null
-        }
-
     companion object {
         private const val LogTag = "AerobagGps"
         private const val NotificationChannelId = "aerobag_gps"
@@ -286,8 +249,6 @@ class AerobagGpsService : Service() {
         private const val ActionApplyPausedState = "org.aerobag.app.action.APPLY_PAUSED_GPS_STATE"
         private const val UpdateIntervalMs = 1_000L
         private const val FastestUpdateIntervalMs = 500L
-        private const val MetersToFeet = 3.280839895
-        private const val MetersPerSecondToKnots = 1.943844492
 
         fun startHighPrecisionGps(context: Context) {
             AndroidGpsPower.markGpsActive(context)

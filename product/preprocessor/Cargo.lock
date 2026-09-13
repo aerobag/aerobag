@@ -1462,6 +1462,7 @@ name = "product-contracts"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "had-key",
  "prost",
  "serde",

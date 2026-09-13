@@ -297,6 +297,17 @@ export function createReleaseJourneyFixtureServer(args) {
     }
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     const pathname = decodeURIComponent(url.pathname);
+    if (pathname === "/service/bulletins-v1.json") {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({schema_version:1,
+        publisher:`http://${request.headers.host}/service/bulletins-v1.json`,revision:1,
+        published_at_utc:"2026-01-01T00:00:00Z",releases:[],notices:[{
+          id:"fixture-notice",attention_revision:1,title:"Journey service announcement",body:"Fixture announcement body.",
+          severity:"info",published_at_utc:"2026-01-01T00:00:00Z",effective_at_utc:null,expires_at_utc:null,
+          resolved:false,audience:{releases:[],platforms:[]},link:null,
+        }]}));
+      return;
+    }
     const transportFaultId = url.searchParams.get("aerobag_e2e_abort_once");
     if (pathname.startsWith("/release-journey/") && transportFaultId &&
         !abortedTransportFaults.has(transportFaultId) && request.method !== "HEAD") {

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "service-bulletins-v1",
+  "producer": "service-bulletins",
+  "payload_schema_version": 1,
+  "requires_claim": true,
+  "measurements": {
+    "service_bulletins.publication_failure_count": {
+      "field": "publication_failure_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "One when the most recent serialized publication attempt failed, zero after a successful publication or validated no-op. Does not count document age as failure."
+    }
+  }
+}

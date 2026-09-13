@@ -106,7 +106,7 @@ class TelemetryContractsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a registered legacy release"):
                 contracts.build_pins(repo, "new", FUTURE_COMMIT)
             shutil.copytree(ROOT, repo / "contracts/telemetry")
-            self.assertEqual(contracts.build_pins(repo, "new", FUTURE_COMMIT), {"product-facts": pin(3)})
+            self.assertEqual(contracts.build_pins(repo, "new", FUTURE_COMMIT), contracts.producer_pins(ROOT))
             source = repo / "contracts/telemetry/producers.json"
             source.write_text(json.dumps({"schema_version": 1, "producers": {"product-facts": pin(1)}}))
             with self.assertRaisesRegex(ValueError, "coverage removed"):
@@ -247,7 +247,9 @@ class TelemetryContractsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "telemetry"
             shutil.copytree(ROOT, root)
-            (root / "producers.json").write_text(json.dumps({"schema_version": 1, "producers": {"product-facts": pin(1)}}))
+            producers = contracts.producer_pins(root)
+            producers["product-facts"] = pin(1)
+            (root / "producers.json").write_text(json.dumps({"schema_version": 1, "producers": producers}))
             policy = contracts.read_object(root / "coverage-policy.json")
             for exceptions in [[], [{"reason": "intentional", "approved_by": "operator"}]]:
                 policy["exceptions"] = exceptions

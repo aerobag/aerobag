@@ -68,6 +68,7 @@ pub struct LiveFeedRuntimeInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveFeedRuntimeDecision {
+    pub event_names: Vec<String>,
     pub transport_policy: SseTransportPolicy,
     #[serde(default)]
     pub connection_event: Option<LiveFeedConnectionEvent>,
@@ -125,6 +126,14 @@ pub fn live_feed_runtime_decision(
     };
 
     LiveFeedRuntimeDecision {
+        event_names: [
+            product_contracts::live_feeds::v3::CATALOG_EVENT_NAME,
+            product_contracts::live_feeds::v3::PRODUCT_EVENT_NAME,
+            product_contracts::service_bulletins::EVENT,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
         transport_policy: AEROBAG_SSE_TRANSPORT_POLICY,
         connection_event,
         commands: reconnect_delay_ms

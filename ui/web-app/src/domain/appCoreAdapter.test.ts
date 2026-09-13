@@ -295,7 +295,7 @@ describe("loadBestAvailableAdapter", () => {
       live_feed_runtime_decision_in_session: async (_handle: number, inputJson: string) => {
         const input = JSON.parse(inputJson) as { kind: string };
         return JSON.stringify({
-          transport_policy: TEST_SSE_TRANSPORT_POLICY,
+          event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY,
           connection_event: input.kind === "start" || input.kind === "online" ? null : input,
           commands: [
             ...(input.kind === "error" ? [{ kind: "reconnect" as const, delay_ms: 5000 }] : []),
@@ -491,7 +491,7 @@ describe("createLiveFeedSubscription", () => {
       async (input) => {
         runtimeEvents.push(input.kind);
         return {
-          transport_policy: TEST_SSE_TRANSPORT_POLICY,
+          event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY,
           commands: input.kind === "error"
             ? [{ kind: "reconnect", delay_ms: 5000 }]
             : input.kind === "online"
@@ -531,7 +531,7 @@ describe("createLiveFeedSubscription", () => {
     const subscription = createLiveFeedSubscription(
       () => "https://feeds.example.test/live-feeds/v3/events",
       async (input) => ({
-        transport_policy: TEST_SSE_TRANSPORT_POLICY,
+        event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY,
         commands: input.kind === "online"
           ? [{ kind: "reconnect", delay_ms: 0 }]
           : [],
@@ -562,7 +562,7 @@ describe("createLiveFeedSubscription", () => {
       async (input) => {
         runtimeEvents.push(input.kind);
         return {
-          transport_policy: TEST_SSE_TRANSPORT_POLICY,
+          event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY,
           commands: input.kind === "error" ? [{ kind: "reconnect", delay_ms: 0 }] : [],
         };
       },
@@ -597,7 +597,7 @@ describe("createLiveFeedSubscription", () => {
       async (input) => {
         runtimeEvents.push(input.kind);
         return {
-          transport_policy: TEST_SSE_TRANSPORT_POLICY,
+          event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY,
           commands: input.kind === "idle_timeout" ? [{ kind: "reconnect", delay_ms: 0 }] : [],
         };
       },
@@ -626,7 +626,7 @@ describe("createLiveFeedSubscription", () => {
     let attempts = 0;
     const subscription = createLiveFeedSubscription(
       () => "https://feeds.example.test/live-feeds/v3/events",
-      async () => ({ transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: [] }),
+      async () => ({ event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: [] }),
       async (events) => {
         ingested.push(events);
         attempts += 1;
@@ -654,7 +654,7 @@ describe("createLiveFeedSubscription", () => {
     const ingested: unknown[][] = [];
     const subscription = createLiveFeedSubscription(
       () => "https://feeds.example.test/live-feeds/v3/events",
-      async () => ({ transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: [] }),
+      async () => ({ event_names: ["live-feed-catalog", "live-feed-current"], transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: [] }),
       async (events) => { ingested.push(events); },
       () => {},
     );

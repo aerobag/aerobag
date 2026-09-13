@@ -2128,7 +2128,7 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = SimpleNamespace(
-                artifact_root=root, deploy_health_path=root / "health.json",
+                artifact_root=root, data_root=root, deploy_health_path=root / "health.json",
                 cloud_status_secret_path=root / "secret", cloud_status_url="http://cloud/status",
                 build_watch_url="http://build/status", calendar_path=root / "calendar.json",
             )

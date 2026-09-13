@@ -30,7 +30,9 @@ def verify(repo: Path, base_ref: str = "HEAD") -> None:
     current = contracts.producer_pins(root)
     for producer, pin in current.items():
         descriptor = contracts.load_contract(pin, producer, root)
-        registered = {measurement for owner, measurement in pipeline_health.PRODUCT_METRIC_REQUIREMENTS.values()
+        registered = {measurement for owner, measurement in (
+            *pipeline_health.PRODUCT_METRIC_REQUIREMENTS.values(),
+            *pipeline_health.SERVICE_METRIC_REQUIREMENTS.values())
                       if owner == producer}
         unmonitored = set(descriptor["measurements"]) - registered
         if unmonitored:

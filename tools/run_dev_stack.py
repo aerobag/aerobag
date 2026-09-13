@@ -161,10 +161,15 @@ class DevStackConfig:
     disable_cloud_server: bool
     disable_build_watch: bool
     disable_pipeline_health: bool
+    service_public_base_url: str = "http://aerobag-dev.iac.jonh.net:18080"
 
     @property
     def published_root(self) -> Path:
         return self.artifact_root / "published"
+
+    @property
+    def service_root(self) -> Path:
+        return self.stack_root / "service"
 
     @property
     def live_root(self) -> Path:
@@ -253,10 +258,14 @@ class DevStack:
 
     def start(self) -> None:
         self.prepare_dirs()
-        if not self.config.skip_binary_build and (
-            not self.config.disable_live_feeds or not self.config.disable_cloud_server
-        ):
+        if not self.config.skip_binary_build:
             self.build_binaries()
+        import publish_notices
+        publish_notices.publish(
+            self.config.service_root,
+            self.config.service_public_base_url.rstrip("/") + publish_notices.BULLETIN_PATH,
+            self.config.target_dir / "debug/service-bulletin-contract", source="dev-stack-start",
+        )
         if not self.config.disable_live_feeds:
             self.start_child("live-feeds", self.live_feeds_command())
         if not self.config.disable_cloud_server:
@@ -339,7 +348,10 @@ class DevStack:
 
     def build_binaries(self) -> None:
         env = self.child_env()
-        commands: list[list[str]] = []
+        commands: list[list[str]] = [[
+            "cargo", "build", "--manifest-path", str(PREPROCESSOR_MANIFEST),
+            "-p", "product-contracts", "--bin", "service-bulletin-contract",
+        ]]
         if not self.config.disable_live_feeds:
             commands.append([
                 "cargo", "build", "--manifest-path", str(PREPROCESSOR_MANIFEST),
@@ -390,6 +402,8 @@ class DevStack:
             str(self.config.live_feeds_binary),
             "--live-root",
             str(self.config.live_root),
+            "--service-bulletin-file",
+            str(self.config.service_root / "bulletins-v1.json"),
             "--scratch-root",
             str(self.config.scratch_root),
             "--fetch-cache-root",
@@ -635,6 +649,7 @@ def make_handler(stack: DevStack):
             parsed = urlparse(self.path)
             path = parsed.path
             if (path == "/live-feeds" or path.startswith("/live-feeds/")
+                    or path == "/service/bulletins-v1.json"
                     or path == "/cloud" or path.startswith("/cloud/")):
                 self.send_cors_options()
                 return
@@ -645,7 +660,14 @@ def make_handler(stack: DevStack):
         def handle_request(self, send_body: bool) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path == "/health.json":
+            if path == "/service/bulletins-v1.json":
+                if self.command in {"GET", "HEAD"}:
+                    self.serve_bulletins(send_body)
+                else:
+                    self.send_text(405, "read-only endpoint\n", send_body)
+            elif path.startswith("/service/"):
+                self.send_text(404, "not found\n", send_body)
+            elif path == "/health.json":
                 self.serve_file(config.deploy_health_path, send_body, no_store=True)
             elif path == "/packages" or path.startswith("/packages/"):
                 relative = path.removeprefix("/packages").lstrip("/") or "current_artifacts.json"
@@ -690,6 +712,35 @@ def make_handler(stack: DevStack):
                     self.serve_file(index, send_body, no_store=False)
                     return
             self.send_html(200, index_html(config), send_body)
+
+        def serve_bulletins(self, send_body: bool) -> None:
+            import hashlib
+            import gzip
+            try:
+                with (config.service_root / "bulletins-v1.json").open("rb") as stream:
+                    data = stream.read(256 * 1024 + 1)
+                if len(data) > 256 * 1024:
+                    self.send_text(503, "bulletin exceeds contract limit\n", send_body)
+                    return
+            except FileNotFoundError:
+                self.send_text(404, "bulletin not published\n", send_body)
+                return
+            etag = 'W/"' + hashlib.sha256(data).hexdigest() + '"'
+            unchanged = self.headers.get("If-None-Match") == etag
+            self.send_response(304 if unchanged else 200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("ETag", etag)
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Content-Type", "application/json")
+            if not unchanged:
+                if "gzip" in self.headers.get("Accept-Encoding", ""):
+                    data = gzip.compress(data, mtime=0)
+                    self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            if send_body and not unchanged:
+                self.wfile.write(data)
 
         def serve_static(self, root: Path, relative: str, send_body: bool) -> None:
             path = safe_static_path(root, relative)
@@ -855,6 +906,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cloud-server-listen", default=DEFAULT_CLOUD_SERVER)
     parser.add_argument("--build-watch-listen", default=DEFAULT_BUILD_WATCH)
     parser.add_argument("--pipeline-health-listen", default=DEFAULT_PIPELINE_HEALTH)
+    parser.add_argument("--service-public-base-url", default="http://aerobag-dev.iac.jonh.net:18080")
     parser.add_argument("--live-feed-fetch-mode", default="fill", choices=["fill", "offline"])
     parser.add_argument(
         "--nms-notams-config",
@@ -946,6 +998,7 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
         disable_cloud_server=args.disable_cloud_server,
         disable_build_watch=args.disable_build_watch,
         disable_pipeline_health=args.disable_pipeline_health,
+        service_public_base_url=args.service_public_base_url,
     )
 
 

@@ -71,6 +71,7 @@ th {{ color:var(--muted); }}
     <a href="/pipeline-health/">Pipeline Health</a>
     <a href="/build-watch/">Build Watch</a>
     <a href="/health.json">Deployment Health JSON</a>
+    <a href="/service/bulletins-v1.json">Service Bulletins</a>
   </nav>
   <section class="services">
     <h2>Global Services</h2>

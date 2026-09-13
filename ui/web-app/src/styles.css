@@ -5098,3 +5098,24 @@ button {
   }
 
 }
+.serviceNoticeTitle {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--thumb-gap);
+  width: 100%;
+  min-height: var(--thumb);
+  text-align: left;
+  font: inherit;
+  font-weight: bold;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.serviceNoticeBody {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: calc(var(--thumb) * 0.32);
+  line-height: 1.5;
+}

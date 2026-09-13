@@ -164,6 +164,7 @@ function utf8ByteLength(value: string): number {
 
 declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
 declare const __AEROBAG_CLOUD_SERVER_BASE_URL__: string | null;
+declare const __AEROBAG_SERVICE_BULLETIN_URLS__: string[] | null;
 
 type LiveFeedE2eProbeState = {
   open_attempts: number;
@@ -255,6 +256,7 @@ export type RasterMapUiState = {
 };
 
 export type UiSessionSnapshot = {
+  service_notifications: import("../generated/sessionPageWire").UiServiceNotificationsState;
   ui_contract_version: number;
   session_revision: number;
   flight_plan_route_revision: number;
@@ -1302,6 +1304,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               },
               live_feeds: { acquisition_policy: "jit_public_resources" },
               client_build: __AEROBAG_CLIENT_BUILD_INFO__,
+              service_bulletin_urls: __AEROBAG_SERVICE_BULLETIN_URLS__ ?? [new URL("/service/bulletins-v1.json", globalThis.location.href).toString()],
               local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             }),
           ), "startup.session.configure_platform"),
@@ -2550,6 +2553,7 @@ type LiveFeedRuntimeCommand =
   | { kind: "retry_resources"; delay_ms: number };
 
 type LiveFeedRuntimeDecision = {
+  event_names: string[];
   transport_policy: {
     heartbeat_interval_ms: number;
     connect_timeout_ms: number;
@@ -2763,7 +2767,7 @@ export function createLiveFeedSubscription(
         () => handleTimeout("error", "EventSource connect timeout"),
         transportPolicy.connect_timeout_ms,
       ) as unknown as number;
-      const queueLiveFeedEvent = (eventName: "live-feed-catalog" | "live-feed-current") => (event: Event) => {
+      const queueLiveFeedEvent = (eventName: string) => (event: Event) => {
         if (!isCurrent()) {
           return;
         }
@@ -2780,8 +2784,9 @@ export function createLiveFeedSubscription(
         });
         scheduleFlush();
       };
-      nextEvents.addEventListener("live-feed-catalog", queueLiveFeedEvent("live-feed-catalog"));
-      nextEvents.addEventListener("live-feed-current", queueLiveFeedEvent("live-feed-current"));
+      for (const eventName of decision.event_names) {
+        nextEvents.addEventListener(eventName, queueLiveFeedEvent(eventName));
+      }
       nextEvents.onopen = () => {
         if (!isCurrent()) {
           return;

@@ -69,6 +69,7 @@ pub(crate) struct MapProjectionDependencies {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StatusProjectionDependencies {
+    pub service_projection_revision: u64,
     pub data_status_revision: u64,
     pub page_projection_revision: u64,
     pub next_freshness_check_epoch_ms: Option<i64>,
@@ -276,6 +277,7 @@ mod tests {
                 internet_adsb_enabled: false,
             },
             status: StatusProjectionDependencies {
+                service_projection_revision: 0,
                 data_status_revision: 0,
                 page_projection_revision: 0,
                 next_freshness_check_epoch_ms: None,

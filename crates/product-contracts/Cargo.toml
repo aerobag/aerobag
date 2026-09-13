@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 had-key = { path = "../had-key" }
 prost = "0.14.4"
 serde = { version = "1", features = ["derive"] }

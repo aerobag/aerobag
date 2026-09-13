@@ -5,13 +5,13 @@
 
 import type { NavSymbolFeature } from "./navQueryWire";
 
-export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 13 as const;
+export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 14 as const;
 
 export const UI_INVALIDATION_VALUES = ["nav_data", "session_snapshot", "raster_tiles", "map_overlay", "nexrad_overlay", "terrain_overlay", "flight_plan_route", "debug_panel"] as const;
 
 export type UiInvalidation = "nav_data" | "session_snapshot" | "raster_tiles" | "map_overlay" | "nexrad_overlay" | "terrain_overlay" | "flight_plan_route" | "debug_panel";
 
-export type UiNavigationPageId = "map" | "charts" | "flight_plan" | "altitude_planner" | "data_status" | "settings" | "home" | "offline_packages";
+export type UiNavigationPageId = "map" | "charts" | "flight_plan" | "altitude_planner" | "data_status" | "service_notifications" | "settings" | "home" | "offline_packages";
 
 export type UiNavigationPageOption = {
   chart_or_plate_return_target: boolean;
@@ -192,7 +192,7 @@ export type UiSurfaceStatusState = {
   controls: UiSurfaceStatusControl[];
 };
 
-export type UiStatusPlatformEffect = { kind: "reload_application" };
+export type UiStatusPlatformEffect = { kind: "reload_application" } | { kind: "open_service_notifications" };
 
 export type UiStatusActionDecision = {
   perform_session_mutation: boolean;
@@ -364,6 +364,38 @@ export type UiSettingsPageState = {
   title: string;
 };
 
+export type UiServiceNoticeAction = {
+  action_id: string;
+  label: string;
+};
+
+export type UiServiceNoticeLink = {
+  label: string;
+  url: string;
+};
+
+export type UiServiceNotice = {
+  archived: boolean;
+  body: string;
+  expanded: boolean;
+  id: string;
+  link?: UiServiceNoticeLink | null;
+  open_action: UiServiceNoticeAction;
+  severity: UiStatusSeverity;
+  state_label: string;
+  timing: string;
+  title: string;
+  unread: boolean;
+};
+
+export type UiServiceNotificationsState = {
+  items: UiServiceNotice[];
+  mark_all_read?: UiServiceNoticeAction | null;
+  source_status: string[];
+  summary: string;
+  title: string;
+};
+
 export type UiDisplayPolicy = {
   allow_screen_off_after_ms?: number | null;
   dim_after_ms?: number | null;
@@ -430,4 +462,5 @@ export type PlatformCapabilities = {
   live_feeds: PlatformLiveFeedsCapability | null;
   local_time_zone: string | null;
   offline_packages: PlatformOfflinePackagesCapability | null;
+  service_bulletin_urls: string[];
 };

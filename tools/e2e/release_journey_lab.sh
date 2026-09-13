@@ -457,6 +457,7 @@ run_android_test() {
     ANDROID_SERIAL="$SERIAL" \
     ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
     ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+    AEROBAG_SERVICE_BULLETIN_URLS="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/service/bulletins-v1.json" \
     ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
     AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-http://127.0.0.1:8085/}" \
     AEROBAG_E2E_CLOUD_PORT="$CLOUD_PORT" \
@@ -631,6 +632,7 @@ case "$command" in
     env \
       AEROBAG_ARTIFACT_READ_PATH="$(dirname "$FIXTURE")/published" \
       AEROBAG_LIVE_FEEDS_ORIGIN="$(fixture_origin)" \
+      AEROBAG_SERVICE_BULLETIN_URLS="$(fixture_origin)/service/bulletins-v1.json" \
       AEROBAG_CLOUD_SERVER_BASE_URL="$(cloud_base_url)" \
       ./ui/web-app/scripts/restart-vite-dev.sh
     ;;
@@ -639,6 +641,7 @@ case "$command" in
     env \
       AEROBAG_E2E_ENABLED=1 \
       AEROBAG_LIVE_FEEDS_ORIGIN="$(fixture_origin)" \
+      AEROBAG_SERVICE_BULLETIN_URLS="$(fixture_origin)/service/bulletins-v1.json" \
       AEROBAG_CLOUD_SERVER_BASE_URL="$(cloud_base_url)" \
       npm --prefix ui/web-app run build:optimized
     ;;
@@ -653,6 +656,7 @@ case "$command" in
       ANDROID_SERIAL="$SERIAL" \
       ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
       ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+    AEROBAG_SERVICE_BULLETIN_URLS="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/service/bulletins-v1.json" \
       ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       ./ui/android-app/scripts/test.sh :app:installDebug
     ;;
@@ -673,6 +677,7 @@ case "$command" in
       ANDROID_SERIAL="$SERIAL" \
       ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
       ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+    AEROBAG_SERVICE_BULLETIN_URLS="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/service/bulletins-v1.json" \
       ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       AEROBAG_E2E_ARTIFACT_DIR="$ARTIFACT_DIR" \
       ./ui/android-app/scripts/run_e2e.sh \
@@ -693,6 +698,7 @@ case "$command" in
       ANDROID_SERIAL="$SERIAL" \
       ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
       ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+    AEROBAG_SERVICE_BULLETIN_URLS="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/service/bulletins-v1.json" \
       ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       AEROBAG_E2E_ARTIFACT_DIR="$ARTIFACT_DIR" \
       ./ui/android-app/scripts/run_e2e.sh \

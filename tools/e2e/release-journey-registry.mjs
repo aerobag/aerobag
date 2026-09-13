@@ -13,6 +13,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "disclaimer.accept-persist", "startup.supported-publication", "navigation.map",
     "navigation.charts", "navigation.flight-plan", "navigation.altitude-planner",
     "navigation.data-status", "navigation.settings", "navigation.home",
+    "navigation.service-notifications", "home.service-notifications",
     "home.chart", "home.plate", "home.flight-plan", "home.altitude-planner",
     "home.data-status", "home.settings", "home.cloud", "home.about",
   ]),

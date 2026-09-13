@@ -56,6 +56,9 @@ RUNTIME_SOURCE_PATHS = (
     "tools/release_retirement.py",
     "tools/build_release.py",
     "tools/admin_index.py",
+    "tools/publish_notices.py",
+    "crates/product-contracts/src/service_bulletins.rs",
+    "crates/product-contracts/src/bin/service-bulletin-contract.rs",
     "tools/live_feed_contract.py",
     "product/preprocessor/scripts/pipeline_health.py",
     "product/preprocessor/scripts/telemetry_contracts.py",
@@ -329,6 +332,7 @@ def load_config(path: Path) -> dict[str, Any]:
     if missing:
         raise SystemExit(f"{path} missing required keys: {', '.join(missing)}")
     config.setdefault("release_desired_state", "deploy/releases.json")
+    config.setdefault("service_public_base_url", "https://aerobag.org")
     config.setdefault("release_live_port_base", 8100)
     config.setdefault("pipeline_health_listen", PIPELINE_HEALTH_LISTEN)
     config.setdefault("pipeline_health_poll_seconds", 60)
@@ -1006,6 +1010,8 @@ rustup target add \
 
 cd "$SOURCE_ROOT/product/preprocessor"
 cargo build --release -p preprocessor-cli
+cargo build --release -p product-contracts --bin service-bulletin-contract
+install -m 0755 "$CARGO_TARGET_DIR/release/service-bulletin-contract" /usr/local/bin/aerobag-validate-bulletin
 
 cd "$SOURCE_ROOT/services"
 cargo build --release -p aerobag-cloud-server
@@ -1151,6 +1157,8 @@ fi
   --observed "$ARTIFACT_ROOT/state/releases-observed.json" \\
   --source-root "$SOURCE_ROOT" \\
   --artifact-root "$ARTIFACT_ROOT" \\
+  --service-root "$DATA_ROOT/service" \\
+  --public-origin {shell_quote(config['service_public_base_url'])} \\
   --cargo-target-dir "$CARGO_TARGET_DIR" \\
   --controller-preprocessor "$CONTROLLER_TOOL_ROOT/preprocessor-cli" \\
   --ui-target-root "$AEROBAG_UI_TARGET_ROOT" \\
@@ -1501,6 +1509,15 @@ def nginx_config(config: dict[str, Any]) -> str:
         add_header Cache-Control "no-cache";
     }}
 
+    location = /service/bulletins-v1.json {{
+        alias {config['data_root']}/service/bulletins-v1.json;
+        add_header Cache-Control "no-cache";
+        add_header Access-Control-Allow-Origin "*" always;
+        etag on;
+    }}
+
+    location /service/ {{ return 404; }}
+
     location /build-watch/ {{
         proxy_pass http://{BUILD_WATCH_LISTEN}/;
         proxy_http_version 1.1;
@@ -1720,7 +1737,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/aerobag/env
 EnvironmentFile=/etc/aerobag/live-feeds/%i.env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{state_args}{nms_args}'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; export AEROBAG_SERVICE_BULLETIN_FILE="$DATA_ROOT/service/bulletins-v1.json"; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{state_args}{nms_args}'
 Restart=always
 RestartSec=10
 

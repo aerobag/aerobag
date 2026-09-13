@@ -62,6 +62,7 @@ def release_environment(
         "AEROBAG_WEB_PUBLIC_BASE_URL": f"/releases/{tag}/web/",
         "AEROBAG_PACKAGE_SOURCE_BASE_URL": f"{release_url}/packages/",
         "AEROBAG_LIVE_FEEDS_ORIGIN": release_url,
+        "AEROBAG_SERVICE_BULLETIN_URLS": f"{origin}/service/bulletins-v1.json",
         "AEROBAG_DOWNLOADS_BASE_URL": f"{release_url}/downloads",
         "AEROBAG_UI_TARGET_ROOT": str(ui_target_root),
         "ANDROID_PACKAGE_SOURCE_BASE_URL": f"{release_url}/packages/",

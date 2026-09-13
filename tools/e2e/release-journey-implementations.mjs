@@ -394,6 +394,7 @@ async function startupNavigation(runtime) {
     ["flight_plan", "flight_plan", "navigation.flight-plan", "home.flight-plan"],
     ["altitude_planner", "altitude_planner", "navigation.altitude-planner", "home.altitude-planner"],
     ["data_status", "data_status", "navigation.data-status", "home.data-status"],
+    ["service_notifications", "service_notifications", "navigation.service-notifications", "home.service-notifications"],
     ["settings", "settings", "navigation.settings", "home.settings"],
     ["cloud", "cloud", null, "home.cloud"],
   ];

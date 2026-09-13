@@ -542,6 +542,7 @@ internal enum class AppPage {
     Charts,
     Home,
     DataStatus,
+    ServiceNotifications,
     Settings,
     Cloud,
     OfflinePackages,
@@ -1219,6 +1220,7 @@ private fun appPageFromNavigationPageId(id: UiNavigationPageId): AppPage =
         UiNavigationPageId.FlightPlan -> AppPage.Plan
         UiNavigationPageId.AltitudePlanner -> AppPage.AltitudePlanner
         UiNavigationPageId.DataStatus -> AppPage.DataStatus
+        UiNavigationPageId.ServiceNotifications -> AppPage.ServiceNotifications
         UiNavigationPageId.Settings -> AppPage.Settings
         UiNavigationPageId.Home -> AppPage.Home
         UiNavigationPageId.OfflinePackages -> AppPage.OfflinePackages
@@ -3749,6 +3751,9 @@ internal fun AerobagApp(
                             if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
                                 requestRuntimeReload(AppPage.Map)
                             }
+                            if (decision.platformEffect is UiStatusPlatformEffect.OpenServiceNotifications) {
+                                navigateToPage(AppPage.ServiceNotifications)
+                            }
                         },
                         onSelectAirport = { airportId ->
                             val selected = applySessionCommand("openChartAirport") {
@@ -3871,6 +3876,21 @@ internal fun AerobagApp(
                         onTimeDisplayAction = { actionId ->
                             applySessionCommand("performTimeDisplayAction") {
                                 uiSession.performTimeDisplayAction(actionId)
+                            }
+                        },
+                    )
+                }
+                AppPage.ServiceNotifications -> {
+                    ServiceNotificationsPage(
+                        state = sessionSnapshot.serviceNotifications,
+                        navElement = navElement,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
+                        onSelectPage = ::navigateToPage,
+                        onAction = { actionId ->
+                            applySessionCommand("performStatusAction") {
+                                uiSession.performStatusAction(actionId)
                             }
                         },
                     )

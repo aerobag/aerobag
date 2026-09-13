@@ -50,6 +50,7 @@ pub mod publication;
 pub mod raster_tiles;
 mod routing_editor;
 mod sequencing;
+mod service_notifications;
 pub mod session;
 mod session_projection;
 mod settings_controller;

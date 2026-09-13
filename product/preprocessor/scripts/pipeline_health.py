@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -63,6 +64,10 @@ PRODUCT_METRIC_REQUIREMENTS = {
     "cycle_product.error_count": ("product-facts", "cycle_product.error_count"),
     "cycle_product.warning_count": ("product-facts", "cycle_product.warning_count"),
     "cycle_product.weather_camera_site_count": ("product-facts", "cycle_product.weather_camera_site_count"),
+}
+
+SERVICE_METRIC_REQUIREMENTS = {
+    "service_bulletins.publication_failure_count": ("service-bulletins", "service_bulletins.publication_failure_count"),
 }
 
 
@@ -511,8 +516,67 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
                 "error": calendar_error,
             },
             "chart_quality": collect_chart_quality(config.artifact_root),
+            "service_bulletins": collect_service_bulletins(config.data_root / "service", release_state),
         },
     }
+
+
+def collect_service_bulletins(root: Path, release_state: Any) -> dict[str, Any]:
+    """Observe the controller-owned publisher, not a release's product telemetry."""
+    result: dict[str, Any] = {"path": str(root), "error": None}
+    try:
+        catalog = telemetry_contracts.default_catalog_root()
+        pin = telemetry_contracts.producer_pins(catalog)["service-bulletins"]
+        descriptor = telemetry_contracts.load_contract(pin, "service-bulletins", catalog)
+        with (root / "publication.lock").open("rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            with (root / "publication-status.json").open("rb") as stream:
+                status = json.loads(stream.read(16 * 1024 + 1))
+            if status.get("schema_version") != descriptor["payload_schema_version"] or status.get("telemetry_contract") != pin:
+                raise ValueError("publisher telemetry identity mismatch")
+            field = descriptor["measurements"]["service_bulletins.publication_failure_count"]["field"]
+            failure = status.get(field)
+            if type(failure) is not int or failure not in (0, 1):
+                raise ValueError("publisher omitted its required failure measurement")
+            result.update(publication_failure_count=failure, attempted_at_utc=status["attempted_at_utc"],
+                          publication_error=status.get("error"))
+            with (root / "bulletins-v1.json").open("rb") as stream:
+                raw = stream.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024:
+                raise ValueError("public bulletin exceeds size bound")
+            document = json.loads(raw)
+            receipt = status.get("receipt")
+            if not failure and (not isinstance(receipt, dict) or receipt.get("sha256") != hashlib.sha256(raw).hexdigest()):
+                raise ValueError("public bulletin does not match the contract-validated publication receipt")
+            result.update(revision=document["revision"], publisher=document["publisher"])
+            if isinstance(release_state, dict) and release_state.get("production"):
+                expected = {release_state["production"]: "production"}
+                if release_state.get("staging"):
+                    expected[release_state["staging"]] = "staging"
+                expected.update({tag: "sunset" for tag in release_state.get("sunset", [])})
+                actual = {item["release"]: item["role"] for item in document["releases"] if item["role"] != "retired"}
+                result["release_assignment_mismatch"] = int(expected != actual)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        result["error"] = str(error)
+    return result
+
+
+def add_service_bulletin_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+    source = facts.get("inputs", {}).get("service_bulletins")
+    if source is None:
+        return
+    error = source.get("error")
+    add_metric(metrics, metric_id="service_bulletins.coverage", label="Service bulletin publication",
+               value=None if error else source.get("revision"), severity="warning" if error else "ok",
+               message=error or f"Validated revision {source.get('revision')}", details=source)
+    for field, label in (("publication_failure_count", "Service bulletin publish failures"),
+                         ("release_assignment_mismatch", "Service bulletin release assignments")):
+        if field not in source:
+            continue
+        value = source[field]
+        add_metric(metrics, metric_id=f"service_bulletins.{field}", label=label, value=value,
+                   warning_threshold=1, critical_threshold=1, severity="critical" if value else "ok",
+                   message=source.get("publication_error") or f"{label}: {value}")
 
 
 def collect_chart_quality(artifact_root: Path) -> list[dict[str, Any]]:
@@ -706,6 +770,7 @@ def evaluate_health(
     add_build_watch_metrics(metrics, facts)
     add_aerobag_cloud_metrics(metrics, facts)
     add_chart_quality_metrics(metrics, facts, now)
+    add_service_bulletin_metrics(metrics, facts)
     channels = facts.get("channels")
     if isinstance(channels, dict):
         production_facts = None

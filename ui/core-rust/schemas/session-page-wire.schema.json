@@ -375,6 +375,13 @@
             }
           ],
           "default": null
+        },
+        "service_bulletin_urls": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -1441,6 +1448,7 @@
         "flight_plan",
         "altitude_planner",
         "data_status",
+        "service_notifications",
         "settings",
         "home",
         "offline_packages"
@@ -1505,6 +1513,136 @@
       },
       "required": [
         "visible"
+      ],
+      "type": "object"
+    },
+    "UiServiceNotice": {
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "type": "boolean"
+        },
+        "body": {
+          "type": "string"
+        },
+        "expanded": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiServiceNoticeLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "open_action": {
+          "$ref": "#/$defs/UiServiceNoticeAction"
+        },
+        "severity": {
+          "$ref": "#/$defs/UiStatusSeverity"
+        },
+        "state_label": {
+          "type": "string"
+        },
+        "timing": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "unread": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "body",
+        "timing",
+        "state_label",
+        "severity",
+        "unread",
+        "archived",
+        "expanded",
+        "open_action"
+      ],
+      "type": "object"
+    },
+    "UiServiceNoticeAction": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiServiceNoticeLink": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "UiServiceNotificationsState": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/UiServiceNotice"
+          },
+          "type": "array"
+        },
+        "mark_all_read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiServiceNoticeAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_status": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "summary",
+        "source_status",
+        "items"
       ],
       "type": "object"
     },
@@ -1771,6 +1909,19 @@
             "kind"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "open_service_notifications",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ],
       "x-discriminator": "kind"
@@ -1865,6 +2016,9 @@
     "playback_panel": {
       "$ref": "#/$defs/UiPlaybackPanelState"
     },
+    "service_notifications": {
+      "$ref": "#/$defs/UiServiceNotificationsState"
+    },
     "settings": {
       "$ref": "#/$defs/UiSettingsPageState"
     },
@@ -1885,6 +2039,7 @@
     }
   },
   "required": [
+    "service_notifications",
     "airway_picker",
     "airway_routing",
     "navigation",
@@ -1906,7 +2061,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 13,
+  "x-contract-version": 14,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -1965,6 +2120,10 @@
     "UiSettingsPageRow",
     "UiSettingsPageSection",
     "UiSettingsPageState",
+    "UiServiceNoticeAction",
+    "UiServiceNoticeLink",
+    "UiServiceNotice",
+    "UiServiceNotificationsState",
     "UiDisplayPolicy",
     "UiDisclaimerState",
     "UiSettingsAction",

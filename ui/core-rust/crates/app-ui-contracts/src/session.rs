@@ -28,6 +28,7 @@ pub enum UiNavigationPageId {
     FlightPlan,
     AltitudePlanner,
     DataStatus,
+    ServiceNotifications,
     Settings,
     Home,
     OfflinePackages,
@@ -230,6 +231,7 @@ pub struct UiSurfaceStatusState {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiStatusPlatformEffect {
     ReloadApplication,
+    OpenServiceNotifications,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +609,8 @@ pub struct ClientBuildInfo {
 #[serde(deny_unknown_fields)]
 pub struct PlatformCapabilities {
     #[serde(default)]
+    pub service_bulletin_urls: Vec<String>,
+    #[serde(default)]
     pub display_policy: Option<PlatformDisplayPolicyCapability>,
     #[serde(default)]
     pub offline_packages: Option<PlatformOfflinePackagesCapability>,
@@ -625,6 +629,7 @@ pub struct PlatformCapabilities {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiSessionPageContracts {
+    pub service_notifications: UiServiceNotificationsState,
     pub airway_picker: UiAirwayPicker,
     pub airway_routing: UiAirwayRouting,
     pub navigation: UiNavigationPageState,
@@ -643,6 +648,50 @@ pub struct UiSessionPageContracts {
     pub nav_db: UiNavDbIdentity,
     pub capabilities: PlatformCapabilities,
     pub settings_action: UiSettingsAction,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiServiceNotificationsState {
+    pub title: String,
+    pub summary: String,
+    pub source_status: Vec<String>,
+    pub items: Vec<UiServiceNotice>,
+    pub mark_all_read: Option<UiServiceNoticeAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiServiceNoticeAction {
+    pub action_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiServiceNotice {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub timing: String,
+    pub state_label: String,
+    pub severity: UiStatusSeverity,
+    pub unread: bool,
+    pub archived: bool,
+    pub expanded: bool,
+    pub open_action: UiServiceNoticeAction,
+    pub link: Option<UiServiceNoticeLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiServiceNoticeLink {
+    pub label: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

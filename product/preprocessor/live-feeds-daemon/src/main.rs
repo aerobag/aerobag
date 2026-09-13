@@ -136,6 +136,7 @@ base directory; this daemon publishes the active contract below a vN child."
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DaemonConfig {
+    service_bulletin_file: Option<PathBuf>,
     live_root: PathBuf,
     listen: SocketAddr,
     scratch_root: PathBuf,
@@ -775,6 +776,8 @@ impl DaemonConfig {
         let mut live_root = None;
         let mut listen = None;
         let mut scratch_root = None;
+        let mut service_bulletin_file =
+            env::var_os("AEROBAG_SERVICE_BULLETIN_FILE").map(PathBuf::from);
         let mut fetch_cache_root = None;
         let mut fetch_cache_mode = "fill".to_string();
         let mut fetch_jobs = 4_usize;
@@ -803,6 +806,9 @@ impl DaemonConfig {
                     std::process::exit(0);
                 }
                 "--live-root" => live_root = Some(next_path(&mut args, "--live-root")?),
+                "--service-bulletin-file" => {
+                    service_bulletin_file = Some(next_path(&mut args, "--service-bulletin-file")?)
+                }
                 "--fetch-cache-root" => {
                     fetch_cache_root = Some(next_path(&mut args, "--fetch-cache-root")?)
                 }
@@ -943,6 +949,7 @@ impl DaemonConfig {
             .unwrap_or_else(|| live_root.join("../state/tfr-detail-backfill"));
 
         Ok(Self {
+            service_bulletin_file,
             live_root,
             listen,
             scratch_root,
@@ -1035,6 +1042,8 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     let listener = TcpListener::bind(config.listen)
         .with_context(|| format!("failed to bind {}", config.listen))?;
     let broker = BroadcastSseBroker::default();
+    broker.inner.bulletin.lock().expect("bulletin lock").path =
+        config.service_bulletin_file.clone();
     let status = DaemonStatus::default();
     let connection_gate = ConnectionGate::new(MAX_REQUEST_CONNECTION_THREADS);
     start_live_feed_driver(&config, broker.clone(), status.clone())?;
@@ -2317,6 +2326,8 @@ fn write_sse_stream(
     writeln!(writer, ": aerobag live-feed root {}\n", live_root.display())
         .context("failed to write SSE banner")?;
     let receiver = broker.subscribe();
+    let mut last_bulletin = None;
+    write_bulletin_hint(writer, broker, &mut last_bulletin)?;
     let mut sent_events = 0_usize;
     if let Some(catalog) = read_live_feed_catalog(live_root)? {
         write_sse_catalog_event(writer, &catalog)?;
@@ -2334,6 +2345,7 @@ fn write_sse_stream(
         }
     }
     loop {
+        write_bulletin_hint(writer, broker, &mut last_bulletin)?;
         match receiver.recv_timeout(Duration::from_millis(
             AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms as u64,
         )) {
@@ -2356,6 +2368,82 @@ fn write_sse_stream(
             }
             Err(BrokerReceiveError::Disconnected) => return Ok(()),
         }
+    }
+}
+
+fn write_bulletin_hint(
+    writer: &mut impl Write,
+    broker: &BroadcastSseBroker,
+    last: &mut Option<product_contracts::service_bulletins::BulletinHint>,
+) -> anyhow::Result<()> {
+    let hint = broker
+        .inner
+        .bulletin
+        .lock()
+        .expect("bulletin lock")
+        .current();
+    if hint.is_some() && &hint != last {
+        writeln!(
+            writer,
+            "event: {}\ndata: {}\n",
+            product_contracts::service_bulletins::EVENT,
+            serde_json::to_string(&hint)?
+        )?;
+        writer.flush()?;
+        *last = hint;
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct BulletinObservation {
+    path: Option<PathBuf>,
+    checked: Option<Instant>,
+    signature: Option<(std::time::SystemTime, u64)>,
+    hint: Option<product_contracts::service_bulletins::BulletinHint>,
+    error: Option<String>,
+}
+
+impl BulletinObservation {
+    fn current(&mut self) -> Option<product_contracts::service_bulletins::BulletinHint> {
+        use product_contracts::service_bulletins::{BulletinDocument, BulletinHint, MAX_BYTES};
+        use std::io::Read;
+        let path = self.path.as_ref()?;
+        // All clients share one bounded observation, not N document reads per heartbeat.
+        if self
+            .checked
+            .is_some_and(|time| time.elapsed() < Duration::from_secs(1))
+        {
+            return self.hint.clone();
+        }
+        self.checked = Some(Instant::now());
+        let result = (|| -> anyhow::Result<()> {
+            let mut file = fs::File::open(path)?;
+            let metadata = file.metadata()?;
+            let signature = (metadata.modified()?, metadata.len());
+            if self.signature == Some(signature) {
+                return Ok(());
+            }
+            let mut bytes = Vec::new();
+            (&mut file)
+                .take(MAX_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            let document = BulletinDocument::decode(&bytes).map_err(anyhow::Error::msg)?;
+            self.signature = Some(signature);
+            self.hint = Some(BulletinHint {
+                publisher: document.publisher,
+                revision: document.revision,
+            });
+            Ok(())
+        })();
+        let error = result.err().map(|error| error.to_string());
+        if error != self.error {
+            if let Some(error) = &error {
+                eprintln!("Service bulletin observation failed (live feeds continue): {error}");
+            }
+            self.error = error;
+        }
+        self.hint.clone()
     }
 }
 
@@ -2446,6 +2534,7 @@ struct BroadcastSseBroker {
 }
 
 struct BroadcastSseBrokerInner {
+    bulletin: Mutex<BulletinObservation>,
     next_subscriber_id: AtomicU64,
     next_event_sequence: AtomicU64,
     subscribers: Mutex<BTreeMap<u64, Weak<BrokerSubscriber>>>,
@@ -2497,6 +2586,7 @@ impl Default for BroadcastSseBroker {
     fn default() -> Self {
         Self {
             inner: Arc::new(BroadcastSseBrokerInner {
+                bulletin: Mutex::new(BulletinObservation::default()),
                 next_subscriber_id: AtomicU64::new(1),
                 next_event_sequence: AtomicU64::new(1),
                 subscribers: Mutex::new(BTreeMap::new()),
@@ -3165,6 +3255,31 @@ mod tests {
         LiveFeedStatePayload,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn bulletin_observer_survives_invalid_publication_and_sees_runtime_updates() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("bulletins.json");
+        let mut document = serde_json::json!({
+            "schema_version":1, "publisher":"https://service.test/service/bulletins-v1.json",
+            "revision":1, "published_at_utc":"2026-09-13T00:00:00Z", "releases":[],"notices":[]
+        });
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let mut observer = BulletinObservation {
+            path: Some(path.clone()),
+            ..Default::default()
+        };
+        assert_eq!(observer.current().unwrap().revision, 1);
+        fs::write(&path, "torn/untrusted document").unwrap();
+        observer.checked = None;
+        assert_eq!(observer.current().unwrap().revision, 1);
+        assert!(observer.error.is_some());
+        document["revision"] = serde_json::json!(20);
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        observer.checked = None;
+        assert_eq!(observer.current().unwrap().revision, 20);
+        assert!(observer.error.is_none());
+    }
 
     fn install_test_nms_baseline(
         store: &NmsApiCollectorStore,
@@ -4888,6 +5003,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let config = DaemonConfig {
+            service_bulletin_file: None,
             live_root: root.to_path_buf(),
             listen: addr,
             scratch_root: root.join("../scratch/live-feeds"),

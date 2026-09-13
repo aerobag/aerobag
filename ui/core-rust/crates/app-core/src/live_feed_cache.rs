@@ -51,6 +51,13 @@ pub struct LiveFeedCache {
     winds_aloft_download_requested: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LiveFeedCacheSseOutcome {
+    pub cache_changed: bool,
+    /// Events owned by the session rather than the durable product cache.
+    pub session_events: Vec<crate::LiveFeedSseEvent>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LiveFeedCacheAcquisitionDirective {
     pub nexrad: NexradAcquisitionDirective,
@@ -731,7 +738,16 @@ impl LiveFeedCache {
         Ok(())
     }
 
-    pub fn ingest_sse_event(&mut self, event: &crate::LiveFeedSseEvent) -> AppResult<bool> {
+    pub fn ingest_sse_event(
+        &mut self,
+        event: &crate::LiveFeedSseEvent,
+    ) -> AppResult<LiveFeedCacheSseOutcome> {
+        if event.event.as_deref() == Some(product_contracts::service_bulletins::EVENT) {
+            return Ok(LiveFeedCacheSseOutcome {
+                cache_changed: false,
+                session_events: vec![event.clone()],
+            });
+        }
         let is_catalog =
             event.event.as_deref() == Some(product_contracts::live_feeds::v3::CATALOG_EVENT_NAME);
         let changed = !self
@@ -739,7 +755,10 @@ impl LiveFeedCache {
             .ingest_sse_events(std::iter::once(event.clone()))?
             .is_empty();
         self.prune_nexrad_to_catalog();
-        Ok(is_catalog || changed)
+        Ok(LiveFeedCacheSseOutcome {
+            cache_changed: is_catalog || changed,
+            session_events: vec![],
+        })
     }
 
     pub fn ingest_version_manifest(
@@ -2808,6 +2827,22 @@ mod tests {
     }
 
     #[test]
+    fn service_events_pass_through_durable_cache_to_the_session_controller() {
+        let mut cache = live_feed_cache();
+        let event = crate::LiveFeedSseEvent {
+            id: None,
+            event: Some(product_contracts::service_bulletins::EVENT.into()),
+            data: r#"{"publisher":"https://service.test/service/bulletins-v1.json","revision":2}"#
+                .into(),
+        };
+        let outcome = cache.ingest_sse_event(&event).unwrap();
+        assert!(!outcome.cache_changed);
+        assert_eq!(outcome.session_events.len(), 1);
+        assert_eq!(outcome.session_events[0].data, event.data);
+        assert_eq!(outcome.session_events[0].event, event.event);
+    }
+
+    #[test]
     fn explicitly_adopted_single_state_product_replaces_newer_timestamp_from_old_source() {
         let mut cache = live_feed_cache();
         cache.remember_installed_state(LiveFeedInstalledState {
@@ -3991,7 +4026,8 @@ mod tests {
             })
             .unwrap();
 
-        assert!(changed);
+        assert!(changed.cache_changed);
+        assert!(changed.session_events.is_empty());
         assert!(cache.live_feeds.catalog_loaded());
         assert!(cache.missing_requests().is_empty());
     }

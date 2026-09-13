@@ -4,6 +4,10 @@
     "product-facts": {
       "id": "product-facts-v3",
       "sha256": "7fcbfa46a0c620802d0dd8701241ff2b06f5f7aad6b7996343b46f7dfdec7489"
+    },
+    "service-bulletins": {
+      "id": "service-bulletins-v1",
+      "sha256": "fa41656853aa3c6e501df079fa6cbabbe06343fa838bf3b36f37b1cf82a16495"
     }
   },
   "exceptions": []

@@ -159,10 +159,13 @@ struct SettingsPersistenceDocument {
     preferences: SettingsPreferences,
     #[serde(default)]
     cloud: CloudPersistentState,
+    #[serde(default)]
+    service_notifications: crate::service_notifications::ServicePersistentState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
+    pub service_notifications: Arc<app_ui_contracts::session::UiServiceNotificationsState>,
     pub ui_contract_version: u32,
     pub session_revision: u64,
     pub flight_plan_route_revision: u64,
@@ -417,6 +420,7 @@ impl SessionDiagnosticsCounters {
 
 #[derive(Clone)]
 struct SessionCoordinatorModel {
+    service_notifications: crate::service_notifications::ServiceNotifications,
     session_revision: u64,
     content_policy: ContentPolicy,
     last_content_report: Option<ContentReport>,
@@ -2212,6 +2216,7 @@ fn create_ui_session_inner(
     let diagnostics = Arc::new(SessionDiagnosticsCounters::default());
     let mut session = UiSession {
         coordinator: SessionCoordinatorModel {
+            service_notifications: Default::default(),
             session_revision: 0,
             content_policy: app_state.content_policy,
             last_content_report: app_state.last_content_report,
@@ -2505,6 +2510,20 @@ pub fn configure_platform_capabilities_in_session(
         session.coordinator.persistence_storage = settings_storage;
         session.coordinator.persistence_write_block_reason = None;
         load_session_persistence_from_storage(session)?;
+        session
+            .coordinator
+            .service_notifications
+            .configure(
+                &session
+                    .coordinator
+                    .platform_capabilities
+                    .service_bulletin_urls,
+            )
+            .map_err(|message| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message,
+            })?;
+        prepare_service_bulletin_effects(session);
         let acs_default_base_url = session
             .coordinator
             .platform_capabilities
@@ -4355,6 +4374,20 @@ pub fn status_action_decision_in_session(
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
+    if action_id == crate::service_notifications::OPEN_INBOX {
+        return Ok(UiStatusActionDecision {
+            platform_effect: Some(
+                app_ui_contracts::session::UiStatusPlatformEffect::OpenServiceNotifications,
+            ),
+            perform_session_mutation: false,
+        });
+    }
+    if action_id.starts_with("service:read:") || action_id.starts_with("service:read-all:") {
+        return Ok(UiStatusActionDecision {
+            platform_effect: None,
+            perform_session_mutation: true,
+        });
+    }
     let decision = crate::data_status::status_action_decision(&action_id)
         .ok_or_else(|| invalid_status_action(&action_id))?;
     if decision.platform_effect.is_some() && !session.data_status.action_is_enabled(&action_id) {
@@ -5635,6 +5668,22 @@ pub fn perform_status_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if action_id.starts_with("service:read:") || action_id.starts_with("service:read-all:") {
+        return run_session_model_transaction(session, |session| {
+            let keys = session
+                .coordinator
+                .service_notifications
+                .read_action(&action_id)
+                .map_err(|message| AppError {
+                    kind: AppErrorKind::UnsupportedOperation,
+                    message,
+                })?;
+            for key in keys {
+                session.cloud.record_service_read(&key)?;
+            }
+            Ok(vec![UiInvalidation::SessionSnapshot])
+        });
+    }
     match session
         .data_status
         .perform_action(&action_id)
@@ -6343,6 +6392,7 @@ fn get_session_snapshot_with_time(
     sync_adsb_ownship_status_record(session);
     prepare_adsb_ownship_effect(session);
     mark_cycle_product_freshness_dirty_if_deadline_due(session);
+    prepare_service_bulletin_effects(session);
     let lookup_ms = elapsed_ms(lookup_started_at);
     let cycle_freshness_started_at = crate::core_clock_ms();
     sync_cycle_product_freshness_status_records_if_needed(session);
@@ -6560,6 +6610,17 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    for event in events.iter().filter(|event| {
+        event.data.len() <= 4096
+            && event.event.as_deref() == Some(product_contracts::service_bulletins::EVENT)
+    }) {
+        if let Ok(hint) =
+            serde_json::from_str::<product_contracts::service_bulletins::BulletinHint>(&event.data)
+        {
+            session.coordinator.service_notifications.hint(hint);
+        }
+    }
+    prepare_service_bulletin_effects(session);
     if !events.is_empty() {
         record_live_feed_connection_event(
             session,
@@ -6610,6 +6671,30 @@ pub fn ingest_resource_in_session_at_epoch_ms(
     bytes: &[u8],
     epoch_ms: i64,
 ) -> AppResult<()> {
+    if crate::service_notifications::ServiceNotifications::handles_resource(resource_id) {
+        let slot = session_slot(handle)?;
+        let mut session = slot.lock_running()?;
+        advance_session_wall_clock(&mut session, epoch_ms);
+        let now = session.coordinator.wall_clock_epoch_ms;
+        return run_durable_session_model_value_transaction(
+            &mut session,
+            |session| match session.coordinator.service_notifications.ingest(
+                resource_id,
+                bytes,
+                now,
+            ) {
+                Ok(_) => Ok(()),
+                Err(message) => {
+                    session
+                        .coordinator
+                        .service_notifications
+                        .failed(resource_id, &message, now);
+                    Ok(())
+                }
+            },
+            |_| true,
+        );
+    }
     if crate::adsb::AdsbSessionState::handles_resource(resource_id) {
         let slot = session_slot(handle)?;
         let mut session_guard = slot.lock_running()?;
@@ -7648,7 +7733,13 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
-    if LiveFeedsState::handles_resource(resource_id) {
+    if crate::service_notifications::ServiceNotifications::handles_resource(resource_id) {
+        session.coordinator.service_notifications.failed(
+            resource_id,
+            message,
+            session.coordinator.wall_clock_epoch_ms,
+        );
+    } else if LiveFeedsState::handles_resource(resource_id) {
         let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         session
             .weather
@@ -12368,6 +12459,10 @@ fn session_projection_dependencies(
             internet_adsb_enabled: session.coordinator.debug_state.internet_adsb,
         },
         status: StatusProjectionDependencies {
+            service_projection_revision: session
+                .coordinator
+                .service_notifications
+                .projection_revision(),
             data_status_revision: session.data_status.revision(),
             page_projection_revision: session.data_status.page_projection_revision(),
             next_freshness_check_epoch_ms: session
@@ -12512,6 +12607,7 @@ fn assemble_session_update(
         }),
         status: changed_projection_patch(previous.status, current.status, || {
             projection_assignments! {
+                ["service_notifications"] => snapshot.service_notifications,
                 ["data_status_state"] => snapshot.data_status_state,
                 ["map_status_controls"] => snapshot.map_status_controls,
                 ["data_status_page_state"] => snapshot.data_status_page_state,
@@ -12608,6 +12704,24 @@ fn try_snapshot_for_session(
     );
     let raster_map = map_projection.projection.raster_map;
     let raster_ms = elapsed_ms(raster_started_at);
+    let service_notifications = session
+        .coordinator
+        .service_notifications
+        .project_cached(
+            session.coordinator.wall_clock_epoch_ms,
+            session
+                .coordinator
+                .platform_capabilities
+                .client_build
+                .as_ref(),
+            &session.cloud,
+        )
+        .map_err(HadReadError::Fatal)?;
+    if let Some(record) = crate::service_notifications::status_record(&service_notifications) {
+        upsert_data_status_record(session, record);
+    } else {
+        clear_data_status_record(session, crate::service_notifications::STATUS_ID);
+    }
     let data_status_projection = session.data_status.project_state();
     if data_status_projection.rebuilt {
         session
@@ -12719,6 +12833,7 @@ fn try_snapshot_for_session(
     });
     let next_nav_db_maintenance_epoch_ms = next_nav_db_maintenance_epoch_ms(session);
     let snapshot = UiSessionSnapshot {
+        service_notifications,
         ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: session.coordinator.session_revision,
         flight_plan_route_revision: session.flight_plan.route_revision(),
@@ -12743,7 +12858,13 @@ fn try_snapshot_for_session(
             })
             .unwrap_or_else(|| {
                 crate::next_time_display_refresh_epoch_ms(session.coordinator.wall_clock_epoch_ms)
-            }),
+            })
+            .min(
+                session
+                    .coordinator
+                    .service_notifications
+                    .next_refresh(session.coordinator.wall_clock_epoch_ms),
+            ),
         app_state: app_state_for_session(session),
         app_ui_state,
         playback_ui_state,
@@ -12889,6 +13010,13 @@ fn prepare_adsb_ownship_effect(session: &mut UiSession) {
     }
 }
 
+fn prepare_service_bulletin_effects(session: &mut UiSession) {
+    let now = session.coordinator.wall_clock_epoch_ms;
+    for resource in session.coordinator.service_notifications.prepare(now) {
+        enqueue_session_resource_effect(session, resource, [UiInvalidation::SessionSnapshot]);
+    }
+}
+
 fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
     let app_state = state::reduce(
         &app_state,
@@ -12928,6 +13056,7 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
         button(UiHomeDestination::AltitudePlanner, "ALTITUDE\nPLANNER"),
         button(UiHomeDestination::DataStatus, "STATUS"),
         button(UiHomeDestination::Settings, "SETTINGS"),
+        button(UiHomeDestination::ServiceNotifications, "SERVICE\nNOTICES"),
     ];
     if capabilities.cloud.is_some() {
         buttons.push(button(UiHomeDestination::Cloud, "CLOUD"));
@@ -12970,6 +13099,12 @@ pub fn navigation_page_state_for_platform(
             false,
         ),
         option(UiNavigationPageId::DataStatus, "STATUS", "STATUS", false),
+        option(
+            UiNavigationPageId::ServiceNotifications,
+            "SERVICE NOTIFICATIONS",
+            "NOTICES",
+            false,
+        ),
         option(UiNavigationPageId::Settings, "SETTINGS", "SET", false),
         option(UiNavigationPageId::Home, "HOME", "HOME", false),
     ];
@@ -13004,6 +13139,14 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     };
     session.settings.restore_preferences(document.preferences);
     session.cloud = CloudController::new(document.cloud);
+    session
+        .coordinator
+        .service_notifications
+        .restore(document.service_notifications)
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message,
+        })?;
     if let Some(timeout) = session.cloud.inactivity_sleep_timeout()? {
         session.settings.set_inactivity_sleep_timeout(timeout);
     }
@@ -13060,6 +13203,11 @@ fn encode_session_persistence(session: &UiSession) -> AppResult<Vec<u8>> {
         version: SETTINGS_PERSISTENCE_VERSION,
         preferences: session.settings.persistent_preferences(),
         cloud: session.cloud.persistent().clone(),
+        service_notifications: session
+            .coordinator
+            .service_notifications
+            .persistent()
+            .clone(),
     })
     .map_err(|err| AppError {
         kind: AppErrorKind::Internal,
@@ -15069,6 +15217,8 @@ mod tests {
                 winds_aloft_acquisition_phase: WindsAloftAcquisitionPhase::Idle,
                 time_display_mode: crate::TimeDisplayMode::Local,
                 data_sources: None,
+                service_notifications: crate::service_notifications::ServiceNotifications::default(
+                ),
             },
             projection_versions: SessionProjectionVersionState::default(),
             settings: SettingsController::default(),
@@ -15330,6 +15480,7 @@ mod tests {
                 "status",
                 BTreeSet::from([
                     "data_status_page_state",
+                    "service_notifications",
                     "data_status_state",
                     "map_status_controls",
                     "next_cycle_product_freshness_check_epoch_ms",
@@ -16957,6 +17108,7 @@ mod tests {
                 (UiHomeDestination::AltitudePlanner, "ALTITUDE\nPLANNER"),
                 (UiHomeDestination::DataStatus, "STATUS"),
                 (UiHomeDestination::Settings, "SETTINGS"),
+                (UiHomeDestination::ServiceNotifications, "SERVICE\nNOTICES"),
                 (UiHomeDestination::OfflinePackages, "OFFLINE\nPACKAGES"),
                 (UiHomeDestination::About, "ABOUT"),
             ]
@@ -16995,6 +17147,11 @@ mod tests {
                     "ALT",
                 ),
                 (UiNavigationPageId::DataStatus, "STATUS", "STATUS"),
+                (
+                    UiNavigationPageId::ServiceNotifications,
+                    "SERVICE NOTIFICATIONS",
+                    "NOTICES"
+                ),
                 (UiNavigationPageId::Settings, "SETTINGS", "SET"),
                 (UiNavigationPageId::Home, "HOME", "HOME"),
             ]
@@ -17476,6 +17633,82 @@ mod tests {
         .expect("restore debug flags");
         assert!(restored.debug_state.tile_labels);
         assert!(restored.debug_state.gps_capture);
+    }
+
+    #[test]
+    fn service_inbox_reads_persist_without_acknowledging_operational_faults() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        let url = "https://notices.test/service/bulletins-v1.json";
+        let capabilities = PlatformCapabilities {
+            service_bulletin_urls: vec![url.into()],
+            ..Default::default()
+        };
+        configure_platform_capabilities_in_session(
+            init.handle,
+            capabilities.clone(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+        let effect = drain_session_resource_effects(init.handle)
+            .unwrap()
+            .into_iter()
+            .find(|effect| {
+                crate::service_notifications::ServiceNotifications::handles_resource(
+                    &effect.resource.id,
+                )
+            })
+            .unwrap();
+        let document = serde_json::json!({
+            "schema_version":1, "publisher":url, "revision":1,
+            "published_at_utc":"2026-09-13T00:00:00Z", "releases":[],
+            "notices":[{"id":"notam-quality", "attention_revision":1, "title":"NOTAM distribution",
+                "body":"Quality is suspect; use caution.", "severity":"caution",
+                "published_at_utc":"2026-09-13T00:00:00Z", "effective_at_utc":null,
+                "expires_at_utc":null, "resolved":false, "audience":{"releases":[],"platforms":[]}, "link":null}]
+        });
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            &effect.resource.id,
+            &serde_json::to_vec(&document).unwrap(),
+            1_789_257_600_000,
+        )
+        .unwrap();
+        let fault =
+            live_feed_unavailable_status_record("notams", "independent source failure".into());
+        {
+            let mut sessions = lock_sessions();
+            let mut session = session_mut(&mut sessions, init.handle).unwrap();
+            upsert_data_status_record(&mut session, fault.clone());
+        }
+        let before = get_session_snapshot(init.handle).unwrap();
+        assert!(has_data_status_box(
+            &before,
+            crate::service_notifications::STATUS_ID
+        ));
+        assert!(has_data_status_box(&before, &fault.id));
+        let action = before.service_notifications.items[0]
+            .open_action
+            .action_id
+            .clone();
+        perform_status_action_in_session(init.handle, action).unwrap();
+        let after = get_session_snapshot(init.handle).unwrap();
+        assert!(!has_data_status_box(
+            &after,
+            crate::service_notifications::STATUS_ID
+        ));
+        assert!(has_data_status_box(&after, &fault.id));
+        assert!(after.service_notifications.items[0].expanded);
+        assert!(!after.service_notifications.items[0].unread);
+        destroy_session(init.handle);
+        let restored = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_platform_capabilities_in_session(restored.handle, capabilities, Some(storage))
+            .unwrap();
+        let snapshot =
+            get_session_snapshot_at_epoch_ms(restored.handle, 1_789_257_601_000).unwrap();
+        assert_eq!(snapshot.service_notifications.items.len(), 1);
+        assert!(!snapshot.service_notifications.items[0].unread);
+        destroy_session(restored.handle);
     }
 
     #[test]

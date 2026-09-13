@@ -3,6 +3,7 @@
   "ssh_host": "aerobag-prod.iac.jonh.net",
   "source_root": "/opt/aerobag",
   "data_root": "/mnt/aerobag-data",
+  "service_public_base_url": "https://aerobag.org",
   "artifact_root": "/mnt/aerobag-data/artifacts",
   "ui_target_root": "/mnt/aerobag-data/ui-target",
   "cargo_target_dir": "/mnt/aerobag-data/build-cache/cargo-target",

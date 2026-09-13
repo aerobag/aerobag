@@ -3647,6 +3647,9 @@ internal fun MapExplorerPage(
                             if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
                                 actions.onReloadApplication()
                             }
+                            if (decision.platformEffect is UiStatusPlatformEffect.OpenServiceNotifications) {
+                                actions.onSelectPage(AppPage.ServiceNotifications)
+                            }
                         }
                     )
                 }

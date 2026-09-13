@@ -244,6 +244,7 @@ internal class AerobagRetainedModel : ViewModel() {
             settingsStore = AndroidCoreSettingsStore(context.applicationContext),
             displayPolicySettingsAvailable = true,
             aerobagCloudBaseUrl = loadAndroidCloudServerBaseUrl(context.applicationContext),
+            serviceBulletinUrls = BuildConfig.AEROBAG_SERVICE_BULLETIN_URLS.split(',').filter { it.isNotBlank() },
             clientBuildInfo = ClientBuildInfo(
                 platform = "Android",
                 version = BuildConfig.VERSION_NAME,

@@ -111,6 +111,17 @@ impl CloudController {
         self.engine().has_linked_account()
     }
 
+    pub(crate) fn service_read_receipts(&self) -> AppResult<std::collections::BTreeSet<String>> {
+        self.engine().service_read_receipts()
+    }
+
+    pub(crate) fn record_service_read(&mut self, id: &str) -> AppResult<()> {
+        if self.engine_mut().record_service_read(id)? {
+            self.note_change();
+        }
+        Ok(())
+    }
+
     pub fn cached_flight_plan(&self) -> Option<FlightPlan> {
         self.engine().cached_flight_plan()
     }

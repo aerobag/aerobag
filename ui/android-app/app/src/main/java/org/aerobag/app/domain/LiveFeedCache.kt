@@ -133,11 +133,19 @@ data class LiveFeedRuntimeInput(
 
 @Serializable
 data class LiveFeedRuntimeDecision(
+    @SerialName("event_names")
+    val eventNames: List<String> = emptyList(),
     @SerialName("transport_policy")
     val transportPolicy: SseTransportPolicy,
     @SerialName("connection_event")
     val connectionEvent: LiveFeedConnectionEvent? = null,
     val commands: List<LiveFeedRuntimeCommand>,
+)
+
+@Serializable
+data class LiveFeedCacheSseOutcome(
+    @SerialName("cache_changed") val cacheChanged: Boolean,
+    @SerialName("session_events") val sessionEvents: List<LiveFeedSseEvent>,
 )
 
 @Serializable
@@ -216,7 +224,7 @@ class LiveFeedCache(
         )
     }
 
-    fun ingestSseEvent(event: LiveFeedSseEvent): Boolean = withOpenHandle { handle ->
+    fun ingestSseEvent(event: LiveFeedSseEvent): LiveFeedCacheSseOutcome = withOpenHandle { handle ->
         json.decodeFromString(
             bridge.liveFeedCacheIngestSseEventJson(handle, json.encodeToString(event)),
         )
@@ -470,6 +478,7 @@ class AndroidLiveFeedClient(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit = {},
+        onSessionEvents: suspend (List<LiveFeedSseEvent>) -> Unit,
     ) = coroutineScope {
         val startDecision = handleRuntimeEvent(
             kind = "start",
@@ -509,7 +518,7 @@ class AndroidLiveFeedClient(
             networkChanges.trySend(detectLiveFeedNetworkStatus(context, eventsUrl))
             while (kotlin.coroutines.coroutineContext.isActive) {
                 val decision = try {
-                    readSseLoop(sseHttpClient, promote, onChanged, onConnectionEvent)
+                    readSseLoop(sseHttpClient, promote, onChanged, onConnectionEvent, onSessionEvents)
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     if (error is LiveFeedSseIdleTimeoutException) {
@@ -723,6 +732,7 @@ class AndroidLiveFeedClient(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
+        onSessionEvents: suspend (List<LiveFeedSseEvent>) -> Unit,
     ) = withContext(Dispatchers.IO) {
         handleRuntimeEvent(
             kind = "connecting",
@@ -780,7 +790,9 @@ class AndroidLiveFeedClient(
                         onChanged = onChanged,
                         onConnectionEvent = onConnectionEvent,
                     )
-                    if (!cache.ingestSseEvent(event)) return
+                    val outcome = cache.ingestSseEvent(event)
+                    if (outcome.sessionEvents.isNotEmpty()) onSessionEvents(outcome.sessionEvents)
+                    if (!outcome.cacheChanged) return
                     onChanged()
                     pumpUntilSettled(promote, onChanged)
                 }

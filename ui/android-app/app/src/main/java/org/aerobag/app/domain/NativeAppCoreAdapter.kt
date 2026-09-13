@@ -472,6 +472,7 @@ internal fun androidPlatformCapabilitiesJson(
     displayPolicySettingsAvailable: Boolean = false,
     aerobagCloudBaseUrl: String? = null,
     clientBuildInfo: ClientBuildInfo? = null,
+    serviceBulletinUrls: List<String> = emptyList(),
 ): String =
     buildJsonObject {
         put(
@@ -509,6 +510,7 @@ internal fun androidPlatformCapabilitiesJson(
             } ?: JsonNull,
         )
         put("local_time_zone", ZoneId.systemDefault().id)
+        put("service_bulletin_urls", kotlinx.serialization.json.JsonArray(serviceBulletinUrls.map { kotlinx.serialization.json.JsonPrimitive(it) }))
     }.toString()
 
 internal fun androidNavigationPageState(
@@ -539,6 +541,7 @@ class NativeAppCoreAdapter(
         clientBuildInfo: ClientBuildInfo? = null,
         cycleDataBaseUrl: String? = null,
         liveFeedsBaseUrl: String? = null,
+        serviceBulletinUrls: List<String> = emptyList(),
         debugLogSinkUrl: String? = null,
         onStartupStage: ((stage: String, durationMs: Long) -> Unit)? = null,
     ): NativeUiSession {
@@ -579,6 +582,7 @@ class NativeAppCoreAdapter(
                 displayPolicySettingsAvailable = displayPolicySettingsAvailable,
                 aerobagCloudBaseUrl = aerobagCloudBaseUrl,
                 clientBuildInfo = clientBuildInfo,
+                serviceBulletinUrls = serviceBulletinUrls,
             ),
             settingsStore = settingsStore ?: NoopCoreSettingsStore,
         )
@@ -749,6 +753,9 @@ private fun landSessionUpdate(
             )
             "data_status_page_state" -> next.copy(
                 dataStatusPageState = json.decodeFromJsonElement<WireUiDataStatusPageState>(value).toUi(),
+            )
+            "service_notifications" -> next.copy(
+                serviceNotifications = json.decodeFromJsonElement<org.aerobag.app.generated.UiServiceNotificationsState>(value),
             )
             "settings_page_state" -> next.copy(
                 settingsPageState = landSettingsPageState(next.settingsPageState, path, value, json),
@@ -1898,13 +1905,12 @@ class NativeUiSession internal constructor(
 
     fun ingestLiveFeedSseEvents(
         events: List<LiveFeedSseEvent>,
-        fetchResource: (CoreResourceRequest) -> ByteArray,
     ): List<UiInvalidation> {
         val outcome = executePagedOperation(
             operation = {
                 bridge.ingestLiveFeedSseEventsInSessionJson(handle, json.encodeToString(events))
             },
-            resourceIo = sessionResourceIo.withFetcher(fetchResource),
+            resourceIo = sessionResourceIo,
         )
         return publishPagedInvalidations("ingestLiveFeedSseEvents", outcome)
     }
@@ -2652,6 +2658,7 @@ private data class WireUiSessionSnapshot(
     val data_status_state: WireUiDataStatusState,
     val map_status_controls: WireUiSurfaceStatusState,
     val data_status_page_state: WireUiDataStatusPageState,
+    val service_notifications: org.aerobag.app.generated.UiServiceNotificationsState,
     val settings_page_state: WireUiSettingsPageState,
     val cloud_page_state: UiCloudPageState,
     val offline_package_preferences_json: String = "{\"regions\":{},\"products\":{}}",
@@ -2903,6 +2910,7 @@ data class UiSessionSnapshot(
     val dataStatusState: UiDataStatusState,
     val mapStatusControls: UiSurfaceStatusState,
     val dataStatusPageState: UiDataStatusPageState,
+    val serviceNotifications: org.aerobag.app.generated.UiServiceNotificationsState,
     val settingsPageState: UiSettingsPageState,
     val cloudPageState: UiCloudPageState,
     val offlinePackagePreferencesJson: String,
@@ -3426,6 +3434,7 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
     dataStatusState = data_status_state.toUi(),
     mapStatusControls = map_status_controls.toUi(),
     dataStatusPageState = data_status_page_state.toUi(),
+    serviceNotifications = service_notifications,
     settingsPageState = settings_page_state.toUi(),
     cloudPageState = cloud_page_state,
     offlinePackagePreferencesJson = offline_package_preferences_json,

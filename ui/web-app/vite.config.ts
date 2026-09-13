@@ -34,6 +34,9 @@ const packageSourceBaseUrl = process.env.AEROBAG_PACKAGE_SOURCE_BASE_URL ?? null
 const downloadsBaseUrl = process.env.AEROBAG_DOWNLOADS_BASE_URL ?? null;
 const webPublicBaseUrl = process.env.AEROBAG_WEB_PUBLIC_BASE_URL ?? "/";
 const aerobagCloudServerBaseUrl = process.env.AEROBAG_CLOUD_SERVER_BASE_URL ?? null;
+// A configured stable endpoint, independent of release asset paths. Production
+// defaults to the web origin; dev can name its shared service explicitly.
+const serviceBulletinUrls = process.env.AEROBAG_SERVICE_BULLETIN_URLS?.split(",").map((url) => url.trim()).filter(Boolean) ?? null;
 const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_LOG_ENABLED ?? "");
 const webE2eEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_E2E_ENABLED ?? "");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
@@ -443,6 +446,7 @@ export default defineConfig({
     __AEROBAG_DOWNLOADS_BASE_URL__: JSON.stringify(downloadsBaseUrl),
     __AEROBAG_CLOUD_SERVER_BASE_URL__: JSON.stringify(aerobagCloudServerBaseUrl),
     __AEROBAG_CLIENT_BUILD_INFO__: JSON.stringify(clientBuildInfo),
+    __AEROBAG_SERVICE_BULLETIN_URLS__: JSON.stringify(serviceBulletinUrls),
   },
   resolve: {
     preserveSymlinks: true,

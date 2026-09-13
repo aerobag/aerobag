@@ -118,6 +118,8 @@ val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_
 val androidCloudServerBaseUrl = System.getenv("ANDROID_CLOUD_SERVER_BASE_URL")?.takeIf { it.isNotBlank() }
     ?: readInstanceConfigValue("ANDROID_CLOUD_SERVER_BASE_URL")
     ?: ""
+val serviceBulletinUrls = readStringListBuildConfig("AEROBAG_SERVICE_BULLETIN_URLS")
+    ?: listOf("http://aerobag-dev.iac.jonh.net:18080/service/bulletins-v1.json")
 fun readIntegerBuildConfig(key: String, defaultValue: Int): Int {
     val rawValue = System.getenv(key)
         ?: readInstanceConfigValue(key)
@@ -382,6 +384,7 @@ android {
         buildConfigField("String", "AEROBAG_GIT_COMMIT", buildConfigStringLiteral(androidGitCommit))
         buildConfigField("boolean", "AEROBAG_BUILD_DIRTY", androidBuildDirty.toString())
         buildConfigField("boolean", "AEROBAG_E2E_ENABLED", androidE2eEnabled.toString())
+        buildConfigField("String", "AEROBAG_SERVICE_BULLETIN_URLS", buildConfigStringLiteral(serviceBulletinUrls.joinToString(",")))
         manifestPlaceholders["e2eProjectionProviderEnabled"] = androidE2eEnabled.toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -19,7 +19,7 @@ function sourceBetween(start: string, end: string): string {
 
 describe("primary navigation layout", () => {
   it("uses one shared bottom dock on every top-level product page", () => {
-    expect(appSource.match(/<PrimaryNavigationDock/g)).toHaveLength(8);
+    expect(appSource.match(/<PrimaryNavigationDock/g)).toHaveLength(9);
     expect(appSource).not.toContain("primaryNavigationDockStatic");
     expect(styles).not.toContain(".primaryNavigationDockStatic");
     expect(styles).not.toContain(".planFooter");

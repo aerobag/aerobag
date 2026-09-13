@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--controller-preprocessor", type=Path, required=True)
     parser.add_argument("--ui-target-root", type=Path, required=True)
     parser.add_argument("--public-origin", default="https://aerobag.org")
+    parser.add_argument("--service-root", type=Path)
     parser.add_argument("--live-port-base", type=int, default=8100)
     parser.add_argument(
         "--legacy-deployed-rev-file",
@@ -1127,7 +1128,15 @@ def main() -> int:
                 controller.run_pending_gc()
         if refresh_products and not args.plan:
             controller.refresh_products()
-        return controller.reconcile(plan_only=args.plan)
+        result = controller.reconcile(plan_only=args.plan)
+        if not args.plan and args.service_root and controller.observed.production:
+            import publish_notices
+            receipt = publish_notices.publish_releases(
+                args.service_root, args.public_origin.rstrip("/") + publish_notices.BULLETIN_PATH,
+                Path("/usr/local/bin/aerobag-validate-bulletin"), controller.desired, controller.observed,
+            )
+            print(f"Service bulletin revision {receipt['revision']} reflects activated releases", flush=True)
+        return result
 
 
 if __name__ == "__main__":

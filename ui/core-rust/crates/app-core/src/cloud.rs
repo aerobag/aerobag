@@ -1073,6 +1073,36 @@ impl CloudEngine {
         Ok(true)
     }
 
+    pub(crate) fn service_read_receipts(&self) -> AppResult<std::collections::BTreeSet<String>> {
+        self.persistent
+            .records
+            .cached
+            .iter()
+            .filter_map(|(key, record)| {
+                key.strip_prefix(crate::service_notifications::RECEIPT_PREFIX)
+                    .map(|id| {
+                        validate_service_receipt(id, record)?;
+                        Ok(id.to_string())
+                    })
+            })
+            .collect()
+    }
+
+    pub(crate) fn record_service_read(&mut self, id: &str) -> AppResult<bool> {
+        let record = CloudRecord {
+            schema_version: 1,
+            modified_at_epoch_ms: None,
+            value: serde_json::Value::Bool(true),
+        };
+        validate_service_receipt(id, &record)?;
+        let key = format!("{}{id}", crate::service_notifications::RECEIPT_PREFIX);
+        if self.persistent.records.cached.contains_key(&key) {
+            return Ok(false);
+        }
+        self.record_local_cloud_record(&key, record);
+        Ok(true)
+    }
+
     pub fn record_local_aircraft_library_membership(
         &mut self,
         definition_hash: &str,
@@ -3275,7 +3305,9 @@ fn aircraft_library_membership_from_record(
 }
 
 fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
-    if key == FLIGHT_PLAN_RECORD_KEY {
+    if let Some(id) = key.strip_prefix(crate::service_notifications::RECEIPT_PREFIX) {
+        validate_service_receipt(id, record)?;
+    } else if key == FLIGHT_PLAN_RECORD_KEY {
         flight_plan_from_record(record)?;
     } else if key == INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY {
         inactivity_sleep_timeout_from_record(record)?;
@@ -3295,6 +3327,18 @@ fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
     } else if let Some(hash) = key.strip_prefix(AIRCRAFT_LIBRARY_RECORD_PREFIX) {
         product_contracts::validate_aircraft_definition_hash(hash).map_err(cloud_error)?;
         aircraft_library_membership_from_record(record)?;
+    }
+    Ok(())
+}
+
+fn validate_service_receipt(id: &str, record: &CloudRecord) -> AppResult<()> {
+    if id.len() != 64
+        || !id.bytes().all(|c| c.is_ascii_hexdigit())
+        || record.schema_version != 1
+        || record.modified_at_epoch_ms.is_some()
+        || record.value != serde_json::Value::Bool(true)
+    {
+        return Err(cloud_error("invalid immutable service read receipt"));
     }
     Ok(())
 }
@@ -3864,6 +3908,35 @@ mod tests {
                 field_id: CloudUiFieldId::DeviceSetupCode,
             })
         );
+    }
+
+    #[test]
+    fn immutable_service_receipts_union_between_devices_and_survive_reload() {
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut first = configured_engine();
+        let setup_code = create_account(&mut first, &mut provider, &FlightPlan::default(), 10);
+        let (mut second, _) = link_account(&mut provider, setup_code, 20);
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        first.record_service_read(&a).unwrap();
+        second.record_service_read(&b).unwrap();
+        pump_acs(&mut first, &mut provider, 100);
+        pump_acs(&mut second, &mut provider, 110);
+        first
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        pump_acs(&mut first, &mut provider, 120);
+        second
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        pump_acs(&mut second, &mut provider, 130);
+        let expected = std::collections::BTreeSet::from([a.clone(), b]);
+        assert_eq!(first.service_read_receipts().unwrap(), expected);
+        assert_eq!(second.service_read_receipts().unwrap(), expected);
+        assert!(!first.record_service_read(&a).unwrap());
+        let persistent = serde_json::to_vec(&first.persistent).unwrap();
+        let restored: CloudPersistentState = serde_json::from_slice(&persistent).unwrap();
+        assert_eq!(restored.records.cached, first.persistent.records.cached);
     }
 
     #[test]

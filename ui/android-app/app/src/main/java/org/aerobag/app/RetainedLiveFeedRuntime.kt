@@ -216,6 +216,11 @@ internal class RetainedLiveFeedRuntime(
                             },
                             onChanged = ::syncCatalog,
                             onConnectionEvent = { event -> reportConnection(event) },
+                            onSessionEvents = { events ->
+                                runSessionCommand("ingestLiveFeedSseEvents") {
+                                    uiSession.ingestLiveFeedSseEvents(events)
+                                }
+                            },
                         )
                     },
                     reportFailure = { phase, error ->

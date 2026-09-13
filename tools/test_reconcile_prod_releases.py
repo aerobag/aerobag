@@ -829,6 +829,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
             args = SimpleNamespace(
                 artifact_root=self.root, check_deployments_only=False,
                 plan=False, refresh_products=True, force_production_tag=None,
+                service_root=None,
             )
             self.instance.observed.releases["prod"].deployment_status = status
             with (

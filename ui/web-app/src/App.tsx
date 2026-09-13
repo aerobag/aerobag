@@ -872,7 +872,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "altitude" | "charts" | "home" | "data" | "settings" | "cloud";
+type AppPage = "map" | "plan" | "altitude" | "charts" | "home" | "data" | "settings" | "cloud" | "notices";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -1068,6 +1068,8 @@ function webHomeButtonPresentation(destination: UiHomeDestination): {
       return { page: "altitude", iconSrc: HOME_ALTITUDE_PLANNER_ICON_SRC };
     case "data_status":
       return { page: "data", iconSrc: HOME_STATUS_ICON_SRC };
+    case "service_notifications":
+      return { page: "notices", iconSrc: HOME_STATUS_ICON_SRC };
     case "settings":
       return { page: "settings", iconSrc: HOME_SETTINGS_ICON_SRC };
     case "cloud":
@@ -1367,6 +1369,7 @@ function appPageFromNavigationPageId(id: UiSessionSnapshot["navigation_page_stat
     case "flight_plan": return "plan";
     case "altitude_planner": return "altitude";
     case "data_status": return "data";
+    case "service_notifications": return "notices";
     case "settings": return "settings";
     case "home": return "home";
     default: return null;
@@ -2412,6 +2415,7 @@ function OperationalApp() {
   const navDbMaintenanceTimerRef = useRef<number | null>(null);
   const cloudRefreshTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
+    service_notifications: { title: "", summary: "", source_status: [], items: [], mark_all_read: null },
     ui_contract_version: UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
     session_revision: 0,
     flight_plan_route_revision: 0,
@@ -2568,7 +2572,10 @@ function OperationalApp() {
     if (decision.platform_effect?.kind === "reload_application") {
       window.location.reload();
     }
-  }, [applySessionSnapshot, uiSession]);
+    if (decision.platform_effect?.kind === "open_service_notifications") {
+      navigateToPage("notices");
+    }
+  }, [applySessionSnapshot, uiSession, navigateToPage]);
 
   useEffect(() => {
     const render = () => ({
@@ -4377,6 +4384,18 @@ function OperationalApp() {
                 applySessionSnapshot(nextSnapshot, "aircraft_library_action");
               });
           }}
+        />
+      </PageLayer>
+      <PageLayer active={page === "notices"}>
+        <ServiceNotificationsPage
+          page={page}
+          state={sessionSnapshot.service_notifications}
+          navElement={planUiState?.guidance?.nav_element}
+          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenPlan={() => navigateToPage("plan")}
+          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
+          onSelectPage={navigateToPage}
+          onAction={performStatusAction}
         />
       </PageLayer>
       <PageLayer active={page === "cloud"}>
@@ -13394,6 +13413,52 @@ function SettingsSyncIndicatorView(props: {
     >
       {props.indicator.symbol}
     </button>
+  );
+}
+
+export function ServiceNotificationsPage(props: {
+  page: AppPage;
+  state: UiSessionSnapshot["service_notifications"];
+  navElement: NavElementUiView | null | undefined;
+  mostRecentChartOrPlatePage: AppPage;
+  onOpenPlan: () => void;
+  onOpenRecentChartOrPlate: () => void;
+  onSelectPage: (page: AppPage) => void;
+  onAction: (actionId: string) => void | Promise<void>;
+}) {
+  return (
+    <section className="appPage dataStatusPage" data-testid="parity:page:service_notifications">
+      <PrimaryNavigationDock page={props.page} navElement={props.navElement}
+        chartPlateTargetPage={props.mostRecentChartOrPlatePage} onSelectPage={props.onSelectPage}
+        onOpenPlan={props.onOpenPlan} onOpenChartOrPlate={props.onOpenRecentChartOrPlate} />
+      <div className="dataStatusPagePanel" aria-label={props.state.title}>
+        <header className="dataStatusPageHeader">
+          <h1>{props.state.title}</h1><p>{props.state.summary}</p>
+          {props.state.mark_all_read && <button type="button" className="trayButton"
+            data-testid="parity:service:mark-all-read"
+            onClick={() => void props.onAction(props.state.mark_all_read!.action_id)}>
+            {props.state.mark_all_read.label}
+          </button>}
+        </header>
+        <div className="dataStatusPageRows">
+          {props.state.items.map((notice) => (
+            <article key={notice.id} className={`dataStatusPageRow statusSeverity-${notice.severity}`}>
+              <button type="button" className="serviceNoticeTitle" aria-expanded={notice.expanded}
+                data-testid={`parity:service:notice:${notice.id}`}
+                onClick={() => void props.onAction(notice.open_action.action_id)}>
+                <span>{notice.title}</span><span>{notice.state_label}</span>
+              </button>
+              <div className="dataStatusPageRowDetail">{notice.timing}</div>
+              {notice.expanded && <div className="serviceNoticeBody">
+                <div>{notice.body}</div>
+                {notice.link && <a href={notice.link.url} rel="noopener noreferrer">{notice.link.label}</a>}
+              </div>}
+            </article>
+          ))}
+        </div>
+        {props.state.source_status.map((status) => <p className="dataStatusPageRowDetail" key={status}>{status}</p>)}
+      </div>
+    </section>
   );
 }
 

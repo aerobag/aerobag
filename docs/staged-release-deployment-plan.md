@@ -464,6 +464,61 @@ sunset failures contribute to operational status. Staging failures remain
 prominent and block qualification or promotion, but do not claim that the
 production service is down.
 
+### Served health and refresh attempts
+
+Health of the active generation and progress preparing its replacement are
+separate state. A scheduled refresh must not revoke deployment evidence for
+artifacts that are still being served. Deployment receipt schema 2 binds the
+release identity, role, public origin, release bytes and **active channel**
+discovery bytes. Candidate qualification still binds the candidate product
+manifest; this does not relax promotion qualification. Schema 1 deployment
+receipts are rechecked once, not silently upgraded.
+
+The controller saves product refresh progress before building. `running` and
+`ready` (waiting for activation) leave active deployment evidence alone.
+Successful activation finishes the refresh and invalidates deployment checks;
+new HTTP checks establish evidence for the new active view. Rollback or a
+restart cannot declare a prepared-but-unactivated refresh successful. Restart
+also does not reset a pending check's clock. A known failure remains visible
+during its retry until the relevant operation actually succeeds.
+
+Chart `current.json` describes the latest attempt, not necessarily a result.
+While it says `checking`, the monitor keeps the latest completed retained
+report's findings, cycle, source and review link, alongside a separate attempt
+row. This is a **global last-completed check**, not proof that a staging check
+belongs to production. Without completed evidence the result is gray/unknown,
+never a zero-count success. Completed warnings/criticals remain actionable
+during retries.
+
+Normal progress is gray/informational, with explicit monitoring deadlines:
+
+| Operation | Budget | Alarm after budget |
+| --- | --- | --- |
+| Active deployment checks | 10 minutes | Critical for production; warning for staging/sunset |
+| Individual chart check | 15 minutes | Warning |
+| Product refresh through activation | 30 minutes | Warning |
+
+Deployment checks normally take seconds (each HTTP request is bounded at 30
+seconds); chart checks observed on September 13 took roughly three minutes,
+and the complete refresh roughly eight. These budgets accommodate normal
+work while detecting a crashed/stalled attempt, including waiting for
+activation. Missing, invalid or future start times do not grant a grace period.
+Known failures alarm immediately; successful retries clear them. Existing
+publication freshness and forced-admission alarms remain independent.
+
+Compact history schema 4 keeps numeric graph samples separately from
+categorical/null `states`, `active_alerts` and sparse `alert_transitions`.
+Transitions record first observation, opening, severity change, clearing, or
+metric disappearance (not misreported as recovery). Changing age text alone
+does not emit another event. These records survive sampler restarts and are
+available through `/pipeline-health/history.json` and retained daily JSONL.
+Legacy numeric-only history cannot reconstruct previously discarded statuses;
+migration preserves its available evidence without inventing earlier events.
+
+These are controller/monitor changes: deploy with `prod_manage.py --reconcile`
+after committing and pushing. No new app release, product rebuild, telemetry
+product-contract revision or modification of old release artifacts is needed.
+
 ## Garbage Collection
 
 The current GC derives important roots from one

@@ -27,7 +27,7 @@ from urllib.request import Request, urlopen
 import telemetry_contracts
 
 SCHEMA_VERSION = 2
-HISTORY_SCHEMA_VERSION = 3
+HISTORY_SCHEMA_VERSION = 4
 DEFAULT_LISTEN = "127.0.0.1:8098"
 DEFAULT_POLL_SECONDS = 60
 HISTORY_RECORD_LIMIT = 2 * 24 * 60 + 10
@@ -41,6 +41,10 @@ DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 LIVE_FEED_FAILURE_WARNING_SECONDS = 2 * 60
 LIVE_FEED_FAILURE_CRITICAL_SECONDS = 10 * 60
+# Budgets for attempts, not grace periods for a known failed result.
+DEPLOYMENT_CHECK_BUDGET_SECONDS = 10 * 60
+CHART_CHECK_BUDGET_SECONDS = 15 * 60
+PRODUCT_REFRESH_BUDGET_SECONDS = 30 * 60
 EXPECTED_NOTAM_PROCEDURE_WITHOUT_UI_ANCHOR = 1
 MIN_WEATHER_CAMERA_SITE_COUNT = 960
 ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
@@ -518,7 +522,22 @@ def collect_chart_quality(artifact_root: Path) -> list[dict[str, Any]]:
         payload, error = read_json_file(path)
         if not error:
             error = chart_quality_report_error(payload)
-        entries.append({"family": path.parent.name, "payload": payload, "error": error})
+        entry = {"family": path.parent.name, "payload": payload, "error": error}
+        if not error and payload.get("status") == "checking":
+            # current.json is attempt progress, not a replacement result. The
+            # producer retains completed reports separately (bounded by its GC).
+            completed = []
+            for report_path in path.parent.glob("reports/*/report.json"):
+                report, read_error = read_json_file(report_path)
+                if (not read_error and not chart_quality_report_error(report)
+                        and report.get("status") != "checking"
+                        and report.get("family") == path.parent.name
+                        and parse_time(report.get("completed_at")) is not None):
+                    completed.append(report)
+            entry["last_completed"] = max(
+                completed, key=lambda report: parse_time(report["completed_at"]), default=None
+            )
+        entries.append(entry)
     return entries
 
 
@@ -560,7 +579,17 @@ def chart_quality_report_error(payload: Any) -> str | None:
     return None
 
 
-def add_chart_quality_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+def attempt_age_seconds(started_at: Any, now: datetime) -> float | None:
+    started = parse_time(started_at)
+    if started is None or started > now:
+        return None
+    return (now - started).total_seconds()
+
+
+def add_chart_quality_metrics(
+    metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime | None = None,
+) -> None:
+    now = now or utc_now()
     reports = facts.get("inputs", {}).get("chart_quality")
     if reports is None:
         return
@@ -574,11 +603,31 @@ def add_chart_quality_metrics(metrics: list[dict[str, Any]], facts: dict[str, An
         error = entry.get("error") or chart_quality_report_error(report)
         if error:
             report = {"status": "critical", "error": error, "critical_count": 1}
+        if report.get("status") == "checking":
+            age = attempt_age_seconds(report.get("started_at"), now)
+            overdue = age is None or age >= CHART_CHECK_BUDGET_SECONDS
+            add_metric(metrics, metric_id=f"chart_quality.{family}.attempt", label=f"{family} chart check attempt",
+                       value="overdue" if overdue else "checking", severity="warning" if overdue else "unknown",
+                       message=(f"{family}: chart check has no valid start time" if age is None else
+                                f"{family}: chart check {'overdue' if overdue else 'in progress'} ({int(age)} seconds)"),
+                       details={"started_at": report.get("started_at"), "cycle": report.get("cycle"),
+                                "source_id": report.get("source_id"), "budget_seconds": CHART_CHECK_BUDGET_SECONDS})
+            previous = entry.get("last_completed")
+            if (previous is None or chart_quality_report_error(previous)
+                    or previous.get("status") == "checking"):
+                add_metric(metrics, metric_id=f"chart_quality.{family}.unresolved", label=f"{family} chart visual checks",
+                           value=None, severity="unknown",
+                           message=f"{family}: no completed result yet; next check in progress")
+                continue
+            report = previous
+        elif not error:
+            add_metric(metrics, metric_id=f"chart_quality.{family}.attempt", label=f"{family} chart check attempt",
+                       value="completed", message=f"{family}: chart check completed",
+                       details={"completed_at": report.get("completed_at")})
         status = report.get("status")
-        incomplete = status == "checking"
         critical = report.get("critical_count", 0)
         warnings = report.get("warning_count", 0)
-        severity = "critical" if status == "critical" or status not in {"ok", "warning", "checking"} else "warning" if status == "warning" or incomplete else "ok"
+        severity = "critical" if status == "critical" or status not in {"ok", "warning"} else status
         report_id = report.get("report_id", "")
         valid_id = isinstance(report_id, str) and len(report_id) == 32 and all(c in "0123456789abcdef" for c in report_id)
         review_url = f"/pipeline-health/chart-quality/{family}/reports/{report_id}/index.html" if valid_id else None
@@ -588,8 +637,7 @@ def add_chart_quality_metrics(metrics: list[dict[str, Any]], facts: dict[str, An
                        if quarantined else '; publication blocked' if decision.get('state') == 'blocked' else '')
         add_metric(metrics, metric_id=f"chart_quality.{family}.unresolved", label=f"{family} chart visual checks",
                    value=critical + warnings, unit="regions", severity=severity, warning_threshold=1,
-                   message=(f"{family}: check incomplete; no verified result for this attempt" if incomplete else
-                            f"{family}: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}{disposition}"),
+                   message=f"{family}: last completed check: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}{disposition}",
                    details={"review_url": review_url, "last_error": report.get("error"),
                             "regions": report.get("regions", []), "policy": report.get("policy"),
                             "source_id": report.get("source_id"), "completed_at": report.get("completed_at"),
@@ -657,7 +705,7 @@ def evaluate_health(
     add_input_metrics(metrics, facts)
     add_build_watch_metrics(metrics, facts)
     add_aerobag_cloud_metrics(metrics, facts)
-    add_chart_quality_metrics(metrics, facts)
+    add_chart_quality_metrics(metrics, facts, now)
     channels = facts.get("channels")
     if isinstance(channels, dict):
         production_facts = None
@@ -670,7 +718,7 @@ def evaluate_health(
             channel_facts = {"inputs": channel_inputs}
             channel_metrics: list[dict[str, Any]] = []
             if channel.get("deployment_managed") is True:
-                add_channel_release_metrics(channel_metrics, channel)
+                add_channel_release_metrics(channel_metrics, channel, now)
             add_channel_input_metrics(channel_metrics, channel_facts)
             add_live_feed_metrics(channel_metrics, channel_facts, now)
             add_product_fact_metrics(
@@ -888,8 +936,9 @@ def add_channel_input_metrics(
 
 
 def add_channel_release_metrics(
-    metrics: list[dict[str, Any]], channel: dict[str, Any]
+    metrics: list[dict[str, Any]], channel: dict[str, Any], now: datetime | None = None,
 ) -> None:
+    now = now or utc_now()
     record = channel.get("release_state")
     if not isinstance(record, dict):
         add_metric(
@@ -928,6 +977,15 @@ def add_channel_release_metrics(
         else:
             severity = "critical"
         message = f"{label}: {value}"
+        if deployment_checks and value == "pending":
+            age = attempt_age_seconds(record.get("deployment_pending_since_utc"), now)
+            if record.get("deployment_error"):
+                severity = "critical"
+            elif age is not None and age < DEPLOYMENT_CHECK_BUDGET_SECONDS:
+                severity = "unknown"
+                message = f"{label}: checking active artifacts ({int(age)} seconds)"
+            else:
+                message += " (overdue or missing valid check start time)"
         if deployment_checks and record.get("deployment_error"):
             message += f" ({record['deployment_error']})"
         if field == "qualification_status" and value == "bypassed":
@@ -943,6 +1001,24 @@ def add_channel_release_metrics(
             severity=severity,
             message=message,
         )
+
+    refresh = record.get("product_refresh_status")
+    if refresh is not None:
+        error = record.get("product_refresh_error")
+        age = attempt_age_seconds(record.get("product_refresh_started_at_utc"), now)
+        active = refresh in {"running", "ready"}
+        overdue = active and (age is None or age >= PRODUCT_REFRESH_BUDGET_SECONDS)
+        severity = ("warning" if error or overdue or refresh not in {"running", "ready", "passed"}
+                    else "unknown" if active else "ok")
+        message = f"cycle product refresh: {refresh}"
+        if overdue:
+            message += " (overdue or missing valid attempt start time)"
+        if error:
+            message += f"; last unsuccessful refresh: {error}"
+        add_metric(metrics, metric_id="release.product_refresh", label="cycle product refresh",
+                   value=refresh, severity=severity, message=message,
+                   details={"started_at_utc": record.get("product_refresh_started_at_utc"),
+                            "budget_seconds": PRODUCT_REFRESH_BUDGET_SECONDS})
 
     # Passing routine HTTP checks must not erase or conceal a forced admission.
     if "deployment_status" in record and (
@@ -2007,6 +2083,55 @@ def history_metric_values(record: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def compact_evaluation_states(evaluation: dict[str, Any]) -> dict[str, Any]:
+    """Keep categorical/unknown states without treating them as graph samples."""
+    metrics = evaluation.get("metrics")
+    if not isinstance(metrics, list):
+        return {}
+    return {
+        metric["id"]: {"value": metric.get("value"), "severity": metric.get("severity", "ok")}
+        for metric in metrics
+        if isinstance(metric, dict) and isinstance(metric.get("id"), str)
+        and (isinstance(metric.get("value"), str) or metric.get("value") is None)
+    }
+
+
+def compact_active_alerts(evaluation: dict[str, Any]) -> dict[str, Any]:
+    alerts = evaluation.get("alerts")
+    if not isinstance(alerts, list):
+        return {}
+    return {
+        alert["metric_id"]: {key: alert[key] for key in ("severity", "message", "scope") if key in alert}
+        for alert in alerts
+        if isinstance(alert, dict) and isinstance(alert.get("metric_id"), str)
+    }
+
+
+def alert_transitions(
+    evaluation: dict[str, Any], previous: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    current = compact_active_alerts(evaluation)
+    prior = (previous or {}).get("active_alerts")
+    if not isinstance(prior, dict):
+        prior = None
+    metrics = {metric["id"]: metric for metric in evaluation.get("metrics", [])}
+    transitions = []
+    for metric_id in sorted(current.keys() | (prior or {}).keys()):
+        before, after = (prior or {}).get(metric_id), current.get(metric_id)
+        if before and after and before.get("severity") == after.get("severity"):
+            # Do not generate an event every minute as "age N seconds" changes.
+            continue
+        if after:
+            event = "changed" if before else "observed" if prior is None else "opened"
+            detail = after
+        else:
+            event = "cleared" if metric_id in metrics else "unavailable"
+            detail = {"previous": before, "severity": metrics.get(metric_id, {}).get("severity", "unknown"),
+                      "message": metrics.get(metric_id, {}).get("message", "Metric no longer present")}
+        transitions.append({"metric_id": metric_id, "event": event, **detail})
+    return transitions
+
+
 def compact_existing_history_record(record: dict[str, Any]) -> dict[str, Any] | None:
     sampled_at = record.get("sampled_at_utc")
     if not isinstance(sampled_at, str):
@@ -2026,6 +2151,15 @@ def compact_existing_history_record(record: dict[str, Any]) -> dict[str, Any] | 
     channel_product_states = record.get("channel_product_states")
     if isinstance(channel_product_states, dict):
         compact["channel_product_states"] = channel_product_states
+    evaluation = record.get("evaluation")
+    if isinstance(evaluation, dict):
+        compact["states"] = compact_evaluation_states(evaluation)
+        if "alerts" in evaluation:
+            compact["active_alerts"] = compact_active_alerts(evaluation)
+    # Old numeric-only samples cannot reconstruct the lost states/events.
+    for key in ("states", "active_alerts", "alert_transitions"):
+        if key in record:
+            compact[key] = record[key]
     return compact
 
 
@@ -2175,12 +2309,16 @@ def append_history(path: Path, record: dict[str, Any]) -> None:
 def compact_history_record(
     facts: dict[str, Any],
     evaluation: dict[str, Any],
+    previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = {
         "schema_version": SCHEMA_VERSION,
         "history_schema_version": HISTORY_SCHEMA_VERSION,
         "sampled_at_utc": facts["sampled_at_utc"],
         "metrics": compact_evaluation_metrics(evaluation),
+        "states": compact_evaluation_states(evaluation),
+        "active_alerts": compact_active_alerts(evaluation),
+        "alert_transitions": alert_transitions(evaluation, previous),
     }
     channel_states = channel_product_states(facts)
     if channel_states:
@@ -2241,7 +2379,7 @@ def run_sample(config: MonitorConfig) -> dict[str, Any]:
     previous = read_history(config.health_root, now=now).records
     facts = collect_facts(config, now)
     evaluation = evaluate_health(facts, previous, now)
-    history_record = compact_history_record(facts, evaluation)
+    history_record = compact_history_record(facts, evaluation, previous[-1] if previous else None)
     current_record = current_health_record(facts, evaluation)
     append_history(history_path, history_record)
     write_current(config.health_root / "pipeline-health-current.json", current_record)

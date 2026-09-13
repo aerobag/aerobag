@@ -164,6 +164,9 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         )
 
     def test_restart_recovers_bypass_after_activation_before_state_write(self) -> None:
+        self.record.product_refresh_status = "ready"
+        self.record.product_refresh_error = "previous failed attempt"
+        self.instance.save()
         with mock.patch.object(self.instance, "save", side_effect=RuntimeError("restart")):
             with self.assertRaisesRegex(RuntimeError, "restart"):
                 self.instance.activate()
@@ -173,6 +176,25 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         record = releases.load_observed_state(self.instance.args.observed).releases["candidate"]
         self.assertEqual(record.qualification_status, "bypassed")
         self.assertEqual(record.qualification_bypass_reason, "forced promotion")
+        self.assertEqual(record.product_refresh_status, "passed")
+        self.assertIsNone(record.product_refresh_error)
+        self.assertIsNotNone(record.deployment_pending_since_utc)
+
+    def test_failed_activation_keeps_refresh_pending_and_previous_deployment_failure(self) -> None:
+        self.record.product_refresh_status = "ready"
+        self.record.product_refresh_started_at_utc = "2026-09-13T15:00:00Z"
+        self.record.deployment_status = "failed"
+        self.record.deployment_error = "bad public bytes"
+        self.instance.validate_public_production.side_effect = RuntimeError("bad route")
+        with self.assertRaisesRegex(RuntimeError, "bad route"):
+            self.instance.activate()
+        self.assertEqual(self.record.product_refresh_status, "ready")
+        self.assertEqual(self.record.deployment_status, "failed")
+        self.instance.validate_public_production.side_effect = None
+        self.instance.activate()
+        self.assertEqual(self.record.product_refresh_status, "passed")
+        self.assertEqual(self.record.deployment_status, "pending")
+        self.assertEqual(self.record.deployment_error, "bad public bytes")
 
 
 class MaintenancePolicyTests(unittest.TestCase):
@@ -536,12 +558,23 @@ class DeploymentLifecycleTests(unittest.TestCase):
         for tag in ["prod", "old"]:
             refreshed[tag] = self.root / f"{tag}-refreshed.json"
             refreshed[tag].write_text(f'{{"tag":"{tag}","cycle":"next"}}')
+        def build_manifest(tag, force):
+            # In particular, prod has advanced its candidate before the slow
+            # second release's build, but still serves its verified generation.
+            self.assertTrue(self.current("prod"))
+            saved = releases.load_observed_state(self.instance.args.observed)
+            self.assertEqual(saved.releases[tag].product_refresh_status, "running")
+            self.assertIsNotNone(saved.releases[tag].product_refresh_started_at_utc)
+            return refreshed[tag]
         with (
             mock.patch.object(controller.urllib.request, "urlopen", side_effect=self.urlopen),
-            mock.patch.object(self.instance, "build_product_manifest", side_effect=lambda tag, force: refreshed[tag]),
+            mock.patch.object(self.instance, "build_product_manifest", side_effect=build_manifest),
         ):
             self.instance.reconcile(plan_only=False)
             self.instance.refresh_products()
+            for tag in refreshed:
+                self.assertTrue(self.current(tag))
+                self.assertEqual(self.instance.observed.releases[tag].product_refresh_status, "ready")
             self.assertTrue(self.instance.observed.channel_inputs_dirty)
             self.assertEqual(
                 releases.plan_reconciliation(self.instance.desired, self.instance.observed).actions,
@@ -552,11 +585,15 @@ class DeploymentLifecycleTests(unittest.TestCase):
             self.instance.observed.channel_inputs_dirty = False
             self.instance.observed.generation += 1
             self.instance.invalidate_deployment_checks()
+            for record in self.instance.observed.releases.values():
+                self.assertEqual(record.product_refresh_status, "passed")
+                self.assertIsNotNone(record.deployment_pending_since_utc)
             self.instance.reconcile(plan_only=False)
         for tag, record in self.instance.observed.releases.items():
             self.assertTrue(self.current(tag))
             self.assertEqual(record.qualification_status, "pending")
             self.assertIsNone(record.qualification_record)
+            self.assertIsNone(record.deployment_pending_since_utc)
             self.assertEqual(
                 (Path(record.release_root) / "qualification.json").read_bytes(), original_receipts[tag],
             )
@@ -610,12 +647,11 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertEqual(record.qualification_bypass_reason, "forced promotion")
         self.assertEqual(record.qualification_bypassed_at_utc, "2026-09-08T19:00:00Z")
 
-    def test_receipt_is_invalidated_by_product_discovery_origin_role_or_release_changes(self) -> None:
+    def test_receipt_is_invalidated_by_active_discovery_origin_role_or_release_changes(self) -> None:
         with mock.patch.object(controller.urllib.request, "urlopen", side_effect=self.urlopen):
             self.instance.reconcile(plan_only=False)
         record = self.instance.observed.releases["prod"]
         paths = [
-            Path(record.product_manifest),
             self.root / "channel-current/production/packages/current_artifacts.json",
             Path(record.release_root) / "web/index.html",
             Path(record.deployment_record),
@@ -634,9 +670,74 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.instance.observed.sunset.append("prod")
         self.assertFalse(self.current("prod"))
 
+    def test_candidate_change_does_not_invalidate_active_deployment_receipt(self) -> None:
+        with mock.patch.object(controller.urllib.request, "urlopen", side_effect=self.urlopen):
+            self.instance.reconcile(plan_only=False)
+        record = self.instance.observed.releases["prod"]
+        Path(record.product_manifest).write_text("new candidate")
+        self.assertTrue(self.current("prod"))
+        self.assertFalse(controller.qualification_is_current(record))
+        receipt_path = Path(record.deployment_record)
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(receipt["schema_version"], 2)
+        self.assertNotIn("product_manifest_sha256", receipt)
+        receipt["schema_version"] = 1
+        receipt_path.write_text(json.dumps(receipt))
+        self.assertFalse(self.current("prod"))
+
+    def test_failed_refresh_is_separate_and_stays_visible_during_retry(self) -> None:
+        with mock.patch.object(controller.urllib.request, "urlopen", side_effect=self.urlopen):
+            self.instance.reconcile(plan_only=False)
+        with mock.patch.object(self.instance, "build_product_manifest", side_effect=RuntimeError("broken producer")):
+            self.instance.refresh_products()
+        for tag, record in self.instance.observed.releases.items():
+            self.assertTrue(self.current(tag))
+            self.assertEqual(record.product_refresh_status, "failed")
+            self.assertEqual(record.product_refresh_error, "broken producer")
+        def retry(tag, force):
+            saved = releases.load_observed_state(self.instance.args.observed).releases[tag]
+            self.assertEqual(saved.product_refresh_status, "running")
+            self.assertEqual(saved.product_refresh_error, "broken producer")
+            return Path(saved.product_manifest)
+        with mock.patch.object(self.instance, "build_product_manifest", side_effect=retry):
+            self.instance.refresh_products()
+        for record in self.instance.observed.releases.values():
+            self.assertEqual(record.product_refresh_status, "passed")
+            self.assertIsNone(record.product_refresh_error)
+
+    def test_restart_preserves_active_receipt_and_pending_deadline(self) -> None:
+        with mock.patch.object(controller.urllib.request, "urlopen", side_effect=self.urlopen):
+            self.instance.reconcile(plan_only=False)
+        prod = self.instance.observed.releases["prod"]
+        Path(prod.product_manifest).write_text("new unactivated candidate")
+        old = self.instance.observed.releases["old"]
+        old.deployment_status = "pending"
+        old.deployment_pending_since_utc = "2026-09-13T10:00:00Z"
+        old.product_refresh_status = "ready"
+        old.product_refresh_started_at_utc = "2026-09-13T09:55:00Z"
+        self.instance.save()
+        args = SimpleNamespace(**vars(self.instance.args), source_root=self.root,
+                               artifact_root=self.root, desired=self.root / "desired.json")
+        identities = {
+            tag: releases.ResolvedTag(tag=tag, tag_object=record.tag_object, commit=record.commit)
+            for tag, record in self.instance.observed.releases.items()
+        }
+        with (mock.patch.object(controller, "_git", return_value="c" * 40),
+              mock.patch.object(releases, "load_desired_releases", return_value=self.instance.desired),
+              mock.patch.object(releases, "resolve_desired_tags", return_value=identities)):
+            for _ in range(2):
+                restarted = controller.Controller(args)
+                restarted.save()
+                self.assertEqual(restarted.observed.releases["prod"].deployment_status, "passed")
+                pending = restarted.observed.releases["old"]
+                self.assertEqual(pending.deployment_pending_since_utc, "2026-09-13T10:00:00Z")
+                self.assertEqual(pending.product_refresh_started_at_utc, "2026-09-13T09:55:00Z")
+                self.assertEqual(pending.product_refresh_status, "ready")
+
     def test_artifacts_changing_during_checks_cannot_receive_passing_receipt(self) -> None:
         def changed(url, timeout):
-            Path(self.instance.observed.releases["prod"].product_manifest).write_text("changed")
+            if url.endswith("/about"):
+                (self.root / "channel-current/production/packages/current_artifacts.json").write_text("changed")
             return self.urlopen(url, timeout)
 
         with mock.patch.object(controller.urllib.request, "urlopen", side_effect=changed):

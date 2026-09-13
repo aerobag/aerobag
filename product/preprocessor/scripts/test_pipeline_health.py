@@ -57,8 +57,11 @@ def evaluate_health(
 
 
 class ChartQualityMetricTests(unittest.TestCase):
+    now = datetime(2026, 9, 13, 15, 0, tzinfo=timezone.utc)
+
     def report(self, status="warning"):
         return {"schema_version": 2, "family": "SEC", "cycle": "2610", "report_id": "a" * 32,
+                "started_at": "2026-09-13T14:59:00Z", "completed_at": "2026-09-13T15:00:00Z",
                 "status": status, "warning_count": int(status == "warning"),
                 "critical_count": int(status == "critical"), "unreviewed_count": 0,
                 "regions": [{"chart": "Test SEC", "scores": {"overview": {"boundary": .2}}}],
@@ -83,10 +86,10 @@ class ChartQualityMetricTests(unittest.TestCase):
         report['publication']['quarantined_sources'] = []
         self.assertIsNotNone(pipeline_health.chart_quality_report_error(report))
 
-    def metrics(self, report):
+    def metrics(self, report, previous=None, now=None):
         metrics = []
         pipeline_health.add_chart_quality_metrics(metrics, {"inputs": {"chart_quality": [
-            {"family": "SEC", "payload": report, "error": None}]}})
+            {"family": "SEC", "payload": report, "error": None, "last_completed": previous}]}}, now or self.now)
         return {m["id"]: m for m in metrics}
 
     def test_warning_and_critical_do_not_require_increasing_counts(self):
@@ -97,8 +100,27 @@ class ChartQualityMetricTests(unittest.TestCase):
                 self.assertEqual(metric["value"], 1)
                 self.assertIn("/reports/" + "a" * 32, metric["details"]["review_url"])
 
-    def test_incomplete_and_malformed_checks_cannot_be_green(self):
-        self.assertEqual(self.metrics(self.report("checking"))["chart_quality.SEC.unresolved"]["severity"], "warning")
+    def test_incomplete_checks_are_unknown_not_zero_and_alarm_when_overdue(self):
+        report = self.report("checking")
+        for start, expected in [(report["started_at"], "unknown"), (None, "warning"),
+                                ("invalid", "warning"), ("2026-09-13T15:01:00Z", "warning"),
+                                ("2026-09-13T14:45:00Z", "warning")]:
+            metrics = self.metrics({**report, "started_at": start})
+            self.assertEqual(metrics["chart_quality.SEC.attempt"]["severity"], expected)
+            self.assertEqual(metrics["chart_quality.SEC.unresolved"]["severity"], "unknown")
+            self.assertIsNone(metrics["chart_quality.SEC.unresolved"]["value"])
+
+    def test_retry_keeps_last_completed_findings_until_a_new_result(self):
+        for status in ["ok", "warning", "critical"]:
+            previous = {**self.report(status), "cycle": "2609"}
+            metric = self.metrics(self.report("checking"), previous)["chart_quality.SEC.unresolved"]
+            self.assertEqual(metric["severity"], status)
+            self.assertIn("last completed check", metric["message"])
+            self.assertIn("cycle 2609", metric["message"])
+        self.assertEqual(self.metrics(self.report("ok"), self.report("critical"))[
+            "chart_quality.SEC.unresolved"]["severity"], "ok")
+
+    def test_malformed_checks_cannot_be_green(self):
         for bad in [None, {}, {**self.report(), "warning_count": "bad"}, {**self.report(), "regions": [{}]},
                     {**self.report("critical"), "status": "ok"}, {**self.report("ok"), "unreviewed_count": 1}]:
             metric = self.metrics(bad)["chart_quality.SEC.unresolved"]
@@ -115,6 +137,22 @@ class ChartQualityMetricTests(unittest.TestCase):
             self.assertEqual(reports[0]["payload"]["status"], "critical")
             self.assertIsNone(reports[0]["error"])
             self.assertFalse((root / "published").exists())
+
+    def test_collector_retains_latest_completed_findings_during_new_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family = root / "state/chart-quality/SEC"
+            for name, status, completed in [("old", "ok", "2026-09-13T14:00:00Z"),
+                                             ("latest", "critical", "2026-09-13T14:30:00Z")]:
+                report = family / "reports" / name / "report.json"
+                report.parent.mkdir(parents=True)
+                report.write_text(json.dumps({**self.report(status), "completed_at": completed}))
+            (family / "current.json").write_text(json.dumps(self.report("checking")))
+            reports = pipeline_health.collect_chart_quality(root)
+            self.assertEqual(reports[0]["last_completed"]["status"], "critical")
+            metrics = []
+            pipeline_health.add_chart_quality_metrics(metrics, {"inputs": {"chart_quality": reports}}, self.now)
+            self.assertEqual(next(m for m in metrics if m["id"].endswith(".unresolved"))["severity"], "critical")
 
     def test_review_assets_are_confined_to_report_tree(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -497,6 +535,44 @@ class PipelineHealthTests(unittest.TestCase):
                 self.assertEqual(by_id["release.qualification_bypass"]["severity"], "critical")
                 self.assertIn("forced promotion", by_id["release.qualification_bypass"]["message"])
                 self.assertIn("2026-09-08T19:00:00Z", by_id["release.qualification_bypass"]["message"])
+
+    def test_deployment_pending_has_bounded_progress_without_hiding_failure(self) -> None:
+        now = datetime(2026, 9, 13, 15, 0, tzinfo=timezone.utc)
+        for role in ["production", "staging", "sunset"]:
+            for age, error, expected in [(0, None, "unknown"), (599, None, "unknown"),
+                                         (0, "wrong bytes", "critical"),
+                                         (600, None, "critical" if role == "production" else "warning"),
+                                         (-1, None, "critical" if role == "production" else "warning")]:
+                metrics = []
+                pipeline_health.add_channel_release_metrics(metrics, {
+                    "role": role, "release_state": {
+                        "build_status": "passed", "live_feed_status": "running",
+                        "deployment_status": "pending", "deployment_error": error,
+                        "deployment_pending_since_utc": pipeline_health.iso_utc(now - timedelta(seconds=age)),
+                    },
+                }, now)
+                metric = next(m for m in metrics if m["id"] == "release.qualification_status")
+                self.assertEqual(metric["severity"], expected, (role, age, error))
+                self.assertEqual(metric["value"], "pending")
+
+    def test_refresh_progress_failure_and_deadline_do_not_relabel_served_health(self) -> None:
+        now = datetime(2026, 9, 13, 15, 0, tzinfo=timezone.utc)
+        for status, age, error, expected in [
+            ("running", 60, None, "unknown"), ("ready", 60, None, "unknown"),
+            ("running", 1800, None, "warning"), ("ready", 1800, None, "warning"),
+            ("running", -1, None, "warning"), ("failed", 60, "broken build", "warning"),
+            ("running", 60, "broken build", "warning"), ("ready", 60, "broken build", "warning"),
+            ("passed", 60, None, "ok"), ("nonsense", 60, None, "warning"),
+        ]:
+            metrics = []
+            pipeline_health.add_channel_release_metrics(metrics, {"role": "production", "release_state": {
+                "build_status": "passed", "live_feed_status": "running", "deployment_status": "passed",
+                "product_refresh_status": status, "product_refresh_error": error,
+                "product_refresh_started_at_utc": pipeline_health.iso_utc(now - timedelta(seconds=age)),
+            }}, now)
+            by_id = {m["id"]: m for m in metrics}
+            self.assertEqual(by_id["release.product_refresh"]["severity"], expected)
+            self.assertEqual(by_id["release.qualification_status"]["severity"], "ok")
 
     def test_live_feed_health_requires_daemon_product_policy(self) -> None:
         now = datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc)
@@ -1380,7 +1456,46 @@ class PipelineHealthTests(unittest.TestCase):
             {"value": 123, "severity": "warning"},
         )
         self.assertNotIn("cycle_build.latest_result", record["metrics"])
+        self.assertEqual(record["states"]["cycle_build.latest_result"], {"value": "pass", "severity": "ok"})
         self.assertLess(len(encoded), 1_000)
+
+    def test_history_keeps_alert_open_change_clear_and_missing_transitions(self) -> None:
+        facts = {"sampled_at_utc": "2026-09-13T15:00:00Z", "inputs": {}}
+        def sample(value, severity, message, previous=None):
+            evaluation = {"metrics": [{"id": "checks", "value": value, "severity": severity, "message": message}],
+                          "alerts": [{"metric_id": "checks", "severity": severity, "message": message, "scope": "global"}]
+                          if severity in {"warning", "critical"} else []}
+            return pipeline_health.compact_history_record(facts, evaluation, previous)
+        first = sample("passed", "ok", "passed")
+        opened = sample("pending", "warning", "overdue 600 seconds", first)
+        self.assertEqual(opened["alert_transitions"][0]["event"], "opened")
+        self.assertEqual(opened["states"]["checks"]["value"], "pending")
+        unchanged = sample("pending", "warning", "overdue 660 seconds", opened)
+        self.assertEqual(unchanged["alert_transitions"], [])
+        changed = sample("failed", "critical", "wrong About bytes", unchanged)
+        self.assertEqual(changed["alert_transitions"][0]["event"], "changed")
+        self.assertEqual(changed["alert_transitions"][0]["message"], "wrong About bytes")
+        # Disk roundtrip models sampler restart; yesterday's active alert survives.
+        reloaded = json.loads(json.dumps(changed))
+        cleared = sample("passed", "ok", "checks passed", reloaded)
+        self.assertEqual(cleared["alert_transitions"][0]["event"], "cleared")
+        self.assertEqual(cleared["active_alerts"], {})
+        missing = pipeline_health.compact_history_record(facts, {"metrics": [], "alerts": []}, changed)
+        self.assertEqual(missing["alert_transitions"][0]["event"], "unavailable")
+        self.assertEqual(pipeline_health.compact_existing_history_record(changed), changed)
+        self.assertNotIn("checks", pipeline_health.compact_metric_series([opened, changed])["series"])
+
+    def test_legacy_numeric_history_does_not_invent_lost_alert_timeline(self) -> None:
+        old = pipeline_health.compact_existing_history_record({
+            "sampled_at_utc": "2026-09-13T15:00:00Z", "history_schema_version": 3,
+            "metrics": {"some.count": 1},
+        })
+        self.assertNotIn("states", old)
+        self.assertNotIn("active_alerts", old)
+        events = pipeline_health.alert_transitions({"metrics": [], "alerts": [
+            {"metric_id": "checks", "severity": "critical", "message": "pending"},
+        ]}, old)
+        self.assertEqual(events[0]["event"], "observed")
 
     def test_compact_history_keeps_product_baselines_separate_by_channel(self) -> None:
         facts = {

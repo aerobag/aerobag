@@ -243,6 +243,10 @@ class ObservedRelease:
     deployment_status: str = "pending"
     deployment_record: str | None = None
     deployment_error: str | None = None
+    deployment_pending_since_utc: str | None = None
+    product_refresh_status: str | None = None
+    product_refresh_started_at_utc: str | None = None
+    product_refresh_error: str | None = None
     product_manifest: str | None = None
     release_root: str | None = None
     live_feed_endpoint: str | None = None
@@ -268,6 +272,10 @@ class ObservedRelease:
                 "deployment_status",
                 "deployment_record",
                 "deployment_error",
+                "deployment_pending_since_utc",
+                "product_refresh_status",
+                "product_refresh_started_at_utc",
+                "product_refresh_error",
                 "product_manifest",
                 "release_root",
                 "live_feed_endpoint",

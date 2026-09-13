@@ -115,6 +115,10 @@ class RetirementTests(unittest.TestCase):
         old = self.activate("old")
         current = self.activate("prod", at=self.now + timedelta(minutes=5))
         record = self.instance.observed.releases["old"]
+        record.product_refresh_status = "failed"
+        record.product_refresh_error = "old failure"
+        record.product_refresh_started_at_utc = "2026-09-11T00:00:00Z"
+        record.deployment_pending_since_utc = "2026-09-11T00:00:00Z"
         record.live_feed_status = "running"
         record.draining_until_utc = (self.now + timedelta(minutes=65)).isoformat()
         self.states["old"] = "active"
@@ -134,6 +138,10 @@ class RetirementTests(unittest.TestCase):
         self.assertIsNone(record.live_feed_endpoint)
         self.assertIsNone(record.release_root)
         self.assertIsNone(record.product_manifest)
+        self.assertIsNone(record.product_refresh_status)
+        self.assertIsNone(record.product_refresh_error)
+        self.assertIsNone(record.product_refresh_started_at_utc)
+        self.assertIsNone(record.deployment_pending_since_utc)
         self.assertEqual(record.build_status, "pending")
         self.assertEqual(record.commit, "b" * 40)
         self.assertTrue(self.instance.observed.gc_pending)

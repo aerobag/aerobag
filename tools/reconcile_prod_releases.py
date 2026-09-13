@@ -223,20 +223,22 @@ def deployment_evidence(
     artifact_root: Path,
     public_origin: str,
 ) -> dict:
-    if record.release_root is None or record.product_manifest is None:
+    if record.release_root is None:
         raise RuntimeError(f"release {record.tag} is missing deployment artifacts")
     role, channel = deployment_channel(observed, record.tag)
     release_root = Path(record.release_root)
     release_builder.validate_release_directory(release_root, record.tag, record.commit)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "deployed-channel-checks",
         "tag": record.tag,
         "commit": record.commit,
         "channel_role": role,
         "public_origin": public_origin.rstrip("/"),
         "release_json_sha256": _sha256(release_root / "release.json"),
-        "product_manifest_sha256": _sha256(Path(record.product_manifest)),
+        # The candidate manifest can advance while the verified old generation
+        # is still serving. Deployment evidence describes the active channel;
+        # candidate qualification separately binds record.product_manifest.
         # Production discovery also includes retained releases. A change to
         # that merged view needs checking even when this release is unchanged.
         "channel_manifest_sha256": _sha256(
@@ -324,9 +326,8 @@ class Controller:
                 record, self.observed, self.artifact_root, self.args.public_origin
             ):
                 record.deployment_status = "pending"
-                record.deployment_error = (
-                    "deployment checks no longer match current channel artifacts"
-                )
+                record.deployment_pending_since_utc = datetime.now(timezone.utc).isoformat()
+                record.deployment_error = None
 
     def save(self) -> None:
         releases.write_observed_state(self.args.observed, self.observed)
@@ -641,10 +642,16 @@ class Controller:
             if record.build_status != "passed":
                 continue
             self.progress(f"Refreshing cycle products for {tag}")
+            record.product_refresh_status = "running"
+            record.product_refresh_started_at_utc = datetime.now(timezone.utc).isoformat()
+            # Keep any previous failure visible until the replacement activates.
+            self.save()
             try:
                 manifest = self.build_product_manifest(tag, force=True)
             except BaseException as error:
                 record.last_error = f"product refresh failed: {error}"
+                record.product_refresh_status = "failed"
+                record.product_refresh_error = str(error)
                 self.save()
                 continue
             if record.product_manifest != str(manifest):
@@ -655,8 +662,12 @@ class Controller:
                 # this release can later be promoted or used for rollback.
                 record.qualification_status = "pending"
                 record.qualification_record = None
-                record.deployment_status = "pending"
-                record.deployment_error = None
+                record.product_refresh_status = "ready"
+            elif self.observed.channel_inputs_dirty:
+                record.product_refresh_status = "ready"
+            else:
+                record.product_refresh_status = "passed"
+                record.product_refresh_error = None
             record.last_error = None
             self.save()
 
@@ -902,7 +913,11 @@ class Controller:
         for tag in filter(None, tags):
             record = self.observed.releases[tag]
             record.deployment_status = "pending"
-            record.deployment_error = None
+            record.deployment_pending_since_utc = datetime.now(timezone.utc).isoformat()
+            # A retry/activation does not erase a known failed public check.
+            if record.product_refresh_status == "ready":
+                record.product_refresh_status = "passed"
+                record.product_refresh_error = None
 
     def check_deployment(self, tag: str) -> dict:
         role, channel = deployment_channel(self.observed, tag)
@@ -942,6 +957,7 @@ class Controller:
         record.deployment_record = str(path)
         record.deployment_status = "passed"
         record.deployment_error = None
+        record.deployment_pending_since_utc = None
         self.save()
         return receipt
 

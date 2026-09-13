@@ -51,6 +51,10 @@ def forget_removed_artifacts(record: releases.ObservedRelease) -> None:
     record.deployment_status = "pending"
     record.deployment_record = None
     record.deployment_error = None
+    record.deployment_pending_since_utc = None
+    record.product_refresh_status = None
+    record.product_refresh_started_at_utc = None
+    record.product_refresh_error = None
     record.live_feed_status = "stopped"
     record.live_feed_endpoint = None
     record.draining_until_utc = None

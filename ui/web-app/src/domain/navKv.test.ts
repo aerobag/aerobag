@@ -5,7 +5,6 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   completeResourceFreeSessionMutation,
-  NAV_KV_PAGE_FETCH_CONCURRENCY,
   NavKvStore,
   ResourceIngestCoordinator,
   resolvePublicResourceUrl,
@@ -87,28 +86,58 @@ describe("ResourceIngestCoordinator", () => {
 });
 
 describe("NavKvStore page fetching", () => {
-  it("bounds concurrent page fetches while retaining every request", async () => {
+  it("yields between page installations without scheduling clamped timers", async () => {
+    const timer = vi.spyOn(globalThis, "setTimeout");
     const originalFetch = globalThis.fetch;
-    const fetchPage = vi.fn(() => Promise.resolve(
-      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
-    ));
-    globalThis.fetch = fetchPage as typeof fetch;
+    globalThis.fetch = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))) as typeof fetch;
+    const insert = vi.fn();
     const store = Reflect.construct(NavKvStore, [
-      { nav_kv_insert_resource: vi.fn() },
-      17,
-      "http://fixture.test/nav_db/root",
+      { nav_kv_insert_resource: insert }, 17, "http://fixture.test/nav_db/root",
     ]) as TestableNavKvStore;
-
     try {
-      const requests = Array.from(
-        { length: NAV_KV_PAGE_FETCH_CONCURRENCY + 1 },
-        (_, pageIndex) => store.ensureNavKvPage(pageIndex),
-      );
-      expect(fetchPage).toHaveBeenCalledTimes(NAV_KV_PAGE_FETCH_CONCURRENCY);
-      await Promise.all(requests);
-      expect(fetchPage).toHaveBeenCalledTimes(NAV_KV_PAGE_FETCH_CONCURRENCY + 1);
+      await Promise.all([store.ensureNavKvPage(1), store.ensureNavKvPage(2)]);
+      expect(insert).toHaveBeenCalledTimes(2);
+      expect(timer).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;
+      timer.mockRestore();
+    }
+  });
+
+  it("dispatches the entire frontier without waiting for responses or installations", async () => {
+    const responses: Array<() => void> = [];
+    const fetchPage = vi.fn(() => new Promise<Response>((resolve) => {
+      responses.push(() => resolve(new Response(new Uint8Array([1, 2, 3]))));
+    }));
+    vi.stubGlobal("fetch", fetchPage);
+    let finishInsert!: () => void;
+    const blockedInsert = new Promise<void>((resolve) => { finishInsert = resolve; });
+    const insert = vi.fn(() => blockedInsert);
+    const store = Reflect.construct(NavKvStore, [
+      { nav_kv_insert_resource: insert }, 17, "http://fixture.test/nav_db/root",
+    ]) as TestableNavKvStore;
+    const requests = Array.from({ length: 32 }, (_, page) => store.ensureNavKvPage(page));
+    try {
+      expect(fetchPage).toHaveBeenCalledTimes(32);
+      expect(store.ensureNavKvPage(8)).toBe(requests[8]);
+      expect(fetchPage).toHaveBeenCalledTimes(32);
+      responses.forEach((resolve) => resolve());
+      await vi.waitFor(() => expect(insert).toHaveBeenCalledOnce());
+      requests.push(store.ensureNavKvPage(32));
+      expect(fetchPage).toHaveBeenCalledTimes(33);
+      responses[32]();
+      finishInsert();
+      await Promise.all(requests);
+      expect(insert).toHaveBeenCalledTimes(33);
+    } finally {
+      finishInsert();
+      // Drain even a capped implementation so a red assertion does not leak work.
+      for (let i = 0; i < 100; i += 1) {
+        responses.splice(0).forEach((resolve) => resolve());
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      }
+      await Promise.all(requests);
+      vi.unstubAllGlobals();
     }
   });
 

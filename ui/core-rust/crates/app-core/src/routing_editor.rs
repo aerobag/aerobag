@@ -53,6 +53,7 @@ struct Drag {
 }
 #[derive(Debug, Clone, PartialEq)]
 struct Editor {
+    graph: Arc<Graph>,
     epoch: u64,
     initial_mode: AirwayNavigationMode,
     start: usize,
@@ -286,6 +287,7 @@ impl RoutingEditor {
         row_uid: &str,
         epoch: u64,
         mode: AirwayNavigationMode,
+        graph: Arc<Graph>,
     ) -> Result<Self, HadReadError> {
         let row = crate::project_ui_state(plan)
             .display_rows
@@ -317,6 +319,7 @@ impl RoutingEditor {
         next.generation += 1;
         let edit_id = format!("airway-route-{}", next.generation);
         next.editor = Some(Editor {
+            graph,
             epoch,
             initial_mode: mode,
             start,
@@ -759,7 +762,8 @@ impl Editor {
         let destination = waypoint(end);
         let origin_position = nav_ref_position(store, &origin, None)?;
         let destination_position = nav_ref_position(store, &destination, None)?;
-        let graph = Arc::new(Graph::load(store)?);
+        let graph = self.graph.clone();
+        let timer = crate::debug_log::CoreDebugTimer::start();
         let paths = graph.routes(
             &origin,
             origin_position,
@@ -767,6 +771,14 @@ impl Editor {
             destination_position,
             &[],
             self.initial_mode,
+        );
+        crate::core_debug_log(
+            "airway_routing.search",
+            &serde_json::json!({
+                "elapsed_ms": timer.elapsed_ms(),
+                "origin": label(&origin), "destination": label(&destination),
+                "nodes": graph.nodes.len(), "paths": paths.len(),
+            }),
         );
         let mut original = vec![ui_position(origin_position)];
         for leg in &plan.resolved_legs {

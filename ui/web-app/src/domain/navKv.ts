@@ -109,16 +109,6 @@ type PendingNavKvPageInsert = {
   reject: (error: unknown) => void;
 };
 
-type PendingNavKvPageFetch = {
-  resourceId: string;
-  pageIndex: number;
-  requestUrl: string;
-  priority: number;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-};
-
-export const NAV_KV_PAGE_FETCH_CONCURRENCY = 6;
 const NAV_KV_PAGE_FETCH_ATTEMPTS = 2;
 const NAV_KV_PAGE_FETCH_RETRY_DELAY_MS = 25;
 
@@ -159,12 +149,10 @@ async function ensureWasmReady(): Promise<NavKvWasmModule> {
 
 export class NavKvStore {
   private readonly inFlightPageFetches = new Map<number, Promise<void>>();
-  private readonly pendingPageFetches = new Map<number, PendingNavKvPageFetch>();
   private readonly resourceIngestCoordinator = new ResourceIngestCoordinator();
   private readonly pendingPageInserts = new Map<number, PendingNavKvPageInsert>();
   private readonly pageRequestPriorities = new Map<number, number>();
   private pageInsertPumpActive = false;
-  private activePageFetches = 0;
   private pageRequestSequence = 0;
   private activeOperations = 0;
   private retireRequested = false;
@@ -621,10 +609,6 @@ export class NavKvStore {
     if (pendingInsert) {
       pendingInsert.priority = priority;
     }
-    const pendingFetch = this.pendingPageFetches.get(pageIndex);
-    if (pendingFetch) {
-      pendingFetch.priority = priority;
-    }
     const cached = this.inFlightPageFetches.get(pageIndex);
     if (cached) {
       return cached;
@@ -632,61 +616,21 @@ export class NavKvStore {
     const resourceId = `nav_kv/page/${pageIndex.toString().padStart(4, "0")}`;
     const address = `${this.navKvPackageRoot}/page_${pageIndex.toString().padStart(4, "0")}`;
     const requestUrl = withNavKvCacheKey(address);
-    let resolveFetch!: () => void;
-    let rejectFetch!: (error: unknown) => void;
-    const pending = new Promise<void>((resolve, reject) => {
-      resolveFetch = resolve;
-      rejectFetch = reject;
-    });
-    const fetched = pending.finally(() => {
-      if (this.inFlightPageFetches.get(pageIndex) === fetched) {
-        this.inFlightPageFetches.delete(pageIndex);
-      }
-    });
-    this.pendingPageFetches.set(pageIndex, {
-      resourceId,
-      pageIndex,
-      requestUrl,
-      priority,
-      resolve: resolveFetch,
-      reject: rejectFetch,
-    });
+    // Network dispatch does not wait for the serial, yielding installation queue.
+    const fetched = this.fetchAndInsertNavKvPage(resourceId, pageIndex, requestUrl, priority)
+      .finally(() => {
+        if (this.inFlightPageFetches.get(pageIndex) === fetched) {
+          this.inFlightPageFetches.delete(pageIndex);
+          this.pageRequestPriorities.delete(pageIndex);
+        }
+      });
     this.inFlightPageFetches.set(pageIndex, fetched);
-    this.pumpPageFetchQueue();
     return fetched;
   }
 
-  private pumpPageFetchQueue(): void {
-    while (this.activePageFetches < NAV_KV_PAGE_FETCH_CONCURRENCY) {
-      const entry = this.takeHighestPriorityPageFetch();
-      if (!entry) {
-        return;
-      }
-      this.activePageFetches += 1;
-      void this.fetchAndInsertNavKvPage(entry)
-        .then(entry.resolve, entry.reject)
-        .finally(() => {
-          this.activePageFetches -= 1;
-          this.pumpPageFetchQueue();
-        });
-    }
-  }
-
-  private takeHighestPriorityPageFetch(): PendingNavKvPageFetch | null {
-    let selected: PendingNavKvPageFetch | null = null;
-    for (const entry of this.pendingPageFetches.values()) {
-      if (!selected || entry.priority > selected.priority) {
-        selected = entry;
-      }
-    }
-    if (selected) {
-      this.pendingPageFetches.delete(selected.pageIndex);
-    }
-    return selected;
-  }
-
-  private async fetchAndInsertNavKvPage(entry: PendingNavKvPageFetch): Promise<void> {
-    const { resourceId, pageIndex, requestUrl, priority } = entry;
+  private async fetchAndInsertNavKvPage(
+    resourceId: string, pageIndex: number, requestUrl: string, priority: number,
+  ): Promise<void> {
     let lastTransportError = "unknown transport error";
     for (let attempt = 1; attempt <= NAV_KV_PAGE_FETCH_ATTEMPTS; attempt += 1) {
       const startedAt = performance.now();
@@ -806,7 +750,17 @@ export class NavKvStore {
 }
 
 function yieldToWorkerEventLoop(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  // A timer here accumulates the nested-timer minimum (4 ms) on every page.
+  // A posted message still yields a task, without delaying the next insertion.
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
 }
 
 function delayNavKvPageRetry(): Promise<void> {

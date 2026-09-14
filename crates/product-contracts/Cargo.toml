@@ -12,6 +12,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 had-key = { path = "../had-key" }
 had-nav-kv = { path = "../had-nav-kv" }
+postcard = { version = "1", features = ["alloc"] }
 prost = "0.14.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

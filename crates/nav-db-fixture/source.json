@@ -1,10 +1,10 @@
 {
   "nav_db_contract": {
-    "contract_id": "NAV25",
+    "contract_id": "NAV26",
     "page_encoding": "xz",
     "required_exact_keys": {
       "airport/notam-catalog": 1,
-      "airway/routing/manifest": 1
+      "airway/routing/graph": 2
     }
   },
   "provenance": {
@@ -1183,11 +1183,9 @@
       ],
       "schema_version": 1
     },
-    "airway/routing/manifest": {
-      "chunk_count": 0,
-      "edge_count": 0,
-      "node_count": 0,
-      "schema_version": 1
+    "airway/routing/graph": {
+      "schema_version": 2,
+      "nodes": []
     },
     "chart/catalog": [
       {

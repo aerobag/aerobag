@@ -30,10 +30,7 @@ fn selected(key: &str) -> bool {
                 .is_some_and(|v| (-125..=-120).contains(&v)))
         || matches!(
             key,
-            "chart/catalog"
-                | "vector/manifest"
-                | "airport/notam-catalog"
-                | "airway/routing/manifest"
+            "chart/catalog" | "vector/manifest" | "airport/notam-catalog"
         )
         || key.starts_with("airport/info/") && AIRPORTS.contains(&parts[2])
         || key.starts_with("navref/")
@@ -125,12 +122,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_mut("airport/notam-catalog")
         .ok_or("missing NOTAM catalog")?["airport_ids"] = json!(AIRPORTS);
     records.insert(
-        "airway/routing/manifest".into(),
-        serde_json::to_value(product_contracts::AirwayRoutingManifest {
+        product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into(),
+        serde_json::to_value(product_contracts::AirwayRoutingGraph {
             schema_version: product_contracts::AIRWAY_ROUTING_SCHEMA_VERSION,
-            node_count: 0,
-            edge_count: 0,
-            chunk_count: 0,
+            nodes: Vec::new(),
         })?,
     );
     let airport = records

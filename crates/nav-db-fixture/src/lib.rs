@@ -126,13 +126,22 @@ pub fn build(generation: Generation) -> Result<NavKvPackageMembers, String> {
         .keys()
         .filter(|key| key.starts_with("aircraft/definition/"))
         .cloned()
+        .map(had_nav_kv::NavKvPrefetch::Value)
+        .chain([had_nav_kv::NavKvPrefetch::Lookup(
+            product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into(),
+        )])
         .collect::<Vec<_>>();
     let pairs = records
         .into_iter()
         .map(|(key, value)| {
-            serde_json::to_vec(&value)
-                .map(|value| NavKvPair { key, value })
-                .map_err(|error| error.to_string())
+            let bytes = if key == product_contracts::AIRWAY_ROUTING_GRAPH_KEY {
+                serde_json::from_value::<product_contracts::AirwayRoutingGraph>(value)
+                    .map_err(|error| error.to_string())?
+                    .encode()?
+            } else {
+                serde_json::to_vec(&value).map_err(|error| error.to_string())?
+            };
+            Ok::<_, String>(NavKvPair { key, value: bytes })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let built = build_nav_kv_sorted_with_extra_prefetch_keys(pairs, 64 * 1024, &aircraft_keys)?;
@@ -196,6 +205,15 @@ mod tests {
         let initial = records(Generation::Initial);
         let candidate = records(Generation::Candidate);
         let rejected = records(Generation::Rejected);
+        let graph = product_contracts::AirwayRoutingGraph::decode(
+            &initial[product_contracts::AIRWAY_ROUTING_GRAPH_KEY],
+        )
+        .unwrap();
+        assert_eq!(
+            graph.schema_version,
+            product_contracts::AIRWAY_ROUTING_SCHEMA_VERSION
+        );
+        assert!(graph.nodes.is_empty());
         assert_eq!(initial.len(), candidate.len());
         let changed: Vec<_> = initial
             .iter()
@@ -243,9 +261,9 @@ mod tests {
         source["records"]
             .as_object_mut()
             .unwrap()
-            .remove(product_contracts::AIRWAY_ROUTING_MANIFEST_KEY);
+            .remove(product_contracts::AIRWAY_ROUTING_GRAPH_KEY);
         assert!(source_records(&source.to_string())
             .unwrap_err()
-            .contains("airway/routing/manifest"));
+            .contains("airway/routing/graph"));
     }
 }

@@ -2,14 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{
-    had_ops::{read_required, HadReadError},
-    LatLon, NavKvQuery, NavKvStore, NavRef,
-};
-use product_contracts::{
-    AirwayRoutingChunk, AirwayRoutingManifest, AirwayRoutingNode, AirwayRoutingReference,
-    AIRWAY_ROUTING_SCHEMA_VERSION,
-};
+use crate::{had_ops::HadReadError, LatLon, NavKvLookup, NavKvStore, NavRef};
+use product_contracts::{AirwayRoutingGraph, AirwayRoutingNode, AirwayRoutingReference};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
@@ -88,77 +82,30 @@ fn low_airway(name: &str) -> bool {
 
 impl Graph {
     pub fn load(store: &NavKvStore) -> Result<Self, HadReadError> {
-        let manifest: AirwayRoutingManifest = read_required(
-            store,
-            NavKvQuery::AirwayRoutingManifest,
-            "airway routing manifest",
-        )?;
-        if manifest.schema_version != AIRWAY_ROUTING_SCHEMA_VERSION
-            || manifest.node_count > 200_000
-            || manifest.chunk_count > 2_000
+        let timer = crate::debug_log::CoreDebugTimer::start();
+        let bytes = match store
+            .get_bytes(product_contracts::AIRWAY_ROUTING_GRAPH_KEY)
+            .map_err(HadReadError::Fatal)?
         {
-            return Err(HadReadError::Fatal(
-                "Unsupported airway routing graph.".into(),
-            ));
-        }
-        // Discover every external value page together; large adjacency chunks
-        // must not turn one user action into a waterfall of page requests.
-        let keys = (0..manifest.chunk_count)
-            .map(product_contracts::airway_routing_chunk_key)
-            .collect::<Vec<_>>();
-        let pages = store
-            .missing_pages_for_keys(&keys)
-            .map_err(HadReadError::Fatal)?;
-        if !pages.is_empty() {
-            return Err(HadReadError::NeedPages(pages));
-        }
-        let mut nodes = Vec::new();
-        let mut missing = BTreeSet::new();
-        for index in 0..manifest.chunk_count {
-            match read_required::<AirwayRoutingChunk>(
-                store,
-                NavKvQuery::AirwayRoutingChunk { index },
-                "airway routing chunk",
-            ) {
-                Ok(chunk) => {
-                    if chunk.schema_version != AIRWAY_ROUTING_SCHEMA_VERSION {
-                        return Err(HadReadError::Fatal(
-                            "Unsupported airway graph chunk.".into(),
-                        ));
-                    }
-                    nodes.extend(chunk.nodes);
-                }
-                Err(HadReadError::NeedPages(pages)) => missing.extend(pages),
-                Err(error) => return Err(error),
+            NavKvLookup::Hit(bytes) => bytes,
+            NavKvLookup::MissingPages(pages) => return Err(HadReadError::NeedPages(pages)),
+            NavKvLookup::MissingKey => {
+                return Err(HadReadError::Fatal(
+                    "NAVDB is missing its airway routing graph.".into(),
+                ))
             }
-        }
-        if !missing.is_empty() {
-            return Err(HadReadError::NeedPages(missing.into_iter().collect()));
-        }
-        if nodes.len() != manifest.node_count as usize
-            || nodes.iter().map(|node| node.edges.len()).sum::<usize>()
-                != manifest.edge_count as usize
-        {
-            return Err(HadReadError::Fatal(
-                "Incomplete airway routing graph.".into(),
-            ));
-        }
-        for (index, node) in nodes.iter().enumerate() {
-            if node.id as usize != index
-                || !node.lat.is_finite()
-                || !node.lon.is_finite()
-                || node.lat.abs() > 90.0
-                || node.lon.abs() > 180.0
-                || node.edges.iter().any(|edge| {
-                    edge.to as usize >= nodes.len()
-                        || !edge.distance_nm.is_finite()
-                        || edge.distance_nm <= 0.0
-                })
-            {
-                return Err(HadReadError::Fatal("Invalid airway routing graph.".into()));
-            }
-        }
-        Ok(Self { nodes })
+        };
+        let read_ms = timer.elapsed_ms();
+        let timer = crate::debug_log::CoreDebugTimer::start();
+        let graph = AirwayRoutingGraph::decode(&bytes).map_err(HadReadError::Fatal)?;
+        crate::core_debug_log(
+            "airway_routing.graph_load",
+            &serde_json::json!({
+                "decoded_bytes": bytes.len(), "read_ms": read_ms,
+                "decode_ms": timer.elapsed_ms(), "nodes": graph.nodes.len(),
+            }),
+        );
+        Ok(Self { nodes: graph.nodes })
     }
 
     pub fn is_target(&self, id: u32, mode: AirwayNavigationMode) -> bool {

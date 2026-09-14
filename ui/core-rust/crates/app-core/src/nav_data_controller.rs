@@ -65,6 +65,7 @@ struct NavDataRuntime {
     store_id: Option<u32>,
     store: Option<Arc<NavKvStore>>,
     generation: u64,
+    airway_graph: Option<Arc<crate::airway_routing::Graph>>,
 }
 
 #[derive(Clone)]
@@ -85,6 +86,20 @@ pub(crate) struct NavDataController {
 }
 
 impl NavDataController {
+    pub fn load_airway_graph(
+        &mut self,
+    ) -> Result<Arc<crate::airway_routing::Graph>, crate::had_ops::HadReadError> {
+        if let Some(graph) = &self.runtime.airway_graph {
+            return Ok(Arc::clone(graph));
+        }
+        let store = self.runtime.store.as_deref().ok_or_else(|| {
+            crate::had_ops::HadReadError::Fatal("No attached NAVDB for airway routing.".into())
+        })?;
+        let graph = Arc::new(crate::airway_routing::Graph::load(store)?);
+        self.runtime.airway_graph = Some(Arc::clone(&graph));
+        Ok(graph)
+    }
+
     pub fn revision(&self) -> u64 {
         self.model.revision
     }
@@ -141,6 +156,7 @@ impl NavDataController {
         store: &NavKvStore,
         open_result: Option<&NavDbOpenResult>,
     ) {
+        self.runtime.airway_graph = None;
         self.runtime.store_id = Some(store_id);
         self.runtime.store = Some(Arc::new(store.clone()));
         self.runtime.generation = self.runtime.generation.saturating_add(1);
@@ -168,6 +184,7 @@ impl NavDataController {
                 revision: self.model.revision.saturating_add(1),
             },
             runtime: NavDataRuntime {
+                airway_graph: None,
                 store_id: Some(store_id),
                 store: Some(Arc::new(store.clone())),
                 generation: self.runtime.generation.saturating_add(1),

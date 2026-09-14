@@ -2,7 +2,7 @@
 
 The first version edits one interval of the current flight plan. Select a
 standalone waypoint row and choose **Find Route**. When exactly one later endpoint
-is available, the map editor opens immediately. Otherwise, choose a later standalone
+is available, the map editor opens without another picker once its data is ready. Otherwise, choose a later standalone
 waypoint in the action tray; clicking the scrim dismisses that picker. The interval may contain complete airways, but no
 procedures. Airway/procedure child rows cannot be boundaries. Applying a draft
 replaces the interval as one undoable definition edit; cancel preserves the plan.
@@ -17,13 +17,24 @@ Equal-distance solutions prefer fewer airway changes, including across pinned
 fixes. The search retains the incoming airway at each fix so a locally tied
 choice cannot force an unnecessary change later.
 
-## NAV25 publication
+## NAV26 publication
 
-NAV25 adds `airway/routing/manifest` (schema 1) and numbered
-`airway/routing/chunk/00000` records. Each chunk contains at most 128 nodes with
-directed adjacency lists. Node IDs are contiguous within one NAVDB publication;
-they must not survive a NAVDB epoch change. Shared navigation identities join
-airways; geometric crossings alone do not.
+NAV26 stores one Postcard schema-2 value at `airway/routing/graph`, containing
+all nodes and directed adjacency lists. Ordinary HAD paging splits that value
+across 64 KiB pages, with the existing per-page XZ and ZIP Stored publication
+format. There is no separate graph file or platform-specific graph transport.
+
+Startup prefetch loads only the key's lookup path, not its external value.
+First use discovers all missing graph pages together; shared HAD reads return
+the whole missing set before allocating/copying the value. Web dispatches the
+entire batch without an application six-request limit; installations remain
+serialized and yielding. Android uses its normal installed-package page reader.
+Core validates Postcard and caches the decoded graph per attached NAVDB; editors
+share it by Arc. Reopening does not decode it again. A NAVDB change clears it.
+
+Node IDs are contiguous within one NAVDB publication; they must not survive a
+NAVDB epoch change. Shared navigation identities join airways; geometric
+crossings alone do not. See [sizing and loading evidence](testing/airway-graph-sizing.md).
 
 The intermediate database now retains AWY1 records in
 `airway_segment_metadata`. Directional conventional and GNSS MEAs, maximum
@@ -45,9 +56,10 @@ Crossing constraints retain their separate meaning, including published context
 at a fix where the pilot leaves the airway. Routing does not select procedures
 or require an altitude ceiling from the pilot.
 
-Smoke and release-journey fixture locks reference rebuilt NAV25 artifacts.
-NAVDB rollover uses the permanent logical source in `crates/nav-db-fixture`,
-which generates its scenarios locally without historical FAA cycles. See
+Smoke and release-journey fixture locks must be updated with genuinely rebuilt
+NAV26 artifacts before this client revision is pushed; the current pins still
+supply NAV25. NAVDB rollover's permanent logical source in `crates/nav-db-fixture`
+has been migrated and generates its scenarios locally without historical FAA cycles. See
 [Hosted CI Invariants](testing/hosted-ci.md) for fixture ownership and checks.
 
 ## Map editor
@@ -119,8 +131,8 @@ cargo +1.94.1 nextest run --locked --profile ci \
   --config 'env.AEROBAG_ARTIFACT_READ_PATH="/tmp/aerobag-empty-route-tests"'
 ```
 
-The ignored `published_nav25_airway_routes_pae_lgu_and_rnt_lgu_via_beezr` test
-reads a full published NAV25 directory through the shared directory reader.
+The ignored `published_nav26_airway_routes_pae_lgu_and_rnt_lgu_via_beezr` test
+reads a full published NAV26 directory through the shared directory reader.
 Set `AEROBAG_ROUTING_NAV_DIR` to that directory and run the test with
 `--ignored --nocapture`. It checks routes from PAE, KPAE, and KRNT to KLGU,
 with and without BEEZR. It also checks KRNT–KLVM via OCS and MBW in both navigation modes, including

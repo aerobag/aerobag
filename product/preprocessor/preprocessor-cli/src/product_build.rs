@@ -32,7 +32,7 @@ use preprocessor_charts::{
     FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
-    build_nav_kv_sorted_with_extra_prefetch_keys, NavKvPair, NavKvRoot,
+    build_nav_kv_sorted_with_extra_prefetch_keys, NavKvPair, NavKvPrefetch, NavKvRoot,
     NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
 };
 use preprocessor_core::{
@@ -4562,6 +4562,18 @@ mod tests {
             .execute_batch(preprocessor_data::AIRWAY_SEGMENT_METADATA_SCHEMA)
             .unwrap();
         let pairs = build_nav_kv_airway_pairs(&connection).unwrap();
+        let routing = pairs
+            .iter()
+            .filter(|pair| pair.key.starts_with("airway/routing/"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            routing.len(),
+            1,
+            "one ordinary HAD value, not a chunk manifest"
+        );
+        assert_eq!(routing[0].key, product_contracts::AIRWAY_ROUTING_GRAPH_KEY);
+        let graph = product_contracts::AirwayRoutingGraph::decode(&routing[0].value).unwrap();
+        assert!(!graph.nodes.is_empty());
         let mut expected_colocated_navaids = BTreeMap::new();
         {
             let mut stmt = connection

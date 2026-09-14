@@ -5767,6 +5767,10 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
                 )
         })
     {
+        let graph = match session.nav_data.load_airway_graph() {
+            Ok(graph) => graph,
+            Err(error) => return apply_routing_editor_transition(session, Err(error)),
+        };
         let transition = session
             .flight_plan
             .routing_editor()
@@ -5776,6 +5780,7 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
                 &row_uid,
                 session.nav_data.epoch(),
                 session.settings.airway_navigation_mode(),
+                graph,
             )
             .map(crate::routing_editor::Transition::Editor);
         return apply_routing_editor_transition(session, transition);
@@ -32994,6 +32999,7 @@ mod tests {
                 &row,
                 epoch,
                 session.settings.airway_navigation_mode(),
+                Arc::new(crate::airway_routing::tests::graph()),
             )
             .unwrap();
         let vor = draft.view(epoch).unwrap().controls[0]
@@ -33063,6 +33069,136 @@ mod tests {
         );
         let legacy: SettingsPreferences = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(legacy.airway_navigation_mode, AirwayNavigationMode::Gnss);
+    }
+
+    #[test]
+    fn airway_routing_cold_graph_requests_one_page_frontier_and_caches_per_navdb() {
+        let mut graph = crate::airway_routing::tests::graph();
+        graph.nodes[0].edges = (0..1000)
+            .flat_map(|_| graph.nodes[0].edges.clone())
+            .collect();
+        let records = crate::airway_routing::tests::records(&graph);
+        let entries = records
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect::<Vec<_>>();
+        let (mut store, pages) =
+            crate::navkv::nav_kv_store_without_pages_and_pages_for_test(&entries, 4096);
+        let value_start = store.root().page_count()
+            - store
+                .root()
+                .value_bytes_len()
+                .div_ceil(store.root().page_size());
+        for page in 0..value_start {
+            store.insert_page(page, pages[page as usize].clone());
+        }
+        let expected = store
+            .missing_pages_for_keys(&[product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into()])
+            .unwrap();
+        assert!(expected.len() > 6);
+        let plan = crate::build_flight_plan(FlightPlan {
+            route_components: ["START", "END"]
+                .into_iter()
+                .map(|id| RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix(id.into()),
+                })
+                .collect(),
+            ..FlightPlan::empty()
+        })
+        .unwrap();
+        let init = create_ui_session(plan, &[], None, None).unwrap();
+        let store_id = attach_isolated_test_nav_kv_store(init.handle, &store);
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        let row = &snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .unwrap()
+            .display_rows[0];
+        let action = row
+            .action_matrix
+            .iter()
+            .flatten()
+            .find(|a| a.id == crate::FlightPlanRowActionId::FindRoute)
+            .unwrap();
+        let run = || {
+            perform_flight_plan_command_in_session(
+                init.handle,
+                FlightPlanSessionCommand::PerformRowAction {
+                    row_uid: row.uid.clone(),
+                    action_uid: action.uid.clone(),
+                },
+                1000,
+            )
+            .unwrap()
+        };
+        let missing = |outcome| {
+            let HadOperationOutcome::NeedResources { resources } = outcome else {
+                panic!("cold graph must request ordinary HAD pages")
+            };
+            resources
+                .into_iter()
+                .map(|resource| {
+                    let page: u32 = resource
+                        .id
+                        .strip_prefix("nav_kv/page/")
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    assert_eq!(
+                        resource.source,
+                        CoreResourceSource::NavKvMember {
+                            member_path: format!("page_{page:04}"),
+                        }
+                    );
+                    page
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(missing(run()), expected);
+        for page in expected.iter().step_by(2) {
+            insert_nav_kv_page_for_attached_sessions(store_id, *page, &pages[*page as usize]);
+        }
+        let remaining = expected
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(missing(run()), remaining);
+        for page in remaining {
+            insert_nav_kv_page_for_attached_sessions(store_id, page, &pages[page as usize]);
+        }
+        assert!(matches!(run(), HadOperationOutcome::Complete { .. }));
+        let cached = session_slot(init.handle)
+            .unwrap()
+            .lock_running()
+            .unwrap()
+            .nav_data
+            .load_airway_graph()
+            .unwrap();
+        assert_eq!(*cached, graph);
+        assert!(matches!(run(), HadOperationOutcome::Complete { .. }));
+        assert!(
+            Arc::ptr_eq(
+                &cached,
+                &session_slot(init.handle)
+                    .unwrap()
+                    .lock_running()
+                    .unwrap()
+                    .nav_data
+                    .load_airway_graph()
+                    .unwrap()
+            ),
+            "warm reopening must reuse the decoded graph"
+        );
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+        assert_eq!(
+            missing(run()),
+            expected,
+            "a new NAVDB must not reuse the old graph"
+        );
+        destroy_session(init.handle);
     }
 
     #[test]

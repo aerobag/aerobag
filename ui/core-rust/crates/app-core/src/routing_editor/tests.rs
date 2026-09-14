@@ -18,9 +18,19 @@ fn plan() -> FlightPlan {
     .unwrap()
 }
 fn open(plan: &FlightPlan, store: &NavKvStore) -> RoutingEditor {
+    open_with_graph(plan, store, &graph())
+}
+fn open_with_graph(plan: &FlightPlan, store: &NavKvStore, graph: &Graph) -> RoutingEditor {
     let row = crate::project_ui_state(plan).display_rows[0].uid.clone();
     let editor = RoutingEditor::default()
-        .open(store, plan, &row, 7, AirwayNavigationMode::Gnss)
+        .open(
+            store,
+            plan,
+            &row,
+            7,
+            AirwayNavigationMode::Gnss,
+            Arc::new(graph.clone()),
+        )
         .unwrap();
     if editor.view(7).unwrap().map_open {
         return editor;
@@ -146,7 +156,14 @@ fn airway_editor_single_endpoint_opens_atomically_after_navigation_pages_arrive(
     let current = RoutingEditor::default();
     let mut rounds = 0;
     let opened = loop {
-        match current.open(&store, &original, &row, 7, AirwayNavigationMode::Vor) {
+        match current.open(
+            &store,
+            &original,
+            &row,
+            7,
+            AirwayNavigationMode::Vor,
+            Arc::new(graph()),
+        ) {
             Ok(opened) => break opened,
             Err(HadReadError::NeedPages(missing)) => {
                 assert_eq!(
@@ -183,7 +200,14 @@ fn airway_editor_multiple_endpoints_keep_picker_and_scrim_dismissal_without_canc
         .uid
         .clone();
     let editor = RoutingEditor::default()
-        .open(&store(), &original, &row, 7, AirwayNavigationMode::Gnss)
+        .open(
+            &store(),
+            &original,
+            &row,
+            7,
+            AirwayNavigationMode::Gnss,
+            Arc::new(graph()),
+        )
         .unwrap();
     let view = editor.view(7).unwrap();
     assert!(!view.map_open);
@@ -236,7 +260,7 @@ fn airway_editor_navigation_mode_recomputes_altitudes_and_undo_restores_mode_and
         .find(|edge| edge.to == 4)
         .unwrap()
         .mea_ft = Some(12000);
-    let editor = open(&original, &custom_store(&graph));
+    let editor = open_with_graph(&original, &custom_store(&graph), &graph);
     let route = editor.view(7).unwrap().route.unwrap();
     assert_eq!(route.legs[0].label, "V4 · GNSS MEA 11,700 ft");
     assert!(!route.legs[0].highest_mea);
@@ -305,7 +329,7 @@ fn airway_editor_keeps_incompatible_pins_and_disables_apply_until_a_route_exists
             }
         }
     }
-    let editor = open(&original, &custom_store(&graph));
+    let editor = open_with_graph(&original, &custom_store(&graph), &graph);
     let pinned = editor
         .drag(
             7,
@@ -620,7 +644,14 @@ fn airway_editor_original_map_path_ends_at_the_selected_boundary() {
     let plan = crate::build_flight_plan(plan).unwrap();
     let row = crate::project_ui_state(&plan).display_rows[0].uid.clone();
     let editor = RoutingEditor::default()
-        .open(&store(), &plan, &row, 7, AirwayNavigationMode::Gnss)
+        .open(
+            &store(),
+            &plan,
+            &row,
+            7,
+            AirwayNavigationMode::Gnss,
+            Arc::new(graph()),
+        )
         .unwrap();
     let action = editor.view(7).unwrap().endpoints[0].action_id.clone();
     let Transition::Editor(editor) = editor.advance(&store(), &plan, &action, 7).unwrap() else {
@@ -710,7 +741,14 @@ fn airway_editor_starting_again_replaces_the_existing_activity() {
         .uid
         .clone();
     let fresh = editor
-        .open(&store(), &original, &row, 7, AirwayNavigationMode::Gnss)
+        .open(
+            &store(),
+            &original,
+            &row,
+            7,
+            AirwayNavigationMode::Gnss,
+            Arc::new(graph()),
+        )
         .unwrap();
     assert_ne!(
         editor.view(7).unwrap().edit_id,
@@ -755,7 +793,7 @@ fn airway_editor_counts_gnss_only_meas_and_keeps_missing_altitudes_explicit() {
         .unwrap();
     edge.airway_name = "T261".into();
     edge.gnss_mea_ft = Some(9000);
-    let editor = open(&original, &custom_store(&graph));
+    let editor = open_with_graph(&original, &custom_store(&graph), &graph);
     let route = editor.view(7).unwrap().route.unwrap();
     let highest = route
         .legs
@@ -775,7 +813,7 @@ fn airway_editor_counts_gnss_only_meas_and_keeps_missing_altitudes_explicit() {
         .find(|edge| edge.to == 4)
         .unwrap()
         .gnss_mea_ft = None;
-    let route = open(&original, &custom_store(&graph))
+    let route = open_with_graph(&original, &custom_store(&graph), &graph)
         .view(7)
         .unwrap()
         .route
@@ -817,7 +855,7 @@ fn airway_editor_places_crossing_altitudes_at_the_named_fix_not_the_source_segme
         .unwrap()
     };
     let store = custom_store(&graph);
-    let route = open(&make_plan("ORNEY".into()), &store)
+    let route = open_with_graph(&make_plan("ORNEY".into()), &store, &graph)
         .view(7)
         .unwrap()
         .route
@@ -835,7 +873,7 @@ fn airway_editor_places_crossing_altitudes_at_the_named_fix_not_the_source_segme
         .all(|leg| leg.label == "V142 · MEA 10,400 ft"));
     assert!(route.legs.iter().all(|leg| leg.highest_mea));
     assert_eq!(route.crossings[0].label, "ORNEY · V142 MCA 11,200 ft");
-    let short = open(&make_plan("HUSEM".into()), &store)
+    let short = open_with_graph(&make_plan("HUSEM".into()), &store, &graph)
         .view(7)
         .unwrap()
         .route
@@ -860,7 +898,7 @@ fn airway_editor_labels_changes_with_nav_symbols_and_does_not_duplicate_pins() {
         .unwrap()
         .airway_name = "V8".into();
     let store = custom_store(&graph);
-    let editor = open(&original, &store);
+    let editor = open_with_graph(&original, &store, &graph);
     let view = editor.view_with_symbols(7, Some(&store)).unwrap().unwrap();
     let junctions = &view.route.as_ref().unwrap().junctions;
     assert_eq!(

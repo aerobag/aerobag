@@ -428,7 +428,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV25";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV26";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -486,7 +486,7 @@ pub fn nav_db_contract_descriptor() -> NavDbContractDescriptor {
                 NotamAirportCatalog::SCHEMA_VERSION,
             ),
             (
-                AIRWAY_ROUTING_MANIFEST_KEY.to_string(),
+                AIRWAY_ROUTING_GRAPH_KEY.to_string(),
                 AIRWAY_ROUTING_SCHEMA_VERSION,
             ),
         ]),
@@ -635,8 +635,8 @@ mod tests {
     #[test]
     fn nav_db_contract_descriptor_matches_immutable_revision() {
         let expected: NavDbContractDescriptor =
-            serde_json::from_str(include_str!("../contracts/nav-db/NAV25.json"))
-                .expect("decode NAV25 contract descriptor");
+            serde_json::from_str(include_str!("../contracts/nav-db/NAV26.json"))
+                .expect("decode NAV26 contract descriptor");
         assert_eq!(nav_db_contract_descriptor(), expected);
     }
 

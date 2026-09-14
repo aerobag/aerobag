@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::*;
+use crate::NavKvQuery;
 use product_contracts::AirwayRoutingEdge;
 
 pub(crate) fn graph() -> Graph {
@@ -69,28 +70,9 @@ pub(crate) fn records(graph: &Graph) -> Vec<(String, Vec<u8>)> {
         })
         .collect::<Vec<_>>();
     records.push((
-        product_contracts::AIRWAY_ROUTING_MANIFEST_KEY.into(),
-        serde_json::to_vec(&AirwayRoutingManifest {
-            schema_version: 1,
-            chunk_count: 2,
-            node_count: graph.nodes.len() as u32,
-            edge_count: graph.nodes.iter().map(|node| node.edges.len() as u32).sum(),
-        })
-        .unwrap(),
+        product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into(),
+        encoded_graph(graph),
     ));
-    for (index, nodes) in [graph.nodes[..3].to_vec(), graph.nodes[3..].to_vec()]
-        .into_iter()
-        .enumerate()
-    {
-        records.push((
-            product_contracts::airway_routing_chunk_key(index as u32),
-            serde_json::to_vec(&AirwayRoutingChunk {
-                schema_version: 1,
-                nodes,
-            })
-            .unwrap(),
-        ));
-    }
     records.sort_by(|a, b| a.0.cmp(&b.0));
     records
 }
@@ -265,40 +247,40 @@ fn airway_search_requires_a_published_edge_without_loops_or_high_airways() {
     }
     assert!(routes(&graph, &[]).is_empty());
 }
-#[test]
-fn airway_graph_pages_are_collected_then_validated_as_one_graph() {
-    let graph = graph();
-    let records = records(&graph);
-    let entries = records
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_slice()))
-        .collect::<Vec<_>>();
-    let (mut store, pages) =
-        crate::navkv::nav_kv_store_without_pages_and_pages_for_test(&entries, 4096);
-    let mut rounds = 0;
-    loop {
-        match Graph::load(&store) {
-            Ok(loaded) => {
-                assert_eq!(loaded, graph);
-                break;
-            }
-            Err(HadReadError::NeedPages(missing)) => {
-                assert!(!missing.is_empty());
-                rounds += 1;
-                assert!(rounds <= 2);
-                for id in missing {
-                    store.insert_page(id, pages[id as usize].clone());
-                }
-            }
-            Err(error) => panic!("{error:?}"),
-        }
-    }
+pub(crate) fn encoded_graph(graph: &Graph) -> Vec<u8> {
+    let graph = product_contracts::AirwayRoutingGraph {
+        schema_version: product_contracts::AIRWAY_ROUTING_SCHEMA_VERSION,
+        nodes: graph.nodes.clone(),
+    };
+    graph.encode().unwrap()
 }
 
 #[test]
-#[ignore = "requires a published NAV25 directory in AEROBAG_ROUTING_NAV_DIR"]
-fn published_nav25_airway_routes_pae_lgu_and_rnt_lgu_via_beezr() {
-    let path = std::env::var("AEROBAG_ROUTING_NAV_DIR").expect("NAV25 directory");
+fn airway_graph_decodes_and_rejects_bad_edges_or_truncation() {
+    let graph = graph();
+    let load = |bytes: &[u8]| {
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[(product_contracts::AIRWAY_ROUTING_GRAPH_KEY, bytes)],
+            4096,
+        );
+        Graph::load(&store)
+    };
+    let bytes = encoded_graph(&graph);
+    assert_eq!(load(&bytes).unwrap(), graph);
+    assert!(load(&bytes[..bytes.len() - 8]).is_err());
+    assert!(load(b"not postcard").is_err());
+    let mut invalid = product_contracts::AirwayRoutingGraph {
+        schema_version: product_contracts::AIRWAY_ROUTING_SCHEMA_VERSION,
+        nodes: graph.nodes,
+    };
+    invalid.nodes[0].edges[0].to = 999;
+    assert!(load(&postcard::to_allocvec(&invalid).unwrap()).is_err());
+}
+
+#[test]
+#[ignore = "requires a published NAV26 directory in AEROBAG_ROUTING_NAV_DIR"]
+fn published_nav26_airway_routes_pae_lgu_and_rnt_lgu_via_beezr() {
+    let path = std::env::var("AEROBAG_ROUTING_NAV_DIR").expect("NAV26 directory");
     let reader = nav_kv_package::NavKvDirectoryReader::new(path, "airway routing smoke test");
     let mut store = NavKvStore::new(crate::NavKvRoot::parse(&reader.read_root().unwrap()).unwrap());
     fn read<T>(
@@ -317,7 +299,7 @@ fn published_nav25_airway_routes_pae_lgu_and_rnt_lgu_via_beezr() {
                 Err(error) => panic!("{error:?}"),
             }
         }
-        panic!("NAV25 read did not converge")
+        panic!("NAV26 read did not converge")
     }
     let graph = read(&mut store, &reader, Graph::load);
     assert!(graph.nodes.len() > 1000);

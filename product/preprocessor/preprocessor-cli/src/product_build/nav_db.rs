@@ -1242,7 +1242,13 @@ pub(super) fn build_nav_kv_artifact(
                 let built = build_nav_kv_sorted_with_extra_prefetch_keys(
                     pairs,
                     64 * 1024,
-                    &aircraft_prefetch_keys,
+                    &aircraft_prefetch_keys
+                        .into_iter()
+                        .map(NavKvPrefetch::Value)
+                        .chain([NavKvPrefetch::Lookup(
+                            product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into(),
+                        )])
+                        .collect::<Vec<_>>(),
                 )
                 .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
                 let root_source_path = source_dir.join(root_filename);
@@ -3140,8 +3146,14 @@ pub(super) fn validate_airway_navrefs_resolve(
         if !key.starts_with("airway/") {
             continue;
         }
-        let json: serde_json::Value = serde_json::from_slice(value)
-            .with_context(|| format!("failed to parse nav_kv airway value {key}"))?;
+        let json: serde_json::Value = if key == product_contracts::AIRWAY_ROUTING_GRAPH_KEY {
+            serde_json::to_value(
+                product_contracts::AirwayRoutingGraph::decode(value).map_err(anyhow::Error::msg)?,
+            )?
+        } else {
+            serde_json::from_slice(value)
+                .with_context(|| format!("failed to parse nav_kv airway value {key}"))?
+        };
         validate_airway_navrefs_in_value(pairs, key, &json)?;
     }
     Ok(())
@@ -6031,7 +6043,7 @@ pub(super) fn build_nav_kv_airway_pairs(
         colocated_navaid_violations.join("\n")
     );
 
-    let routing_pairs = super::airway_routing::build_routing_pairs(connection, &branch_points)?;
+    let graph = super::airway_routing::build_routing_graph(connection, &branch_points)?;
     let mut branches_by_airway = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for ((name, branch_key), points) in branch_points {
         branches_by_airway
@@ -6045,7 +6057,10 @@ pub(super) fn build_nav_kv_airway_pairs(
     }
 
     let mut pairs = Vec::new();
-    pairs.extend(routing_pairs);
+    pairs.push(NavKvPair {
+        key: product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into(),
+        value: graph.encode().map_err(anyhow::Error::msg)?,
+    });
     for (airway_name, branches) in branches_by_airway {
         pairs.push(json_pair(
             format!("airway/{}", had_upper_key_component(&airway_name)),

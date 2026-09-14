@@ -4,9 +4,8 @@
 
 use super::*;
 use product_contracts::{
-    airway_routing_chunk_key, AirwayRoutingChunk, AirwayRoutingEdge, AirwayRoutingManifest,
-    AirwayRoutingNode, AirwayRoutingReference, AIRWAY_ROUTING_CHUNK_SIZE,
-    AIRWAY_ROUTING_MANIFEST_KEY, AIRWAY_ROUTING_SCHEMA_VERSION,
+    AirwayRoutingEdge, AirwayRoutingGraph, AirwayRoutingNode, AirwayRoutingReference,
+    AIRWAY_ROUTING_SCHEMA_VERSION,
 };
 
 #[derive(Debug)]
@@ -82,10 +81,10 @@ fn distance_nm(from: &AirwayRoutingNode, to: &AirwayRoutingNode) -> f64 {
     3440.065 * 2.0 * a.clamp(0.0, 1.0).sqrt().asin()
 }
 
-pub(super) fn build_routing_pairs(
+pub(super) fn build_routing_graph(
     connection: &rusqlite::Connection,
     branches: &BTreeMap<(String, String), Vec<serde_json::Value>>,
-) -> anyhow::Result<Vec<NavKvPair>> {
+) -> anyhow::Result<AirwayRoutingGraph> {
     let mut statement = connection.prepare("SELECT * FROM airway_segment_metadata")?;
     let rows = statement.query_map([], |row| {
         Ok((
@@ -201,28 +200,12 @@ pub(super) fn build_routing_pairs(
             }
         }
     }
-    let manifest = AirwayRoutingManifest {
+    let graph = AirwayRoutingGraph {
         schema_version: AIRWAY_ROUTING_SCHEMA_VERSION,
-        chunk_count: nodes.len().div_ceil(AIRWAY_ROUTING_CHUNK_SIZE) as u32,
-        node_count: nodes.len() as u32,
-        edge_count: nodes.iter().map(|node| node.edges.len() as u32).sum(),
+        nodes,
     };
-    let mut pairs = vec![json_pair(
-        AIRWAY_ROUTING_MANIFEST_KEY.into(),
-        &serde_json::to_value(manifest)?,
-        "airway routing manifest",
-    )?];
-    for (index, chunk) in nodes.chunks(AIRWAY_ROUTING_CHUNK_SIZE).enumerate() {
-        pairs.push(json_pair(
-            airway_routing_chunk_key(index as u32),
-            &serde_json::to_value(AirwayRoutingChunk {
-                schema_version: AIRWAY_ROUTING_SCHEMA_VERSION,
-                nodes: chunk.to_vec(),
-            })?,
-            "airway routing chunk",
-        )?);
-    }
-    Ok(pairs)
+    graph.validate().map_err(anyhow::Error::msg)?;
+    Ok(graph)
 }
 
 #[cfg(test)]
@@ -283,16 +266,19 @@ mod tests {
                 vec![point("BRAVO", 10, -120.0), point("DELTA", 20, -119.5)],
             ),
         ]);
-        let pairs = build_routing_pairs(&connection, &branches).unwrap();
-        let manifest: AirwayRoutingManifest = serde_json::from_slice(&pairs[0].value).unwrap();
-        let chunk: AirwayRoutingChunk = serde_json::from_slice(&pairs[1].value).unwrap();
-        assert_eq!(manifest.node_count, 4, "shared fixes have one identity");
+        let graph = build_routing_graph(&connection, &branches).unwrap();
         assert_eq!(
-            manifest.edge_count, 2,
+            AirwayRoutingGraph::decode(&graph.encode().unwrap()).unwrap(),
+            graph
+        );
+        assert_eq!(graph.nodes.len(), 4, "shared fixes have one identity");
+        assert_eq!(
+            graph.nodes.iter().map(|n| n.edges.len()).sum::<usize>(),
+            2,
             "discontinued and unusable segments are absent"
         );
-        let forward = &chunk.nodes[0].edges[0];
-        let reverse = &chunk.nodes[1].edges[0];
+        let forward = &graph.nodes[0].edges[0];
+        let reverse = &graph.nodes[1].edges[0];
         assert_eq!((forward.mea_ft, reverse.mea_ft), (Some(9000), Some(11000)));
         assert_eq!(
             (forward.gnss_mea_ft, reverse.gnss_mea_ft),
@@ -305,11 +291,14 @@ mod tests {
         connection.execute_batch(r#"
           INSERT INTO airway_segment_metadata SELECT name,branch_key,15,mea_ft,mea_direction,opposite_mea_ft,opposite_mea_direction,gnss_mea_ft,gnss_direction,opposite_gnss_mea_ft,opposite_gnss_direction,maximum_altitude_ft,crossing_altitude_ft,crossing_direction,opposite_crossing_altitude_ft,opposite_crossing_direction,crossing_point,flags_json FROM airway_segment_metadata WHERE name='V2' AND sequence_number=10;
         "#).unwrap();
-        let interrupted = build_routing_pairs(&connection, &branches).unwrap();
-        let manifest: AirwayRoutingManifest =
-            serde_json::from_slice(&interrupted[0].value).unwrap();
+        let interrupted = build_routing_graph(&connection, &branches).unwrap();
         assert_eq!(
-            manifest.edge_count, 0,
+            interrupted
+                .nodes
+                .iter()
+                .map(|n| n.edges.len())
+                .sum::<usize>(),
+            0,
             "a missing point must not create a shortcut"
         );
     }

@@ -1551,8 +1551,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         { reason });
       return snapshot;
     };
-    const runFlightPlanMutation = async (operation: SessionMutationOperation) => {
-      snapshot = await runSessionMutation(operation);
+    const runFlightPlanMutation = async (operation: SessionMutationOperation, operationLabel?: string) => {
+      snapshot = await runSessionMutation(operation, undefined, operationLabel);
       return snapshot;
     };
     const performFlightPlanCommand = (command: Record<string, unknown>) =>
@@ -1563,6 +1563,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             JSON.stringify(command),
             BigInt(this.clockEpochMs()),
           ),
+        `flight_plan.${command.kind}`,
       );
     const queryFlightPlan = <T,>(query: Record<string, unknown>) =>
       runSessionResult<T>(

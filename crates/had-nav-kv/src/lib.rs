@@ -146,6 +146,13 @@ enum LeafEntryValueRef<'a> {
     External { offset: u32, len: u32 },
 }
 
+/// Whether startup needs a value or only the tree path describing its pages.
+#[derive(Debug, Clone)]
+pub enum NavKvPrefetch {
+    Value(String),
+    Lookup(String),
+}
+
 pub fn build_nav_kv_sorted(
     mut pairs: Vec<NavKvPair>,
     page_size: u32,
@@ -157,7 +164,7 @@ pub fn build_nav_kv_sorted(
 pub fn build_nav_kv_sorted_with_extra_prefetch_keys(
     mut pairs: Vec<NavKvPair>,
     page_size: u32,
-    extra_prefetch_keys: &[String],
+    extra_prefetch_keys: &[NavKvPrefetch],
 ) -> Result<NavKvBuildOutput, String> {
     pairs.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
     build_nav_kv_strict_with_extra_prefetch_keys(pairs, page_size, extra_prefetch_keys)
@@ -173,7 +180,7 @@ pub fn build_nav_kv_strict(
 fn build_nav_kv_strict_with_extra_prefetch_keys(
     pairs: Vec<NavKvPair>,
     page_size: u32,
-    extra_prefetch_keys: &[String],
+    extra_prefetch_keys: &[NavKvPrefetch],
 ) -> Result<NavKvBuildOutput, String> {
     validate_pairs(&pairs, page_size)?;
     let page_size_usize = usize::try_from(page_size)
@@ -792,6 +799,18 @@ impl NavKvStore {
             LeafEntryValueRef::Inline(bytes) => Ok(NavKvLookup::Hit(bytes.to_vec())),
             LeafEntryValueRef::External { offset, len } => {
                 let mut missing_pages = BTreeSet::new();
+                // Discover the complete frontier before allocating or copying any value.
+                self.record_missing_external_value_pages(
+                    offset,
+                    len,
+                    &mut missing_pages,
+                    &mut stats,
+                )?;
+                if !missing_pages.is_empty() {
+                    return Ok(NavKvLookup::MissingPages(
+                        missing_pages.into_iter().collect(),
+                    ));
+                }
                 match self.read_external_value_borrowed(offset, len, &mut missing_pages, &mut stats)
                 {
                     Some(bytes) => Ok(NavKvLookup::Hit(bytes)),
@@ -1514,7 +1533,7 @@ fn parse_internal_node(bytes: &[u8]) -> Result<InternalNode, String> {
 fn startup_prefetch_pages(
     root: &NavKvRoot,
     pages: &[Vec<u8>],
-    extra_prefetch_keys: &[String],
+    extra_prefetch_keys: &[NavKvPrefetch],
 ) -> Result<Vec<u32>, String> {
     let mut touched = BTreeSet::new();
     trace_extract_value(root, pages, &mut touched, "contract/nav-db")?;
@@ -1542,8 +1561,18 @@ fn startup_prefetch_pages(
         trace_extract_value(root, pages, &mut touched, &key)?;
     }
     trace_extract_value(root, pages, &mut touched, "vector/manifest")?;
-    for key in extra_prefetch_keys {
-        if !trace_extract_value(root, pages, &mut touched, key)? {
+    for request in extra_prefetch_keys {
+        let (key, found) = match request {
+            NavKvPrefetch::Value(key) => {
+                (key, trace_extract_value(root, pages, &mut touched, key)?)
+            }
+            NavKvPrefetch::Lookup(key) => (
+                key,
+                root.get_value_range(key, |page| trace_page(pages, &mut touched, page))
+                    .is_some(),
+            ),
+        };
+        if !found {
             return Err(format!("extra startup prefetch key does not exist: {key}"));
         }
     }
@@ -1739,6 +1768,47 @@ mod tests {
             .extract_value("k", |page| built.pages.get(page as usize).cloned())
             .expect("value");
         assert_eq!(value, "x".repeat(INLINE_VALUE_MAX_LEN + 200).as_bytes());
+    }
+
+    #[test]
+    fn multi_page_read_reports_the_whole_missing_frontier() {
+        let value = vec![42; 10 * 4096 + 17];
+        let built = build_nav_kv_sorted(
+            vec![NavKvPair {
+                key: "large".into(),
+                value: value.clone(),
+            }],
+            4096,
+        )
+        .unwrap();
+        let root = NavKvRoot::parse(&built.root_bytes).unwrap();
+        let mut store = NavKvStore::new(root.clone());
+        for page in 0..root.value_page_start {
+            store.insert_page(page, built.pages[page as usize].clone());
+        }
+        let expected = (root.value_page_start..root.page_count).collect::<Vec<_>>();
+        assert!(expected.len() > 6);
+        assert_eq!(
+            store.get_bytes("large").unwrap(),
+            NavKvLookup::MissingPages(expected.clone())
+        );
+        for page in expected.iter().step_by(2) {
+            store.insert_page(*page, built.pages[*page as usize].clone());
+        }
+        let remaining = expected
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            store.get_bytes("large").unwrap(),
+            NavKvLookup::MissingPages(remaining.clone())
+        );
+        for page in remaining {
+            store.insert_page(page, built.pages[page as usize].clone());
+        }
+        assert_eq!(store.get_bytes("large").unwrap(), NavKvLookup::Hit(value));
     }
 
     #[test]
@@ -1978,6 +2048,47 @@ mod tests {
     }
 
     #[test]
+    fn lookup_prefetch_does_not_fetch_a_large_value() {
+        let value = vec![42; 100 * 4096 + 17];
+        let built = build_nav_kv_sorted_with_extra_prefetch_keys(
+            vec![
+                pair("chart/catalog", "[]"),
+                NavKvPair {
+                    key: "large".into(),
+                    value: value.clone(),
+                },
+            ],
+            4096,
+            &[NavKvPrefetch::Lookup("large".into())],
+        )
+        .unwrap();
+        let root = NavKvRoot::parse(&built.root_bytes).unwrap();
+        assert!(built
+            .prefetch_pages
+            .iter()
+            .all(|p| *p < root.value_page_start));
+        let mut store = NavKvStore::new(root.clone());
+        for page in &built.prefetch_pages {
+            store.insert_page(*page, built.pages[*page as usize].clone());
+        }
+        assert_eq!(
+            store.get_bytes("large").unwrap(),
+            NavKvLookup::MissingPages((root.value_page_start..root.page_count).collect())
+        );
+        for page in root.value_page_start..root.page_count {
+            store.insert_page(page, built.pages[page as usize].clone());
+        }
+        assert_eq!(store.get_bytes("large").unwrap(), NavKvLookup::Hit(value));
+        assert!(build_nav_kv_sorted_with_extra_prefetch_keys(
+            vec![pair("chart/catalog", "[]")],
+            4096,
+            &[NavKvPrefetch::Lookup("missing".into())],
+        )
+        .unwrap_err()
+        .contains("does not exist"));
+    }
+
+    #[test]
     fn caller_can_add_an_exact_startup_prefetch_key() {
         let key = "aircraft/definition/abc".to_string();
         let built = build_nav_kv_sorted_with_extra_prefetch_keys(
@@ -1987,7 +2098,7 @@ mod tests {
                 pair("waypoint/id/KRDD", "unrelated"),
             ],
             TEST_PAGE_SIZE,
-            std::slice::from_ref(&key),
+            &[NavKvPrefetch::Value(key.clone())],
         )
         .expect("build nav kv");
         let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
@@ -2005,7 +2116,9 @@ mod tests {
         assert!(build_nav_kv_sorted_with_extra_prefetch_keys(
             vec![pair("chart/catalog", "catalog-value")],
             TEST_PAGE_SIZE,
-            &["aircraft/definition/missing".to_string()],
+            &[NavKvPrefetch::Value(
+                "aircraft/definition/missing".to_string()
+            )],
         )
         .unwrap_err()
         .contains("does not exist"));

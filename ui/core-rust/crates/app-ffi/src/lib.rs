@@ -217,6 +217,21 @@ fn resource_policy_from_wire(policy: &str) -> Result<app_core::CoreResourcePolic
     }
 }
 
+pub fn perform_guided_tour_action_in_session_json(
+    handle: u64,
+    command_json: &str,
+) -> Result<String, String> {
+    let command: app_core::UiTourCommand =
+        serde_json::from_str(command_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::session::perform_guided_tour_action_in_session(
+        handle as u32,
+        command.action,
+        command.expected_generation,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn perform_flight_plan_command_in_session_json(
     handle: u64,
     command_json: &str,
@@ -2517,6 +2532,83 @@ pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> 
     serde_json::to_string(&result).map_err(|err| err.to_string())
 }
 
+fn decode_offline_library_refresh(
+    payload: OfflinePackagesControllerLibraryRefreshSucceededWire,
+) -> Result<app_core::OfflinePackagesControllerEvent, String> {
+    let discovery_manifests = payload
+        .discovery_jsons
+        .into_iter()
+        .map(|json| app_core::decode_current_artifacts_manifest(&json))
+        .collect::<Result<Vec<_>, _>>()?;
+    let bundle_manifests_by_filename = payload
+        .bundle_jsons_by_filename
+        .into_iter()
+        .map(|(filename, json)| {
+            app_core::decode_bundle_manifest(&json).map(|bundle| (filename, bundle))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(
+        app_core::OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+            fetched_at_epoch_ms: payload.fetched_at_epoch_ms,
+            discovery_manifests,
+            bundle_manifests_by_filename,
+        },
+    )
+}
+
+pub fn guided_tour_packages_preview_json(
+    handle: u64,
+    input_json: &str,
+    step_id: &str,
+) -> Result<String, String> {
+    let input: OfflinePackagesControllerInputWire =
+        serde_json::from_str(input_json).map_err(|e| e.to_string())?;
+    let state = offline_packages_controllers()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&(handle as u32))
+        .cloned()
+        .ok_or_else(|| "invalid offline packages controller handle".to_string())?;
+    let event = match input.event {
+        OfflinePackagesControllerEventWire::EnsureLibrary => {
+            app_core::OfflinePackagesControllerEvent::EnsureLibrary
+        }
+        OfflinePackagesControllerEventWire::LibraryRefreshSucceeded(payload) => {
+            decode_offline_library_refresh(payload)?
+        }
+        _ => return Err("tour catalog preview accepts only catalog reads".into()),
+    };
+    let ui = app_core::guided_tour_packages_preview(
+        app_core::OfflinePackagesControllerInput {
+            state: Some(state),
+            package_source_base_url: input.package_source_base_url,
+            discovery_filenames: input.discovery_filenames,
+            now_epoch_ms: input.now_epoch_ms,
+            installed: input.installed,
+            storage: input.storage,
+            event,
+        },
+        step_id,
+    );
+    serde_json::to_string(&ui).map_err(|e| e.to_string())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_guidedTourPackagesPreviewJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    input_json: JString,
+    step_id: JString,
+) -> jstring {
+    let result = (|| {
+        let input = get_java_string(&mut env, input_json)?;
+        let step = get_java_string(&mut env, step_id)?;
+        guided_tour_packages_preview_json(handle as u64, &input, &step)
+    })();
+    return_string(&mut env, result)
+}
+
 pub fn dispatch_offline_packages_controller_json(
     handle: u64,
     input_json: &str,
@@ -2533,27 +2625,9 @@ pub fn dispatch_offline_packages_controller_json(
             false,
         ),
         OfflinePackagesControllerEventWire::LibraryRefreshSucceeded(payload) => {
-            let discovery_manifests = payload
-                .discovery_jsons
-                .into_iter()
-                .map(|json| app_core::decode_current_artifacts_manifest(&json))
-                .collect::<Result<Vec<_>, _>>()?;
-            let bundle_manifests_by_filename = payload
-                .bundle_jsons_by_filename
-                .into_iter()
-                .map(|(filename, json)| {
-                    app_core::decode_bundle_manifest(&json).map(|bundle| (filename, bundle))
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
-            (
-                app_core::OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
-                    fetched_at_epoch_ms: payload.fetched_at_epoch_ms,
-                    discovery_manifests,
-                    bundle_manifests_by_filename,
-                },
-                true,
-            )
+            (decode_offline_library_refresh(payload)?, true)
         }
+
         OfflinePackagesControllerEventWire::LibraryRefreshFailed { message } => (
             app_core::OfflinePackagesControllerEvent::LibraryRefreshFailed { message },
             false,
@@ -2662,6 +2736,20 @@ struct JniSettingsStore {
 
 impl app_core::SettingsStorage for JniSettingsStore {
     fn read_settings(&self) -> app_core::AppResult<Option<Vec<u8>>> {
+        self.read_document("readSettings")
+    }
+    fn write_settings(&self, bytes: &[u8]) -> app_core::AppResult<()> {
+        self.write_document("writeSettings", bytes)
+    }
+    fn read_tour_introduction(&self) -> app_core::AppResult<Option<Vec<u8>>> {
+        self.read_document("readTourIntroduction")
+    }
+    fn write_tour_introduction(&self, bytes: &[u8]) -> app_core::AppResult<()> {
+        self.write_document("writeTourIntroduction", bytes)
+    }
+}
+impl JniSettingsStore {
+    fn read_document(&self, method: &str) -> app_core::AppResult<Option<Vec<u8>>> {
         let mut env = self
             .vm
             .attach_current_thread()
@@ -2670,7 +2758,7 @@ impl app_core::SettingsStorage for JniSettingsStore {
                 message: err.to_string(),
             })?;
         let value = env
-            .call_method(self.store.as_obj(), "readSettings", "()[B", &[])
+            .call_method(self.store.as_obj(), method, "()[B", &[])
             .map_err(|err| app_core::AppError {
                 kind: app_core::AppErrorKind::Internal,
                 message: err.to_string(),
@@ -2691,7 +2779,7 @@ impl app_core::SettingsStorage for JniSettingsStore {
             })
     }
 
-    fn write_settings(&self, bytes: &[u8]) -> app_core::AppResult<()> {
+    fn write_document(&self, method: &str, bytes: &[u8]) -> app_core::AppResult<()> {
         let mut env = self
             .vm
             .attach_current_thread()
@@ -2708,7 +2796,7 @@ impl app_core::SettingsStorage for JniSettingsStore {
         let array = JObject::from(array);
         env.call_method(
             self.store.as_obj(),
-            "writeSettings",
+            method,
             "([B)V",
             &[JValue::Object(&array)],
         )
@@ -3672,6 +3760,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setInstalledPa
     let result = (|| {
         let package_ids_json = get_java_string(&mut env, package_ids_json)?;
         set_installed_package_ids_in_session_json(handle as u64, &package_ids_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performGuidedTourActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    command_json: JString,
+) -> jstring {
+    let result = (|| {
+        let command_json = get_java_string(&mut env, command_json)?;
+        perform_guided_tour_action_in_session_json(handle as u64, &command_json)
     })();
     return_string(&mut env, result)
 }

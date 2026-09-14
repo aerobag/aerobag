@@ -291,7 +291,7 @@ val stageCanonicalAndroidResources by tasks.registering {
     }
     doLast {
         val drawableDir = generatedCanonicalResourcesDir.get().asFile.resolve("drawable-nodpi")
-        canonicalIconsDir.listFiles { file -> file.isFile && file.extension == "png" }
+        canonicalIconsDir.listFiles { file -> file.isFile && file.extension in setOf("png", "jpg") }
             .orEmpty()
             .forEach { icon ->
                 linkOrCopy(icon, drawableDir.resolve(icon.name.replace('-', '_')))

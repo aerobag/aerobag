@@ -4,6 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +25,7 @@ let browser;
 
 try {
   chrome = await launchChrome({ userDataDir });
-  browser = await connectToBrowser(chrome.wsUrl);
+  browser = await connectToBrowser(chrome.endpoint);
   const page = await browser.createPage();
   await page.send("Page.enable");
   await page.send("Runtime.enable");
@@ -46,6 +47,7 @@ try {
     }
     return state.map;
   }, 60_000, "app did not reach the map");
+  await dismissFirstUseTour(page);
 
   await click(page, '.pageLayer.isActive [data-testid="page-button-home"]');
   await click(page, '.pageLayer.isActive [data-testid="home-button-cloud"]');

@@ -17,6 +17,7 @@ pub enum UiHomeDestination {
     Cloud,
     OfflinePackages,
     About,
+    GuidedTour,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

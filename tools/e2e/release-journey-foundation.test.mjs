@@ -3779,7 +3779,7 @@ test("Android airport-info popups export their semantic identity", () => {
   const modal = mapPage.slice(mapPage.indexOf("internal fun AirportInfoModal"));
   assert.match(
     modal,
-    /\.testTag\("parity:airport-info-modal:\$\{detail\.airportId\}"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
+    /\.testTag\("parity:airport-info-modal:\$\{detail\.airportId\}"\)\s*\.guidedTourAnchor\("tour:airport-info"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
   );
   assert.match(
     modal,

@@ -1482,7 +1482,7 @@ export async function launchFreshAndroidApp(
   });
 }
 
-export async function acceptDisclaimerIfPresent(serial) {
+export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = false } = {}) {
   const initial = (await observeUntil("initial mandatory disclaimer state", () =>
     queryAndroidStartupProjection(serial), {
     timeoutMs: E2E_TIMING.startupMs,
@@ -1510,12 +1510,31 @@ export async function acceptDisclaimerIfPresent(serial) {
   });
   await observeUntil("application startup after accepting mandatory disclaimer", () => {
     const nextState = queryAndroidStartupState(serial);
-    return nextState?.disclaimer_required === "false" ? nextState : null;
+    return nextState?.disclaimer_required === "false" && nextState?.tour_pending !== "true" ? nextState : null;
   }, {
     timeoutMs: E2E_TIMING.startupMs,
     intervalMs: E2E_TIMING.resourcePollIntervalMs,
     consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
   });
+  if (!keepIntroduction) {
+    const node = (tag) => queryAndroidSemanticNodes(serial, tag, { first: true })?.[0] ?? null;
+    if (node("parity:guided-tour-panel")) {
+      await performTransition("close first-use tour", {
+        readinessSamples: 1,
+        ready: () => node("parity:guided-tour-close"),
+        act: button => activateAndroidNode(serial, button),
+        complete: () => !node("parity:guided-tour-panel") && node("parity:home-button:Chart"),
+        responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
+      });
+      await performTransition("return to chart after introduction", {
+        readinessSamples: 1,
+        ready: () => node("parity:home-button:Chart"),
+        act: button => activateAndroidNode(serial, button),
+        complete: () => queryAndroidStartupState(serial)?.page === "Map",
+        responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
+      });
+    }
+  }
   return true;
 }
 

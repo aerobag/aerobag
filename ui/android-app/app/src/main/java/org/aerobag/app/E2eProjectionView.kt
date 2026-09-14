@@ -112,7 +112,7 @@ internal fun Modifier.e2eIndexedElement(
 ): Modifier = e2eIndexedGeometry(
     semanticTag = semanticTag,
     state = state,
-).testTag(semanticTag)
+).testTag(semanticTag).guidedTourAnchor(semanticTag)
 
 /** Standard state contract for an indexed interactive control. */
 @Composable

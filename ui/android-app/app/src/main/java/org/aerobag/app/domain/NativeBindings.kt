@@ -7,11 +7,14 @@ package org.aerobag.app.domain
 interface CoreSettingsStore {
     fun readSettings(): ByteArray?
     fun writeSettings(bytes: ByteArray)
+    fun readTourIntroduction(): ByteArray? = null
+    fun writeTourIntroduction(bytes: ByteArray) {}
 }
 
 interface NativeBridge {
     fun createOfflinePackagesController(packagesStateJson: String, libraryCacheJson: String): Long
 
+    fun guidedTourPackagesPreviewJson(handle: Long, inputJson: String, stepId: String): String
     fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
 
     fun destroyOfflinePackagesController(handle: Long)
@@ -242,6 +245,8 @@ interface NativeBridge {
         rowUid: String,
         actionUid: String,
     ): String
+
+    fun performGuidedTourActionInSessionJson(handle: Long, commandJson: String): String
 
     fun performFlightPlanCommandInSessionJson(
         handle: Long,
@@ -669,6 +674,7 @@ object NativeBindings : NativeBridge {
         libraryCacheJson: String,
     ): Long
 
+    external override fun guidedTourPackagesPreviewJson(handle: Long, inputJson: String, stepId: String): String
     external override fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
 
     external override fun destroyOfflinePackagesController(handle: Long)
@@ -916,6 +922,8 @@ object NativeBindings : NativeBridge {
         rowUid: String,
         actionUid: String,
     ): String
+
+    external override fun performGuidedTourActionInSessionJson(handle: Long, commandJson: String): String
 
     external override fun performFlightPlanCommandInSessionJson(
         handle: Long,

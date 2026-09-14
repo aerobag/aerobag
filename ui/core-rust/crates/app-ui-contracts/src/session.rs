@@ -663,6 +663,8 @@ pub struct PlatformCapabilities {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiSessionPageContracts {
+    pub guided_tour: crate::tour::UiGuidedTour,
+    pub tour_command: crate::tour::UiTourCommand,
     pub service_notifications: UiServiceNotificationsState,
     pub airway_picker: UiAirwayPicker,
     pub airway_routing: UiAirwayRouting,

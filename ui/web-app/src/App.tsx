@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { BrowserGeolocationWatch } from "./domain/browserGeolocationWatch";
+import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, useGuidedTour } from "./GuidedTour";
+import type { UiTourAction } from "./generated/sessionPageWire";
 import { useMapGeometryBinding } from "./MapGeometryLayer";
 import { AirwayRoutingOverlay } from "./AirwayRoutingOverlay";
 import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
@@ -1035,6 +1038,7 @@ const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
 const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
 const HOME_ABOUT_ICON_SRC = "/icons/icons/home-about-icon.png?v=20260802a";
 const HOME_ALTITUDE_PLANNER_ICON_SRC = "/icons/icons/home-altitude-planner-icon.png?v=20260806a";
+const HOME_GUIDED_TOUR_ICON_SRC = "/icons/icons/home-guided-tour-icon.jpg?v=20260914a";
 const HOME_CLOUD_ICON_SRC = "/icons/icons/home-cloud-icon.png?v=20260803a";
 const HOME_FLIGHT_PLAN_ICON_SRC = "/icons/icons/home-flight-plan-icon.png?v=20260802a";
 const HOME_OFFLINE_PACKAGES_ICON_SRC = "/icons/icons/home-offline-packages-icon.png?v=20260802a";
@@ -1076,6 +1080,8 @@ function webHomeButtonPresentation(destination: UiHomeDestination): {
       return { page: null, iconSrc: HOME_OFFLINE_PACKAGES_ICON_SRC };
     case "about":
       return { page: null, iconSrc: HOME_ABOUT_ICON_SRC, documentPage: "about" };
+    case "guided_tour":
+      return { page: null, iconSrc: HOME_GUIDED_TOUR_ICON_SRC };
   }
 }
 
@@ -2416,6 +2422,8 @@ function OperationalApp() {
   const navDbMaintenanceTimerRef = useRef<number | null>(null);
   const cloudRefreshTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
+    guided_tour: null,
+    guided_tour_auto_start: false,
     service_notifications: { title: "", summary: "", expanded: false,
       enter_action: {action_id: "", label: ""}, toggle_action: {action_id: "", label: ""},
       source_status: [], items: [], mark_all_read: null },
@@ -3263,8 +3271,8 @@ function OperationalApp() {
       return;
     }
     let cancelled = false;
-    let watchId: number | null = null;
-    let selectedAutoAfterFirstFix = false;
+    let gpsWatch: BrowserGeolocationWatch | null = null;
+    let unregisterPower: (() => void) | null = null;
 
     const updateStatus = (connectionState: "unavailable" | "searching" | "connected" | "stale" | "failed", enabled: boolean, statusLabel: string) => {
       void uiSession.updateOwnshipSourceStatus({
@@ -3283,35 +3291,18 @@ function OperationalApp() {
 
     void (async () => {
       try {
-        let nextSnapshot = await uiSession.registerOwnshipSource({
-          source_id: browserGeolocationSourceId,
-          source_kind: "device_gps",
-          display_name: "Browser Location",
-          selectable: true,
-          auto_eligible: true,
+        const existing = sessionRenderStore.snapshot.app_ui_state.ownship.controls.sources.find(source => source.source_id === browserGeolocationSourceId);
+        const nextSnapshot = await uiSession.registerOwnshipSource({
+          source_id: browserGeolocationSourceId, source_kind: "device_gps", display_name: "Browser Location",
+          selectable: true, auto_eligible: true, power_state: existing?.power_state ?? "running",
         });
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
         applySessionSnapshot(nextSnapshot, "geolocation_register");
-
         if (typeof navigator === "undefined" || !navigator.geolocation) {
           updateStatus("unavailable", false, "Browser geolocation unavailable");
           return;
         }
-
-        nextSnapshot = await uiSession.updateOwnshipSourceStatus({
-          source_id: browserGeolocationSourceId,
-          connection_state: "searching",
-          enabled: true,
-          status_label: "Waiting for browser location",
-        });
-        if (cancelled) {
-          return;
-        }
-        applySessionSnapshot(nextSnapshot, "geolocation_searching");
-
-        watchId = navigator.geolocation.watchPosition(
+        gpsWatch = new BrowserGeolocationWatch(navigator.geolocation,
           (position) => {
             const coords = position.coords;
             const eventTimeEpochMs = Number.isFinite(position.timestamp) ? Math.trunc(position.timestamp) : Date.now();
@@ -3338,14 +3329,6 @@ function OperationalApp() {
                 return;
               }
               applySessionSnapshot(pushedSnapshot, "geolocation_sample");
-              if (selectedAutoAfterFirstFix) {
-                return;
-              }
-              selectedAutoAfterFirstFix = true;
-              const selectedSnapshot = await uiSession.selectOwnshipSource({ kind: "auto" });
-              if (!cancelled) {
-                applySessionSnapshot(selectedSnapshot, "geolocation_select_auto");
-              }
             }).catch((error) => {
               debugLog("geolocation.sample_failed", { error: errorMessage(error) });
             });
@@ -3358,12 +3341,14 @@ function OperationalApp() {
               permissionDenied ? "Browser location permission denied" : error.message || "Browser location failed",
             );
           },
-          {
-            enableHighAccuracy: true,
-            maximumAge: 1_000,
-            timeout: 15_000,
-          },
+          () => updateStatus("searching", true, "Waiting for browser location"),
         );
+        const reconcilePower = () => {
+          const power = sessionRenderStore.snapshot.app_ui_state.ownship.controls.sources.find(source => source.source_id === browserGeolocationSourceId)?.power_state;
+          gpsWatch?.setPaused(power === "paused" || power === "sleeping" || cancelled);
+        };
+        unregisterPower = sessionRenderStore.subscribe(HIGH_RATE_SESSION_UPDATE_GROUPS, reconcilePower);
+        reconcilePower();
       } catch (error) {
         updateStatus("failed", false, errorMessage(error));
       }
@@ -3371,11 +3356,10 @@ function OperationalApp() {
 
     return () => {
       cancelled = true;
-      if (watchId !== null && typeof navigator !== "undefined" && navigator.geolocation) {
-        navigator.geolocation.clearWatch(watchId);
-      }
+      unregisterPower?.();
+      gpsWatch?.dispose();
     };
-  }, [uiSession]);
+  }, [uiSession, sessionRenderStore, applySessionSnapshot]);
   const planUiState = sessionSnapshot.app_ui_state.active_plan;
   const chartPageStateRequestKey = JSON.stringify([
     planUiState?.plan_id ?? null,
@@ -3708,6 +3692,7 @@ function OperationalApp() {
   }, [appReady, reportStartupFatalError, startupFatalError]);
 
   useEffect(() => {
+    if (sessionSnapshot.guided_tour || tourSavedView.current) return;
     writePersistedWebUiState({
       page,
       mapOrientationMode,
@@ -3716,7 +3701,7 @@ function OperationalApp() {
       recentAirportIds,
     });
     setPersistedPage(page);
-  }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId]);
+  }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId, sessionSnapshot.guided_tour]);
 
   const navigationPageOptions = useMemo(
     () => navigationPageOptionsFromCore(sessionSnapshot.navigation_page_state),
@@ -3813,6 +3798,7 @@ function OperationalApp() {
   }, [applySessionSnapshot, uiSession]);
 
   function navigateToPage(nextPage: AppPage) {
+    if (sessionRenderStore.snapshot.guided_tour) return;
     if (nextPage === page) {
       return;
     }
@@ -3924,6 +3910,56 @@ function OperationalApp() {
       });
   }
 
+  const tour = sessionSnapshot.guided_tour;
+  const [tourBusy, setTourBusy] = useState(false);
+  const [tourError, setTourError] = useState<string | null>(null);
+  const tourSavedView = useRef<{ view: AppViewSnapshot; history: AppViewSnapshot[]; orientation: typeof mapOrientationMode } | null>(null);
+  const tourBusyRef = useRef(false);
+  const tourClosePending = useRef(false);
+  const onTourSceneError = useCallback((generation: number, error: string) => {
+    if (sessionRenderStore.snapshot.guided_tour?.generation === generation) setTourError(error);
+  }, [sessionRenderStore]);
+  async function performTourAction(action: UiTourAction) {
+    if (!uiSession) return;
+    if (tourBusyRef.current) { if (action === "close") tourClosePending.current = true; return; }
+    if ((action === "start" || action === "start_introduction") && !tourSavedView.current) {
+      tourSavedView.current = { view: action === "start_introduction" ? {...currentSnapshot(), page: "home"} : currentSnapshot(), history: action === "start_introduction" ? [] : [...pageHistory], orientation: mapOrientationMode };
+    }
+    tourBusyRef.current = true;
+    setTourBusy(true); setTourError(null);
+    try {
+      const next = await uiSession.performGuidedTourAction(action, sessionRenderStore.snapshot.guided_tour?.generation ?? null);
+      applySessionSnapshot(next, "guided_tour");
+      if (!next.guided_tour && tourSavedView.current) {
+        const saved = tourSavedView.current;
+        applySnapshotLocally(saved.view, saved.history);
+        setMapOrientationMode(saved.orientation);
+        tourSavedView.current = null;
+      }
+    } catch (error) {
+      setTourError(errorMessage(error));
+      if (!sessionRenderStore.snapshot.guided_tour) tourSavedView.current = null;
+    }
+    finally {
+      tourBusyRef.current = false; setTourBusy(false);
+      if (tourClosePending.current) { tourClosePending.current = false; void performTourAction("close"); }
+    }
+  }
+  useEffect(() => {
+    if (appReady && sessionSnapshot.guided_tour_auto_start) void performTourAction("start_introduction");
+  }, [appReady, sessionSnapshot.guided_tour_auto_start]);
+  useEffect(() => {
+    if (!tour) return;
+    const pages = { map: "map", flight_plan: "plan", charts: "charts", home: "home", altitude_planner: "altitude", offline_packages: "home", cloud: "cloud" } as const;
+    setPageHistory([]);
+    setPage(pages[tour.page]);
+    const center = latLonToWorld(tour.viewport.lat, tour.viewport.lon);
+    mapViewportStore.publish({ centerWorldX: center.x, centerWorldY: center.y, zoom: tour.viewport.zoom, rotationDeg: 0 });
+    setMapOrientationMode(tour.viewport.track_up ? "track" : "north");
+    setChartFolderOpen(tour.surface === "plate_folder");
+    if (tour.page === "charts") setChartViewport(null);
+  }, [tour?.generation]);
+
   const themeVars = appThemeVars;
 
   useEffect(() => {
@@ -3980,8 +4016,10 @@ function OperationalApp() {
     <main
       className="appShell"
       style={themeVars}
-      data-testid={`parity:startup-state:ready:true:disclaimer_required:${sessionSnapshot.disclaimer_state.required}:persisted_page:${persistedPage}:session_revision:${sessionSnapshot.session_revision}`}
+      data-testid={`parity:startup-state:ready:true:disclaimer_required:${sessionSnapshot.disclaimer_state.required}:tour_pending:${sessionSnapshot.guided_tour_auto_start}:persisted_page:${persistedPage}:session_revision:${sessionSnapshot.session_revision}`}
     >
+      <GuidedTourContext.Provider value={tour}>
+      <GuidedTourFeedback.Provider value={onTourSceneError}>
       <NavigationPageOptionsContext.Provider value={navigationPageOptions}>
       <HighRateSessionEffects
         sessionRenderStore={sessionRenderStore}
@@ -4333,6 +4371,7 @@ function OperationalApp() {
         <HomePage
           page={page}
           state={sessionSnapshot.home_page_state}
+          onStartTour={() => void performTourAction("start")}
           planUiState={planUiState}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
@@ -4417,6 +4456,10 @@ function OperationalApp() {
         />
       ) : null}
       </NavigationPageOptionsContext.Provider>
+      {!tour && tourError ? <div className="mapSelectionToast" role="alert">{tourError}</div> : null}
+      {tour ? <GuidedTourOverlay tour={tour} busy={tourBusy} error={tourError} onAction={performTourAction} /> : null}
+      </GuidedTourFeedback.Provider>
+      </GuidedTourContext.Provider>
     </main>
   );
 }
@@ -4609,6 +4652,12 @@ function MapPage(props: {
   const mapBearingTransformRef = useRef<HTMLDivElement | null>(null);
   const mapContentTransformRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["family", "layers", "procedureWarning", "status", "ownship"] as const);
+  const tour = useGuidedTour();
+  const tourFeedback = useContext(GuidedTourFeedback);
+  useEffect(() => {
+    if (!tour || tour.page !== "map") { trayGroup.closeAll(); return; }
+    trayGroup.setOpen(tour.surface === "base_map" ? "family" : tour.surface === "layers" ? "layers" : tour.surface === "ownship" ? "ownship" : null);
+  }, [tour?.generation]);
   const layerToggleBusyRef = useRef(false);
   const [chartSearch, setChartSearch] = useState<{
     query: string;
@@ -4837,6 +4886,38 @@ function MapPage(props: {
     mapSelectionDistanceTarget?.lat,
     mapSelectionDistanceTarget?.lon,
   ]);
+  useEffect(() => {
+    setMapSelection(null);
+    mapSelectionRequests.cancel();
+    if (page !== "map" || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !tour || tour.page !== "map" || !uiSession || !["inspector", "weather", "notams", "airport_info"].includes(tour.surface)) return;
+    let cancelled = false;
+    const load = async () => {
+      const point = tour.map_point;
+      const result = point
+        ? await uiSession.queryMapSelection(viewport, surfaceSize.width, surfaceSize.height, point)
+        : (await uiSession.queryMapSelectionForNavRef(viewport, surfaceSize.width, surfaceSize.height, { Airport: tour.subject })).selection;
+      const selected = result.categories.flatMap(category => category.items).find(item => tour.subject === "SPOT" ? item.label.startsWith("SPOT") : item.label.includes(tour.subject))
+        ?? mapSelectionItemById(result, result.initial_selected_item_id ?? null);
+      let detailModal: NonNullable<typeof mapSelection>["detailModal"] = null;
+      if (tour.surface === "airport_info") detailModal = { kind: "airport", detail: await uiSession.airportInfo(tour.subject) };
+      if (tour.surface === "weather" || tour.surface === "notams") {
+        const weather = selected?.actions.find(action => action.id === "wx");
+        if (weather?.action_uid) {
+          const decision = await uiSession.mapSelectionActionDecision(weather.action_uid);
+          if (decision.effect?.kind === "show_weather") detailModal = { kind: "weather", detail: decision.effect.detail };
+        }
+        if (!detailModal) throw new Error(weather?.disabled_reason ?? "Weather is currently unavailable for this airport.");
+      }
+      if (cancelled) return;
+      const screenPoint = point
+        ? worldToScreen(viewport, latLonToWorld(point.lat, point.lon), surfaceSize.width, surfaceSize.height)
+        : { x: surfaceSize.width / 2, y: surfaceSize.height / 2 };
+      setMapSelection({ point: screenPoint, result, selectedItem: selected, detailModal });
+      if (tour.surface === "notams") requestAnimationFrame(() => document.querySelector('.airportNotamSection')?.scrollIntoView({ block: "start" }));
+    };
+    void load().catch(error => { if (!cancelled) tourFeedback(tour.generation, errorMessage(error)); });
+    return () => { cancelled = true; };
+  }, [tour?.generation, uiSession, page, surfaceSize.width > 0 && surfaceSize.height > 0]);
   const [hoverWeather, setHoverWeather] = useState<{
     stationId: string;
     point: ScreenPoint;
@@ -8079,7 +8160,7 @@ function MapPage(props: {
                         vectorEffect="non-scaling-stroke"
                       />
                     ) : (
-                      <g transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
+                      <g data-tour-anchor="map-spot-marker" transform={`translate(${selectedMapHighlight.point.x} ${selectedMapHighlight.point.y})`}>
                         <MapSelectionSpotSymbol />
                       </g>
                     )}
@@ -9111,6 +9192,8 @@ function AltitudePlannerPage(props: {
   const [departureTimeInput, setDepartureTimeInput] = useState(planner.departure.time_value);
   const [departureWhenInput, setDepartureWhenInput] = useState(planner.departure.when_value);
   const [openControlId, setOpenControlId] = useState<string | null>(null);
+  const tour = useGuidedTour();
+  useEffect(() => { if (tour) setOpenControlId(tour.surface === "aircraft_models" ? "aircraft" : null); }, [tour?.generation]);
   const departureTimeFocused = useRef(false);
   const departureWhenFocused = useRef(false);
   const suppressDepartureBlurSubmit = useRef(false);
@@ -9622,6 +9705,18 @@ function FlightPlanPage(props: {
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
   const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
   const [waypointModalMaxHeight, setWaypointModalMaxHeight] = useState<number | null>(null);
+  const tour = useGuidedTour();
+  useEffect(() => {
+    if (!tour) return;
+    setProcedurePicker(null); setAirportInsert(null); setFlightPlanAirportInfoModal(null);
+    setRouteEntryText(tour.page === "flight_plan" && tour.surface === "route_entry" ? tour.subject : "");
+    const selectedUid = tour.page === "flight_plan" ? tour.row_uid ?? null : null;
+    setSelectedWaypointUid(selectedUid);
+    const element = selectedUid ? structuredRowRefs.current.get(selectedUid) : null;
+    element?.scrollIntoView({ block: "center" });
+    const b = element?.getBoundingClientRect();
+    setSelectedWaypointAnchor(b ? { top: b.top, height: b.height } : null);
+  }, [tour?.generation, props.page, planUiState.plan_version]);
   const waypointSuggestionPlanKey = `${planUiState.plan_id}:${planUiState.plan_version}`;
   useEffect(() => {
     const editor = airportInsert;
@@ -10660,7 +10755,7 @@ function FlightPlanPage(props: {
                       <div className={section.dense ? "airwaySuggestionGrid" : "waypointActionTray"}>
                         {section.buttons.map((button) => (
                           <button key={button.action_id} type="button"
-                            className={`trayButton${section.dense ? " trayButtonSquare airwaySuggestionButton" : " airwayChoiceButton"}${button.suggested ? " isSuggested" : ""}${!button.enabled ? " isDisabled" : ""}`}
+                            className={`trayButton${section.dense ? " trayButtonSquare airwaySuggestionButton" : " airwayChoiceButton"}${button.suggested ? " isSuggested selectedControlHighlight" : ""}${!button.enabled ? " isDisabled" : ""}`}
                             data-testid={button.test_id} aria-disabled={!button.enabled || undefined}
                             title={button.disabled_reason ?? undefined}
                             onPointerDown={stopPointer} onPointerUp={stopPointer}
@@ -10992,6 +11087,7 @@ function TrayDock(props: {
         ? createPortal(
             <section
               ref={trayRef}
+              data-testid={`${testId}-tray`}
               className={`chartTray chartTrayPortal${trayWide ? " chartTrayWide" : ""}${style === "situation" ? " chartTraySituation" : ""} isOpen`}
               aria-label={ariaLabel}
               style={
@@ -11256,6 +11352,7 @@ function MapSelectionTray(props: {
                 type="button"
                 className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}`}
                 data-testid={`map-selection-item-${category.id}-${item.label}`}
+                data-tour-anchor={item.highlight.kind === "spot" ? "inspector-spot" : undefined}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
                 onDoubleClick={stopDoubleClick}
@@ -11925,6 +12022,8 @@ function ChartsPage(props: {
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "status", "ownship"] as const);
+  const tour = useGuidedTour();
+  useEffect(() => { if (tour) trayGroup.setOpen(tour.page === "charts" && tour.surface === "plate_airports" ? "airport" : null); }, [tour?.generation]);
   const [procedureNotamDetail, setProcedureNotamDetail] = useState<
     NonNullable<ChartAsset["procedure_notam_badge"]>["detail"] | null
   >(null);
@@ -11937,6 +12036,7 @@ function ChartsPage(props: {
     distance_annotations: [],
   });
   const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
+  const tourFeedback = useContext(GuidedTourFeedback);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedCollection?.charts ?? [];
@@ -12087,6 +12187,7 @@ function ChartsPage(props: {
           error: errorMessage(error),
         });
         if (!cancelled) {
+          if (tour) tourFeedback(tour.generation, "This plate image is unavailable. Check your connection and try again.");
           setResolvedChartUrls((current) => ({
             ...current,
             [selectedChart.id]: {
@@ -12099,7 +12200,7 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [selectedChart?.id, uiSession, navDataEpoch]);
+  }, [selectedChart?.id, uiSession, navDataEpoch, tour?.generation, tourFeedback]);
 
   useEffect(() => {
     if (!folderOpen || !uiSession) {
@@ -12596,6 +12697,7 @@ function ChartsPage(props: {
               src={selectedChartAssetUrl}
               alt={selectedChart.label}
               draggable={false}
+              onError={() => { if (tour) tourFeedback(tour.generation, "This plate image is unavailable. Check your connection and try again."); }}
               onLoad={(event) =>
                 {
                   setImageSize({
@@ -12795,6 +12897,7 @@ function ChartsPage(props: {
 }
 
 function HomePage(props: {
+  onStartTour: () => void;
   page: AppPage;
   state: UiHomePageState;
   planUiState: FlightPlanUiState | null;
@@ -12873,6 +12976,7 @@ function HomePage(props: {
                   }
                   return;
                 }
+                if (button.destination === "guided_tour") { props.onStartTour(); return; }
                 if (!presentation.page) {
                   throw new Error(`Enabled core Home button has no web navigation target: ${button.destination}`);
                 }
@@ -14355,6 +14459,7 @@ export function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
   return {
     close,
     closeAll,
+    setOpen: (id: T | null) => setOpenId(id),
     isOpen,
     openId: active ? openId : null,
     scrimOpen: active && openId !== null,

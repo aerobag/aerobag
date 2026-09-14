@@ -115,6 +115,44 @@ impl SituationController {
         self.projection_cache = None;
     }
 
+    /// A tour rewinds preview/playback and selection, while live receiver data
+    /// continues to arrive. Keep those new samples and receiver capabilities.
+    pub fn restore_user_state(&mut self, saved: SituationModelCheckpoint) {
+        let live_sources = self
+            .model
+            .ownship
+            .sources
+            .iter()
+            .filter(|source| {
+                matches!(
+                    source.source_kind,
+                    OwnshipSourceKind::DeviceGps
+                        | OwnshipSourceKind::ExternalGps
+                        | OwnshipSourceKind::ExternalAhrs
+                        | OwnshipSourceKind::LiveNetworkTrack
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.rollback_model(saved);
+        for mut source in live_sources {
+            if let Some(previous) = self
+                .model
+                .ownship
+                .sources
+                .iter_mut()
+                .find(|old| old.source_id == source.source_id)
+            {
+                source.power_state = previous.power_state;
+                *previous = source;
+            } else {
+                self.model.ownship.sources.push(source);
+            }
+        }
+        let selection = self.model.ownship.controls.selection.clone();
+        self.select_source(selection);
+    }
+
     pub fn ownship(&self) -> &OwnshipState {
         &self.model.ownship
     }
@@ -329,6 +367,46 @@ mod tests {
         });
         controller.select_source(OwnshipSelectionCommand::Source { source_id });
         controller
+    }
+
+    #[test]
+    fn guided_tour_restore_preserves_live_receivers_and_restores_selection_and_power() {
+        let mut controller = replay_controller();
+        let gps_id = OwnshipSourceId("gps".into());
+        controller.register_source(OwnshipSourceRegistration {
+            source_id: gps_id.clone(),
+            source_kind: OwnshipSourceKind::DeviceGps,
+            display_name: "GPS".into(),
+            selectable: true,
+            auto_eligible: true,
+            stale_after_ms: None,
+            power_state: Some(crate::OwnshipSourcePowerState::Paused),
+        });
+        let selection = controller.ownship().controls.selection.clone();
+        let saved = controller.checkpoint_model();
+        controller.select_source(OwnshipSelectionCommand::Source {
+            source_id: gps_id.clone(),
+        });
+        controller.set_source_power_paused(&gps_id, false);
+        controller.update_source_status(OwnshipSourceStatusUpdate {
+            source_id: gps_id.clone(),
+            connection_state: SourceConnectionState::Connected,
+            enabled: true,
+            status_label: "New receiver status".into(),
+        });
+        controller.restore_user_state(saved);
+        assert_eq!(controller.ownship().controls.selection, selection);
+        let gps = controller
+            .ownship()
+            .sources
+            .iter()
+            .find(|source| source.source_id == gps_id)
+            .unwrap();
+        assert_eq!(
+            gps.power_state,
+            Some(crate::OwnshipSourcePowerState::Paused)
+        );
+        assert_eq!(gps.status_label, "New receiver status");
     }
 
     #[test]

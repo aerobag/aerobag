@@ -275,7 +275,7 @@ async function observeAndroidStartupState(
 async function ensureOfflinePackagesReady(
   serial,
   result,
-  { packageSourcePort, packageSourceDevicePort, syncOfflinePackages, syncAllAvailablePackages },
+  { packageSourcePort, packageSourceDevicePort, syncOfflinePackages, syncAllAvailablePackages, keepIntroduction = false },
 ) {
   if (packageSourcePort && packageSourceDevicePort) {
     adbBestEffort(serial, [
@@ -290,7 +290,7 @@ async function ensureOfflinePackagesReady(
     "runtime or offline package UI ready",
   );
 
-  if (await acceptDisclaimerIfPresent(serial)) {
+  if (await acceptDisclaimerIfPresent(serial, { keepIntroduction })) {
     recordStep(result, "disclaimer accepted");
     startup = await observeAndroidStartupState(serial, "startup state after disclaimer");
   }
@@ -361,9 +361,10 @@ async function ensureOfflinePackagesReady(
   );
   recordStep(result, "offline package sync completed", "runtime loaded");
 
-  if (await acceptDisclaimerIfPresent(serial)) {
+  if (await acceptDisclaimerIfPresent(serial, { keepIntroduction })) {
     recordStep(result, "disclaimer accepted");
   }
+  startup = await observeAndroidStartupState(serial, "current runtime page after package setup");
   if (startup?.page === "OfflinePackages" && startup?.ready === "true") {
     const driver = nativeSemanticDriver(serial);
     await nativeTransition(result, "offline package page dismissed", {
@@ -1565,7 +1566,7 @@ async function runSharedReleaseJourney(args, journey) {
       fixture,
       { clearUiPrefs: true, clearCoreSettings: true },
     );
-    await ensureOfflinePackagesReady(args.serial, bootstrap, args);
+    await ensureOfflinePackagesReady(args.serial, bootstrap, { ...args, keepIntroduction: journey.id === "shared.guided-tour" });
     await waitForRuntime(args.serial, bootstrap);
 
     const driver = new AndroidSemanticJourneyDriver(args.serial, {

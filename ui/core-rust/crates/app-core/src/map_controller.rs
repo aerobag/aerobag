@@ -91,6 +91,35 @@ impl MapController {
         self.projection_cache = None;
     }
 
+    /// Restore tour choices without rolling back newly published map metadata.
+    pub fn restore_user_choices(&mut self, saved: MapModelCheckpoint) {
+        for layer in [
+            MapLayerId::WorldBasemap,
+            MapLayerId::Vectors,
+            MapLayerId::Nexrad,
+            MapLayerId::TerrainWarning,
+            MapLayerId::Metars,
+            MapLayerId::Traffic,
+            MapLayerId::OfflineRegions,
+        ] {
+            self.set_layer_visibility(
+                layer,
+                map_layer_toggle(&saved.model.layer_state, layer).visible,
+            );
+        }
+        if let Some(previous) = saved.model.raster_catalog {
+            if let Some(current) = self.raster_catalog_mut() {
+                if let Some(family) = previous.family_options.iter().find(|family| family.active) {
+                    crate::select_map_family_in_catalog(current, &family.id);
+                }
+                crate::select_map_in_catalog(current, &previous.selected_map_id);
+            }
+        } else {
+            // None means the user was using the catalog's default selection.
+            self.replace_raster_catalog(None);
+        }
+    }
+
     pub fn layer_state(&self) -> &UiMapLayerState {
         &self.model.layer_state
     }
@@ -296,7 +325,6 @@ fn uninitialized_map_overlay_config() -> MapOverlayConfig {
     }
 }
 
-#[cfg(test)]
 fn map_layer_toggle(state: &UiMapLayerState, layer: MapLayerId) -> &UiMapLayerToggleState {
     match layer {
         MapLayerId::WorldBasemap => &state.world_basemap,

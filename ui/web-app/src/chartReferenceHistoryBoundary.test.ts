@@ -57,7 +57,7 @@ describe("chart-reference view history boundary", () => {
 
     expect(chartsPage).toContain("navDataEpoch: number;");
     expect(chartsPage).toContain("setResolvedChartUrls({});");
-    expect(chartsPage).toContain("[selectedChart?.id, uiSession, navDataEpoch]");
+    expect(chartsPage).toContain("[selectedChart?.id, uiSession, navDataEpoch, tour?.generation, tourFeedback]");
     expect(chartsPage).toContain("[folderOpen, navDataEpoch, resolvedChartUrls, sortedCharts, uiSession]");
   });
 

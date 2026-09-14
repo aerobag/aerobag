@@ -4,6 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -62,6 +63,7 @@ async function main() {
     await waitForMapReady(page);
     await waitForQuiet(page, 1000);
     await acceptDisclaimerIfPresent(page);
+    await dismissFirstUseTour(page);
 
     await ensureTerrainLayerVisible(page);
     await selectReplaySource(page);

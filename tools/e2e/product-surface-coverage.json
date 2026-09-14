@@ -10,7 +10,8 @@
       "settings": "home.settings",
       "cloud": "home.cloud",
       "offline_packages": "home.offline-packages",
-      "about": "home.about"
+      "about": "home.about",
+      "guided_tour": "home.guided-tour"
     },
     "navigation_pages": {
       "map": "navigation.map",

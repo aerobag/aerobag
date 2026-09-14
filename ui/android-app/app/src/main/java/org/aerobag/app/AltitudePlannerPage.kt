@@ -97,6 +97,10 @@ internal fun AltitudePlannerPage(
     var departureTimeInput by remember { mutableStateOf(planner.departure.timeValue) }
     var departureWhenInput by remember { mutableStateOf(planner.departure.whenValue) }
     var openControlId by remember { mutableStateOf<String?>(null) }
+    val tour = LocalGuidedTour.current
+    LaunchedEffect(tour?.generation) {
+        openControlId = if (tour?.surface == org.aerobag.app.generated.UiTourSurface.AircraftModels) "aircraft" else null
+    }
     var departureTimeFocused by remember { mutableStateOf(false) }
     var departureWhenFocused by remember { mutableStateOf(false) }
 
@@ -367,7 +371,7 @@ internal fun AltitudePlannerPage(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .testTag("parity:altitude-comparison-panel"),
+                                .testTag("parity:altitude-comparison-panel").guidedTourAnchor("tour:altitude-table"),
                             verticalArrangement = Arrangement.spacedBy(ThumbGap),
                         ) {
                             items(panel.rows) { row ->

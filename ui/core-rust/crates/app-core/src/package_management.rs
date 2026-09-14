@@ -4473,6 +4473,121 @@ mod tests {
     }
 
     #[test]
+    fn guided_tour_packages_preview_cycles_a_copy_without_exposing_effects() {
+        let mut discovery =
+            discovery_manifest_with_nav_contract(crate::REQUIRED_NAV_DB_CONTRACT_ID);
+        discovery.as_of_date = Some("2026-05-20".into());
+        discovery.as_of_utc = Some("2026-05-20T12:00:00Z".into());
+        let filename = discovery.bundles[0].filename.clone();
+        let bundle = BundleManifest {
+            packages: vec![
+                with_cycle_and_size(
+                    pkg(
+                        "NW_SEC_2605",
+                        "sec",
+                        Some("nw"),
+                        Some("2026-05-20"),
+                        Some("2026-06-17"),
+                    ),
+                    "2605",
+                    100,
+                ),
+                with_cycle_and_size(
+                    pkg(
+                        "NE_SEC_2605",
+                        "sec",
+                        Some("ne"),
+                        Some("2026-05-20"),
+                        Some("2026-06-17"),
+                    ),
+                    "2605",
+                    100,
+                ),
+            ],
+        };
+        let state = OfflinePackagesControllerState {
+            packages_state: Some(OfflinePackagesState {
+                preferences: default_offline_package_preferences(["ne"], ["sec"]),
+                now_override_epoch_ms: None,
+            }),
+            library_cache: Some(OfflinePackagesLibraryCache {
+                package_source_base_url: "https://example.test".into(),
+                fetched_at_epoch_ms: 1_778_025_600_000,
+                discovery_manifests: vec![discovery],
+                bundle_manifests_by_filename: BTreeMap::from([(filename, bundle)]),
+            }),
+            ..Default::default()
+        };
+        let cache = state.library_cache.clone().unwrap();
+        let fresh = guided_tour_packages_preview(
+            OfflinePackagesControllerInput {
+                state: None,
+                package_source_base_url: "https://example.test".into(),
+                discovery_filenames: vec![],
+                now_epoch_ms: cache.fetched_at_epoch_ms,
+                installed: vec![],
+                storage: None,
+                event: OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+                    fetched_at_epoch_ms: cache.fetched_at_epoch_ms,
+                    discovery_manifests: cache.discovery_manifests,
+                    bundle_manifests_by_filename: cache.bundle_manifests_by_filename,
+                },
+            },
+            "offline-play",
+        );
+        assert!(fresh.library_loaded);
+        assert!(fresh
+            .planner_ui_state
+            .unwrap()
+            .regions
+            .iter()
+            .any(|row| row.id == "nw" && row.selection == OfflinePackageSelection::Play));
+        let original = serde_json::to_value(&state).unwrap();
+        for (step, selection) in [
+            ("offline-play", OfflinePackageSelection::Play),
+            ("offline-pause", OfflinePackageSelection::Pause),
+            ("offline-remove", OfflinePackageSelection::Unselected),
+            ("offline-apply", OfflinePackageSelection::Play),
+        ] {
+            let ui = guided_tour_packages_preview(
+                OfflinePackagesControllerInput {
+                    state: Some(state.clone()),
+                    package_source_base_url: "https://example.test".into(),
+                    discovery_filenames: vec![],
+                    now_epoch_ms: 1_778_025_600_000,
+                    installed: vec![],
+                    storage: None,
+                    event: OfflinePackagesControllerEvent::SyncRequested,
+                },
+                step,
+            );
+            let planner = ui
+                .planner_ui_state
+                .expect("demonstration uses the real cached catalog");
+            assert_eq!(
+                planner
+                    .regions
+                    .iter()
+                    .find(|r| r.id == "nw")
+                    .unwrap()
+                    .selection,
+                selection
+            );
+            assert_eq!(
+                planner
+                    .regions
+                    .iter()
+                    .find(|r| r.id == "ne")
+                    .unwrap()
+                    .selection,
+                OfflinePackageSelection::Pause
+            );
+            assert!(!ui.sync_in_flight);
+            assert_eq!(serde_json::to_value(&state).unwrap(), original);
+        }
+    }
+
+    #[test]
     fn offline_packages_controller_uses_cached_catalog_for_display_after_refresh_failure() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
@@ -4850,4 +4965,49 @@ mod tests {
         assert!(second.preferences_for_cloud.is_none());
         assert!(second.command.is_none());
     }
+}
+
+/// Render the tour against a copy of the real catalog. Only the UI escapes;
+/// commands, persistence output and cloud preferences cannot leave this API.
+pub fn guided_tour_packages_preview(
+    mut input: OfflinePackagesControllerInput,
+    step_id: &str,
+) -> OfflinePackagesControllerUiState {
+    let mut state = input.state.take().unwrap_or_default();
+    state.sync_in_flight = false;
+    state.sync_after_library_refresh = false;
+    state.sync_progress = None;
+    state.library_loading = false;
+    state.packages_state = Some(OfflinePackagesState::default());
+    input.state = Some(state);
+    if matches!(
+        input.event,
+        OfflinePackagesControllerEvent::LibraryRefreshSucceeded { .. }
+    ) {
+        input.state = Some(reduce_offline_packages_controller(&input).state);
+    }
+    input.event = OfflinePackagesControllerEvent::PackagesEvent {
+        event: OfflinePackagesEvent::UseSystemClock,
+    };
+    let initial = reduce_offline_packages_controller(&input);
+    let mut state = initial.state;
+    if let Some(planner) = initial.ui_state.planner_ui_state {
+        let prefs = &mut state.packages_state.get_or_insert_default().preferences;
+        for region in planner.regions {
+            let northwest = region.label.to_lowercase().contains("northwest")
+                || region.id.eq_ignore_ascii_case("nw");
+            let selection = if northwest {
+                match step_id {
+                    "offline-pause" => OfflinePackageSelection::Pause,
+                    "offline-remove" => OfflinePackageSelection::Unselected,
+                    _ => OfflinePackageSelection::Play,
+                }
+            } else {
+                OfflinePackageSelection::Pause
+            };
+            prefs.regions.insert(region.id, selection);
+        }
+    }
+    input.state = Some(state);
+    reduce_offline_packages_controller(&input).ui_state
 }

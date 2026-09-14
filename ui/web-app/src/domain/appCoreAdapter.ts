@@ -256,6 +256,8 @@ export type RasterMapUiState = {
 };
 
 export type UiSessionSnapshot = {
+  guided_tour_auto_start: boolean;
+  guided_tour: import("../generated/sessionPageWire").UiGuidedTour | null;
   service_notifications: import("../generated/sessionPageWire").UiServiceNotificationsState;
   ui_contract_version: number;
   session_revision: number;
@@ -827,6 +829,7 @@ export type UiSessionProjectionPublication = {
 export type UiSessionProjectionListener = (publication: UiSessionProjectionPublication) => void;
 
 export interface UiSession {
+  performGuidedTourAction(action: import("../generated/sessionPageWire").UiTourAction, generation: number | null): Promise<UiSessionSnapshot>;
   setInvalidationListener(listener: UiInvalidationListener | null): void;
   setProjectionListener(listener: UiSessionProjectionListener | null): void;
   initialSnapshot(): UiSessionSnapshot;
@@ -1047,6 +1050,7 @@ type WasmModule = {
     rowUid: string,
     actionUid: string,
   ): Promise<string> | string;
+  perform_guided_tour_action_in_session(handle: number, commandJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_flight_plan_command_in_session(
     sessionHandle: number,
     commandJson: string,
@@ -1718,6 +1722,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       appendFlightPlanEntry: async (input) => {
         return performFlightPlanCommand({ kind: "append_entry", input });
       },
+      performGuidedTourAction: async (action, generation) => runFlightPlanMutation(() =>
+        this.module.perform_guided_tour_action_in_session(handle, JSON.stringify({ action, expected_generation: generation }))),
       performAirwayRoutingAction: async (actionId) => performFlightPlanCommand({ kind: "perform_airway_routing_action", action_id: actionId }),
       dragAirwayRoute: async (editId, phase, position, snapRadiusNm, viaInsertIndex, moveViaIndex) => performFlightPlanCommand({
         kind: "drag_airway_route", edit_id: editId, phase, position, snap_radius_nm: snapRadiusNm,
@@ -2411,6 +2417,7 @@ async function loadBestAvailableAdapterUncached(
     "set_resource_policy_in_session",
     "configure_platform_capabilities_in_session",
     "should_prepare_live_feed_resource",
+    "perform_guided_tour_action_in_session",
     "perform_flight_plan_command_in_session",
     "flight_plan_row_action_decision_in_session",
     "perform_flight_plan_column_action_in_session",

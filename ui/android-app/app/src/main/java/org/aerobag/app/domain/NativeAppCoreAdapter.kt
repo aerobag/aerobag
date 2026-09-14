@@ -766,6 +766,8 @@ private fun landSessionUpdate(
             "offline_package_preferences_json" -> next.copy(
                 offlinePackagePreferencesJson = value.jsonPrimitive.content,
             )
+            "guided_tour_auto_start" -> next.copy(guidedTourAutoStart = json.decodeFromJsonElement<Boolean>(value))
+            "guided_tour" -> next.copy(guidedTour = json.decodeFromJsonElement<org.aerobag.app.generated.UiGuidedTour?>(value))
             "home_page_state" -> next.copy(
                 homePageState = json.decodeFromJsonElement<UiHomePageState>(value),
             )
@@ -1024,6 +1026,13 @@ class NativeUiSession internal constructor(
         } ?: return snapshot
         return outcome
     }
+
+    fun performGuidedTourAction(action: org.aerobag.app.generated.UiTourAction, generation: Long?): UiSessionSnapshot =
+        runPagedSnapshot("performGuidedTourAction") {
+            bridge.performGuidedTourActionInSessionJson(handle, json.encodeToString(
+                org.aerobag.app.generated.UiTourCommand(action, generation)
+            ))
+        }
 
     private fun performFlightPlanCommand(
         commandName: String,
@@ -2646,6 +2655,8 @@ private data class WireChartSelectorControlUiView(
 
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
+    val guided_tour_auto_start: Boolean = false,
+    val guided_tour: org.aerobag.app.generated.UiGuidedTour? = null,
     val ui_contract_version: Int,
     val session_revision: Long = 0,
     val flight_plan_route_revision: Long = 0,
@@ -2899,6 +2910,8 @@ data class ChartSelectorControlUiView(
 )
 
 data class UiSessionSnapshot(
+    val guidedTourAutoStart: Boolean = false,
+    val guidedTour: org.aerobag.app.generated.UiGuidedTour? = null,
     val sessionRevision: Long,
     val flightPlanRouteRevision: Long,
     val notamDisplayStateId: String?,
@@ -3423,6 +3436,8 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
         "UI wire contract $ui_contract_version is unsupported; client requires $UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION"
     }
     return UiSessionSnapshot(
+    guidedTour = guided_tour,
+    guidedTourAutoStart = guided_tour_auto_start,
     sessionRevision = session_revision,
     flightPlanRouteRevision = flight_plan_route_revision,
     notamDisplayStateId = notam_display_state_id,

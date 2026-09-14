@@ -444,6 +444,15 @@ internal fun FlightPlanPage(
             null
     }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
+    val tour = LocalGuidedTour.current
+    LaunchedEffect(tour?.generation) {
+        val step = tour ?: return@LaunchedEffect
+        procedurePicker = null
+        airportInsert = null
+        routeEntryText = if (step.surface == org.aerobag.app.generated.UiTourSurface.RouteEntry) step.subject else ""
+        val uid = step.rowUid
+        onOverlayAction(if (uid != null) FlightPlanOverlayAction.SelectRow(uid) else FlightPlanOverlayAction.Dismiss)
+    }
     val planStateTestTag = "parity:plan-state:${flightPlanStateProjection(projectedPlanUiState)}"
     val guidance = projectedPlanUiState.guidance
     val planControls = projectedPlanUiState.controls
@@ -845,7 +854,7 @@ internal fun FlightPlanPage(
                         state = planListState,
                         modifier = Modifier
                             .weight(1f)
-                            .testTag("parity:plan-list"),
+                            .testTag("parity:plan-list").guidedTourAnchor("tour:flight-plan"),
                         contentPadding = PaddingValues(bottom = planListBottomPadding),
                         verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                     ) {
@@ -1247,7 +1256,7 @@ internal fun FlightPlanPage(
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .heightIn(max = waypointTrayMaxHeight)
-                        .zIndex(5f),
+                        .zIndex(5f).guidedTourAnchor("tour:airway-picker"),
                     width = waypointTrayWidth,
                 ) {
                     MenuPanelRow(label = picker.title, active = false, enabled = false, onSelect = {})
@@ -1265,15 +1274,16 @@ internal fun FlightPlanPage(
                                 item(key = buttons.first().actionId) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(waypointActionGap)) {
                                         buttons.forEach { button ->
-                                            MenuPanelRow(
-                                                label = button.label,
-                                                active = button.suggested,
-                                                enabled = button.enabled,
-                                                disabledReason = button.disabledReason,
-                                                testTag = button.testId,
-                                                modifier = Modifier.weight(1f),
-                                                onSelect = { performAirwayPickerAction(button.actionId) },
-                                            )
+                                            SelectedControlHighlightFrame(selected=button.suggested,modifier=Modifier.weight(1f)) {
+                                                MenuPanelRow(
+                                                    label = button.label,
+                                                    active = button.suggested,
+                                                    enabled = button.enabled,
+                                                    disabledReason = button.disabledReason,
+                                                    testTag = button.testId,
+                                                    onSelect = { performAirwayPickerAction(button.actionId) },
+                                                )
+                                            }
                                         }
                                         repeat(columns - buttons.size) { Spacer(Modifier.weight(1f)) }
                                     }
@@ -1294,7 +1304,7 @@ internal fun FlightPlanPage(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
-                        .zIndex(5f),
+                        .zIndex(5f).guidedTourAnchor("tour:plan-row"),
                     width = waypointTrayWidth,
                 ) {
                     selectedRowActionMatrix.forEach { actionRow ->

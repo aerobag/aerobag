@@ -1157,25 +1157,25 @@ trait SituationControlHandler {
         vec![
             SituationControlMenuItem {
                 input: SituationControlInput::SkipBackward,
-                label: "⏮".to_string(),
+                label: "⏮  <".to_string(),
                 enabled,
                 disabled_reason: disabled_reason.clone(),
             },
             SituationControlMenuItem {
                 input: SituationControlInput::FastRewind,
-                label: "⏪".to_string(),
+                label: "⏪  (".to_string(),
                 enabled,
                 disabled_reason: disabled_reason.clone(),
             },
             SituationControlMenuItem {
                 input: SituationControlInput::FastForward,
-                label: "⏩".to_string(),
+                label: "⏩  )".to_string(),
                 enabled,
                 disabled_reason: disabled_reason.clone(),
             },
             SituationControlMenuItem {
                 input: SituationControlInput::SkipForward,
-                label: "⏭".to_string(),
+                label: "⏭  >".to_string(),
                 enabled,
                 disabled_reason,
             },
@@ -1188,6 +1188,9 @@ struct ReplaySituationControlHandler;
 struct PlanPreviewSituationControlHandler;
 
 impl SituationControlHandler for DisabledSituationControlHandler {
+    fn menu_items(&self) -> Vec<SituationControlMenuItem> {
+        Vec::new()
+    }
     fn controls_enabled(&self) -> bool {
         false
     }

@@ -152,8 +152,34 @@ struct WebCoreSettingsStorage;
 
 #[cfg(target_arch = "wasm32")]
 impl app_core::SettingsStorage for WebCoreSettingsStorage {
+    fn read_tour_introduction(&self) -> app_core::AppResult<Option<Vec<u8>>> {
+        read_web_document(
+            "aerobag.tour.introduction.v1",
+            "__aerobagTourIntroductionJson",
+        )
+        .map(|value| value.map(String::into_bytes))
+        .map_err(|message| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message,
+        })
+    }
+    fn write_tour_introduction(&self, bytes: &[u8]) -> app_core::AppResult<()> {
+        let value = std::str::from_utf8(bytes).map_err(|e| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message: e.to_string(),
+        })?;
+        write_web_document(
+            "aerobag.tour.introduction.v1",
+            "__aerobagTourIntroductionJson",
+            value,
+        )
+        .map_err(|message| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message,
+        })
+    }
     fn read_settings(&self) -> app_core::AppResult<Option<Vec<u8>>> {
-        read_web_core_settings()
+        read_web_document(WEB_CORE_SETTINGS_STORAGE_KEY, "__aerobagCoreSettingsJson")
             .map(|value| value.map(String::into_bytes))
             .map_err(|message| app_core::AppError {
                 kind: app_core::AppErrorKind::Internal,
@@ -166,7 +192,12 @@ impl app_core::SettingsStorage for WebCoreSettingsStorage {
             kind: app_core::AppErrorKind::Internal,
             message: err.to_string(),
         })?;
-        write_web_core_settings(value).map_err(|message| app_core::AppError {
+        write_web_document(
+            WEB_CORE_SETTINGS_STORAGE_KEY,
+            "__aerobagCoreSettingsJson",
+            value,
+        )
+        .map_err(|message| app_core::AppError {
             kind: app_core::AppErrorKind::Internal,
             message,
         })
@@ -193,21 +224,18 @@ fn web_local_storage() -> Option<JsValue> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn read_web_core_settings() -> Result<Option<String>, String> {
+fn read_web_document(key: &str, worker_key: &str) -> Result<Option<String>, String> {
     let value = if let Some(storage) = web_local_storage() {
         let get_item = Reflect::get(&storage, &JsValue::from_str("getItem"))
             .map_err(|err| format!("localStorage.getItem lookup failed: {err:?}"))?
             .dyn_into::<Function>()
             .map_err(|_| "localStorage.getItem is not callable".to_string())?;
         get_item
-            .call1(&storage, &JsValue::from_str(WEB_CORE_SETTINGS_STORAGE_KEY))
+            .call1(&storage, &JsValue::from_str(key))
             .map_err(|err| format!("localStorage.getItem failed: {err:?}"))?
     } else {
-        Reflect::get(
-            &js_sys::global(),
-            &JsValue::from_str("__aerobagCoreSettingsJson"),
-        )
-        .map_err(|err| format!("worker core settings lookup failed: {err:?}"))?
+        Reflect::get(&js_sys::global(), &JsValue::from_str(worker_key))
+            .map_err(|err| format!("worker core settings lookup failed: {err:?}"))?
     };
     if value.is_null() || value.is_undefined() {
         Ok(None)
@@ -220,24 +248,20 @@ fn read_web_core_settings() -> Result<Option<String>, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn write_web_core_settings(value: &str) -> Result<(), String> {
+fn write_web_document(key: &str, worker_key: &str, value: &str) -> Result<(), String> {
     if let Some(storage) = web_local_storage() {
         let set_item = Reflect::get(&storage, &JsValue::from_str("setItem"))
             .map_err(|err| format!("localStorage.setItem lookup failed: {err:?}"))?
             .dyn_into::<Function>()
             .map_err(|_| "localStorage.setItem is not callable".to_string())?;
         set_item
-            .call2(
-                &storage,
-                &JsValue::from_str(WEB_CORE_SETTINGS_STORAGE_KEY),
-                &JsValue::from_str(value),
-            )
+            .call2(&storage, &JsValue::from_str(key), &JsValue::from_str(value))
             .map(|_| ())
             .map_err(|err| format!("localStorage.setItem failed: {err:?}"))
     } else {
         Reflect::set(
             &js_sys::global(),
-            &JsValue::from_str("__aerobagCoreSettingsJson"),
+            &JsValue::from_str(worker_key),
             &JsValue::from_str(value),
         )
         .map(|_| ())
@@ -734,6 +758,22 @@ pub fn perform_map_selection_ui_action_in_session(
         session_handle,
         action_uid.to_string(),
         now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn perform_guided_tour_action_in_session(
+    session_handle: u32,
+    command_json: &str,
+) -> Result<String, JsValue> {
+    let command: app_core::UiTourCommand =
+        serde_json::from_str(command_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::session::perform_guided_tour_action_in_session(
+        session_handle,
+        command.action,
+        command.expected_generation,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))

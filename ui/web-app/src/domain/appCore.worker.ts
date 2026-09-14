@@ -56,6 +56,7 @@ type WorkerSessionProjection = {
 type WorkerCoreSettingsChanged = {
   kind: "coreSettingsChanged";
   settingsJson: string | null;
+  tourIntroductionJson: string | null;
 };
 
 type WorkerDebugLog = {
@@ -197,6 +198,7 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
   if (method === "createUiSession") {
     const request = args[0] as WorkerCreateUiSessionRequest;
     setWorkerCoreSettingsJson(request.settingsJson);
+    setWorkerTourIntroductionJson(request.tourIntroductionJson);
     const session = await adapter.createUiSession(
       request.recentAirportIds,
       request.selectedAirportId,
@@ -229,13 +231,16 @@ async function callSessionMethod(
     throw new Error("session invalidation listener is controlled by the worker proxy");
   }
   const settingsBefore = workerCoreSettingsJson();
+  const introductionBefore = workerTourIntroductionJson();
   try {
     const result = await callMethod(session, method, args);
     const settingsAfter = workerCoreSettingsJson();
-    if (settingsAfter !== settingsBefore) {
+    const introductionAfter = workerTourIntroductionJson();
+    if (settingsAfter !== settingsBefore || introductionAfter !== introductionBefore) {
       ctx.postMessage({
         kind: "coreSettingsChanged",
         settingsJson: settingsAfter,
+        tourIntroductionJson: introductionAfter,
       });
     }
     return workerSessionResultForTransport(result);
@@ -371,6 +376,15 @@ function setWorkerCoreSettingsJson(settingsJson: string | null): void {
 
 function workerCoreSettingsJson(): string | null {
   const value = (globalThis as unknown as { __aerobagCoreSettingsJson?: unknown }).__aerobagCoreSettingsJson;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function setWorkerTourIntroductionJson(settingsJson: string | null): void {
+  (globalThis as unknown as { __aerobagTourIntroductionJson?: string | null }).__aerobagTourIntroductionJson = settingsJson;
+}
+
+function workerTourIntroductionJson(): string | null {
+  const value = (globalThis as unknown as { __aerobagTourIntroductionJson?: unknown }).__aerobagTourIntroductionJson;
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 

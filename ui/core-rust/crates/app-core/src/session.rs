@@ -151,6 +151,10 @@ use crate::{
     SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
     VectorAggregateTilePayload, VectorIdentLabelStyle, WeatherDetailUiView,
 };
+#[path = "guided_tour_session.rs"]
+mod guided_tour_session;
+pub use guided_tour_session::perform_guided_tour_action_in_session;
+
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -165,6 +169,8 @@ struct SettingsPersistenceDocument {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
+    pub guided_tour: Option<app_ui_contracts::tour::UiGuidedTour>,
+    pub guided_tour_auto_start: bool,
     pub service_notifications: Arc<app_ui_contracts::session::UiServiceNotificationsState>,
     pub ui_contract_version: u32,
     pub session_revision: u64,
@@ -420,6 +426,11 @@ impl SessionDiagnosticsCounters {
 
 #[derive(Clone)]
 struct SessionCoordinatorModel {
+    guided_tour: Option<app_ui_contracts::tour::UiGuidedTour>,
+    tour_saved: Option<Arc<guided_tour_session::TourSavedState>>,
+    tour_resume_step: Option<String>,
+    tour_introduction_offered: Option<bool>,
+    tour_demo: Option<crate::guided_tour::Demo>,
     service_notifications: crate::service_notifications::ServiceNotifications,
     session_revision: u64,
     content_policy: ContentPolicy,
@@ -455,6 +466,7 @@ impl WindsAloftAcquisitionPhase {
 
 #[derive(Default)]
 struct SessionRuntime {
+    tour_cloud_responses: Vec<(u64, CloudHttpResponse, i64)>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     adsb: crate::adsb::AdsbSessionState,
     map_selection_action_key: Option<[u8; 32]>,
@@ -2216,6 +2228,11 @@ fn create_ui_session_inner(
     let diagnostics = Arc::new(SessionDiagnosticsCounters::default());
     let mut session = UiSession {
         coordinator: SessionCoordinatorModel {
+            guided_tour: None,
+            tour_saved: None,
+            tour_resume_step: None,
+            tour_introduction_offered: None,
+            tour_demo: None,
             service_notifications: Default::default(),
             session_revision: 0,
             content_policy: app_state.content_policy,
@@ -2601,7 +2618,9 @@ pub fn take_cloud_provider_request_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.coordinator.platform_capabilities.cloud.is_none() {
+    if session.coordinator.guided_tour.is_some()
+        || session.coordinator.platform_capabilities.cloud.is_none()
+    {
         return Ok(None);
     }
     run_durable_session_model_value_transaction(
@@ -2620,6 +2639,9 @@ pub fn cloud_event_stream_plan_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.coordinator.guided_tour.is_some() {
+        return Ok(None);
+    }
     Ok(session.cloud.event_stream_plan())
 }
 
@@ -2631,6 +2653,9 @@ pub fn report_cloud_event_stream_event_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.coordinator.guided_tour.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         session
@@ -2649,6 +2674,13 @@ pub fn complete_cloud_provider_request_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.coordinator.guided_tour.is_some() {
+        session
+            .runtime
+            .tour_cloud_responses
+            .push((request_id, response, now_epoch_ms));
+        return unchanged_session_update_outcome(session);
+    }
     run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         let updates =
@@ -12373,7 +12405,7 @@ fn changed_session_update_outcome_with_invalidations(
 
 fn changed_session_update_outcome_impl(
     session: &mut UiSession,
-    mut invalidations: Vec<UiInvalidation>,
+    invalidations: Vec<UiInvalidation>,
     force_flight_plan_update: bool,
 ) -> AppResult<HadOperationOutcome> {
     let previous_versions = session.projection_versions.versions();
@@ -12385,6 +12417,14 @@ fn changed_session_update_outcome_impl(
         // even when it returns to the last fully observed dependency value.
         session.projection_versions.force_flight_plan_update();
     }
+    session_update_outcome_since(session, previous_versions, invalidations)
+}
+
+fn session_update_outcome_since(
+    session: &mut UiSession,
+    previous_versions: SessionProjectionVersions,
+    mut invalidations: Vec<UiInvalidation>,
+) -> AppResult<HadOperationOutcome> {
     dedupe_invalidations(&mut invalidations);
     let project_started_at = crate::core_clock_ms();
     match try_project_session_update(session, previous_versions) {
@@ -12472,6 +12512,8 @@ fn session_projection_dependencies(
     let capabilities = &session.coordinator.platform_capabilities;
     let cloud_available = capabilities.cloud.is_some();
     let application_shell = ApplicationShellProjectionDependencies {
+        guided_tour: snapshot.guided_tour.clone(),
+        guided_tour_auto_start: snapshot.guided_tour_auto_start,
         content_policy: session.coordinator.content_policy,
         last_content_report: session.coordinator.last_content_report.clone(),
     };
@@ -12604,6 +12646,8 @@ fn assemble_session_update(
             current.application_shell,
             || {
                 projection_assignments! {
+                    ["guided_tour"] => snapshot.guided_tour,
+                    ["guided_tour_auto_start"] => snapshot.guided_tour_auto_start,
                     ["app_ui_state", "content_policy"] => snapshot.app_ui_state.content_policy,
                     ["app_ui_state", "last_content_report"] => snapshot.app_ui_state.last_content_report,
                 }
@@ -12884,6 +12928,10 @@ fn try_snapshot_for_session(
     });
     let next_nav_db_maintenance_epoch_ms = next_nav_db_maintenance_epoch_ms(session);
     let snapshot = UiSessionSnapshot {
+        guided_tour: session.coordinator.guided_tour.clone(),
+        guided_tour_auto_start: session.coordinator.tour_introduction_offered == Some(false)
+            && !session.settings.disclaimer_required()
+            && session.coordinator.guided_tour.is_none(),
         service_notifications,
         ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: session.coordinator.session_revision,
@@ -13134,6 +13182,7 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
             }),
         },
         button(UiHomeDestination::About, "ABOUT"),
+        button(UiHomeDestination::GuidedTour, "GUIDED\nTOUR"),
     ]);
     UiHomePageState { buttons }
 }
@@ -13183,7 +13232,9 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
-    let Some(bytes) = storage.read_settings()? else {
+    let persisted = storage.read_settings()?;
+    guided_tour_session::load_introduction(session, persisted.is_some())?;
+    let Some(bytes) = persisted else {
         return Ok(());
     };
     let document = match decode_session_persistence(&bytes) {
@@ -13222,6 +13273,10 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
 }
 
 fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
+    guided_tour_session::persist_introduction(session)?;
+    if session.coordinator.guided_tour.is_some() {
+        return Ok(());
+    }
     let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
@@ -13988,10 +14043,10 @@ trait SessionSituationSourceHandler {
 
     fn menu_items(&self, session: &UiSession) -> Vec<SituationControlMenuItem> {
         [
-            (SituationControlInput::SkipBackward, "⏮"),
-            (SituationControlInput::FastRewind, "⏪"),
-            (SituationControlInput::FastForward, "⏩"),
-            (SituationControlInput::SkipForward, "⏭"),
+            (SituationControlInput::SkipBackward, "⏮  <"),
+            (SituationControlInput::FastRewind, "⏪  ("),
+            (SituationControlInput::FastForward, "⏩  )"),
+            (SituationControlInput::SkipForward, "⏭  >"),
         ]
         .into_iter()
         .map(|(input, label)| {
@@ -15092,6 +15147,190 @@ mod tests {
     };
     use chrono::SecondsFormat;
 
+    #[test]
+    fn tour_introduction_is_local_once_only_and_preserves_existing_users() {
+        use app_ui_contracts::tour::UiTourAction;
+        let storage = Arc::new(MemorySettingsStorage::default());
+        let open = || {
+            let init = create_ui_session(FlightPlan::empty(), &[], None, None).unwrap();
+            let snapshot = configure_platform_capabilities_in_session(
+                init.handle,
+                PlatformCapabilities::default(),
+                Some(storage.clone()),
+            )
+            .unwrap();
+            (init.handle, snapshot)
+        };
+        let (handle, fresh) = open();
+        assert!(fresh.disclaimer_state.required);
+        assert!(!fresh.guided_tour_auto_start);
+        perform_guided_tour_action_in_session(handle, UiTourAction::StartIntroduction, None)
+            .unwrap();
+        assert!(get_session_snapshot(handle).unwrap().guided_tour.is_none());
+        assert!(
+            accept_disclaimer_in_session(handle, "no-warranty-v1")
+                .unwrap()
+                .guided_tour_auto_start
+        );
+        // Restart between accepting the disclaimer and showing the welcome card.
+        let (handle, pending) = open();
+        assert!(pending.guided_tour_auto_start);
+        let saved = storage.read_settings().unwrap();
+        perform_guided_tour_action_in_session(handle, UiTourAction::StartIntroduction, None)
+            .unwrap();
+        let active = get_session_snapshot(handle).unwrap();
+        assert!(!active.guided_tour_auto_start);
+        assert_eq!(active.guided_tour.as_ref().unwrap().step_id, "welcome");
+        assert_eq!(storage.read_settings().unwrap(), saved);
+        // Even a process exit during the tour must count as offered.
+        let (_, reopened) = open();
+        assert!(!reopened.guided_tour_auto_start);
+        assert!(reopened.guided_tour.is_none());
+        perform_guided_tour_action_in_session(
+            handle,
+            UiTourAction::Close,
+            Some(active.guided_tour.unwrap().generation),
+        )
+        .unwrap();
+        assert!(!get_session_snapshot(handle).unwrap().guided_tour_auto_start);
+        assert_eq!(storage.read_settings().unwrap(), saved);
+        // Existing settings predate the introduction marker.
+        *storage.introduction.lock().unwrap() = None;
+        let (handle, legacy) = open();
+        assert!(!legacy.guided_tour_auto_start);
+        perform_guided_tour_action_in_session(handle, UiTourAction::StartIntroduction, None)
+            .unwrap();
+        assert!(get_session_snapshot(handle).unwrap().guided_tour.is_none());
+    }
+
+    #[test]
+    fn guided_tour_restores_choices_and_never_persists_the_demo() {
+        use app_ui_contracts::tour::UiTourAction;
+        fn advance(
+            handle: u32,
+            action: UiTourAction,
+            generation: Option<u64>,
+        ) -> UiSessionSnapshot {
+            // Every action, especially Close, must return the mutation envelope
+            // consumed by both platform adapters, not a raw session snapshot.
+            session_update_from_outcome(
+                perform_guided_tour_action_in_session(handle, action, generation).unwrap(),
+            );
+            get_session_snapshot(handle).unwrap()
+        }
+        let storage = Arc::new(MemorySettingsStorage::default());
+        let mut plan = FlightPlan::empty();
+        plan.route_components.push(RouteComponent::Waypoint {
+            waypoint: NavRef::Spot(LatLon {
+                lat: 45.0,
+                lon: -120.0,
+            }),
+        });
+        let plan = plan.normalized();
+        let init = create_ui_session(plan.clone(), &[], None, None).unwrap();
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+        let saved_bytes = storage.read_settings().unwrap();
+        let saved = get_session_snapshot(init.handle).unwrap();
+        let started = advance(init.handle, UiTourAction::Start, None);
+        let generation = started.guided_tour.as_ref().unwrap().generation;
+        assert_eq!(started.guided_tour.as_ref().unwrap().step_id, "welcome");
+        assert_ne!(
+            started.app_ui_state.active_plan,
+            saved.app_ui_state.active_plan
+        );
+        assert_eq!(storage.read_settings().unwrap(), saved_bytes);
+        assert!(take_cloud_provider_request_in_session(init.handle, 0)
+            .unwrap()
+            .is_none());
+        session_update_from_outcome(
+            report_cloud_event_stream_event_in_session(
+                init.handle,
+                crate::CloudEventStreamEvent {
+                    stream_id: 1,
+                    kind: crate::CloudEventStreamEventKind::Closed,
+                    data: None,
+                    detail: None,
+                },
+                0,
+            )
+            .unwrap(),
+        );
+        let next = advance(init.handle, UiTourAction::Next, Some(generation));
+        assert!(perform_guided_tour_action_in_session(
+            init.handle,
+            UiTourAction::Next,
+            Some(generation)
+        )
+        .is_err());
+        let back = advance(
+            init.handle,
+            UiTourAction::Back,
+            Some(next.guided_tour.unwrap().generation),
+        );
+        assert_eq!(back.guided_tour.as_ref().unwrap().step_id, "welcome");
+        let closed = advance(
+            init.handle,
+            UiTourAction::Close,
+            Some(back.guided_tour.unwrap().generation),
+        );
+        assert!(closed.guided_tour.is_none());
+        assert_eq!(
+            closed.app_ui_state.active_plan,
+            saved.app_ui_state.active_plan
+        );
+        assert_eq!(closed.map_layer_state, saved.map_layer_state);
+        assert_eq!(closed.chart_page_state, saved.chart_page_state);
+        assert_eq!(storage.read_settings().unwrap(), saved_bytes);
+        let started = advance(init.handle, UiTourAction::Start, None);
+        let next = advance(
+            init.handle,
+            UiTourAction::Next,
+            Some(started.guided_tour.unwrap().generation),
+        );
+        advance(
+            init.handle,
+            UiTourAction::Close,
+            Some(next.guided_tour.unwrap().generation),
+        );
+        let resumed = advance(init.handle, UiTourAction::Start, None);
+        assert_eq!(resumed.guided_tour.as_ref().unwrap().step_id, "chart");
+        let restarted = advance(
+            init.handle,
+            UiTourAction::Restart,
+            Some(resumed.guided_tour.unwrap().generation),
+        );
+        assert_eq!(restarted.guided_tour.as_ref().unwrap().step_id, "welcome");
+        // Restart preserves the original restoration checkpoint. Finishing also
+        // clears the bookmark, so a completed tour starts at the beginning.
+        let last = crate::guided_tour::steps(false).len() - 1;
+        let generation = restarted.guided_tour.unwrap().generation + 1;
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.coordinator.guided_tour =
+                Some(crate::guided_tour::view(last, generation, false));
+        }
+        let finished = advance(init.handle, UiTourAction::Next, Some(generation));
+        assert_eq!(
+            finished.app_ui_state.active_plan,
+            saved.app_ui_state.active_plan
+        );
+        assert_eq!(storage.read_settings().unwrap(), saved_bytes);
+        let fresh = advance(init.handle, UiTourAction::Start, None);
+        assert_eq!(fresh.guided_tour.as_ref().unwrap().step_id, "welcome");
+        advance(
+            init.handle,
+            UiTourAction::Close,
+            Some(fresh.guided_tour.unwrap().generation),
+        );
+        destroy_session(init.handle);
+    }
+
     // Page delivery broadcasts by store ID, so unrelated test databases need distinct identities.
     static NEXT_TEST_NAV_KV_STORE_ID: AtomicU32 = AtomicU32::new(1_000_000);
 
@@ -15257,6 +15496,11 @@ mod tests {
         );
         UiSession {
             coordinator: SessionCoordinatorModel {
+                guided_tour: None,
+                tour_saved: None,
+                tour_resume_step: None,
+                tour_introduction_offered: None,
+                tour_demo: None,
                 session_revision: 0,
                 content_policy: app_state.content_policy,
                 last_content_report: app_state.last_content_report,
@@ -15501,6 +15745,8 @@ mod tests {
             (
                 "application_shell",
                 BTreeSet::from([
+                    "guided_tour",
+                    "guided_tour_auto_start",
                     "app_ui_state/content_policy",
                     "app_ui_state/last_content_report",
                 ]),
@@ -17094,9 +17340,17 @@ mod tests {
     #[derive(Default)]
     struct MemorySettingsStorage {
         bytes: Mutex<Option<Vec<u8>>>,
+        introduction: Mutex<Option<Vec<u8>>>,
     }
 
     impl SettingsStorage for MemorySettingsStorage {
+        fn read_tour_introduction(&self) -> AppResult<Option<Vec<u8>>> {
+            Ok(self.introduction.lock().unwrap().clone())
+        }
+        fn write_tour_introduction(&self, bytes: &[u8]) -> AppResult<()> {
+            *self.introduction.lock().unwrap() = Some(bytes.to_vec());
+            Ok(())
+        }
         fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
             Ok(self.bytes.lock().expect("settings lock").clone())
         }
@@ -17115,6 +17369,7 @@ mod tests {
         ] {
             let storage = Arc::new(MemorySettingsStorage {
                 bytes: Mutex::new(Some(original.clone())),
+                ..Default::default()
             });
             let init =
                 create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
@@ -17170,6 +17425,7 @@ mod tests {
                 (UiHomeDestination::Settings, "SETTINGS"),
                 (UiHomeDestination::OfflinePackages, "OFFLINE\nPACKAGES"),
                 (UiHomeDestination::About, "ABOUT"),
+                (UiHomeDestination::GuidedTour, "GUIDED\nTOUR"),
             ]
         );
         let web_offline = web_snapshot

@@ -1,0 +1,22 @@
+/* SPDX-FileCopyrightText: 2026 Aerobag contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later */
+.guidedTourScrim { position: fixed; inset: 0; z-index: 2147483000; background: transparent; touch-action: none; overscroll-behavior: none; }
+.guidedTourArrows { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.guidedTourArrows rect, .guidedTourArrows path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.guidedTourArrow-outer { stroke: #38210e; stroke-width: 9; }
+.guidedTourArrow-outline { stroke: white; stroke-width: 7; }
+.guidedTourArrow-color { stroke: #ed7100; stroke-width: 4; }
+.guidedTourPanel { position: absolute; width: min(380px, calc(100vw - 40px)); box-sizing: border-box; max-height: calc(100dvh - 40px); overflow: auto; padding: 20px; border: 2px solid #ed7100; border-radius: 14px; background: #f9fcfd; color: #17313d; box-shadow: 0 4px 24px #12272f38; font-size: 15px; line-height: 1.45; touch-action: pan-y; }
+.guidedTourChapter { display: flex; justify-content: space-between; gap: 16px; color: #3e6373; font-size: 12px; font-weight: 600; }
+.guidedTourPanel h2 { margin: 9px 0; font-size: 21px; line-height: 1.2; }
+.guidedTourPanel p { margin: 10px 0 18px; white-space: pre-line; }
+.guidedTourButtons { display: flex; gap: 8px; align-items: center; }
+.guidedTourButtons button { min-height: 44px; padding: 8px 12px; border: 1px solid #9db3bc; border-radius: 8px; background: white; color: #17313d; cursor: pointer; }
+.guidedTourButtons button:first-child { margin-right: auto; }
+.guidedTourButtons button:last-child { background: #086a8b; color: white; border-color: #086a8b; font-weight: 600; }
+.guidedTourButtons button:disabled { opacity: .45; cursor: default; }
+.guidedTourError { color: #a52920; }
+
+.guidedTourRestart { display: block; margin: 0 auto 8px 0; padding: 8px; border: none; background: transparent; color: #3e6373; font: inherit; font-size: 13px; cursor: pointer; }
+.guidedTourRestart:disabled { opacity: .45; cursor: default; }
+.guidedTourPanel.isTitleCard h2 { min-height: 160px; display: flex; justify-content: center; align-items: center; margin: 0 0 16px; text-align: center; font-size: 28px; }

@@ -2065,6 +2065,7 @@ private val AndroidProcessSemanticId = UUID.randomUUID().toString()
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
     var onSituationControlInput: ((SituationControlInput) -> Boolean)? = null
+    var onGuidedTourKeyEvent: ((AndroidKeyEvent) -> Boolean)? = null
     var onDisplayInactivityChanged: ((Boolean) -> Boolean)? = null
 
     private val displayPolicyHandler = Handler(Looper.getMainLooper())
@@ -2364,6 +2365,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: AndroidKeyEvent): Boolean {
+        if (onGuidedTourKeyEvent?.invoke(event) == true) {
+            if (event.action == AndroidKeyEvent.ACTION_DOWN) noteDisplayUserActivity()
+            return true
+        }
         if (event.action == AndroidKeyEvent.ACTION_DOWN) {
             noteDisplayUserActivity()
             val situationInput = situationControlInputForKeyEvent(event)
@@ -2992,7 +2997,7 @@ internal fun AerobagApp(
     DisposableEffect(uiSession, context) {
         val activity = context as? MainActivity
         activity?.onSituationControlInput = { input ->
-            applySessionCommand("applySituationControlInput") {
+            if (uiSession.snapshot.guidedTour != null) true else applySessionCommand("applySituationControlInput") {
                 uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
             } != null
         }
@@ -3164,6 +3169,7 @@ internal fun AerobagApp(
             ?: navigationPageOptions.defaultChartOrPlateReturnPage
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
+        if (sessionSnapshot.guidedTour != null || retainedModel.tourSavedView != null) return@LaunchedEffect
         retainedModel.page = page
         val persisted = withContext(Dispatchers.IO) {
             writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
@@ -3173,10 +3179,10 @@ internal fun AerobagApp(
         }
     }
     LaunchedEffect(pageHistory) {
-        retainedModel.pageHistory = pageHistory
+        if (sessionSnapshot.guidedTour == null) retainedModel.pageHistory = pageHistory
     }
     LaunchedEffect(mapViewport) {
-        retainedModel.mapViewport = mapViewport
+        if (sessionSnapshot.guidedTour == null) retainedModel.mapViewport = mapViewport
     }
     LaunchedEffect(
         uiSession,
@@ -3358,6 +3364,69 @@ internal fun AerobagApp(
         chartFolderOpen = snapshot.chartFolderOpen
     }
 
+    val tour = sessionSnapshot.guidedTour
+    val tourScope = rememberCoroutineScope()
+    var tourBusy by remember { mutableStateOf(false) }
+    var tourClosePending by remember { mutableStateOf(false) }
+    var tourError by remember { mutableStateOf<String?>(null) }
+    fun performTourAction(action: org.aerobag.app.generated.UiTourAction) {
+        if (tourBusy) {
+            if (action == org.aerobag.app.generated.UiTourAction.Close) tourClosePending = true
+            return
+        }
+        if (action in listOf(org.aerobag.app.generated.UiTourAction.Start, org.aerobag.app.generated.UiTourAction.StartIntroduction) && retainedModel.tourSavedView == null) {
+            val introductory = action == org.aerobag.app.generated.UiTourAction.StartIntroduction
+            retainedModel.tourSavedView = Triple(if (introductory) currentSnapshot().copy(page=AppPage.Home) else currentSnapshot(), if (introductory) emptyList() else pageHistory, mapOrientationMode)
+        }
+        tourBusy = true
+        tourError = null
+        tourScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { uiSession.performGuidedTourAction(action, uiSession.snapshot.guidedTour?.generation) }
+                applySessionSnapshot(result)
+                if (result.guidedTour == null) {
+                    retainedModel.tourSavedView?.let { saved ->
+                        applySnapshotLocally(saved.first, saved.second)
+                        mapOrientationMode = saved.third
+                    }
+                    retainedModel.tourSavedView = null
+                }
+            } catch (error: CancellationException) { throw error
+            } catch (error: Throwable) {
+                tourError = error.message ?: "The tour step could not be prepared."
+                if (uiSession.snapshot.guidedTour == null) {
+                    retainedModel.tourSavedView = null
+                    sessionCommandNotice = SessionCommandNotice(nextSessionCommandNoticeId++, tourError!!)
+                }
+            } finally {
+                tourBusy = false
+                if (tourClosePending) { tourClosePending=false; performTourAction(org.aerobag.app.generated.UiTourAction.Close) }
+            }
+        }
+    }
+    LaunchedEffect(sessionSnapshot.guidedTourAutoStart) {
+        if (sessionSnapshot.guidedTourAutoStart) performTourAction(org.aerobag.app.generated.UiTourAction.StartIntroduction)
+    }
+    LaunchedEffect(tour?.generation) {
+        val step = tour ?: return@LaunchedEffect
+        pageHistory = emptyList()
+        page = when (step.page) {
+            org.aerobag.app.generated.UiTourPage.Map -> AppPage.Map
+            org.aerobag.app.generated.UiTourPage.FlightPlan -> AppPage.Plan
+            org.aerobag.app.generated.UiTourPage.Charts -> AppPage.Charts
+            org.aerobag.app.generated.UiTourPage.Home -> AppPage.Home
+            org.aerobag.app.generated.UiTourPage.AltitudePlanner -> AppPage.AltitudePlanner
+            org.aerobag.app.generated.UiTourPage.OfflinePackages -> AppPage.OfflinePackages
+            org.aerobag.app.generated.UiTourPage.Cloud -> AppPage.Cloud
+        }
+        val center = latLonToWorld(step.viewport.lat, step.viewport.lon)
+        mapViewport = MapViewportState(center.x, center.y, step.viewport.zoom)
+        mapOrientationMode = if (step.viewport.trackUp) MapOrientationMode.Track else MapOrientationMode.North
+        chartFolderOpen = step.surface == org.aerobag.app.generated.UiTourSurface.PlateFolder
+        chartViewport = null
+
+    }
+
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
         if (snapshot.plateTargetAirportId != null || snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
             applySessionCommand("restoreChartPageState") {
@@ -3390,6 +3459,7 @@ internal fun AerobagApp(
     }
 
     fun navigateToPage(nextPage: AppPage) {
+        if (uiSession.snapshot.guidedTour != null) return
         diagnosticLogInfo("AerobagNavigation") {
             "navigate request from=$page to=$nextPage history=${pageHistory.size}"
         }
@@ -3483,7 +3553,7 @@ internal fun AerobagApp(
         )
     }
 
-    BackHandler(enabled = pageHistory.isNotEmpty()) {
+    BackHandler(enabled = pageHistory.isNotEmpty() && tour == null) {
         val previous = pageHistory.lastOrNull() ?: return@BackHandler
         restoreSnapshot(previous, pageHistory.dropLast(1))
     }
@@ -3520,12 +3590,16 @@ internal fun AerobagApp(
                 onSnapshot = ::applySessionSnapshot,
             )
         }
+        GuidedTourHost(tour, tourBusy, tourError, ::performTourAction, onSceneError = { generation, message ->
+            if (uiSession.snapshot.guidedTour?.generation == generation) tourError = message
+        }) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag(
                     "parity:startup-state:ready:true:" +
                         "disclaimer_required:${sessionSnapshot.disclaimerState.required}:" +
+                        "tour_pending:${sessionSnapshot.guidedTourAutoStart}:" +
                         "page:${page.name}:" +
                         "persisted_page:${persistedPage.name}:" +
                         "session_revision:${sessionSnapshot.sessionRevision}",
@@ -3536,6 +3610,7 @@ internal fun AerobagApp(
                 state =
                     "ready:true:" +
                         "disclaimer_required:${sessionSnapshot.disclaimerState.required}:" +
+                        "tour_pending:${sessionSnapshot.guidedTourAutoStart}:" +
                         "page:${page.name}:" +
                         "persisted_page:${persistedPage.name}:" +
                         "session_revision:${sessionSnapshot.sessionRevision}",
@@ -3825,6 +3900,7 @@ internal fun AerobagApp(
                     HomePage(
                         page = page,
                         homePageState = sessionSnapshot.homePageState,
+                        onStartTour = { performTourAction(org.aerobag.app.generated.UiTourAction.Start) },
                         pageHistory = pageHistory,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,
@@ -3981,6 +4057,7 @@ internal fun AerobagApp(
                 )
             }
         }
+    }
     }
 }
 

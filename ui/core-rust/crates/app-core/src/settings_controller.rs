@@ -57,6 +57,12 @@ pub(crate) enum CloudSyncedSettingsRecord {
 pub trait SettingsStorage: Send + Sync {
     fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
     fn write_settings(&self, bytes: &[u8]) -> AppResult<()>;
+    fn read_tour_introduction(&self) -> AppResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn write_tour_introduction(&self, _bytes: &[u8]) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 pub type SettingsStorageHandle = Arc<dyn SettingsStorage>;
@@ -416,6 +422,7 @@ pub(crate) struct SettingsController {
     projection_cache: Option<SettingsProjectionCache>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SettingsModelCheckpoint {
     preferences: SettingsPreferences,
     aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
@@ -447,6 +454,10 @@ impl SettingsController {
         self.revision = checkpoint.revision;
         self.static_revision = checkpoint.static_revision;
         self.projection_cache = None;
+    }
+
+    pub fn disclaimer_required(&self) -> bool {
+        project_disclaimer_state(&self.preferences).required
     }
 
     pub fn persistent_preferences(&self) -> SettingsPreferences {

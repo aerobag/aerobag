@@ -4837,11 +4837,6 @@ button {
   max-width: none;
 }
 
-.airwayChoiceButton.isSuggested {
-  border-color: #d45a7a;
-  box-shadow: 0 0 0 2px rgba(212, 90, 122, 0.22);
-}
-
 @keyframes spin {
   from {
     transform: rotate(0deg);

@@ -4,6 +4,8 @@
 
 package org.aerobag.app
 
+import org.aerobag.app.domain.MapOrientationMode
+
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
@@ -71,6 +73,7 @@ internal class AerobagRetainedModel : ViewModel() {
     var coreSession: AerobagRetainedCoreSession? = null
         private set
 
+    var tourSavedView: Triple<AppViewSnapshot, List<AppViewSnapshot>, MapOrientationMode>? = null
     var page: AppPage? = null
     var pageHistory: List<AppViewSnapshot> = emptyList()
     var mapViewport: MapViewportState? = null

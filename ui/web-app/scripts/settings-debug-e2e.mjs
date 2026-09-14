@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: 2026 Aerobag contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +25,7 @@ let browser;
 
 try {
   chrome = await launchChrome({ userDataDir, width: viewportWidth, height: viewportHeight });
-  browser = await connectToBrowser(chrome.wsUrl);
+  browser = await connectToBrowser(chrome.endpoint);
   const page = await browser.createPage();
   await page.send("Page.enable");
   await page.send("Runtime.enable");
@@ -37,6 +38,7 @@ try {
   await page.navigate(url);
   await page.waitForLoad();
   await acceptDisclaimerAndWaitForMap(page);
+  await dismissFirstUseTour(page);
 
   const legacyDebugUi = await page.evaluate(`(() => ({
     launcher: Boolean(document.querySelector('.debugLauncher')),

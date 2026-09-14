@@ -5,7 +5,7 @@
 
 import type { NavSymbolFeature } from "./navQueryWire";
 
-export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 15 as const;
+export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 16 as const;
 
 export const UI_INVALIDATION_VALUES = ["nav_data", "session_snapshot", "raster_tiles", "map_overlay", "nexrad_overlay", "terrain_overlay", "flight_plan_route", "debug_panel"] as const;
 
@@ -236,6 +236,64 @@ export type UiDataStatusPageState = {
   rows: UiDataStatusPageRow[];
   summary: string;
   title: string;
+};
+
+export type UiTourPage = "map" | "flight_plan" | "charts" | "home" | "altitude_planner" | "offline_packages" | "cloud";
+
+export type UiTourSurface = "none" | "base_map" | "layers" | "flight_plan_row" | "route_entry" | "plate_airports" | "plate_folder" | "aircraft_models" | "inspector" | "weather" | "notams" | "airport_info" | "ownship" | "offline_regions" | "offline_products" | "offline_help";
+
+export type UiTourPlacement = "auto" | "top_right" | "bottom_right" | "center";
+
+export type UiTourPresentation = "callout" | "title_card";
+
+export type UiTourViewport = {
+  centered: boolean;
+  lat: number;
+  lon: number;
+  track_up: boolean;
+  zoom: number;
+};
+
+export type UiTourMapPoint = {
+  lat: number;
+  lon: number;
+};
+
+export type UiTourShortcut = {
+  action: UiTourAction;
+  key: string;
+};
+
+export type UiGuidedTour = {
+  back_enabled: boolean;
+  body: string;
+  chapter: string;
+  close_label: string;
+  generation: number;
+  map_point?: UiTourMapPoint | null;
+  next_label: string;
+  option_uid?: string | null;
+  page: UiTourPage;
+  placement: UiTourPlacement;
+  position: number;
+  presentation: UiTourPresentation;
+  restart_label?: string | null;
+  row_uid?: string | null;
+  shortcuts: UiTourShortcut[];
+  step_id: string;
+  subject: string;
+  surface: UiTourSurface;
+  targets: string[];
+  title: string;
+  total: number;
+  viewport: UiTourViewport;
+};
+
+export type UiTourAction = "start" | "start_introduction" | "restart" | "next" | "back" | "close";
+
+export type UiTourCommand = {
+  action: UiTourAction;
+  expected_generation?: number | null;
 };
 
 export type UiChartPageState = {

@@ -29,6 +29,8 @@ pub(crate) struct SessionProjectionVersions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApplicationShellProjectionDependencies {
+    pub guided_tour: Option<app_ui_contracts::tour::UiGuidedTour>,
+    pub guided_tour_auto_start: bool,
     pub content_policy: ContentPolicy,
     pub last_content_report: Option<ContentReport>,
 }
@@ -235,6 +237,8 @@ mod tests {
 
     fn application_shell_dependencies() -> ApplicationShellProjectionDependencies {
         ApplicationShellProjectionDependencies {
+            guided_tour: None,
+            guided_tour_auto_start: false,
             content_policy: ContentPolicy::PreferLocal,
             last_content_report: None,
         }

@@ -38,6 +38,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -3087,6 +3088,67 @@ internal fun MapExplorerPage(
         }
     }
 
+    val tour = LocalGuidedTour.current
+    val tourFeedback = LocalGuidedTourFeedback.current
+    LaunchedEffect(tour?.generation, surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+        val step = tour ?: return@LaunchedEffect
+        chartTrayOpen = step.surface == org.aerobag.app.generated.UiTourSurface.BaseMap
+        layerTrayOpen = step.surface == org.aerobag.app.generated.UiTourSurface.Layers
+        situationTrayOpen = step.surface == org.aerobag.app.generated.UiTourSurface.Ownship
+        chartSearchOpen = false
+        openStatusControlId = null
+        mapSelection = null
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return@LaunchedEffect
+        if (step.surface !in listOf(org.aerobag.app.generated.UiTourSurface.Inspector, org.aerobag.app.generated.UiTourSurface.Weather,
+                org.aerobag.app.generated.UiTourSurface.Notams, org.aerobag.app.generated.UiTourSurface.AirportInfo)) return@LaunchedEffect
+        suspend fun show(result: MapSelectionQueryResult, selectedId: String?) {
+            if (uiSession.snapshot.guidedTour?.generation != step.generation) return
+            val item = mapSelectionItemById(result, selectedId ?: result.initialSelectedItemId)
+            val point = step.mapPoint?.let {
+                MapDisplayFrame(viewportState.value,surfaceWidthPx,surfaceHeightPx).latLonToScreen(it.lat,it.lon)
+            }
+            mapSelection = MapSelectionUiState(point?.let { Offset(it.x,it.y) } ?: Offset(surfaceWidthPx/2f,surfaceHeightPx/2f),result,item)
+            if (step.surface == org.aerobag.app.generated.UiTourSurface.AirportInfo) {
+                // Keep asynchronous preparation owned by the current scene.
+                val detail = withContext(Dispatchers.IO) { uiSession.airportInfo(step.subject) }
+                if (uiSession.snapshot.guidedTour?.generation == step.generation) {
+                    mapSelection = mapSelection?.copy(detailModal = MapSelectionDetailModalState(
+                        title = step.subject, airportInfo = detail,
+                    ))
+                }
+            } else if (step.surface == org.aerobag.app.generated.UiTourSurface.Weather || step.surface == org.aerobag.app.generated.UiTourSurface.Notams) {
+                val wx = item?.actions?.firstOrNull { it.id == "wx" }
+                if (wx?.enabled == true) performSelectedMapAction(wx)
+                else tourFeedback(step.generation, wx?.disabledReason ?: "Weather is currently unavailable for this airport.")
+            }
+        }
+        val selectionReady = kotlinx.coroutines.CompletableDeferred<Pair<MapSelectionQueryResult, String?>>()
+        val mapPoint = step.mapPoint
+        if (mapPoint != null) {
+            sessionWorkRunner.submitMapSelection(viewportState.value, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble(),
+                LatLonPoint(mapPoint.lat,mapPoint.lon), density.density.toDouble(),
+                fetchResource = { fetchMapOverlayCoreResource(context,it,devServerBaseUrl) },
+                onResult = { result ->
+                    val spot = result.categories.flatMap { it.items }.firstOrNull { it.navRef is NavRef.Spot }
+                    if (spot == null) selectionReady.completeExceptionally(IllegalStateException("The selected spot is unavailable."))
+                    else selectionReady.complete(result to spot.id)
+                }, onError = { selectionReady.completeExceptionally(it) })
+        } else {
+            sessionWorkRunner.submitMapSelectionForNavRef(viewportState.value, surfaceWidthPx.toDouble(), surfaceHeightPx.toDouble(),
+                NavRef.Airport(step.subject), density.density.toDouble(),
+                fetchResource = { fetchMapOverlayCoreResource(context,it,devServerBaseUrl) },
+                onResult = { selectionReady.complete(it.selection to it.selectedItemId) }, onError = { selectionReady.completeExceptionally(it) })
+        }
+        try {
+            val (result, selectedId) = selectionReady.await()
+            show(result, selectedId)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            tourFeedback(step.generation, error.message ?: "This map view could not be prepared.")
+        }
+    }
+
     fun toggleOpenMapSelectionTimeDisplay(actionId: String) {
         val previous = mapSelection ?: return
         val selectedItemId = previous.selectedItem?.id
@@ -3789,8 +3851,8 @@ internal fun MapExplorerPage(
             }
 
             mapSelection?.takeIf { mapInteraction?.inspect == true }?.let { selection ->
-                Popup(
-                    onDismissRequest = { mapSelection = null },
+                TourAwarePopup(
+                    onDismiss = { mapSelection = null },
                     properties = PopupProperties(focusable = true, clippingEnabled = false),
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
@@ -4856,6 +4918,11 @@ private fun MapSelectionHighlightLayer(
     mapUpDeg: Double,
 ) {
     val item = selectedItem ?: return
+    val spot = item.highlight as? MapSelectionHighlight.Spot
+    if (spot != null) {
+        MapSelectionSpotMarker(spot, MapDisplayFrame(viewport, surfaceWidthPx, surfaceHeightPx), uiTheme)
+        return
+    }
     Canvas(modifier = Modifier.fillMaxSize()) {
         when (val highlight = item.highlight) {
             is MapSelectionHighlight.FeatureRef -> {
@@ -4963,11 +5030,23 @@ private fun MapSelectionHighlightLayer(
                     drawOfflineRegion(region, densityScale, uiTheme, selected = true)
                 }
             }
-            is MapSelectionHighlight.Spot -> {
-                val point = latLonToScreen(highlight.lat, highlight.lon, viewport, surfaceWidthPx, surfaceHeightPx)
-                drawMapSelectionSpotSymbol(point, densityScale, uiTheme)
-            }
+            is MapSelectionHighlight.Spot -> Unit // Rendered by its anchored Canvas above.
+
         }
+    }
+}
+
+/** The drawn marker owns its tour anchor. Both follow the map's displayed frame. */
+@Composable
+internal fun MapSelectionSpotMarker(spot: MapSelectionHighlight.Spot, frame: MapDisplayFrame, uiTheme: UiTheme) {
+    val point = frame.latLonToScreen(spot.lat, spot.lon)
+    val density = LocalDensity.current
+    // Symbol bounds include the four-unit white outline around the peg.
+    val left = with(density) { 16.dp.toPx() }
+    val top = with(density) { 39.dp.toPx() }
+    Canvas(Modifier.offset { IntOffset((point.x-left).roundToInt(), (point.y-top).roundToInt()) }
+        .size(32.dp, 43.dp).guidedTourAnchor("tour:map-spot-marker")) {
+        drawMapSelectionSpotSymbol(Offset(left,top), density.density, uiTheme)
     }
 }
 
@@ -5321,7 +5400,7 @@ internal fun WeatherDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .testTag("parity:weather-detail-modal")
+            .testTag("parity:weather-detail-modal").guidedTourAnchor("tour:weather")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),
@@ -5395,7 +5474,7 @@ internal fun AirportInfoModal(
     val scrollState = rememberScrollState()
     Surface(
         modifier = modifier
-            .testTag("parity:airport-info-modal:${detail.airportId}")
+            .testTag("parity:airport-info-modal:${detail.airportId}").guidedTourAnchor("tour:airport-info")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),
@@ -5692,6 +5771,7 @@ private fun AirportRunwayDiagram(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun AirportNotamSection(
     notams: List<AirportNotamUiView>,
@@ -5699,10 +5779,15 @@ internal fun AirportNotamSection(
     trailingLabel: String = notams.size.toString(),
     emptyText: String,
 ) {
+    val tour = LocalGuidedTour.current
+    val bringIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    LaunchedEffect(tour?.generation) {
+        if (tour?.surface == org.aerobag.app.generated.UiTourSurface.Notams) bringIntoView.bringIntoView()
+    }
     val uiTheme = LocalAerobagUiTheme.current
     Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxWidth().guidedTourAnchor("tour:notams").bringIntoViewRequester(bringIntoView)
             .background(
                 uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f),
                 RoundedCornerShape(ThumbRadius),
@@ -5944,6 +6029,7 @@ internal fun MapSelectionItemButton(
                     selected = selected,
                     text = item.label,
                 )
+                .then(if (item.highlight is MapSelectionHighlight.Spot) Modifier.guidedTourAnchor("tour:inspector-spot") else Modifier)
                 .clickable(onClick = onClick),
             shape = RoundedCornerShape(ThumbRadius),
             color = containerColor,

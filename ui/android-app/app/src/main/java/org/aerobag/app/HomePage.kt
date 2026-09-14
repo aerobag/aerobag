@@ -339,6 +339,7 @@ private fun UiHomePageButton.toHomeGridButton(): HomeGridButton {
     val externalUrl: String?
     val iconResId: Int?
     when (destination) {
+        UiHomeDestination.GuidedTour -> { targetPage = null; externalUrl = null; iconResId = R.drawable.home_guided_tour_icon }
         UiHomeDestination.Chart -> {
             targetPage = AppPage.Map
             externalUrl = null
@@ -425,6 +426,7 @@ internal fun HomePage(
     navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
+    onStartTour: () -> Unit = {},
     onOpenRecentChartOrPlate: () -> Unit = {},
     offlinePackagesControllerHandle: Long,
     synchronizedOfflinePackagePreferencesJson: String = "{\"regions\":{},\"products\":{}}",
@@ -455,6 +457,37 @@ internal fun HomePage(
             .buttons
             .map { it.toHomeGridButton() }
     }
+    val tour = LocalGuidedTour.current
+    val tourFeedback = LocalGuidedTourFeedback.current
+    var tourPackagesUi by remember { mutableStateOf<OfflinePackagesControllerUiStateWire?>(null) }
+    var tourCatalog by remember { mutableStateOf<OfflinePackagesControllerEventWire.LibraryRefreshSucceeded?>(null) }
+    LaunchedEffect(tour?.generation) {
+        val step = tour ?: return@LaunchedEffect
+        if (!offlinePackagesRouted) return@LaunchedEffect
+        try {
+            tourPackagesUi = withContext(Dispatchers.IO) {
+                val input = OfflinePackagesControllerInputWire(packageSourceBaseUrl=packageSourceBaseUrl,
+                    discoveryFilenames=emptyList(),nowEpochMs=System.currentTimeMillis(),
+                    installed=listInstalledPackageArtifacts(context.applicationContext),
+                    storage=installedPackageStorageInfo(context.applicationContext),event=OfflinePackagesControllerEventWire.EnsureLibrary)
+                fun preview(event: OfflinePackagesControllerEventWire) = PackageManagementJson.decodeFromString<OfflinePackagesControllerUiStateWire>(
+                    NativeBindings.guidedTourPackagesPreviewJson(offlinePackagesControllerHandle, PackageManagementJson.encodeToString(input.copy(event=event)), step.stepId))
+                var ui = preview(tourCatalog ?: input.event)
+                if (!ui.libraryLoaded) {
+                    val connections = ActivePackageConnections()
+                    try {
+                        // Read catalog metadata only. The preview API returns no package
+                        // commands or persistence, including on a fresh installation.
+                        val catalog = refreshOfflinePackageLibrary(packageSourceBaseUrl,connections)
+                        tourCatalog = catalog
+                        ui = preview(catalog)
+                    } finally { connections.disconnectAll() }
+                }
+                ui
+            }
+        } catch (error: CancellationException) { throw error
+        } catch (error: Throwable) { tourFeedback(step.generation,error.message ?: "The package catalog could not be loaded.") }
+    }
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
     var appliedSynchronizedOfflinePackagePreferencesJson by remember(offlinePackagesControllerHandle) {
@@ -479,6 +512,7 @@ internal fun HomePage(
         offlinePackageOperationJob = job
     }
     suspend fun dispatchOfflinePackagesController(event: OfflinePackagesControllerEventWire) {
+        if (tour != null) return
         if (!offlinePackagesControllerAlive.get()) {
             diagnosticLogInfo("OfflinePackages") {
                 "dropping event=${event::class.simpleName} for disposed controller handle=$offlinePackagesControllerHandle"
@@ -616,6 +650,7 @@ internal fun HomePage(
         durableSyncRecord?.updatedAtEpochMs,
         offlinePackagesControllerHandle,
     ) {
+        if (tour != null) return@LaunchedEffect
         val record = durableSyncRecord ?: return@LaunchedEffect
         when (record.phase) {
             DurableOfflinePackageSyncPhase.Queued,
@@ -666,6 +701,7 @@ internal fun HomePage(
         synchronizedOfflinePackagePreferencesJson,
         offlinePackageOperationJob,
     ) {
+        if (tour != null) return@LaunchedEffect
         if (
             shouldApplySynchronizedOfflinePackagePreferences(
                 offlinePackagesRouted = offlinePackagesRouted,
@@ -751,7 +787,9 @@ internal fun HomePage(
                             diagnosticLogInfo("AerobagNavigation") {
                                 "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}"
                             }
-                            if (button.targetPage != null) {
+                            if (button.key == UiHomeDestination.GuidedTour.name) {
+                                onStartTour()
+                            } else if (button.targetPage != null) {
                                 onSelectPage(button.targetPage)
                             } else if (button.externalUrl != null) {
                                 uriHandler.openUri(button.externalUrl)
@@ -773,7 +811,7 @@ internal fun HomePage(
                     bottom = ThumbSize + (ThumbGap * 2f),
                 )
                 .zIndex(1f)
-            val controllerUiState = offlinePackagesControllerResult?.uiState
+            val controllerUiState = if (tour != null) tourPackagesUi else offlinePackagesControllerResult?.uiState
             LaunchedEffect(
                 offlinePackagesRouted,
                 packageSourceBaseUrl,

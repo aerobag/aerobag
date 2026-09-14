@@ -15,6 +15,14 @@ internal class AndroidCoreSettingsStore(context: Context) : CoreSettingsStore {
     private val file = File(context.applicationContext.filesDir, CoreSettingsFileName)
     private val atomicFile = AtomicFile(file)
 
+    private val introductionFile = AtomicFile(File(context.applicationContext.filesDir, "tour-introduction-v1.json"))
+
+    @Synchronized
+    override fun readTourIntroduction(): ByteArray? = if (introductionFile.baseFile.exists()) introductionFile.readFully() else null
+
+    @Synchronized
+    override fun writeTourIntroduction(bytes: ByteArray) = writeDocument(introductionFile, bytes)
+
     @Synchronized
     override fun readSettings(): ByteArray? =
         if (file.exists()) {
@@ -24,8 +32,10 @@ internal class AndroidCoreSettingsStore(context: Context) : CoreSettingsStore {
         }
 
     @Synchronized
-    override fun writeSettings(bytes: ByteArray) {
-        file.parentFile?.mkdirs()
+    override fun writeSettings(bytes: ByteArray) = writeDocument(atomicFile, bytes)
+
+    private fun writeDocument(atomicFile: AtomicFile, bytes: ByteArray) {
+        atomicFile.baseFile.parentFile?.mkdirs()
         val output = atomicFile.startWrite()
         try {
             output.write(bytes)
@@ -39,5 +49,6 @@ internal class AndroidCoreSettingsStore(context: Context) : CoreSettingsStore {
     @Synchronized
     fun clearSettings() {
         atomicFile.delete()
+        introductionFile.delete()
     }
 }

@@ -139,6 +139,7 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -409,6 +410,14 @@ internal fun ChartsPage(
     var openStatusControlId by remember { mutableStateOf<UiSurfaceStatusControlId?>(null) }
     var procedureNotamDetail by remember { mutableStateOf<PlateProcedureNotamDetail?>(null) }
     var situationTrayOpen by remember { mutableStateOf(false) }
+    val tour = LocalGuidedTour.current
+    val tourFeedback = LocalGuidedTourFeedback.current
+    LaunchedEffect(tour?.generation) {
+        airportTrayOpen = tour?.surface == org.aerobag.app.generated.UiTourSurface.PlateAirports
+        chartTrayOpen = false
+        loadTrayOpen = false
+        situationTrayOpen = false
+    }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     fun applySessionCommand(operation: () -> UiSessionSnapshot) {
         try {
@@ -431,6 +440,7 @@ internal fun ChartsPage(
         bitmapLoadKey,
         sessionWorkRunner,
         devServerBaseUrl,
+        tour?.generation,
     ) {
         val chartId = bitmapLoadKey.chartId
         value = null
@@ -456,6 +466,9 @@ internal fun ChartsPage(
             .onFailure { error ->
                 if (error is CancellationException) {
                     throw error
+                }
+                tour?.let { step ->
+                    tourFeedback(step.generation, "This plate image is unavailable. Check that its region’s plates are available and try again.")
                 }
                 if (error is org.aerobag.app.domain.NativeSessionCommandRejectedException) {
                     onSessionCommandFailure(error)
@@ -980,8 +993,8 @@ internal fun ChartsPage(
         }
 
         procedureNotamDetail?.let { detail ->
-            Popup(
-                onDismissRequest = { procedureNotamDetail = null },
+            TourAwarePopup(
+                onDismiss = { procedureNotamDetail = null },
                 properties = PopupProperties(focusable = true, clippingEnabled = false),
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -1160,7 +1173,7 @@ internal fun ChartPlateToggleButton(
     Box(modifier = Modifier.size(ThumbSize)) {
         CompactSquareButton(
             label = option?.launcherLabel ?: currentPage.name.uppercase(),
-            modifier = Modifier.matchParentSize(),
+            modifier = Modifier.matchParentSize().guidedTourAnchor("tour:chart-plate"),
             selected = currentPage == AppPage.Map || currentPage == AppPage.Charts,
             iconResId = option?.iconResId,
             onClick = { onSelectPage(targetPage) },
@@ -1185,7 +1198,7 @@ internal fun ChartPlateReturnButton(
         ?: pageOptions.firstOrNull { it.page == AppPage.Map }
     CompactSquareButton(
         label = option?.launcherLabel ?: chartPage.name.uppercase(),
-        modifier = Modifier.size(ThumbSize),
+        modifier = Modifier.size(ThumbSize).guidedTourAnchor("tour:chart-plate"),
         iconResId = option?.iconResId,
         onClick = onClick,
     )
@@ -1200,7 +1213,7 @@ internal fun HomePageButton(
     val homeOption = LocalNavigationPageOptions.current.options.firstOrNull { it.page == AppPage.Home }
     CompactSquareButton(
         label = homeOption?.launcherLabel ?: AppPage.Home.name.uppercase(),
-        modifier = modifier.size(ThumbSize),
+        modifier = modifier.size(ThumbSize).guidedTourAnchor("tour:home"),
         selected = currentPage == AppPage.Home,
         iconResId = homeOption?.iconResId,
         onClick = onClick,
@@ -1858,7 +1871,7 @@ internal fun PlateFolderGrid(
             ) {
                 Surface(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .fillMaxSize().guidedTourAnchor("tour:plate-folder")
                         .e2eIndexedControl(
                             semanticTag = "parity:plate-folder-tile:${chart.id}",
                             enabled = true,
@@ -2008,6 +2021,7 @@ internal fun MenuDock(
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     var anchorTopPx by remember { mutableStateOf(0f) }
+    var anchorRootPosition by remember { mutableStateOf(Offset.Zero) }
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
     val launcherAccentColor = options.firstOrNull { it.active }?.accentColor
     val buttonWidth = buttonWidthOverride ?: style.buttonWidth
@@ -2046,18 +2060,20 @@ internal fun MenuDock(
                 .align(Alignment.TopStart)
                 .onGloballyPositioned { coordinates ->
                     anchorTopPx = coordinates.boundsInWindow().top
+                    anchorRootPosition = coordinates.boundsInRoot().topLeft
                 },
             onClick = onToggle,
         )
         if (open) {
-            Popup(
+            TourAwarePopup(
+                position = anchorRootPosition,
                 offset = IntOffset(0, trayOffsetPx.roundToInt()),
-                onDismissRequest = onToggle,
-                properties = PopupProperties(focusable = true),
+                onDismiss = onToggle,
             ) {
                 MenuPanel(
                     modifier = Modifier
                         .semantics { testTagsAsResourceId = true }
+                        .guidedTourAnchor("${launcherTestTag}:tray")
                         .width(trayWidth)
                         .heightIn(max = trayMaxHeight),
                 ) {
@@ -2358,7 +2374,7 @@ internal fun NavElementDock(
             modifier
                 .width(ThumbSize * 3f)
                 .height(ThumbSize)
-                .testTag("parity:nav-cdi")
+                .e2eIndexedElement("parity:nav-cdi", "enabled:true")
                 .then(
                     if (onClick != null) {
                         Modifier.clickable(

@@ -7,6 +7,7 @@ pub mod home;
 pub mod nav_query;
 pub mod nexrad;
 pub mod session;
+pub mod tour;
 pub mod work;
 
-pub const UI_WIRE_CONTRACT_VERSION: u32 = 15;
+pub const UI_WIRE_CONTRACT_VERSION: u32 = 16;

@@ -4,6 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -256,7 +257,7 @@ function allocatePort() {
 async function launchIsolatedPage(name) {
   const userDataDir = path.join(profileRoot, name);
   const chrome = await launchChrome({ userDataDir });
-  const browser = await connectToBrowser(chrome.wsUrl);
+  const browser = await connectToBrowser(chrome.endpoint);
   const page = await browser.createPage();
   resources.push({ chrome, browser });
   await page.send("Page.enable");
@@ -276,6 +277,7 @@ async function launchIsolatedPage(name) {
     }
     return state.map;
   }, 60_000, `${name} browser did not reach the map`);
+  await dismissFirstUseTour(page);
   return { chrome, browser, page };
 }
 

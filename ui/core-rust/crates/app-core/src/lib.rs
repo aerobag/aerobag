@@ -31,6 +31,7 @@ mod forecast_atmosphere;
 pub mod freshness;
 pub mod geodesy;
 pub mod geometry;
+mod guided_tour;
 pub mod had_ops;
 pub mod ids;
 pub mod live_feed_cache;
@@ -88,6 +89,7 @@ pub use altitude_planner::{
 pub use app_ui_contracts::session::{
     UiNavigationPageId, UiNavigationPageOption, UiNavigationPageState,
 };
+pub use app_ui_contracts::tour::{UiTourAction, UiTourCommand};
 pub use barometer::{BarometerCommand, BarometerEditor, BarometerReading};
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
@@ -2468,3 +2470,5 @@ mod tests {
         );
     }
 }
+
+pub use package_management::guided_tour_packages_preview;

@@ -137,7 +137,7 @@ async function startupState(runtime, timeoutMs = E2E_TIMING.startupMs) {
   return runtime.eventually("operational startup state", () => readStartupState(runtime), timeoutMs);
 }
 
-async function acceptDisclaimer(runtime, { required = false } = {}) {
+async function acceptDisclaimer(runtime, { required = false, keepIntroduction = false } = {}) {
   const initial = await startupState(runtime);
   if (initial.disclaimer_required !== "true") {
     if (required) {
@@ -154,6 +154,17 @@ async function acceptDisclaimer(runtime, { required = false } = {}) {
   const completed = await startupState(runtime);
   if (completed.disclaimer_required !== "false") {
     throw new Error("application startup retained mandatory disclaimer after acceptance");
+  }
+  if (!keepIntroduction) {
+    await runtime.eventually("first-use introduction settled", async () => {
+      const state = await readStartupState(runtime);
+      return state?.tour_pending !== "true" ? state : null;
+    });
+    if (await runtime.driver.readElement("guided-tour-panel")) {
+      await runtime.action("close first-use tour", "guided-tour-close", { complete: async () => !(await runtime.driver.readElement("guided-tour-panel")) });
+      // Preserve the conventional post-disclaimer chart landing for the journey.
+      await runtime.openPage("map");
+    }
   }
   return true;
 }
@@ -2721,6 +2732,56 @@ async function flightPlanAirwayEstimates(runtime) {
   runtime.check("plan.estimates-vectors", Boolean(estimates), `${estimates?.length ?? 0} populated cells`);
 }
 
+async function guidedTour(runtime) {
+  // Android bootstrap has already cleared user settings, installed the nav
+  // packages and accepted its startup disclaimer. Observe that first welcome
+  // directly; clearing all data here would remove the required packages too.
+  if (runtime.platform === "web") await runtime.resetApplicationData();
+  await acceptDisclaimer(runtime, { required: runtime.platform === "web", keepIntroduction: true });
+  runtime.check("tour.first-use", Boolean(await runtime.eventually("automatic welcome", async () => {
+    const panel = await runtime.driver.readElement("guided-tour-panel");
+    return panel?.text.includes("Three pages for most of your flying") ? panel : null;
+  })));
+  await runtime.action("close automatic tour", "guided-tour-close", { complete: async () => !(await runtime.driver.readElement("guided-tour-panel")) && await runtime.driver.readPage("home") });
+  await runtime.reload();
+  await startupState(runtime);
+  runtime.check("tour.offered-once", !(await runtime.driver.readElement("guided-tour-panel")) && (await readStartupState(runtime))?.tour_pending === "false");
+  await runtime.openPage("flight_plan");
+  const airway = runtime.capability("airway");
+  await appendRoute(runtime, `${airway.entry} ${airway.exit}`);
+  const labels = async () => (await planRows(runtime)).map(row => row.text);
+  const original = await labels();
+  await runtime.openPage("map");
+  const originalMap = (await runtime.driver.readElement("chart-family-button"))?.text;
+  if (!originalMap) throw new Error("The original base map control is missing.");
+  await runtime.openPage("home");
+  const panel = () => runtime.driver.readElement("guided-tour-panel");
+  const at = async (text) => { const value = await panel(); return value?.text.includes(text) ? value : null; };
+  const start = (title = "Three pages for most of your flying") => runtime.action("start guided tour", runtime.platform === "web" ? "home-button-guided_tour" : "home-button:GuidedTour", {
+    complete: () => at(title),
+  });
+  runtime.check("home.guided-tour", Boolean(await start()));
+  runtime.check("tour.next", Boolean(await runtime.action("next tour step", "guided-tour-next", { complete: () => at("The Chart page") })));
+  runtime.check("tour.back", Boolean(await runtime.action("previous tour step", "guided-tour-back", { complete: () => at("Three pages for most of your flying") })));
+  await runtime.action("return to chart lesson", "guided-tour-next", { complete: () => at("The Chart page") });
+  runtime.check("tour.menu", Boolean(await runtime.action("open base map lesson", "guided-tour-next", {
+    complete: async () => {
+      const step = await at("Select the base map");
+      const next = await runtime.driver.readElement("guided-tour-next");
+      return step && next?.enabled ? step : null;
+    },
+  })));
+  await runtime.action("close guided tour", "guided-tour-close", { complete: async () => !(await panel()) && await runtime.driver.readPage("home") });
+  await runtime.openPage("flight_plan");
+  const restoredPlan = JSON.stringify(await labels()) === JSON.stringify(original);
+  await runtime.openPage("map");
+  runtime.check("tour.close-restores", restoredPlan && (await runtime.driver.readElement("chart-family-button"))?.text === originalMap);
+  await runtime.openPage("home");
+  runtime.check("tour.reopen", Boolean(await start("Select the base map")));
+  runtime.check("tour.restart", Boolean(await runtime.action("restart guided tour", "guided-tour-restart", { complete: () => at("Three pages for most of your flying") })));
+  await runtime.action("close reopened tour", "guided-tour-close", { complete: async () => !(await panel()) });
+}
+
 async function flightPlanFindRoute(runtime) {
   const airway = runtime.capability("airway");
   const control = (name) => `airway-routing-control-${name}`;
@@ -3740,6 +3801,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.airport-info": airportInfo,
   "shared.inspector-details": inspectorDetails,
   "shared.flight-plan-airway-estimates": flightPlanAirwayEstimates,
+  "shared.guided-tour": guidedTour,
   "shared.flight-plan-find-route": flightPlanFindRoute,
   "shared.altitude-planner": altitudePlanner,
   "shared.replay-track-up": replayTrackUp,

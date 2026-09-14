@@ -573,6 +573,13 @@ internal fun OfflinePackagesPanel(
         !syncInFlight && !syncEnabled -> syncDisabledReason
         else -> null
     }
+    val tour = LocalGuidedTour.current
+    val tourListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(tour?.generation) {
+        val step = tour ?: return@LaunchedEffect
+        val regionsIndex = (if (uiState.coreProducts.isNotEmpty()) 1 else 0) + (if (uiState.zoomLevels.isNotEmpty()) 1 else 0)
+        tourListState.scrollToItem(regionsIndex + if (step.surface == org.aerobag.app.generated.UiTourSurface.OfflineProducts || step.surface == org.aerobag.app.generated.UiTourSurface.OfflineHelp) 1 else 0)
+    }
     val preferenceStateTag = buildString {
         append("parity:offline-preferences")
         uiState.regions.sortedBy { it.id }.forEach { row ->
@@ -742,7 +749,13 @@ internal fun OfflinePackagesPanel(
 
             OfflinePackageAllSection(row = uiState.allPackages)
 
+            if (tour?.surface == org.aerobag.app.generated.UiTourSurface.OfflineHelp) {
+                uiState.products.firstOrNull()?.helpText?.let { text ->
+                    Text(text, modifier=Modifier.fillMaxWidth().guidedTourAnchor("tour:offline-help-panel").padding(8.dp), color=uiTheme.controls.panelFg)
+                }
+            }
             LazyColumn(
+                state = tourListState,
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
@@ -821,7 +834,7 @@ internal fun OfflinePackageSection(
     onRowClick: (OfflinePackagesEventWire) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    MenuPanel(modifier = Modifier.fillMaxWidth()) {
+    MenuPanel(modifier = Modifier.fillMaxWidth().guidedTourAnchor(if (title == "REGIONS") "tour:offline-regions" else "tour:offline-products")) {
         Text(
             text = title,
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
@@ -829,12 +842,13 @@ internal fun OfflinePackageSection(
             fontWeight = FontWeight.ExtraBold,
             color = uiTheme.controls.panelMuted,
         )
-        rows.forEach { row ->
+        rows.forEachIndexed { index, row ->
             val selectionEvent = row.selectionEvent
             OfflinePackagePlanRow(
                 label = row.label,
                 row = row,
                 testTag = "$testTagPrefix:${row.id}",
+                tourHelpAnchor = title == "PRODUCTS" && index == 0,
                 enabled = enabled && selectionEvent != null,
                 disabledReason = selectionEvent?.let { disabledReason },
                 onCycleClick = selectionEvent?.let { event ->
@@ -853,6 +867,7 @@ internal fun OfflinePackagePlanRow(
     disabledReason: String? = null,
     onCycleClick: (() -> Unit)?,
     backgroundOverride: Color? = null,
+    tourHelpAnchor: Boolean = false,
     testTag: String? = null,
 ) {
     val context = LocalContext.current
@@ -869,7 +884,7 @@ internal fun OfflinePackagePlanRow(
             .height(ThumbSize * 1.32f)
             .then(
                 testTag?.let {
-                    Modifier.testTag("$it:selection:${row.selection.name.lowercase()}")
+                    Modifier.testTag("$it:selection:${row.selection.name.lowercase()}").guidedTourAnchor(it)
                 } ?: Modifier,
             )
             .clip(RoundedCornerShape(ThumbRadius))
@@ -941,7 +956,7 @@ internal fun OfflinePackagePlanRow(
             if (!row.helpText.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .fillMaxSize().then(if (tourHelpAnchor) Modifier.guidedTourAnchor("tour:offline-help") else Modifier)
                         .clip(CircleShape)
                         .border(1.dp, uiTheme.controls.buttonFg, CircleShape)
                         .clickable(

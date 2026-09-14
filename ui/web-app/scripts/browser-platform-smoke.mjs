@@ -4,6 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,7 +32,7 @@ try {
     height: viewportHeight,
   });
   progress("connecting to Chrome");
-  browser = await connectToBrowser(chrome.wsUrl);
+  browser = await connectToBrowser(chrome.endpoint);
   const page = await browser.createPage();
   await page.send("Page.enable");
   await page.send("Runtime.enable");
@@ -49,6 +50,7 @@ try {
 
   progress("waiting for map");
   await acceptDisclaimerIfPresent(page);
+  await dismissFirstUseTour(page);
   const mapRect = await waitForMap(page);
   progress("checking shared time-display actions");
   const timeDisplay = await verifyTimeDisplayActions(page);

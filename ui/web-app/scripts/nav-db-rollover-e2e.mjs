@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -156,6 +157,7 @@ async function runScenario(scenario) {
       `cycle ${initialCycle} startup`,
     );
     await acceptDisclaimer(page);
+    await dismissFirstUseTour(page);
     await buildRichFlightPlan(page);
     assert(
       !(await page.evalValue("Boolean(document.querySelector('.disclaimerAcceptButton'))")),

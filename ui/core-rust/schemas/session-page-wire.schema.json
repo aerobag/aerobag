@@ -1424,6 +1424,126 @@
       ],
       "type": "object"
     },
+    "UiGuidedTour": {
+      "additionalProperties": false,
+      "properties": {
+        "back_enabled": {
+          "type": "boolean"
+        },
+        "body": {
+          "type": "string"
+        },
+        "chapter": {
+          "type": "string"
+        },
+        "close_label": {
+          "type": "string"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "map_point": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiTourMapPoint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_label": {
+          "type": "string"
+        },
+        "option_uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page": {
+          "$ref": "#/$defs/UiTourPage"
+        },
+        "placement": {
+          "$ref": "#/$defs/UiTourPlacement"
+        },
+        "position": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "presentation": {
+          "$ref": "#/$defs/UiTourPresentation"
+        },
+        "restart_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "row_uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shortcuts": {
+          "items": {
+            "$ref": "#/$defs/UiTourShortcut"
+          },
+          "type": "array"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/UiTourSurface"
+        },
+        "targets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "total": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "viewport": {
+          "$ref": "#/$defs/UiTourViewport"
+        }
+      },
+      "required": [
+        "generation",
+        "step_id",
+        "chapter",
+        "title",
+        "body",
+        "placement",
+        "presentation",
+        "position",
+        "total",
+        "page",
+        "surface",
+        "subject",
+        "targets",
+        "viewport",
+        "back_enabled",
+        "next_label",
+        "close_label",
+        "shortcuts"
+      ],
+      "type": "object"
+    },
     "UiInvalidation": {
       "enum": [
         "nav_data",
@@ -2141,6 +2261,154 @@
         "controls"
       ],
       "type": "object"
+    },
+    "UiTourAction": {
+      "enum": [
+        "start",
+        "start_introduction",
+        "restart",
+        "next",
+        "back",
+        "close"
+      ],
+      "type": "string"
+    },
+    "UiTourCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/UiTourAction"
+        },
+        "expected_generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "UiTourMapPoint": {
+      "additionalProperties": false,
+      "description": "Geographic subject of an inspector scene, independent of camera framing.",
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "UiTourPage": {
+      "enum": [
+        "map",
+        "flight_plan",
+        "charts",
+        "home",
+        "altitude_planner",
+        "offline_packages",
+        "cloud"
+      ],
+      "type": "string"
+    },
+    "UiTourPlacement": {
+      "enum": [
+        "auto",
+        "top_right",
+        "bottom_right",
+        "center"
+      ],
+      "type": "string"
+    },
+    "UiTourPresentation": {
+      "enum": [
+        "callout",
+        "title_card"
+      ],
+      "type": "string"
+    },
+    "UiTourShortcut": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/UiTourAction"
+        },
+        "key": {
+          "description": "Lowercase key name; platforms normalize physical keyboard events.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "action"
+      ],
+      "type": "object"
+    },
+    "UiTourSurface": {
+      "description": "Transient presentation owned by the tour. These open the normal application\nsurfaces; the platform never decides which demonstration comes next.",
+      "enum": [
+        "none",
+        "base_map",
+        "layers",
+        "flight_plan_row",
+        "route_entry",
+        "plate_airports",
+        "plate_folder",
+        "aircraft_models",
+        "inspector",
+        "weather",
+        "notams",
+        "airport_info",
+        "ownship",
+        "offline_regions",
+        "offline_products",
+        "offline_help"
+      ],
+      "type": "string"
+    },
+    "UiTourViewport": {
+      "additionalProperties": false,
+      "properties": {
+        "centered": {
+          "type": "boolean"
+        },
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        },
+        "track_up": {
+          "type": "boolean"
+        },
+        "zoom": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lon",
+        "zoom",
+        "track_up",
+        "centered"
+      ],
+      "type": "object"
     }
   },
   "$id": "org.aerobag.ui-wire.session-page",
@@ -2168,6 +2436,9 @@
     },
     "display_policy": {
       "$ref": "#/$defs/UiDisplayPolicy"
+    },
+    "guided_tour": {
+      "$ref": "#/$defs/UiGuidedTour"
     },
     "map_interaction": {
       "$ref": "#/$defs/UiMapInteraction"
@@ -2204,9 +2475,14 @@
     },
     "surface_status": {
       "$ref": "#/$defs/UiSurfaceStatusState"
+    },
+    "tour_command": {
+      "$ref": "#/$defs/UiTourCommand"
     }
   },
   "required": [
+    "guided_tour",
+    "tour_command",
     "service_notifications",
     "airway_picker",
     "airway_routing",
@@ -2229,7 +2505,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 15,
+  "x-contract-version": 16,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -2270,6 +2546,16 @@
     "UiDataStatusPageFact",
     "UiDataStatusPageRow",
     "UiDataStatusPageState",
+    "UiTourPage",
+    "UiTourSurface",
+    "UiTourPlacement",
+    "UiTourPresentation",
+    "UiTourViewport",
+    "UiTourMapPoint",
+    "UiTourShortcut",
+    "UiGuidedTour",
+    "UiTourAction",
+    "UiTourCommand",
     "UiChartPageState",
     "UiMapLayerToggleState",
     "UiMapLayerOption",

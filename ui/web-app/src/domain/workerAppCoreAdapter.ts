@@ -75,6 +75,7 @@ type WorkerSessionProjection = {
 type WorkerCoreSettingsChanged = {
   kind: "coreSettingsChanged";
   settingsJson: string | null;
+  tourIntroductionJson: string | null;
 };
 
 type WorkerDebugLog = {
@@ -191,6 +192,7 @@ class AppCoreWorkerClient {
     }
     if (message.kind === "coreSettingsChanged") {
       writePersistedCoreSettingsJson(message.settingsJson);
+      writePersistedCoreSettingsJson(message.tourIntroductionJson, webTourIntroductionStorageKey);
       return;
     }
     if (message.kind === "workerDebugLog") {
@@ -359,6 +361,7 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
         selectedAirportId,
         selectedChartId,
         settingsJson: readPersistedCoreSettingsJson(),
+        tourIntroductionJson: readPersistedCoreSettingsJson(webTourIntroductionStorageKey),
         nowEpochMs: Date.now(),
       };
       const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [request]);
@@ -417,6 +420,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     suggestWaypointIdentifiersAtFlightPlanRow: (...args) => call("suggestWaypointIdentifiersAtFlightPlanRow", args),
     previewFlightPlanEntry: (...args) => call("previewFlightPlanEntry", args),
     appendFlightPlanEntry: (...args) => updateSnapshot(call("appendFlightPlanEntry", args)),
+    performGuidedTourAction: (...args) => updateSnapshot(call("performGuidedTourAction", args)),
     performAirwayRoutingAction: (...args) => updateSnapshot(call("performAirwayRoutingAction", args)),
     dragAirwayRoute: (...args) => updateSnapshot(call("dragAirwayRoute", args)),
     airwayRoutingViewport: (...args) => call("airwayRoutingViewport", args),
@@ -517,23 +521,24 @@ function workerError(payload: WorkerErrorPayload): Error {
   return error;
 }
 
+const webTourIntroductionStorageKey = "aerobag.tour.introduction.v1";
 const webCoreSettingsStorageKey = "aerobag.core.settings.v1";
 
-function readPersistedCoreSettingsJson(): string | null {
+function readPersistedCoreSettingsJson(key = webCoreSettingsStorageKey): string | null {
   try {
-    return window.localStorage.getItem(webCoreSettingsStorageKey);
+    return window.localStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-function writePersistedCoreSettingsJson(settingsJson: string | null): void {
+function writePersistedCoreSettingsJson(settingsJson: string | null, key = webCoreSettingsStorageKey): void {
   try {
     if (settingsJson === null || settingsJson.length === 0) {
-      window.localStorage.removeItem(webCoreSettingsStorageKey);
+      window.localStorage.removeItem(key);
       return;
     }
-    window.localStorage.setItem(webCoreSettingsStorageKey, settingsJson);
+    window.localStorage.setItem(key, settingsJson);
   } catch {
     // Losing a persistence write should not make the live session unusable.
   }

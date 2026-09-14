@@ -1,8 +1,8 @@
 # Airway graph sizing and loading options
 
 Measured 2026-09-14. The audit below describes the NAV25 baseline; the selected
-NAV26 implementation is described first. This is not a post-change browser
-latency benchmark. Spinner work is deferred separately in
+NAV26 implementation and subsequent browser measurements are described first.
+Spinner work is deferred separately in
 [foreground-action-feedback-plan.md](foreground-action-feedback-plan.md).
 
 ## Implemented: One first-use graph page frontier (NAV26)
@@ -58,7 +58,7 @@ adds 120 compressed bytes. Actual publication alignment and neighboring records
 will change those page/byte totals slightly; these are not measured network
 latencies. The published NAV25 baseline is 130 pages / 694,808 compressed bytes.
 
-Verification on this implementation: 1,014 core tests passed (27 ignored or
+Pre-publication verification: 1,014 core tests passed (27 ignored or
 fixture-dependent), including 49 platform-boundary tests; 84 shared contract,
 HAD and package/fixture tests passed; 5 focused producer tests passed; web
 TypeScript and all 233 unit tests passed; WASM target type-check passed.
@@ -67,12 +67,44 @@ arm64-v8a and x86_64. No physical-device run or new-publication browser run was
 performed in this change.
 These are not real-device/real-publication latency results.
 
-Before integration/push: rebuild a NAV26 publication and genuinely regenerate
-the compact smoke/release fixtures, updating their pinned artifact commit and
-contract metadata together. The permanent logical rollover fixture now encodes
-the new logical graph record as Postcard inside HAD; do not relabel NAV25 bytes.
-Then repeat KRNT-KLVN on 8085, cold and warm, preferably with added RTT.
-8085 stays on its previous optimized NAV25 WASM until that publication exists.
+### NAV26 publication and browser results
+
+Publication `main-56c813c3cc44/20260914T163556Z`, cycle 2609, contains
+NAVDB `c16b4a0ddfa2cf6810de7540f5edf225e698b3af6be55ee0f975408a2aa74abb`.
+The shared HAD prefix audit confirms one graph value of 1,196,453 bytes over
+19 value pages, plus one lookup page. Startup already installs that lookup page.
+
+Optimized WASM on 8085, headless Chrome on the dev server, KRNT-KLVN:
+
+- Three independent fresh browser profiles: first Find Route reached the
+  editor summary in 103, 88, and 87 ms.
+- Each cold graph request discovered all 19 pages in one frontier. Fetch,
+  decompression and installation of that frontier took 49, 50, and 50 ms.
+- HAD value assembly took 0-1 ms; Postcard decode/validation took 2-3 ms;
+  shortest-path search took 4-5 ms.
+- A separate snapshot resource needed one additional page, taking 2-3 ms.
+- Six warm reopenings took 28, 25, 24, 23, 23, and 35 ms. They did not fetch
+  or decode the graph again; searches took 3-5 ms.
+
+The endpoint is DOM-observed editor summary availability, polled at 20 ms,
+not an after-paint measurement. Cold means fresh browser and core caches;
+the server's disk cache is warm. These are local, unthrottled measurements,
+not evidence of laptop/Firefox or high-RTT performance. Do not compare them
+as a controlled speedup against the user's earlier four-second observation.
+The first run saved valid timings but failed during temporary-profile cleanup;
+bounded removal retries, as used by the other browser labs, fixed that race.
+The next two complete harness runs passed. Reports are
+`/tmp/aerobag-airway-routing-nav26-run2.json` and `-run3.json`.
+
+Both compact fixtures were genuinely rebuilt from this publication. Another
+checkout concurrently published artifact commit
+`ef74b3f0587a7e77ec6637bfbedd3d05d42d4027`; its fixture data matches our independent
+rebuild byte-for-byte. Use that published commit, now pinned in the application,
+rather than publishing a duplicate. Live-feed samples are unchanged. Both
+fixture contract checks and release-fixture materialization passed. This closes
+the temporary NAV25/NAV26 fixture mismatch accepted for the producer handoff.
+The permanent logical rollover fixture generates the new graph as Postcard
+inside HAD. Full browser/emulator release journeys were not run for this handoff.
 
 ## What the NAV25 first action reads
 
@@ -231,8 +263,8 @@ supports early **descriptor** fetch much more clearly than mandatory graph fetch
 From the repository root, with NAVDB naming an unpacked publication directory:
 
 ```sh
-cargo +1.94.1 run --locked --manifest-path ui/core-rust/Cargo.toml \\
-  --target-dir ../ui-target/shared/rust-target -p app-core \\
+cargo +1.94.1 run --locked --manifest-path ui/core-rust/Cargo.toml \
+  --target-dir ../ui-target/shared/rust-target -p app-core \
   --example airway_graph_audit -- "$NAVDB" /tmp/airway-graph-audit
 ```
 
@@ -244,9 +276,9 @@ roundtrips, and the selected Postcard-in-HAD graph through per-page XZ decoding,
 metadata-only prefetch and one missing-page frontier with the shared reader. Nothing
 is written into the publication or loaded into a live session.
 
-This is size evidence, not a native-to-WASM performance extrapolation. After
-publishing NAV26, compare browser cold/warm latency and startup
-under realistic RTT/bandwidth, verify all retained route/altitude/crossing results
+This offline audit is size evidence, not a native-to-WASM performance extrapolation.
+After the local browser measurements above, further comparison should cover
+cold/warm latency and startup under realistic RTT/bandwidth. Verify retained route/altitude/crossing results
 with golden tests, test concurrent requests and failed fetch retry, and retain
 short installation work units so transport bundling does not become UI blocking.
 
@@ -258,6 +290,6 @@ Code owners inspected:
   route_crossings, summary and materialize.
 - crates/product-contracts/src/airway_routing.rs: serialized graph schema.
 - product/preprocessor/preprocessor-cli/src/product_build/airway_routing.rs:
-  producer and chunking; nav_db.rs: unfiltered branch inputs and json_pair.
+  graph producer; nav_db.rs: unfiltered branch inputs and binary graph value.
 - ui/core-rust/crates/app-core/src/had_ops.rs: NavDbOpenController prefetch barrier.
-- ui/web-app/src/domain/navKv.ts: six-slot queue and installation yields.
+- ui/web-app/src/domain/navKv.ts: unrestricted fetch dispatch and installation yields.

@@ -56,10 +56,11 @@ Crossing constraints retain their separate meaning, including published context
 at a fix where the pilot leaves the airway. Routing does not select procedures
 or require an altitude ceiling from the pilot.
 
-Smoke and release-journey fixture locks must be updated with genuinely rebuilt
-NAV26 artifacts before this client revision is pushed; the current pins still
-supply NAV25. NAVDB rollover's permanent logical source in `crates/nav-db-fixture`
-has been migrated and generates its scenarios locally without historical FAA cycles. See
+Smoke and release-journey fixtures were rebuilt from the real NAV26 cycle-2609
+publication and pinned on 2026-09-14. Their contract metadata and publication
+bytes now match the client. NAVDB rollover's permanent logical source in
+`crates/nav-db-fixture` has been migrated and generates its scenarios locally
+without historical FAA cycles. See
 [Hosted CI Invariants](testing/hosted-ci.md) for fixture ownership and checks.
 
 ## Map editor

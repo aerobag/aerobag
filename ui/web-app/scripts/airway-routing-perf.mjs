@@ -81,5 +81,5 @@ try {
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

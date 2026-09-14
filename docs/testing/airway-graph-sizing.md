@@ -252,6 +252,57 @@ schedule the whole frontier. Production HTTPS negotiated HTTP/2 when checked;
 local Vite HTTP negotiated HTTP/1.1. HTTP/1.1 browser connection limits can
 still serialize requests, whereas HTTP/2 permits multiplexed streams.
 
+## Unresolved Firefox stall report (2026-09-14)
+
+The user reported a first Find Route taking over ten seconds, followed by fast
+reopens/reloads. Do not treat the localhost Chrome results as disproving this.
+The available Firefox trace `browser-mu1nu549-x2abmp37`, RPC 153, instead shows:
+
+- 202 ms for the first-use 19-page graph frontier; 1 ms assembly, 6 ms decoding,
+  12 ms search; another snapshot page takes 16 ms.
+- 250 ms worker method duration; 349 ms total main-thread RPC round trip.
+- Map navigation begins about 276 ms after RPC dispatch; the first map frame
+  marker is about 342 ms after dispatch. That marker is not proof of paint.
+- Later reloads `browser-mu1nwgsc-m77ynqyw` and `browser-mu1nwmmx-eszqj22w`
+  fetch/install all 19 graph pages again (245/186 ms), decode in 7 ms, and finish
+  their RPCs in 367/321 ms. Core's graph cache did not survive these reloads.
+
+The old trace did not timestamp the physical click, and its HTTP cache evidence
+was absent: `lastResourceTimingForUrl` incorrectly required `window`, although
+fetches now run in a worker. Two new worker-context tests failed with null
+timings before replacing that check with worker-compatible `location`.
+
+Added sparse row-action pointer/click, decision, mutation, navigation, editor
+commit, frame-opportunity, and viewport-fit markers. Compare main-thread markers
+on their own clock; worker log forwarding also carries worker-local timestamps.
+Do not add overlapping RPC and frame durations or interpret the frame opportunity
+as a measured compositor presentation. These are diagnostics, not a stall fix.
+
+The browser probe now uses trusted pointer events and hit-testing, asserts the
+input/decision/editor markers, and accepts `--cold-http`. It verifies actual
+HTTP transfer for every graph page, not just a fresh Rust cache. Final desktop
+run: 19/19 pages transferred, 558,436 bytes including reported HTTP overhead;
+93 ms frontier; click-to-commit 139 ms, click-to-frame-opportunity 153 ms.
+A narrow-screen run also passed. `inner:check` passed all 248 web tests and
+TypeScript. Reproduce from `ui/web-app` with
+`node scripts/airway-routing-perf.mjs --cold-http` (optionally `--narrow`).
+The >10-second Firefox stall remains unaccounted for and needs a capture with
+these input-boundary markers; no latency repair is claimed here.
+
+The next logged Firefox attempt (`browser-mu1oe4pg-sghdg4it`) reached editor
+commit 301 ms after click and the frame marker after 343 ms. It rebuilt core's
+graph from 19 pages in 197 ms; available HTTP timings showed cache hits. The
+user also reported a fast private-window attempt, but that attempt did not
+upload a separate trace. Keep the unexplained stall distinct from these passes.
+
+Production retention: diagnostics remain opt-in. With logging disabled, the
+new frame effect schedules no callbacks, timing wrappers invoke the action
+directly, and page-fetch diagnostics skip Resource Timing lookup entirely.
+A regression test failed before adding that lookup guard and passes afterward.
+The markers do not gate rendering or schedule routing work. Enabled capture
+uses the existing bounded debug-log queue; the standalone probe's collected
+records are test-only and not part of the app.
+
 ## Eager loading tradeoff
 
 Today's root-prefetch set is 21 pages / 113,980 B. NavDbOpenController::step

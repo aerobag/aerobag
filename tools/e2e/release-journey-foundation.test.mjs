@@ -66,7 +66,7 @@ import {
 } from "./gesture-geometry.mjs";
 import { recreateWebJourneyPage, WebSemanticTransport } from "./web-semantic-transport.mjs";
 import {
-  assertConditionRemains, E2E_TIMING, observeChangedValueUntilStable,
+  E2E_TIMING, observeChangedValueUntilStable,
   ObservationTimeoutError, observeUntil, observeValueUntilStable, performTransition,
   TerminalObservationError, TransientObservationError,
 } from "./transition-contract.mjs";
@@ -922,17 +922,6 @@ test("a failed transition records its phase and final diagnostic state", async (
   assert.deepEqual(timings[0].action_result, { accepted: true });
   assert.deepEqual(timings[0].diagnostic_state, { state: "model-updated" });
   assert.ok(timings[0].observation.attempts > 0);
-});
-
-test("temporal behavior is sampled instead of hidden behind a sleep", async () => {
-  let samples = 0;
-  const result = await assertConditionRemains(
-    "stable state",
-    async () => ++samples,
-    (sample) => sample > 0,
-    { durationMs: 8, intervalMs: 1 },
-  );
-  assert.ok(result.samples >= 2);
 });
 
 test("shared journeys contain no mutations inside observation loops or fixed UI sleeps", () => {

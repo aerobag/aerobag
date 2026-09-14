@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { observeDebugLog, type DebugLogRecord } from "./debugLog";
 import {
   completeResourceFreeSessionMutation,
   NavKvStore,
@@ -86,6 +87,59 @@ describe("ResourceIngestCoordinator", () => {
 });
 
 describe("NavKvStore page fetching", () => {
+  it("does not inspect resource timings with production diagnostics disabled", async () => {
+    vi.stubGlobal("window", undefined);
+    vi.stubGlobal("location", { protocol: "http:", href: "http://fixture.test/worker.js" });
+    vi.stubGlobal("__aerobagDebugLogEnabled", false);
+    vi.stubGlobal("__aerobagPerfRunId", undefined);
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response(new Uint8Array([1, 2, 3]))));
+    const getEntries = vi.spyOn(performance, "getEntriesByName");
+    const records: DebugLogRecord[] = [];
+    const unobserve = observeDebugLog((record) => records.push(record));
+    const insert = vi.fn();
+    const store = Reflect.construct(NavKvStore, [
+      { nav_kv_insert_resource: insert }, 17, "http://fixture.test/nav_db/root",
+    ]) as TestableNavKvStore;
+    try {
+      await store.ensureNavKvPage(1);
+      expect(insert).toHaveBeenCalledOnce();
+      expect(getEntries).not.toHaveBeenCalled();
+      expect(records).toHaveLength(0);
+    } finally {
+      unobserve();
+      getEntries.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([0, 423])("records worker resource timing with transfer size %i", async (transferSize) => {
+    vi.stubGlobal("window", undefined);
+    vi.stubGlobal("location", { protocol: "http:", href: "http://fixture.test/worker.js" });
+    vi.stubGlobal("__aerobagDebugLogEnabled", true);
+    const fetchPage = vi.fn<typeof fetch>(async () => new Response(new Uint8Array([1, 2, 3])));
+    vi.stubGlobal("fetch", fetchPage);
+    const getEntries = vi.spyOn(performance, "getEntriesByName").mockReturnValue([{
+      duration: 15, startTime: 100, responseStart: 110, responseEnd: 115,
+      transferSize, encodedBodySize: 123, decodedBodySize: 123,
+    } as PerformanceResourceTiming]);
+    const records: DebugLogRecord[] = [];
+    const unobserve = observeDebugLog((record) => records.push(record));
+    const store = Reflect.construct(NavKvStore, [
+      { nav_kv_insert_resource: vi.fn() }, 17, "http://fixture.test/nav_db/root",
+    ]) as TestableNavKvStore;
+    try {
+      await store.ensureNavKvPage(1);
+      expect(records.find((record) => record.tag === "nav_kv.page.fetch_detail")?.data).toMatchObject({
+        transfer_size: transferSize, encoded_body_size: 123, resource_duration_ms: 15,
+      });
+      expect(getEntries).toHaveBeenCalledWith(fetchPage.mock.calls[0]?.[0], "resource");
+    } finally {
+      unobserve();
+      getEntries.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("yields between page installations without scheduling clamped timers", async () => {
     const timer = vi.spyOn(globalThis, "setTimeout");
     const originalFetch = globalThis.fetch;

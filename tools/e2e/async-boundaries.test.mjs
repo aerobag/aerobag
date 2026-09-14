@@ -93,6 +93,34 @@ test("deadline ownership removes timers on early success and rejection", async (
   assert.equal(calls, 0);
 });
 
+test("temporal behavior is sampled instead of hidden behind a sleep", async () => {
+  const clock = manualScheduler();
+  let waiting = deferred();
+  const scheduler = {
+    ...clock,
+    setTimeout(callback, ms) {
+      const timer = clock.setTimeout(callback, ms);
+      if (ms === 1) waiting.resolve();
+      return timer;
+    },
+  };
+  const samples = [];
+  const observation = assertConditionRemains("stable state", () => {
+    samples.push(clock.now());
+    return true;
+  }, Boolean, { durationMs: 8, intervalMs: 1, scheduler });
+  for (let tick = 0; tick < 8; tick += 1) {
+    // Wait for the actual inter-sample timer, not a wall-clock scheduling guess.
+    await waiting.promise;
+    waiting = deferred();
+    assert.equal(samples.length, tick + 1);
+    clock.advance(1);
+  }
+  assert.deepEqual(await observation, { durationMs: 8, samples: 8 });
+  assert.deepEqual(samples, [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(clock.pending(), 0);
+});
+
 test("temporal sampling cannot pass while its last probe is hung", async () => {
   const scheduler = manualScheduler();
   const entered = deferred();

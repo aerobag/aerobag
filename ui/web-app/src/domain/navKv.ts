@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
+import { debugLog, debugTiming, installRustDebugLogBridge, isDebugLogEnabled } from "./debugLog";
 import { resolveLiveFeedResourceUrl } from "./liveFeedUrls";
 import type { UiSessionUpdate } from "../generated/sessionUpdateWire";
 
@@ -1005,6 +1005,7 @@ function logNavKvPageFetchDetail(
   completedAt: number,
   byteLength: number,
 ) {
+  if (!isDebugLogEnabled()) return;
   const timing = lastResourceTimingForUrl(requestUrl);
   const responseEnd = timing?.responseEnd;
   debugLog("nav_kv.page.fetch_detail", {
@@ -1024,10 +1025,10 @@ function logNavKvPageFetchDetail(
 }
 
 function lastResourceTimingForUrl(requestUrl: string): PerformanceResourceTiming | null {
-  if (typeof performance === "undefined" || typeof window === "undefined") {
+  if (typeof performance === "undefined" || typeof location === "undefined") {
     return null;
   }
-  const absoluteUrl = new URL(requestUrl, window.location.href).href;
+  const absoluteUrl = new URL(requestUrl, location.href).href;
   const entries = performance.getEntriesByName(absoluteUrl, "resource") as PerformanceResourceTiming[];
   return entries.at(-1) ?? null;
 }

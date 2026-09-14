@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Aerobag contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { debugLog, debugTiming, isDebugLogEnabled } from "./domain/debugLog";
 import type { NavSymbolFeature } from "./generated/navQueryWire";
 import type { UiAirwayRouteDragPhase, UiAirwayRoutePosition, UiAirwayRouting } from "./generated/sessionPageWire";
 import type { UiSession, UiSessionSnapshot } from "./domain/appCoreAdapter";
@@ -34,6 +35,16 @@ export function AirwayRoutingOverlay(props: Props) {
   const [cursor, setCursor] = useState<UiAirwayRoutePosition | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [panelBounds, setPanelBounds] = useState<LabelRect | null>(null);
+  useLayoutEffect(() => {
+    if (!isDebugLogEnabled()) return;
+    const trace = { edit_id: view.edit_id, row_uid: view.row_uid };
+    debugLog("airway_routing.editor.commit", trace);
+    let frame = requestAnimationFrame(() => {
+      // A paint opportunity, not proof that the compositor presented pixels.
+      frame = requestAnimationFrame(() => debugLog("airway_routing.editor.after_frame", trace));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [view.edit_id, view.row_uid]);
   useEffect(() => {
     const element = panel.current;
     if (!element) return;
@@ -48,13 +59,13 @@ export function AirwayRoutingOverlay(props: Props) {
   useEffect(() => {
     if (width <= 0 || height <= 0 || fitted.current === view.edit_id) return;
     let cancelled = false;
-    void (async () => {
+    void debugTiming("airway_routing.editor.fit", async () => {
       const p = latest.current;
       const frame = await p.session.airwayRoutingViewport(width, height, geometry.displayViewport().rotationDeg ?? 0);
       if (cancelled || !frame) return;
       p.onSnapshot(await p.session.disengageMapFollow(frame), "airway_routing_fit");
       if (!cancelled) { fitted.current = view.edit_id; p.onViewport(frame); }
-    })().catch((error) => latest.current.onError(error));
+    }, { edit_id: view.edit_id, row_uid: view.row_uid }).catch((error) => latest.current.onError(error));
     return () => { cancelled = true; };
   }, [view.edit_id, width > 0 && height > 0]);
 

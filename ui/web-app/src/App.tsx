@@ -9599,6 +9599,7 @@ function FlightPlanPage(props: {
     if (airwayRouting?.map_open && openedRoutingId.current !== airwayRouting.edit_id) {
       openedRoutingId.current = airwayRouting.edit_id;
       setSelectedWaypointUid(null);
+      debugLog("plan.airway_routing.navigate", { edit_id: airwayRouting.edit_id, row_uid: airwayRouting.row_uid });
       props.onSelectPage("map");
     } else if (!airwayRouting && priorRoutingRow.current) {
       setSelectedWaypointUid((current) => current === priorRoutingRow.current ? null : current);
@@ -9860,12 +9861,18 @@ function FlightPlanPage(props: {
       if (!uiSession) {
         return;
       }
-      const decision = await uiSession.flightPlanRowActionDecision(
-        selectedRow.rowUid,
-        actionUid,
+      const trace = { row_uid: selectedRow.rowUid, action_uid: actionUid };
+      const decision = await debugTiming(
+        "plan.row_action.decision",
+        () => uiSession.flightPlanRowActionDecision(selectedRow.rowUid, actionUid),
+        trace,
       );
       if (decision.perform_session_mutation) {
-        await props.onPerformFlightPlanRowAction(selectedRow.rowUid, actionUid);
+        await debugTiming(
+          "plan.row_action.mutation",
+          () => props.onPerformFlightPlanRowAction(selectedRow.rowUid, actionUid),
+          trace,
+        );
       }
       const effect = decision.effect;
       if (effect?.kind === "show_weather") {
@@ -10793,9 +10800,21 @@ function FlightPlanPage(props: {
                           disabled={disabled && !disabledReason}
                           aria-disabled={disabled ? "true" : undefined}
                           title={disabledReason ?? undefined}
-                          onPointerDown={stopPointer}
+                          onPointerDown={(event) => {
+                            stopPointer(event);
+                            debugLog("plan.row_action.pointer_down", {
+                              row_uid: selectedRow.rowUid, action_uid: action.uid, action_id: action.id,
+                              event_delay_ms: Math.round(performance.now() - event.timeStamp),
+                              trusted: event.isTrusted, disabled,
+                            });
+                          }}
                           onPointerUp={stopPointer}
-                          onClick={() => {
+                          onClick={(event) => {
+                            debugLog("plan.row_action.click", {
+                              row_uid: selectedRow.rowUid, action_uid: action.uid, action_id: action.id,
+                              event_delay_ms: Math.round(performance.now() - event.timeStamp),
+                              trusted: event.isTrusted, disabled,
+                            });
                             if (disabled) {
                               if (disabledReason) {
                                 showDisabledAction(disabledReason);

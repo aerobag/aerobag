@@ -4374,17 +4374,10 @@ pub fn status_action_decision_in_session(
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
-    if action_id == crate::service_notifications::OPEN_INBOX {
+    if crate::service_notifications::ServiceNotifications::handles_action(&action_id) {
         return Ok(UiStatusActionDecision {
-            platform_effect: Some(
-                app_ui_contracts::session::UiStatusPlatformEffect::OpenServiceNotifications,
-            ),
-            perform_session_mutation: false,
-        });
-    }
-    if action_id.starts_with("service:read:") || action_id.starts_with("service:read-all:") {
-        return Ok(UiStatusActionDecision {
-            platform_effect: None,
+            platform_effect: (action_id == crate::service_notifications::OPEN_INBOX)
+                .then_some(app_ui_contracts::session::UiStatusPlatformEffect::OpenDataStatus),
             perform_session_mutation: true,
         });
     }
@@ -5704,8 +5697,25 @@ pub fn perform_status_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if action_id.starts_with("service:read:") || action_id.starts_with("service:read-all:") {
+    if crate::service_notifications::ServiceNotifications::handles_action(&action_id) {
         return run_session_model_transaction(session, |session| {
+            let receipts = session.cloud.service_read_receipts()?;
+            if session
+                .coordinator
+                .service_notifications
+                .presentation_action(
+                    &action_id,
+                    session.coordinator.wall_clock_epoch_ms,
+                    session
+                        .coordinator
+                        .platform_capabilities
+                        .client_build
+                        .as_ref(),
+                    &receipts,
+                )
+            {
+                return Ok(vec![UiInvalidation::SessionSnapshot]);
+            }
             let keys = session
                 .coordinator
                 .service_notifications
@@ -13104,7 +13114,6 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
         button(UiHomeDestination::AltitudePlanner, "ALTITUDE\nPLANNER"),
         button(UiHomeDestination::DataStatus, "STATUS"),
         button(UiHomeDestination::Settings, "SETTINGS"),
-        button(UiHomeDestination::ServiceNotifications, "SERVICE\nNOTICES"),
     ];
     if capabilities.cloud.is_some() {
         buttons.push(button(UiHomeDestination::Cloud, "CLOUD"));
@@ -13147,12 +13156,6 @@ pub fn navigation_page_state_for_platform(
             false,
         ),
         option(UiNavigationPageId::DataStatus, "STATUS", "STATUS", false),
-        option(
-            UiNavigationPageId::ServiceNotifications,
-            "SERVICE NOTIFICATIONS",
-            "NOTICES",
-            false,
-        ),
         option(UiNavigationPageId::Settings, "SETTINGS", "SET", false),
         option(UiNavigationPageId::Home, "HOME", "HOME", false),
     ];
@@ -17160,7 +17163,6 @@ mod tests {
                 (UiHomeDestination::AltitudePlanner, "ALTITUDE\nPLANNER"),
                 (UiHomeDestination::DataStatus, "STATUS"),
                 (UiHomeDestination::Settings, "SETTINGS"),
-                (UiHomeDestination::ServiceNotifications, "SERVICE\nNOTICES"),
                 (UiHomeDestination::OfflinePackages, "OFFLINE\nPACKAGES"),
                 (UiHomeDestination::About, "ABOUT"),
             ]
@@ -17199,11 +17201,6 @@ mod tests {
                     "ALT",
                 ),
                 (UiNavigationPageId::DataStatus, "STATUS", "STATUS"),
-                (
-                    UiNavigationPageId::ServiceNotifications,
-                    "SERVICE NOTIFICATIONS",
-                    "NOTICES"
-                ),
                 (UiNavigationPageId::Settings, "SETTINGS", "SET"),
                 (UiNavigationPageId::Home, "HOME", "HOME"),
             ]
@@ -17739,6 +17736,20 @@ mod tests {
             crate::service_notifications::STATUS_ID
         ));
         assert!(has_data_status_box(&before, &fault.id));
+        let inbox = crate::service_notifications::OPEN_INBOX.to_string();
+        let decision = status_action_decision_in_session(init.handle, inbox.clone()).unwrap();
+        assert_eq!(
+            decision.platform_effect,
+            Some(app_ui_contracts::session::UiStatusPlatformEffect::OpenDataStatus)
+        );
+        assert!(decision.perform_session_mutation);
+        perform_status_action_in_session(init.handle, inbox).unwrap();
+        assert!(
+            get_session_snapshot(init.handle)
+                .unwrap()
+                .service_notifications
+                .expanded
+        );
         let action = before.service_notifications.items[0]
             .open_action
             .action_id
@@ -17752,6 +17763,18 @@ mod tests {
         assert!(has_data_status_box(&after, &fault.id));
         assert!(after.service_notifications.items[0].expanded);
         assert!(!after.service_notifications.items[0].unread);
+        assert!(after.service_notifications.expanded);
+        perform_status_action_in_session(
+            init.handle,
+            after.service_notifications.enter_action.action_id.clone(),
+        )
+        .unwrap();
+        assert!(
+            !get_session_snapshot(init.handle)
+                .unwrap()
+                .service_notifications
+                .expanded
+        );
         destroy_session(init.handle);
         let restored = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
         configure_platform_capabilities_in_session(restored.handle, capabilities, Some(storage))

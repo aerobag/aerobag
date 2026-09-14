@@ -10,6 +10,9 @@ import { createServer, request as httpRequest } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LiveFeedCutoverFixture } from "./live-feed-cutover-fixture.mjs";
+import {
+  createServiceBulletinFixture, SERVICE_BULLETIN_CONTROL_PATH, SERVICE_BULLETIN_PATH,
+} from "./service-notifications-fixture.mjs";
 
 const LIVE_FEED_SCHEMA_VERSION = 3;
 const LIVE_FEED_PREFIX = `/live-feeds/v${LIVE_FEED_SCHEMA_VERSION}`;
@@ -260,6 +263,7 @@ export function createReleaseJourneyFixtureServer(args) {
   const cutover = args.liveFeedProfile === "cutover" ? new LiveFeedCutoverFixture(config.current) : null;
   const recentRequests = [];
   const abortedTransportFaults = new Set();
+  const serviceBulletins = createServiceBulletinFixture();
   let generation = 0;
   const control = {
     publication: "primary",
@@ -301,15 +305,10 @@ export function createReleaseJourneyFixtureServer(args) {
     }
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     const pathname = decodeURIComponent(url.pathname);
-    if (pathname === "/service/bulletins-v1.json") {
-      response.setHeader("Content-Type", "application/json");
-      response.end(JSON.stringify({schema_version:1,
-        publisher:`http://${request.headers.host}/service/bulletins-v1.json`,revision:1,
-        published_at_utc:"2026-01-01T00:00:00Z",releases:[],notices:[{
-          id:"fixture-notice",attention_revision:1,title:"Journey service announcement",body:"Fixture announcement body.",
-          severity:"info",published_at_utc:"2026-01-01T00:00:00Z",effective_at_utc:null,expires_at_utc:null,
-          resolved:false,audience:{releases:[],platforms:[]},link:null,
-        }]}));
+    if (pathname === SERVICE_BULLETIN_PATH && ["GET", "HEAD"].includes(request.method)) {
+      const document = serviceBulletins.document(request.headers.host);
+      requestDiagnostic.service_bulletin_revision = document.revision;
+      sendBytes(request, response, Buffer.from(JSON.stringify(document)));
       return;
     }
     const transportFaultId = url.searchParams.get("aerobag_e2e_abort_once");
@@ -319,7 +318,7 @@ export function createReleaseJourneyFixtureServer(args) {
       request.socket.destroy();
       return;
     }
-    if (request.method === "POST" && pathname === "/__control") {
+    if (request.method === "POST" && ["/__control", SERVICE_BULLETIN_CONTROL_PATH].includes(pathname)) {
       let body = "";
       request.setEncoding("utf8");
       request.on("data", (chunk) => {
@@ -334,9 +333,15 @@ export function createReleaseJourneyFixtureServer(args) {
         }
         try {
           const update = JSON.parse(body || "{}");
+          if (pathname === SERVICE_BULLETIN_CONTROL_PATH) {
+            const state = serviceBulletins.publish(update);
+            sendBytes(request, response, Buffer.from(JSON.stringify(state)));
+            return;
+          }
           if (update.reset === true) {
             generation += 1;
             cutover?.reset();
+            serviceBulletins.reset();
             abortedTransportFaults.clear();
             control.publication = "primary";
             control.artifact_fault = "none";
@@ -402,6 +407,7 @@ export function createReleaseJourneyFixtureServer(args) {
         product_count: Object.keys(config.current.products ?? {}).length,
         control,
         ...(cutover ? { live_feed_cutover: cutover.status() } : {}),
+        service_notifications: serviceBulletins.state(),
         updated_artifact_filename: config.publicationVariants.updatedArtifactFilename,
       }));
       return;
@@ -441,10 +447,11 @@ export function createReleaseJourneyFixtureServer(args) {
         response.write(`event: ${event.event}\n`);
         response.write(`data: ${JSON.stringify(event.payload)}\n\n`);
       }
+      serviceBulletins.subscribe(response, request.headers.host);
       const heartbeat = setInterval(() => {
         response.write(`event: live-feed-heartbeat\ndata: ${JSON.stringify({ schema_version: LIVE_FEED_SCHEMA_VERSION, products: [] })}\n\n`);
       }, 15_000);
-      request.on("close", () => clearInterval(heartbeat));
+      response.on("close", () => clearInterval(heartbeat));
       return;
     }
     if (pathname === `${LIVE_FEED_PREFIX}/current.json`) {

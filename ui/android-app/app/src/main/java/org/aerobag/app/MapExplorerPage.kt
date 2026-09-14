@@ -3640,8 +3640,10 @@ internal fun MapExplorerPage(
                             chartTrayOpen = false
                             layerTrayOpen = false
                         },
+                        onDismiss = { openStatusControlId = null },
                         onAction = { actionId ->
                             val decision = uiSession.statusActionDecision(actionId)
+                            if (decision.platformEffect != null) openStatusControlId = null
                             if (decision.performSessionMutation) {
                                 applySessionCommand("performStatusAction") {
                                     uiSession.performStatusAction(actionId)
@@ -3650,8 +3652,8 @@ internal fun MapExplorerPage(
                             if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
                                 actions.onReloadApplication()
                             }
-                            if (decision.platformEffect is UiStatusPlatformEffect.OpenServiceNotifications) {
-                                actions.onSelectPage(AppPage.ServiceNotifications)
+                            if (decision.platformEffect is UiStatusPlatformEffect.OpenDataStatus) {
+                                actions.onSelectPage(AppPage.DataStatus)
                             }
                         }
                     )

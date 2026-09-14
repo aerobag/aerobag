@@ -872,7 +872,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "altitude" | "charts" | "home" | "data" | "settings" | "cloud" | "notices";
+type AppPage = "map" | "plan" | "altitude" | "charts" | "home" | "data" | "settings" | "cloud";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -1068,8 +1068,6 @@ function webHomeButtonPresentation(destination: UiHomeDestination): {
       return { page: "altitude", iconSrc: HOME_ALTITUDE_PLANNER_ICON_SRC };
     case "data_status":
       return { page: "data", iconSrc: HOME_STATUS_ICON_SRC };
-    case "service_notifications":
-      return { page: "notices", iconSrc: HOME_STATUS_ICON_SRC };
     case "settings":
       return { page: "settings", iconSrc: HOME_SETTINGS_ICON_SRC };
     case "cloud":
@@ -1369,7 +1367,6 @@ function appPageFromNavigationPageId(id: UiSessionSnapshot["navigation_page_stat
     case "flight_plan": return "plan";
     case "altitude_planner": return "altitude";
     case "data_status": return "data";
-    case "service_notifications": return "notices";
     case "settings": return "settings";
     case "home": return "home";
     default: return null;
@@ -2234,12 +2231,16 @@ function requireMapViewport(viewport: MapViewportState | null): MapViewportState
   return viewport;
 }
 
-const PageLayer = memo(
+const PageVisibilityContext = createContext(true);
+
+export const PageLayer = memo(
   function PageLayer(props: { active: boolean; children: ReactNode }) {
     return (
-      <div className={`pageLayer${props.active ? " isActive" : ""}`} aria-hidden={!props.active}>
-        {props.children}
-      </div>
+      <PageVisibilityContext.Provider value={props.active}>
+        <div className={`pageLayer${props.active ? " isActive" : ""}`} aria-hidden={!props.active}>
+          {props.children}
+        </div>
+      </PageVisibilityContext.Provider>
     );
   },
   (previous, next) => !previous.active && !next.active,
@@ -2415,7 +2416,9 @@ function OperationalApp() {
   const navDbMaintenanceTimerRef = useRef<number | null>(null);
   const cloudRefreshTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
-    service_notifications: { title: "", summary: "", source_status: [], items: [], mark_all_read: null },
+    service_notifications: { title: "", summary: "", expanded: false,
+      enter_action: {action_id: "", label: ""}, toggle_action: {action_id: "", label: ""},
+      source_status: [], items: [], mark_all_read: null },
     ui_contract_version: UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
     session_revision: 0,
     flight_plan_route_revision: 0,
@@ -2572,8 +2575,8 @@ function OperationalApp() {
     if (decision.platform_effect?.kind === "reload_application") {
       window.location.reload();
     }
-    if (decision.platform_effect?.kind === "open_service_notifications") {
-      navigateToPage("notices");
+    if (decision.platform_effect?.kind === "open_data_status") {
+      navigateToPage("data");
     }
   }, [applySessionSnapshot, uiSession, navigateToPage]);
 
@@ -4342,6 +4345,8 @@ function OperationalApp() {
         <DataStatusPage
           page={page}
           state={sessionSnapshot.data_status_page_state}
+          notices={sessionSnapshot.service_notifications}
+          onStatusAction={performStatusAction}
           navElement={planUiState?.guidance?.nav_element}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenPlan={() => navigateToPage("plan")}
@@ -4384,18 +4389,6 @@ function OperationalApp() {
                 applySessionSnapshot(nextSnapshot, "aircraft_library_action");
               });
           }}
-        />
-      </PageLayer>
-      <PageLayer active={page === "notices"}>
-        <ServiceNotificationsPage
-          page={page}
-          state={sessionSnapshot.service_notifications}
-          navElement={planUiState?.guidance?.nav_element}
-          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
-          onOpenPlan={() => navigateToPage("plan")}
-          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
-          onSelectPage={navigateToPage}
-          onAction={performStatusAction}
         />
       </PageLayer>
       <PageLayer active={page === "cloud"}>
@@ -13463,40 +13456,45 @@ function SettingsSyncIndicatorView(props: {
   );
 }
 
-export function ServiceNotificationsPage(props: {
-  page: AppPage;
+export function ServiceNotificationsSection(props: {
   state: UiSessionSnapshot["service_notifications"];
-  navElement: NavElementUiView | null | undefined;
-  mostRecentChartOrPlatePage: AppPage;
-  onOpenPlan: () => void;
-  onOpenRecentChartOrPlate: () => void;
-  onSelectPage: (page: AppPage) => void;
   onAction: (actionId: string) => void | Promise<void>;
 }) {
+  const active = useContext(PageVisibilityContext);
+  const entered = useRef(false);
+  const enterAction = props.state.enter_action.action_id;
+  useEffect(() => {
+    if (!active) entered.current = false;
+    else if (!entered.current && enterAction) {
+      entered.current = true;
+      void props.onAction(enterAction);
+    }
+  }, [active, enterAction, props.onAction]);
   return (
-    <section className="appPage dataStatusPage" data-testid="parity:page:service_notifications">
-      <PrimaryNavigationDock page={props.page} navElement={props.navElement}
-        chartPlateTargetPage={props.mostRecentChartOrPlatePage} onSelectPage={props.onSelectPage}
-        onOpenPlan={props.onOpenPlan} onOpenChartOrPlate={props.onOpenRecentChartOrPlate} />
-      <div className="dataStatusPagePanel" aria-label={props.state.title}>
-        <header className="dataStatusPageHeader">
-          <h1>{props.state.title}</h1><p>{props.state.summary}</p>
-          {props.state.mark_all_read && <button type="button" className="trayButton"
+    <section className="serviceNotificationsSection" data-testid="parity:service:section">
+      <button type="button" className="serviceNotificationsToggle"
+        data-testid="parity:service:toggle" aria-expanded={props.state.expanded}
+        aria-label={props.state.toggle_action.label}
+        onClick={() => void props.onAction(props.state.toggle_action.action_id)}>
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d={props.state.expanded ? "M1 3 L11 3 L6 9 Z" : "M3 1 L9 6 L3 11 Z"} /></svg>
+        <span>{props.state.title}</span><span className="serviceNotificationsSummary">{props.state.summary}</span>
+      </button>
+      {props.state.expanded && <div className="serviceNotificationsContent">
+          {props.state.mark_all_read && <button type="button" className="trayButton serviceNotificationsMarkAll"
             data-testid="parity:service:mark-all-read"
             onClick={() => void props.onAction(props.state.mark_all_read!.action_id)}>
             {props.state.mark_all_read.label}
           </button>}
-        </header>
-        <div className="dataStatusPageRows">
+        <div className="serviceNoticeList">
           {props.state.items.map((notice) => (
-            <article key={notice.id} className={`dataStatusPageRow statusSeverity-${notice.severity}`}>
+            <article key={notice.id} className={`serviceNoticeCard serviceNoticeTone-${notice.tone}`}>
               <button type="button" className="serviceNoticeTitle" aria-expanded={notice.expanded}
                 data-testid={`parity:service:notice:${notice.id}`}
                 onClick={() => void props.onAction(notice.open_action.action_id)}>
                 <span>{notice.title}</span><span>{notice.state_label}</span>
               </button>
               <div className="dataStatusPageRowDetail">{notice.timing}</div>
-              {notice.expanded && <div className="serviceNoticeBody">
+              {notice.expanded && <div className="serviceNoticeBody" data-testid={`parity:service:body:${notice.id}`}>
                 <div>{notice.body}</div>
                 {notice.link && <a href={notice.link.url} rel="noopener noreferrer">{notice.link.label}</a>}
               </div>}
@@ -13504,14 +13502,16 @@ export function ServiceNotificationsPage(props: {
           ))}
         </div>
         {props.state.source_status.map((status) => <p className="dataStatusPageRowDetail" key={status}>{status}</p>)}
-      </div>
+      </div>}
     </section>
   );
 }
 
-function DataStatusPage(props: {
+export function DataStatusPage(props: {
   page: AppPage;
   state: UiDataStatusPageState;
+  notices: UiSessionSnapshot["service_notifications"];
+  onStatusAction: (actionId: string) => void | Promise<void>;
   navElement: NavElementUiView | null | undefined;
   mostRecentChartOrPlatePage: AppPage;
   onOpenPlan: () => void;
@@ -13535,6 +13535,7 @@ function DataStatusPage(props: {
           <h1>{props.state.title}</h1>
           <p>{props.state.summary}</p>
         </header>
+        <ServiceNotificationsSection state={props.notices} onAction={props.onStatusAction} />
         <div className="dataStatusPageRows">
           {props.state.rows.map((row) => (
             <DataStatusPageRowArticle
@@ -13773,7 +13774,7 @@ function StatusControlDock(props: {
   );
 }
 
-function DataStatusDock(props: {
+export function DataStatusDock(props: {
   dataStatusState: UiDataStatusState;
   lowered?: boolean;
   open: boolean;
@@ -14323,12 +14324,17 @@ function TrayScrim(props: { ariaLabel: string; onClose: () => void }) {
   );
 }
 
-function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
+export function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
+  const active = useContext(PageVisibilityContext);
   const [openId, setOpenId] = useState<T | null>(null);
   const allowedIds = useMemo(() => new Set<T>(ids), [ids]);
 
+  useEffect(() => {
+    if (!active) setOpenId(null);
+  }, [active]);
+
   function isOpen(id: T) {
-    return openId === id;
+    return active && openId === id;
   }
 
   function toggle(id: T) {
@@ -14350,8 +14356,8 @@ function useModalTrayGroup<const T extends string>(ids: readonly T[]) {
     close,
     closeAll,
     isOpen,
-    openId,
-    scrimOpen: openId !== null,
+    openId: active ? openId : null,
+    scrimOpen: active && openId !== null,
     toggle,
   };
 }

@@ -13,7 +13,6 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "disclaimer.accept-persist", "startup.supported-publication", "navigation.map",
     "navigation.charts", "navigation.flight-plan", "navigation.altitude-planner",
     "navigation.data-status", "navigation.settings", "navigation.home",
-    "navigation.service-notifications", "home.service-notifications",
     "home.chart", "home.plate", "home.flight-plan", "home.altitude-planner",
     "home.data-status", "home.settings", "home.cloud", "home.about",
   ]),
@@ -103,6 +102,10 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "status.tfrs", "status.notams", "status.metars", "status.pireps", "status.tafs",
     "status.nexrad", "status.obstacles", "status.winds-aloft",
   ], { live_feed_profile: "mixed" }),
+  journey("shared.service-notifications", "p0", shared, [
+    "service.live-feed-arrival", "service.status-entry", "service.notice-bodies",
+    "service.read-hides-aggregate", "service.reentry-folded", "service.expand-history",
+  ]),
   journey("shared.replay-track-up", "p1", shared, [
     "replay.load", "replay.play-pause", "replay.rate", "replay.seek",
     "replay.ownship", "replay.rotation", "replay.track-gap",

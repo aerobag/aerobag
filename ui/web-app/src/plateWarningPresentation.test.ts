@@ -28,7 +28,11 @@ describe("plate procedure geometry warnings", () => {
     expect(appSource).toContain('case "global":');
     expect(appSource).toContain('return "status";');
     expect(chartsPage.match(/onAction: onStatusAction/g)).toHaveLength(1);
-    expect(appSource.match(/onStatusAction={performStatusAction}/g)).toHaveLength(2);
+    for (const page of ["MapPage", "ChartsPage", "DataStatusPage"]) {
+      const start = appSource.indexOf(`<${page}`);
+      const end = appSource.indexOf("/>", start);
+      expect(appSource.slice(start, end)).toContain("onStatusAction={performStatusAction}");
+    }
     expect(appSource).toContain("uiSession.performStatusAction(actionId)");
     expect(chartsPage).toContain("<DataStatusWarningFace");
     expect(chartsPage).toContain("count={chart.procedure_geometry_warning_count.toString()}");

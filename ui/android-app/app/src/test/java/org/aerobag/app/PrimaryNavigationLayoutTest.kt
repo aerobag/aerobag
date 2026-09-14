@@ -74,6 +74,29 @@ class PrimaryNavigationLayoutTest {
     }
 
     @Test
+    fun chartAndMapStatusActionsRouteToStatusUsingTheTouchTestedDismissalOwner() {
+        val main = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+        val map = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val chartAction = sourceBetween(main, "onStatusAction = { actionId ->", "onSelectAirport =")
+        val mapBadge = sourceBetween(map, "DataStatusBadge(", "SituationStatusBadge(")
+        val chartBadge = sourceBetween(chartsSource, "DataStatusBadge(", "SituationStatusBadge(")
+        for (source in listOf(chartAction, mapBadge)) {
+            assertTrue(source.contains("decision.performSessionMutation"))
+            assertTrue(source.contains("uiSession.performStatusAction(actionId)"))
+            assertTrue(source.contains("UiStatusPlatformEffect.OpenDataStatus"))
+        }
+        assertTrue(chartAction.contains("navigateToPage(AppPage.DataStatus)"))
+        assertTrue(mapBadge.contains("actions.onSelectPage(AppPage.DataStatus)"))
+        for (source in listOf(chartBadge, mapBadge)) {
+            assertTrue(source.contains("onDismiss = { openStatusControlId = null }"))
+        }
+        for (source in listOf(main, map, sourceFile("src/main/java/org/aerobag/app/HomePage.kt").readText())) {
+            assertFalse(source.contains("AppPage.ServiceNotifications"))
+            assertFalse(source.contains("OpenServiceNotifications"))
+        }
+    }
+
+    @Test
     fun geographicEditorsCannotEscapeIntoTheScreenControlPlane() {
         val map = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
         val layers = map.indexOf("MapSurfaceLayers(")

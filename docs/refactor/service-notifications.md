@@ -229,14 +229,22 @@ severity, action IDs, page state, and all resulting invalidations. Keep document
 ingestion and persistence off UI/input paths using the established runners.
 Platforms provide generic IO, clock/capability inputs, and minimal presentation.
 
-Add a permanently reachable Service Notifications page using existing page
-navigation, buttons, theme tones, help, and text-reading layouts. Order relevant
-unread items before read items; use severity and publication time for stable
-ordering within those groups. Retain read/resolved items in a history section.
+Service Notifications is the first, full-width section of Status, above the
+responsive status-tile grid, not a separate Home destination. Its title row has
+a fold triangle. Core initializes each Status visit expanded if relevant unread
+items exist, collapsed otherwise. Manual folding lasts for that visit; reading
+the last item must not fold away the body being read. Scrolling/re-rendering must
+not replay the page-entry action. Order unread items first, then read/history;
+use severity and publication time for stable ordering within those groups.
+Core sends a dedicated history tone for read, resolved, and expired notices:
+both platforms use the existing light-gray quiet background without a highlight
+border. Info, Caution, and Warning use the same severity order as data status,
+with Warning more severe than Caution.
 
 The caution tray contributes at most one service-notifications record, with
 text such as `3 unread service notifications`. Its tone is the worst relevant
-unread severity. Its action opens the page; it does not hush notifications.
+unread severity. Its action opens Status and its notifications section, closing
+the originating tray; it does not hush notifications.
 The aggregate disappears when there are no relevant unread messages.
 
 Opening a notice's readable body marks that exact attention revision read.

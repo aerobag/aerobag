@@ -7,7 +7,7 @@ use crate::{
 };
 use app_ui_contracts::session::{
     ClientBuildInfo, UiServiceNotice, UiServiceNoticeAction, UiServiceNoticeLink,
-    UiServiceNotificationsState, UiStatusSeverity,
+    UiServiceNoticeTone, UiServiceNotificationsState, UiStatusSeverity,
 };
 use product_contracts::service_bulletins::{
     self as contract, BulletinDocument, BulletinHint, NoticeSeverity, ReleaseRole,
@@ -21,6 +21,9 @@ use std::{
 
 pub const STATUS_ID: &str = "service:unread";
 pub const OPEN_INBOX: &str = "service:inbox";
+pub const ENTER_STATUS: &str = "service:enter";
+pub const EXPAND: &str = "service:expand";
+pub const COLLAPSE: &str = "service:collapse";
 pub const RECEIPT_PREFIX: &str = "service/read/";
 const RESOURCE_PREFIX: &str = "service-bulletin/";
 
@@ -45,6 +48,7 @@ pub struct ServiceNotifications {
     sources: BTreeMap<String, FetchState>,
     next_request: u64,
     expanded: Option<String>,
+    section_expanded: Option<bool>,
     cache: Option<(
         i64,
         u64,
@@ -82,6 +86,34 @@ fn severity(value: NoticeSeverity) -> UiStatusSeverity {
 }
 
 impl ServiceNotifications {
+    pub fn handles_action(action: &str) -> bool {
+        matches!(action, OPEN_INBOX | ENTER_STATUS | EXPAND | COLLAPSE)
+            || action.starts_with("service:read:")
+            || action.starts_with("service:read-all:")
+    }
+
+    pub fn presentation_action(
+        &mut self,
+        action: &str,
+        now: i64,
+        build: Option<&ClientBuildInfo>,
+        receipts: &BTreeSet<String>,
+    ) -> bool {
+        let expanded = match action {
+            ENTER_STATUS | OPEN_INBOX => self
+                .project(now, build, receipts)
+                .items
+                .iter()
+                .any(|n| n.unread),
+            EXPAND => true,
+            COLLAPSE => false,
+            _ => return false,
+        };
+        self.section_expanded = Some(expanded);
+        self.cache = None;
+        true
+    }
+
     pub fn persistent(&self) -> &ServicePersistentState {
         &self.persistent
     }
@@ -392,6 +424,7 @@ impl ServiceNotifications {
                     ),
                     state_label: if archived { "History" } else { "Active" }.into(),
                     severity: severity(notice.severity),
+                    tone: UiServiceNoticeTone::History,
                     link: notice.link.as_ref().map(|link| UiServiceNoticeLink {
                         label: link.label.clone(),
                         url: link.url.clone(),
@@ -438,12 +471,22 @@ impl ServiceNotifications {
                     id, title: if ended { "This application version is no longer supported" } else { "Update available; support for this version is ending" }.into(),
                     body: format!("{current}You are using version {}. Its cycle products and live feeds {} supported until {until}. Update when you are not navigating.", release.release, if ended { "were" } else { "will only be" }),
                     timing: if ended { format!("Support ended {} ago", age(now - deadline)) } else { format!("Support ends in {}", age(deadline - now)) },
-                    state_label: "Active".into(), severity: if ended { UiStatusSeverity::Warning } else { UiStatusSeverity::Caution },
+                    state_label: "Active".into(), severity: if ended { UiStatusSeverity::Warning } else { UiStatusSeverity::Caution }, tone: UiServiceNoticeTone::History,
                     link: Some(UiServiceNoticeLink { label: label.into(), url: url.clone() }),
                 });
             }
         }
         for item in &mut items {
+            item.tone = if item.unread {
+                match item.severity {
+                    UiStatusSeverity::Info => UiServiceNoticeTone::Info,
+                    UiStatusSeverity::Caution => UiServiceNoticeTone::Caution,
+                    UiStatusSeverity::Warning => UiServiceNoticeTone::Warning,
+                    _ => unreachable!("service notices have info, caution or warning severity"),
+                }
+            } else {
+                UiServiceNoticeTone::History
+            };
             item.state_label = if item.archived {
                 "History"
             } else if item.unread {
@@ -470,8 +513,23 @@ impl ServiceNotifications {
             action_id: format!("service:read-all:{}", unread.join(",")),
             label: "Mark all read".into(),
         });
+        let expanded = self.section_expanded.unwrap_or(!unread.is_empty());
         UiServiceNotificationsState {
             title: "Service Notifications".into(),
+            expanded,
+            enter_action: UiServiceNoticeAction {
+                action_id: ENTER_STATUS.into(),
+                label: "Open Status".into(),
+            },
+            toggle_action: UiServiceNoticeAction {
+                action_id: if expanded { COLLAPSE } else { EXPAND }.into(),
+                label: if expanded {
+                    "Collapse service notifications"
+                } else {
+                    "Expand service notifications"
+                }
+                .into(),
+            },
             summary: if items.is_empty() {
                 "No service notifications are available.".into()
             } else {
@@ -583,6 +641,102 @@ mod tests {
         assert!(state
             .ingest(&request.id, &serde_json::to_vec(document).unwrap(), time)
             .unwrap());
+    }
+
+    #[test]
+    fn status_entry_folding_is_core_owned_and_reading_does_not_hide_the_body() {
+        let mut state = ServiceNotifications::default();
+        let mut doc = document();
+        let mut receipts = BTreeSet::new();
+        assert!(state.presentation_action(ENTER_STATUS, now(), None, &receipts));
+        assert!(!state.project(now(), None, &receipts).expanded);
+        install(&mut state, &doc, now());
+        // An arrival does not override the user's current collapsed section.
+        assert!(!state.project(now(), None, &receipts).expanded);
+        state.presentation_action(ENTER_STATUS, now(), None, &receipts);
+        let entered = state.project(now(), None, &receipts);
+        assert!(entered.expanded);
+        assert_eq!(entered.toggle_action.action_id, COLLAPSE);
+        receipts.extend(
+            state
+                .read_action(&entered.items[0].open_action.action_id)
+                .unwrap(),
+        );
+        let read = state.project(now(), None, &receipts);
+        assert!(read.expanded);
+        assert!(read.items[0].expanded);
+        assert_eq!(read.items[0].body, doc.notices[0].body);
+        assert_eq!(read.items[0].tone, UiServiceNoticeTone::History);
+        assert!(status_record(&read).is_none());
+        state.presentation_action(ENTER_STATUS, now(), None, &receipts);
+        let reentered = state.project(now(), None, &receipts);
+        assert!(!reentered.expanded);
+        state.presentation_action(&reentered.toggle_action.action_id, now(), None, &receipts);
+        assert!(state.project(now(), None, &receipts).expanded);
+        state.presentation_action(COLLAPSE, now(), None, &receipts);
+        state.presentation_action(COLLAPSE, now(), None, &receipts);
+        assert!(!state.project(now(), None, &receipts).expanded);
+        doc.notices[0].attention_revision += 1;
+        doc.revision += 1;
+        install(&mut state, &doc, now());
+        state.presentation_action(OPEN_INBOX, now(), None, &receipts);
+        assert!(state.project(now(), None, &receipts).expanded);
+    }
+
+    #[test]
+    fn unread_severity_drives_caution_but_read_and_archived_items_have_neutral_tone() {
+        let mut state = ServiceNotifications::default();
+        let mut doc = document();
+        doc.notices.clear();
+        for (id, severity, resolved) in [
+            ("info", NoticeSeverity::Info, false),
+            ("caution", NoticeSeverity::Caution, false),
+            ("warning", NoticeSeverity::Warning, false),
+            ("resolved-warning", NoticeSeverity::Warning, true),
+            ("expired-warning", NoticeSeverity::Warning, false),
+        ] {
+            let mut notice = document().notices.remove(0);
+            notice.id = id.into();
+            notice.severity = severity;
+            notice.resolved = resolved;
+            if id == "expired-warning" {
+                notice.expires_at_utc = Some("2026-09-13T00:00:01Z".into());
+            }
+            doc.notices.push(notice);
+        }
+        install(&mut state, &doc, now());
+        let mut receipts = BTreeSet::new();
+        for (id, severity, tone) in [
+            (
+                "warning",
+                UiStatusSeverity::Warning,
+                UiServiceNoticeTone::Warning,
+            ),
+            (
+                "caution",
+                UiStatusSeverity::Caution,
+                UiServiceNoticeTone::Caution,
+            ),
+            ("info", UiStatusSeverity::Info, UiServiceNoticeTone::Info),
+        ] {
+            let page = state.project(now(), None, &receipts);
+            let first = &page.items[0];
+            assert_eq!(first.id, key(&doc.publisher, &format!("notice/{id}"), 1));
+            assert_eq!(first.tone, tone);
+            assert_eq!(status_record(&page).unwrap().severity, severity);
+            assert!(page
+                .items
+                .iter()
+                .filter(|n| !n.unread)
+                .all(|n| n.tone == UiServiceNoticeTone::History));
+            receipts.extend(state.read_action(&first.open_action.action_id).unwrap());
+        }
+        let page = state.project(now(), None, &receipts);
+        assert!(page
+            .items
+            .iter()
+            .all(|n| n.tone == UiServiceNoticeTone::History));
+        assert!(status_record(&page).is_none());
     }
 
     #[test]

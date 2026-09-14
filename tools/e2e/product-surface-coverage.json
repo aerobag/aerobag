@@ -7,7 +7,6 @@
       "flight_plan": "home.flight-plan",
       "altitude_planner": "home.altitude-planner",
       "data_status": "home.data-status",
-      "service_notifications": "home.service-notifications",
       "settings": "home.settings",
       "cloud": "home.cloud",
       "offline_packages": "home.offline-packages",
@@ -19,7 +18,6 @@
       "flight_plan": "navigation.flight-plan",
       "altitude_planner": "navigation.altitude-planner",
       "data_status": "navigation.data-status",
-      "service_notifications": "navigation.service-notifications",
       "settings": "navigation.settings",
       "home": "navigation.home",
       "offline_packages": "navigation.offline-packages"

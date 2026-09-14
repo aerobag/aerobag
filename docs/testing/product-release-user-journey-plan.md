@@ -42,6 +42,10 @@ fixture, emulator, Cloud, web, and Android operations are subcommands of that
 single wrapper so one narrowly scoped persistent command approval covers lab
 iteration without approving changing low-level commands individually.
 
+The shared p0 [service notifications journey](service-notifications-e2e.md)
+publishes notices through real fixture HTTP/SSE and tests the Status section,
+read state and explicit history expansion, not a separate Home destination.
+
 ## Goal
 
 A product release should be blocked when a pilot can no longer reach or use an

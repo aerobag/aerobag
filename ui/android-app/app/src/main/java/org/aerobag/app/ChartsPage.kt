@@ -861,6 +861,7 @@ internal fun ChartsPage(
                         loadTrayOpen = false
                         situationTrayOpen = false
                     },
+                    onDismiss = { openStatusControlId = null },
                     onAction = onStatusAction,
                 )
             }

@@ -2,7 +2,6 @@
   "$defs": {
     "UiHomeDestination": {
       "enum": [
-        "service_notifications",
         "chart",
         "plate",
         "flight_plan",
@@ -59,7 +58,7 @@
   ],
   "title": "UiHomePageState",
   "type": "object",
-  "x-contract-version": 14,
+  "x-contract-version": 15,
   "x-export-order": [
     "UiHomeDestination",
     "UiHomePageButton",

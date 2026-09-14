@@ -233,6 +233,7 @@ fn main() {
                 "UiSettingsPageState",
                 "UiServiceNoticeAction",
                 "UiServiceNoticeLink",
+                "UiServiceNoticeTone",
                 "UiServiceNotice",
                 "UiServiceNotificationsState",
                 "UiDisplayPolicy",

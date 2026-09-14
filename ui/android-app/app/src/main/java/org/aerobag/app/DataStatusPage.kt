@@ -4,6 +4,7 @@
 
 package org.aerobag.app
 
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as lazyGridItems
 import androidx.compose.foundation.lazy.items as lazyColumnItems
@@ -34,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -49,6 +52,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -69,6 +73,7 @@ import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiStatusAction
 import org.aerobag.app.domain.UiStatusActionStyle
 import org.aerobag.app.domain.UiStatusSeverity
+import org.aerobag.app.generated.UiServiceNotificationsState
 import kotlin.math.roundToInt
 
 @Composable
@@ -79,6 +84,7 @@ internal fun DataStatusBadge(
     testTagPrefix: String = "data-status",
     open: Boolean,
     onToggle: () -> Unit,
+    onDismiss: () -> Unit,
     onAction: (String) -> Unit = {},
 ) {
     val hasStatus = dataStatusState.boxes.isNotEmpty()
@@ -120,7 +126,7 @@ internal fun DataStatusBadge(
         if (open) {
             Popup(
                 offset = popupOffset,
-                onDismissRequest = onToggle,
+                onDismissRequest = onDismiss,
                 properties = PopupProperties(focusable = true),
             ) {
                 Surface(
@@ -139,8 +145,9 @@ internal fun DataStatusBadge(
                         modifier = Modifier.padding(ThumbSize * 0.14f),
                         verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.12f),
                     ) {
-                        lazyColumnItems(dataStatusState.boxes) { box ->
+                        lazyColumnItems(dataStatusState.boxes, key = { it.id }) { box ->
                             DataStatusBoxRow(
+                                id = box.id,
                                 label = box.label,
                                 value = box.value ?: "\u2014",
                                 detail = box.detail,
@@ -222,6 +229,7 @@ internal fun DataStatusBadgeFace(
 
 @Composable
 private fun DataStatusBoxRow(
+    id: String,
     label: String,
     value: String,
     detail: String,
@@ -237,6 +245,10 @@ private fun DataStatusBoxRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .e2eIndexedElement(
+                semanticTag = "parity:data-status-box-$id",
+                state = "enabled:true:text:${Uri.encode("$label $value $detail")}",
+            )
             .alpha(if (hushed) 0.58f else 1f)
             .clip(RoundedCornerShape(ThumbRadius * 0.72f))
             .background(background)
@@ -291,6 +303,7 @@ private fun DataStatusBoxRow(
             ) {
                 Box(modifier = Modifier.weight(1f))
                 actions.forEach { action ->
+                    val renderedLabel = action.label.uppercase()
                     val actionBg = when (action.style) {
                         UiStatusActionStyle.Hush -> uiTheme.controls.panelFg.copy(alpha = 0.88f)
                         UiStatusActionStyle.Normal -> uiTheme.controls.buttonUnchecked
@@ -299,17 +312,18 @@ private fun DataStatusBoxRow(
                         modifier = Modifier
                             .widthIn(min = ThumbSize * 0.9f)
                             .height(ThumbSize * 0.42f)
+                            .e2eIndexedControl(
+                                semanticTag = "parity:data-status-action-$id-${action.id}",
+                                enabled = action.enabled,
+                                text = renderedLabel,
+                            )
                             .alpha(if (action.enabled) 1f else 0.45f)
-                            .then(
-                                if (action.enabled) {
-                                    Modifier.clickable(
-                                        indication = null,
-                                        interactionSource = remember { MutableInteractionSource() },
-                                    ) { onAction(action.id) }
-                                } else {
-                                    Modifier
-                                },
-                            ),
+                            .clickable(
+                                enabled = action.enabled,
+                                role = Role.Button,
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() },
+                            ) { onAction(action.id) },
                         shape = RoundedCornerShape(ThumbRadius * 0.45f),
                         color = actionBg,
                         contentColor = Color.White,
@@ -320,7 +334,7 @@ private fun DataStatusBoxRow(
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                text = action.label.uppercase(),
+                                text = renderedLabel,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.ExtraBold,
@@ -358,13 +372,19 @@ private val DataStatusPageFactTextSize = 9.sp
 internal fun DataStatusPage(
     page: AppPage,
     state: UiDataStatusPageState,
+    serviceNotifications: UiServiceNotificationsState,
     navElement: NavElementUiView?,
     mostRecentChartOrPlatePage: AppPage,
     onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onTimeDisplayAction: (String) -> Unit,
+    onServiceNoticeAction: (String) -> Unit,
 ) {
+    // Page-owned, not lazy-item-owned: scrolling must not replay a Status entry.
+    LaunchedEffect(Unit) {
+        onServiceNoticeAction(serviceNotifications.enterAction.actionId)
+    }
     val uiTheme = LocalAerobagUiTheme.current
     Box(
         modifier = Modifier
@@ -440,10 +460,16 @@ internal fun DataStatusPage(
             }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(ThumbSize * 7f),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().e2eIndexedElement(
+                    semanticTag = "parity:data-status:content",
+                    state = "enabled:true",
+                ),
                 horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
                 verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
             ) {
+                item(key = "service-notifications", span = { GridItemSpan(maxLineSpan) }) {
+                    ServiceNotificationsSection(serviceNotifications, onServiceNoticeAction)
+                }
                 lazyGridItems(state.rows, key = { it.id }) { row ->
                     DataStatusPageRowCard(
                         row = row,

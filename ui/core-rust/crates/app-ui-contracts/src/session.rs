@@ -28,7 +28,6 @@ pub enum UiNavigationPageId {
     FlightPlan,
     AltitudePlanner,
     DataStatus,
-    ServiceNotifications,
     Settings,
     Home,
     OfflinePackages,
@@ -266,7 +265,7 @@ pub struct UiSurfaceStatusState {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiStatusPlatformEffect {
     ReloadApplication,
-    OpenServiceNotifications,
+    OpenDataStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -691,17 +690,30 @@ pub struct UiSessionPageContracts {
 pub struct UiServiceNotificationsState {
     pub title: String,
     pub summary: String,
+    pub expanded: bool,
+    pub enter_action: UiServiceNoticeAction,
+    pub toggle_action: UiServiceNoticeAction,
     pub source_status: Vec<String>,
     pub items: Vec<UiServiceNotice>,
     pub mark_all_read: Option<UiServiceNoticeAction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiServiceNoticeAction {
     pub action_id: String,
     pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiServiceNoticeTone {
+    Info,
+    Caution,
+    Warning,
+    History,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -714,6 +726,7 @@ pub struct UiServiceNotice {
     pub timing: String,
     pub state_label: String,
     pub severity: UiStatusSeverity,
+    pub tone: UiServiceNoticeTone,
     pub unread: bool,
     pub archived: bool,
     pub expanded: bool,

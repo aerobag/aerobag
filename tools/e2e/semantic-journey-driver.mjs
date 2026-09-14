@@ -274,7 +274,6 @@ const WEB_PAGE_SELECTORS = Object.freeze({
   flight_plan: '[data-testid="parity:page:flight_plan"]',
   altitude_planner: '[data-testid="parity:page:altitude_planner"]',
   data_status: '[data-testid="parity:page:data_status"]',
-  service_notifications: '[data-testid="parity:page:service_notifications"]',
   settings: '[data-testid="parity:page:settings"]',
   home: '[data-testid="parity:page:home"]',
   cloud: '[data-testid="parity:page:cloud"]',
@@ -287,7 +286,6 @@ const WEB_HOME_KEYS = Object.freeze({
   flight_plan: "flight_plan",
   altitude_planner: "altitude_planner",
   data_status: "data_status",
-  service_notifications: "service_notifications",
   settings: "settings",
   cloud: "cloud",
   about: "about",
@@ -634,7 +632,6 @@ const ANDROID_PAGE_TAGS = Object.freeze({
   flight_plan: "parity:page:flight_plan",
   altitude_planner: "parity:page:altitude_planner",
   data_status: "parity:page:data_status",
-  service_notifications: "parity:page:service_notifications",
   settings: "parity:page:settings",
   home: "parity:page:home",
   cloud: "parity:page:cloud",
@@ -652,7 +649,6 @@ const ANDROID_PAGE_ELEMENT_TAGS = Object.freeze({
   "page:flight_plan": ANDROID_PAGE_TAGS.flight_plan,
   "page:altitude_planner": ANDROID_PAGE_TAGS.altitude_planner,
   "page:data_status": ANDROID_PAGE_TAGS.data_status,
-  "page:service_notifications": ANDROID_PAGE_TAGS.service_notifications,
   "page:settings": ANDROID_PAGE_TAGS.settings,
   "page:home": ANDROID_PAGE_TAGS.home,
   "page:cloud": ANDROID_PAGE_TAGS.cloud,
@@ -665,7 +661,6 @@ const ANDROID_HOME_KEYS = Object.freeze({
   flight_plan: "FlightPlan",
   altitude_planner: "AltitudePlanner",
   data_status: "DataStatus",
-  service_notifications: "ServiceNotifications",
   settings: "Settings",
   cloud: "Cloud",
   offline_packages: "OfflinePackages",
@@ -678,7 +673,6 @@ const ANDROID_PERSISTED_PAGE_IDS = Object.freeze({
   Charts: "charts",
   Home: "home",
   DataStatus: "data_status",
-  ServiceNotifications: "service_notifications",
   Settings: "settings",
   Cloud: "cloud",
   OfflinePackages: "offline_packages",
@@ -780,6 +774,8 @@ export function androidElementMayRequireVerticalScroll(elementId) {
   return ANDROID_CLOUD_ACTION_IDS.has(elementId) ||
     tag.startsWith("parity:cloud-action:") ||
     tag.startsWith("parity:settings-") ||
+    tag.startsWith("parity:service:") ||
+    tag.startsWith("parity:data-status-action-") ||
     tag.startsWith("parity:offline-product:") ||
     tag.startsWith("parity:offline-region:") ||
     tag.startsWith("parity:offline-zoom-level") ||
@@ -798,6 +794,8 @@ export function androidElementMayRequireHorizontalScroll(elementId) {
 export function androidProjectionMayRequireVerticalScan(probe) {
   const tag = androidSemanticTag(probe);
   return tag.startsWith("parity:data-status-row:") ||
+    tag.startsWith("parity:data-status-box-") ||
+    tag.startsWith("parity:service:notice:") ||
     tag.startsWith("parity:offline-");
 }
 

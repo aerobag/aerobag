@@ -364,11 +364,6 @@ private fun UiHomePageButton.toHomeGridButton(): HomeGridButton {
             externalUrl = null
             iconResId = R.drawable.home_status_icon
         }
-        UiHomeDestination.ServiceNotifications -> {
-            targetPage = AppPage.ServiceNotifications
-            externalUrl = null
-            iconResId = R.drawable.home_status_icon
-        }
         UiHomeDestination.Settings -> {
             targetPage = AppPage.Settings
             externalUrl = null

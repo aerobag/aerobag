@@ -1592,7 +1592,6 @@
         "flight_plan",
         "altitude_planner",
         "data_status",
-        "service_notifications",
         "settings",
         "home",
         "offline_packages"
@@ -1700,6 +1699,9 @@
         "title": {
           "type": "string"
         },
+        "tone": {
+          "$ref": "#/$defs/UiServiceNoticeTone"
+        },
         "unread": {
           "type": "boolean"
         }
@@ -1711,6 +1713,7 @@
         "timing",
         "state_label",
         "severity",
+        "tone",
         "unread",
         "archived",
         "expanded",
@@ -1750,9 +1753,24 @@
       ],
       "type": "object"
     },
+    "UiServiceNoticeTone": {
+      "enum": [
+        "info",
+        "caution",
+        "warning",
+        "history"
+      ],
+      "type": "string"
+    },
     "UiServiceNotificationsState": {
       "additionalProperties": false,
       "properties": {
+        "enter_action": {
+          "$ref": "#/$defs/UiServiceNoticeAction"
+        },
+        "expanded": {
+          "type": "boolean"
+        },
         "items": {
           "items": {
             "$ref": "#/$defs/UiServiceNotice"
@@ -1780,11 +1798,17 @@
         },
         "title": {
           "type": "string"
+        },
+        "toggle_action": {
+          "$ref": "#/$defs/UiServiceNoticeAction"
         }
       },
       "required": [
         "title",
         "summary",
+        "expanded",
+        "enter_action",
+        "toggle_action",
         "source_status",
         "items"
       ],
@@ -2058,7 +2082,7 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "open_service_notifications",
+              "const": "open_data_status",
               "type": "string"
             }
           },
@@ -2205,7 +2229,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 14,
+  "x-contract-version": 15,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -2268,6 +2292,7 @@
     "UiSettingsPageState",
     "UiServiceNoticeAction",
     "UiServiceNoticeLink",
+    "UiServiceNoticeTone",
     "UiServiceNotice",
     "UiServiceNotificationsState",
     "UiDisplayPolicy",

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum UiHomeDestination {
-    ServiceNotifications,
     Chart,
     Plate,
     FlightPlan,

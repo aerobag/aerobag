@@ -8,6 +8,10 @@ import {
 } from "./transition-contract.mjs";
 import { semanticOptionSelected } from "./release-journey-runtime.mjs";
 import { liveFeedProviderCutover } from "./live-feed-cutover-journey.mjs";
+import { semanticProjectionFields } from "./android-harness.mjs";
+import {
+  SERVICE_BULLETIN_CONTROL_PATH, SERVICE_BULLETIN_PATH, SERVICE_NOTICE_FIXTURES,
+} from "./service-notifications-fixture.mjs";
 
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
@@ -395,7 +399,6 @@ async function startupNavigation(runtime) {
     ["flight_plan", "flight_plan", "navigation.flight-plan", "home.flight-plan"],
     ["altitude_planner", "altitude_planner", "navigation.altitude-planner", "home.altitude-planner"],
     ["data_status", "data_status", "navigation.data-status", "home.data-status"],
-    ["service_notifications", "service_notifications", "navigation.service-notifications", "home.service-notifications"],
     ["settings", "settings", "navigation.settings", "home.settings"],
     ["cloud", "cloud", null, "home.cloud"],
   ];
@@ -515,6 +518,7 @@ async function setFixtureControl(runtime, update) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(update),
+    signal: AbortSignal.timeout(E2E_TIMING.localResourceMs),
   });
 }
 
@@ -526,6 +530,191 @@ async function fixtureHealth(runtime) {
 async function fixtureRequests(runtime) {
   if (!runtime.fixtureOrigin) throw new Error("journey fixture origin is unavailable");
   return fetchFixtureJson(runtime, "/__requests", {}, { transientNetworkErrors: true });
+}
+
+const SERVICE_AGGREGATE = "data-status-box-service:unread";
+const SERVICE_INBOX_ACTION = "data-status-action-service:unread-service:inbox";
+
+async function serviceSection(runtime, expanded) {
+  const page = await runtime.driver.readElement("page:data_status");
+  const section = await runtime.driver.readElement("parity:service:section");
+  const toggle = await runtime.driver.readElement("parity:service:toggle");
+  // Web exposes aria-expanded. Android's indexed state-description includes
+  // other fields such as window-focus; compare the expanded field, not the wire.
+  const fields = semanticProjectionFields(section?.state ?? section?.disabled_reason);
+  const matches = typeof toggle?.expanded === "boolean"
+    ? toggle.expanded === expanded : fields.expanded === String(expanded);
+  return page && section && matches ? { page, section, toggle } : null;
+}
+
+async function revealServiceNotice(runtime, notice) {
+  const entry = await runtime.revealProjectionMatching(
+    "parity:service:notice:", notice.title, `service notice ${notice.title}`,
+  );
+  const tag = projectionId(entry);
+  if (!/^parity:service:notice:[0-9a-f]{64}$/.test(tag)) {
+    throw new Error(`service notice has no receipt-hash control: ${tag}`);
+  }
+  return { tag, bodyTag: tag.replace(":notice:", ":body:") };
+}
+
+async function openServiceNoticeBody(runtime, notice, identity) {
+  if (!(await runtime.driver.readProjection(identity.bodyTag)).length) {
+    await runtime.action(`open ${notice.title}`, identity.tag, {
+      complete: async () => {
+        const bodies = await runtime.driver.readProjection(identity.bodyTag);
+        return bodies.find((body) => projectionId(body) === identity.bodyTag);
+      },
+    });
+  }
+  // Marking read can move this row below remaining unread rows. Reveal the
+  // rendered body after that transition, then require its actual visible text.
+  await runtime.revealElement(identity.bodyTag);
+  await runtime.eventually(`visible body of ${notice.title}`, async () => {
+    const body = await runtime.driver.readElement(identity.bodyTag);
+    return body?.text === notice.body ? body : null;
+  });
+}
+
+async function openStatusBadge(runtime) {
+  await runtime.action("open /!\\ status panel", "data-status-launcher", {
+    complete: () => runtime.driver.readElement("data-status-panel"),
+  });
+}
+
+async function serviceNotifications(runtime) {
+  // Each lab lane owns its fixture. Reset before starting the app so stale SSE
+  // connections and bulletin/read caches cannot manufacture an arrival.
+  await setFixtureControl(runtime, { reset: true });
+  try {
+    await runtime.reset();
+    await acceptDisclaimer(runtime);
+    await runtime.openPage("map");
+    await runtime.eventually("empty bulletin fetched and live-feed SSE connected", async () => {
+      const health = await fixtureHealth(runtime);
+      const requests = await fixtureRequests(runtime);
+      const initialFetch = requests.find((request) => request.method === "GET" &&
+        request.url === SERVICE_BULLETIN_PATH && request.service_bulletin_revision === 1 &&
+        request.status === 200 && request.outcome === "finished");
+      return health.service_notifications?.subscribers > 0 && initialFetch ? initialFetch : null;
+    }, E2E_TIMING.localResourceMs);
+
+    // No app reload, refresh action, clock jump, or direct session mutation after
+    // this publication: the already-open SSE stream must trigger the HTTP fetch.
+    const publication = await fetchFixtureJson(runtime, SERVICE_BULLETIN_CONTROL_PATH, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ publication: "published" }),
+      signal: AbortSignal.timeout(E2E_TIMING.localResourceMs),
+    });
+    await runtime.eventually("SSE-announced bulletin fetched", async () => {
+      const requests = await fixtureRequests(runtime);
+      return requests.find((request) => request.method === "GET" &&
+        request.url === SERVICE_BULLETIN_PATH && request.service_bulletin_revision === publication.revision &&
+        request.status === 200 && request.outcome === "finished");
+    }, E2E_TIMING.localResourceMs);
+    await openStatusBadge(runtime);
+    await runtime.revealElement(SERVICE_INBOX_ACTION);
+    const inbox = await runtime.eventually("Read notifications entry in /!\\ panel", async () => {
+      const action = await runtime.driver.readElement(SERVICE_INBOX_ACTION);
+      const aggregate = await runtime.driver.readElement(SERVICE_AGGREGATE);
+      const label = (action?.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+      return label === "read notifications" && aggregate ? { action, aggregate } : null;
+    });
+    runtime.check("service.live-feed-arrival", publication.live_announcements > 0, JSON.stringify({ publication, inbox }));
+
+    await runtime.action("Read notifications opens Status", SERVICE_INBOX_ACTION, {
+      complete: async () => {
+        const section = await serviceSection(runtime, true);
+        const panel = await runtime.driver.readElement("data-status-panel");
+        return section && !panel ? section : null;
+      },
+    });
+    runtime.check("service.status-entry", Boolean(await serviceSection(runtime, true)) &&
+      !await runtime.driver.readElement("data-status-panel"));
+    if ((await runtime.driver.readProjection("parity:service:body:")).length > 0) {
+      throw new Error("entering Status opened a notice body without a title click");
+    }
+    await runtime.driver.captureFrame(`${runtime.artifactDir}/status-unread.png`);
+
+    const identities = new Map();
+    const unread = SERVICE_NOTICE_FIXTURES.filter((notice) => !notice.resolved);
+    for (const [index, notice] of unread.entries()) {
+      const identity = await revealServiceNotice(runtime, notice);
+      identities.set(notice.id, identity);
+      if (await runtime.driver.readElement(identity.bodyTag)) {
+        throw new Error(`${notice.title} body appeared without opening its title`);
+      }
+      await openServiceNoticeBody(runtime, notice, identity);
+      if (index < unread.length - 1) {
+        await runtime.revealElement("parity:service:mark-all-read");
+        if (!await runtime.driver.readElement("parity:service:mark-all-read")) {
+          throw new Error("opening one notice marked other notices read");
+        }
+      }
+    }
+    runtime.check("service.notice-bodies", identities.size === unread.length);
+
+    await runtime.openPage("map");
+    const statusPresence = await runtime.stable("map status launcher after reading notices", async () => {
+      if (!await runtime.driver.readElement("page:map")) return null;
+      const launcher = await runtime.driver.readElement("data-status-launcher");
+      const projected = await runtime.driver.readProjection("data-status-launcher");
+      const panel = await runtime.driver.readElement("data-status-panel");
+      return { launcher_present: Boolean(launcher) || projected.length > 0, panel_present: Boolean(panel) };
+    });
+    if (!statusPresence.launcher_present) {
+      // With healthy GPS/data, reading the final notice removes the whole dock.
+      // A projected but offscreen launcher must take the actionable path below.
+      runtime.check("service.read-hides-aggregate", !statusPresence.panel_present, JSON.stringify(statusPresence));
+    } else {
+      await openStatusBadge(runtime);
+      const cleared = await runtime.eventually("read notices remove only the service aggregate", async () => {
+        const panel = await runtime.driver.readElement("data-status-panel");
+        const aggregate = await runtime.driver.readElement(SERVICE_AGGREGATE);
+        const action = await runtime.driver.readElement(SERVICE_INBOX_ACTION);
+        return panel && !aggregate && !action ? panel : null;
+      });
+      // Android's panel is virtualized. Absence in its first viewport is not
+      // evidence of removal: scan every rendered status row through physical scroll.
+      let boxes;
+      await runtime.transition("scan status panel after reading notices", {
+        ready: () => runtime.driver.readElement("data-status-panel"),
+        act: async () => { boxes = await runtime.driver.scanProjection("data-status-box-"); },
+        complete: async () => boxes?.length ? runtime.driver.readElement("data-status-panel") : null,
+      });
+      runtime.check("service.read-hides-aggregate", Boolean(cleared) && boxes.length > 0 &&
+        !boxes.some((box) => projectionId(box).replace(/^parity:/, "") === SERVICE_AGGREGATE), JSON.stringify(boxes));
+      // Web Back clicks an exposed scrim point; Android Back dismisses its popup.
+      // The launcher behind the modal scrim is not an available closing control.
+      await runtime.transition("dismiss status popup", {
+        ready: () => runtime.driver.readElement("data-status-panel"),
+        act: () => runtime.driver.back(),
+        complete: async () => !await runtime.driver.readElement("data-status-panel"),
+      });
+    }
+
+    await runtime.openPage("data_status");
+    await runtime.revealElement("parity:service:toggle");
+    await runtime.eventually("Status reentry folds read history", () => serviceSection(runtime, false));
+    const foldedNotices = await runtime.driver.readProjection("parity:service:notice:");
+    const foldedBodies = await runtime.driver.readProjection("parity:service:body:");
+    runtime.check("service.reentry-folded", foldedNotices.length === 0 && foldedBodies.length === 0);
+
+    await runtime.action("explicitly expand notification history", "parity:service:toggle", {
+      complete: () => serviceSection(runtime, true),
+    });
+    await runtime.driver.captureFrame(`${runtime.artifactDir}/status-read-history.png`);
+    for (const notice of SERVICE_NOTICE_FIXTURES) {
+      const identity = await revealServiceNotice(runtime, notice);
+      const previous = identities.get(notice.id);
+      if (previous && previous.tag !== identity.tag) throw new Error("read history lost its receipt identity");
+      await openServiceNoticeBody(runtime, notice, identity);
+    }
+    await runtime.revealElement("parity:service:toggle");
+    runtime.check("service.expand-history", !await runtime.driver.readElement("parity:service:mark-all-read"));
+  } finally {
+    await setFixtureControl(runtime, { reset: true });
+  }
 }
 
 export function publicationCatalogRequestCount(requests) {
@@ -3546,6 +3735,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.plate-operate": plateOperate,
   "shared.plate-advisories-and-references": plateAdvisoriesAndReferences,
   "shared.status-and-settings": statusAndSettings,
+  "shared.service-notifications": serviceNotifications,
   "shared.map-modes-and-overlays": mapModesAndOverlays,
   "shared.airport-info": airportInfo,
   "shared.inspector-details": inspectorDetails,

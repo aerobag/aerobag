@@ -3,36 +3,9 @@
 
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { createReleaseJourneyFixtureServer } from "./serve-release-journey-fixture.mjs";
-
-// Tiny server-control input, not a relabeled NAVDB/app qualification fixture.
-async function fixtureServer(t) {
-  const directory = await mkdtemp(join(tmpdir(), "aerobag-fixture-isolation-"));
-  await mkdir(join(directory, "publication"));
-  await mkdir(join(directory, "live"));
-  const json = (file, data) => writeFile(join(directory, file), JSON.stringify(data));
-  await json("fixture.json", { fixture: "server-control-test", publication_root: "publication", capabilities: { live_feeds: { fresh: "live" } } });
-  await json("publication/current_artifacts.json", [{ artifact_roots: { packaged: "" }, bundles: [{ relative_path: "bundle.json", cycle: "test" }], contracts: {} }]);
-  await json("publication/bundle.json", { bundle_id: "test", packages: [{ id: "test", family_id: "csup", region_id: "nw", filename: "test.zip", relative_path: "test.zip" }] });
-  await json("live/current.json", { schema_version: 3, generated_at_utc: "2026-01-01T00:00:00Z", products: {} });
-  await writeFile(join(directory, "payload.txt"), "payload");
-  await mkdir(join(directory, "publication/map/tiles"), { recursive: true });
-  await writeFile(join(directory, "publication/map/tiles/test.webp"), "tile bytes");
-  const server = createReleaseJourneyFixtureServer({ fixture: join(directory, "fixture.json"), liveFeedProfile: "fresh" });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
-  });
-  return { server, origin: `http://127.0.0.1:${server.address().port}` };
-}
+import { fixtureServer } from "./fixture-test-server.mjs";
 
 function getOnce(url) {
   return new Promise((resolve, reject) => {

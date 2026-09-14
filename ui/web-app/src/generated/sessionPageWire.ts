@@ -5,13 +5,13 @@
 
 import type { NavSymbolFeature } from "./navQueryWire";
 
-export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 14 as const;
+export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 15 as const;
 
 export const UI_INVALIDATION_VALUES = ["nav_data", "session_snapshot", "raster_tiles", "map_overlay", "nexrad_overlay", "terrain_overlay", "flight_plan_route", "debug_panel"] as const;
 
 export type UiInvalidation = "nav_data" | "session_snapshot" | "raster_tiles" | "map_overlay" | "nexrad_overlay" | "terrain_overlay" | "flight_plan_route" | "debug_panel";
 
-export type UiNavigationPageId = "map" | "charts" | "flight_plan" | "altitude_planner" | "data_status" | "service_notifications" | "settings" | "home" | "offline_packages";
+export type UiNavigationPageId = "map" | "charts" | "flight_plan" | "altitude_planner" | "data_status" | "settings" | "home" | "offline_packages";
 
 export type UiNavigationPageOption = {
   chart_or_plate_return_target: boolean;
@@ -207,7 +207,7 @@ export type UiSurfaceStatusState = {
   controls: UiSurfaceStatusControl[];
 };
 
-export type UiStatusPlatformEffect = { kind: "reload_application" } | { kind: "open_service_notifications" };
+export type UiStatusPlatformEffect = { kind: "reload_application" } | { kind: "open_data_status" };
 
 export type UiStatusActionDecision = {
   perform_session_mutation: boolean;
@@ -389,6 +389,8 @@ export type UiServiceNoticeLink = {
   url: string;
 };
 
+export type UiServiceNoticeTone = "info" | "caution" | "warning" | "history";
+
 export type UiServiceNotice = {
   archived: boolean;
   body: string;
@@ -400,15 +402,19 @@ export type UiServiceNotice = {
   state_label: string;
   timing: string;
   title: string;
+  tone: UiServiceNoticeTone;
   unread: boolean;
 };
 
 export type UiServiceNotificationsState = {
+  enter_action: UiServiceNoticeAction;
+  expanded: boolean;
   items: UiServiceNotice[];
   mark_all_read?: UiServiceNoticeAction | null;
   source_status: string[];
   summary: string;
   title: string;
+  toggle_action: UiServiceNoticeAction;
 };
 
 export type UiDisplayPolicy = {

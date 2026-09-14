@@ -4727,8 +4727,8 @@ mod tests {
                 if let Some((entered, release)) = &self.gate {
                     entered.send(())?;
                     release
-                        .recv_timeout(Duration::from_secs(10))
-                        .context("slow builder was not released")?;
+                        .recv()
+                        .context("slow builder release gate disconnected")?;
                 }
                 json_built_state(
                     scratch,
@@ -4750,6 +4750,7 @@ mod tests {
         let status = DaemonStatus::default();
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
+        let (fast_done_tx, fast_done_rx) = mpsc::channel();
         let mut slow: Box<dyn DaemonLiveFeedTask + Send> = Box::new(ProductionLiveFeedTask::new(
             "tafs",
             Duration::ZERO,
@@ -4768,33 +4769,45 @@ mod tests {
         ));
         let now = Utc::now();
         thread::scope(|scope| -> anyhow::Result<()> {
+            // Drop the sender on early return/panic before scope joins workers.
+            // Only the observer has a deadline; the gate cannot open by itself.
+            let release_tx = release_tx;
             let blocked = scope.spawn(|| {
                 run_production_task_tick(now, &mut slow, &scratch, &publisher, &broker, &status)
             });
             entered_rx.recv_timeout(Duration::from_secs(10))?;
-            for minute in 0..2 {
-                let result = run_production_task_tick(
-                    now + chrono::Duration::minutes(minute),
-                    &mut fast,
-                    &scratch,
-                    &publisher,
-                    &broker,
-                    &status,
-                );
-                assert!(result.failures.is_empty(), "{:#?}", result.failures);
-                assert_eq!(result.published.len(), 1);
-                assert_eq!(
-                    updates
-                        .recv_timeout(Duration::from_secs(1))?
-                        .invalidation
-                        .product,
-                    "metars"
-                );
-                assert_eq!(
-                    status.snapshot().products["metars"].attempts.len(),
-                    minute as usize + 1
-                );
-            }
+            scope.spawn(|| {
+                let result = (|| -> anyhow::Result<()> {
+                    for minute in 0..2 {
+                        let result = run_production_task_tick(
+                            now + chrono::Duration::minutes(minute),
+                            &mut fast,
+                            &scratch,
+                            &publisher,
+                            &broker,
+                            &status,
+                        );
+                        assert!(result.failures.is_empty(), "{:#?}", result.failures);
+                        assert_eq!(result.published.len(), 1);
+                        assert_eq!(
+                            updates
+                                .recv_timeout(Duration::from_secs(1))?
+                                .invalidation
+                                .product,
+                            "metars"
+                        );
+                        assert_eq!(
+                            status.snapshot().products["metars"].attempts.len(),
+                            minute as usize + 1
+                        );
+                    }
+                    Ok(())
+                })();
+                let _ = fast_done_tx.send(result);
+            });
+            fast_done_rx
+                .recv_timeout(Duration::from_secs(10))
+                .context("fast feed did not publish and repoll while the slow feed was gated")??;
             assert!(
                 !blocked.is_finished(),
                 "slow feed should still be held by the gate"

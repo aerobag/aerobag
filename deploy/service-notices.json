@@ -1,3 +1,17 @@
 {
-  "notices": []
+  "notices": [
+    {
+      "id": "dev-notification-test-4",
+      "attention_revision": 2,
+      "title": "Notice my notice",
+      "body": "Notification",
+      "severity": "info",
+      "published_at_utc": "2026-09-14T00:15:00Z",
+      "resolved": false,
+      "audience": {
+        "releases": [],
+        "platforms": []
+      }
+    }
+  ]
 }

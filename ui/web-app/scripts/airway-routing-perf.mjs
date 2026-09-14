@@ -6,6 +6,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { connectToBrowser, launchChrome, stopProcess, waitFor } from "./chrome-cdp.mjs";
+import { dismissFirstUseTour } from "./dismiss-first-use-tour.mjs";
 
 const url = process.env.AEROBAG_E2E_URL ?? "http://127.0.0.1:8085/";
 const route = process.env.AEROBAG_PERF_ROUTE ?? "KRNT KLVN";
@@ -32,6 +33,7 @@ try {
     if (accept) { accept.click(); return false; }
     return Boolean(document.querySelector('[data-testid="map-surface"]'));
   })()`), 60_000, "App startup failed", 100);
+  await dismissFirstUseTour(page);
   await page.evaluate(`(async () => {
     globalThis.__routePerfRecords = [];
     const logs = await import('/src/domain/debugLog.ts');

@@ -96,6 +96,15 @@ bounded removal retries, as used by the other browser labs, fixed that race.
 The next two complete harness runs passed. Reports are
 `/tmp/aerobag-airway-routing-nav26-run2.json` and `-run3.json`.
 
+After integrating the new guided-tour feature and rebuilding 8085, the standalone
+probe initially failed to establish its two-airport plan because it operated
+behind the automatic introduction. It now calls the shared `dismissFirstUseTour`
+helper, closing the actual tour through pointer input before route entry.
+The final integrated-app run passed: 138 ms cold (99 ms for the 19-page frontier,
+2 ms graph decode, 5 ms search), then 26 and 35 ms warm. That report is
+`/tmp/aerobag-airway-routing-perf.json`. This additional run used the new startup
+flow, so it is recorded separately from the three earlier profiles.
+
 Both compact fixtures were genuinely rebuilt from this publication. Another
 checkout concurrently published artifact commit
 `ef74b3f0587a7e77ec6637bfbedd3d05d42d4027`; its fixture data matches our independent

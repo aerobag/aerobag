@@ -31411,7 +31411,7 @@ mod tests {
                 display_name: "Device GPS".to_string(),
                 selectable: true,
                 auto_eligible: true,
-                stale_after_ms: Some(5_000),
+                stale_after_ms: None,
                 power_state: Some(crate::OwnshipSourcePowerState::Running),
             },
         )
@@ -31438,9 +31438,17 @@ mod tests {
             },
         )
         .expect("push GPS fix");
-        assert_eq!(live.next_session_snapshot_refresh_epoch_ms, 6_001);
+        assert_eq!(live.next_session_snapshot_refresh_epoch_ms, 11_001);
 
-        let stale = get_session_snapshot_at_epoch_ms(init.handle, 6_001)
+        let between_fixes = get_session_snapshot_at_epoch_ms(init.handle, 8_000)
+            .expect("refresh seven seconds after GPS fix");
+        assert_eq!(
+            between_fixes.app_ui_state.ownship.render.mode,
+            crate::OwnshipMode::Live
+        );
+        assert!(between_fixes.app_ui_state.ownship.render.draw_aircraft);
+
+        let stale = get_session_snapshot_at_epoch_ms(init.handle, 11_001)
             .expect("refresh at stale deadline");
         assert_eq!(
             stale.app_ui_state.ownship.render.mode,

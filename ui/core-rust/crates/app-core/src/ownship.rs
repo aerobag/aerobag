@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
 
-const DEFAULT_STALE_AFTER_MS: i64 = 5_000;
+// Stationary indoor Android GPS fixes commonly arrive 6-7 seconds apart.
+const DEFAULT_STALE_AFTER_MS: i64 = 10_000;
 const LIVE_NETWORK_STALE_AFTER_MS: i64 = 15_000;
 const FEET_PER_NAUTICAL_MILE: f64 = 6076.12;
 const FEET_PER_METER: f64 = 3.280_839_895_013_123;
@@ -1342,8 +1343,8 @@ mod tests {
             SituationSample {
                 source_id: OwnshipSourceId("other".to_string()),
                 source_kind: OwnshipSourceKind::DeviceGps,
-                event_time_epoch_ms: 16_001,
-                received_time_epoch_ms: 16_001,
+                event_time_epoch_ms: 10_000 + DEFAULT_STALE_AFTER_MS + 1,
+                received_time_epoch_ms: 10_000 + DEFAULT_STALE_AFTER_MS + 1,
                 position: None,
                 horizontal_accuracy_m: None,
                 vertical_accuracy_m: None,
@@ -1512,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn wall_clock_expires_a_silent_ownship_source() {
+    fn gps_survives_seven_second_gaps_but_expires_after_ten_seconds() {
         let state = push_sample(
             &OwnshipState::default(),
             SituationSample {
@@ -1534,10 +1535,18 @@ mod tests {
                 vertical_speed_fpm: None,
             },
         );
-        assert_eq!(state.controls.next_refresh_epoch_ms, Some(6_001));
+        assert_eq!(state.controls.next_refresh_epoch_ms, Some(11_001));
         assert_eq!(state.resolved.mode, OwnshipMode::Live);
 
-        let stale = refresh_at(&state, 6_001);
+        for now in [7_000, 8_000, 11_000] {
+            let live = refresh_at(&state, now);
+            assert_eq!(live.resolved.mode, OwnshipMode::Live);
+            assert!(live.render.draw_aircraft);
+            assert_eq!(live.controls.launcher_label, "GPS");
+            assert_eq!(live.controls.next_refresh_epoch_ms, Some(11_001));
+        }
+
+        let stale = refresh_at(&state, 11_001);
 
         assert_eq!(stale.resolved.mode, OwnshipMode::None);
         assert_eq!(
@@ -1709,8 +1718,8 @@ mod tests {
             SituationSample {
                 source_id: OwnshipSourceId("clock".to_string()),
                 source_kind: OwnshipSourceKind::LiveNetworkTrack,
-                event_time_epoch_ms: 7_000,
-                received_time_epoch_ms: 7_000,
+                event_time_epoch_ms: 1_000 + DEFAULT_STALE_AFTER_MS + 1,
+                received_time_epoch_ms: 1_000 + DEFAULT_STALE_AFTER_MS + 1,
                 position: None,
                 horizontal_accuracy_m: None,
                 vertical_accuracy_m: None,

@@ -659,10 +659,7 @@ function describeMapFollowProbe(probe) {
 }
 
 function queryMapFollowProbe(serial) {
-  const node = queryAndroidExactProjection(
-    serial,
-    "org.aerobag.app:id/e2e_map_follow_projection",
-  )[0] ?? null;
+  const node = nativeSemanticDriver(serial).readScalarProjection(MAP_FOLLOW_PREFIX)[0] ?? null;
   const state = node?.["state-description"];
   return state ? parseMapFollowTag(`${MAP_FOLLOW_PREFIX}${state}`) : null;
 }

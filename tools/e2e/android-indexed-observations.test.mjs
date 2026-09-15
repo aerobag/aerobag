@@ -163,3 +163,27 @@ test("provider-only batch requests bypass the server's accessibility queue and f
   assert.match(handler, /prefix\s*\? providerProjectionPrefix\(tag\)/);
   assert.match(handler, /providerOnly \? new JSONArray\(\)\s*: renderNodeQuery/);
 });
+
+test("native map-follow state uses the shared scalar reader for presence and absence", () => {
+  const { driver, snapshots, respondWith } = device();
+  const native = readFileSync(new URL("run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const context = {
+    nativeSemanticDriver: () => driver,
+    MAP_FOLLOW_PREFIX: "parity:map-follow-state:",
+    queryAndroidExactProjection: () => assert.fail("native state must share the provider-only reader"),
+  };
+  const helper = (name, next) => runInNewContext(`(${native.slice(
+    native.indexOf(`function ${name}(`), native.indexOf(next),
+  ).trim()})`, context);
+  context.parseMapFollowTag = helper("parseMapFollowTag", "function mapFollowOffsetPx(");
+  const read = helper("queryMapFollowProbe", "async function waitForMapFollowProbe(");
+  assert.equal(read("no-device"), null);
+  const tag = projections.get("parity:map-follow-state:");
+  snapshots.set(tag, { "state-description": "following:1:ownship-x:300:ownship-y:700:center-x:500:center-y:500:zoom-centi:1139" });
+  assert.equal(read("no-device").following, true);
+  assert.equal(read("no-device").ownshipX, 300);
+  snapshots.delete(tag);
+  assert.equal(read("no-device"), null);
+  respondWith({ status: 28, stdout: "", stderr: "provider busy" });
+  assert.throws(() => read("no-device"), TransientObservationError);
+});

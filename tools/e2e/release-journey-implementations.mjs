@@ -4,9 +4,10 @@
 
 import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import {
-  E2E_TIMING, TerminalObservationError, TransientObservationError,
+  E2E_TIMING, TransientObservationError,
 } from "./transition-contract.mjs";
 import { semanticOptionSelected } from "./release-journey-runtime.mjs";
+import { acceptDisclaimer, readStartupState, startupState } from "./first-use-startup.mjs";
 import { liveFeedProviderCutover } from "./live-feed-cutover-journey.mjs";
 import { semanticProjectionFields } from "./android-harness.mjs";
 import {
@@ -119,54 +120,6 @@ function taggedFields(entry, prefix) {
     fields[components[index]] = components[index + 1];
   }
   return fields;
-}
-
-async function readStartupState(runtime) {
-  const fatal = runtime.platform === "web"
-    ? await runtime.driver.readElement("startup-fatal-error")
-    : null;
-  if (fatal) {
-    throw new TerminalObservationError("application startup failed", fatal.text || "unknown failure");
-  }
-  const entries = await runtime.driver.readProjection("parity:startup-state:");
-  const fields = taggedFields(entries[0], "parity:startup-state:");
-  return fields?.ready === "true" ? fields : null;
-}
-
-async function startupState(runtime, timeoutMs = E2E_TIMING.startupMs) {
-  return runtime.eventually("operational startup state", () => readStartupState(runtime), timeoutMs);
-}
-
-async function acceptDisclaimer(runtime, { required = false, keepIntroduction = false } = {}) {
-  const initial = await startupState(runtime);
-  if (initial.disclaimer_required !== "true") {
-    if (required) {
-      throw new Error("fresh profile reached the map without presenting the disclaimer");
-    }
-    return false;
-  }
-  await runtime.action("accept mandatory disclaimer", "disclaimer-accept-button", {
-    complete: async () => {
-      const state = await readStartupState(runtime);
-      return state?.disclaimer_required === "false" ? state : null;
-    },
-  });
-  const completed = await startupState(runtime);
-  if (completed.disclaimer_required !== "false") {
-    throw new Error("application startup retained mandatory disclaimer after acceptance");
-  }
-  if (!keepIntroduction) {
-    await runtime.eventually("first-use introduction settled", async () => {
-      const state = await readStartupState(runtime);
-      return state?.tour_pending !== "true" ? state : null;
-    });
-    if (await runtime.driver.readElement("guided-tour-panel")) {
-      await runtime.action("close first-use tour", "guided-tour-close", { complete: async () => !(await runtime.driver.readElement("guided-tour-panel")) });
-      // Preserve the conventional post-disclaimer chart landing for the journey.
-      await runtime.openPage("map");
-    }
-  }
-  return true;
 }
 
 async function selectedRasterMap(runtime) {

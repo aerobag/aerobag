@@ -58,6 +58,7 @@ import {
   waitForNode,
 } from "./android-harness.mjs";
 import { loadAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
+import { clampDragEndpoint } from "./gesture-geometry.mjs";
 import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
   offlineSyncButtonIsIdle,
@@ -958,17 +959,26 @@ async function prepareRouteViewportForRotations(serial, result, route, expectedS
 }
 
 async function dragMapWhileFollowing(serial, result) {
+  const driver = nativeSemanticDriver(serial);
   let probe = null;
   try {
     probe = await nativeTransition(result, "map drag keeps CTR engaged with an offset ownship", {
-      ready: async () => queryMapFollowProbe(serial),
-      act: async (followProbe) => {
-        // The exact projection already identifies a safe point in the map viewport.
-        // Avoid traversing the map's high-fanout accessibility subtree for bounds.
-        const startX = followProbe.centerX;
-        const startY = followProbe.centerY;
-        const endX = startX + Math.max(120, startX * 0.44);
-        await swipe(serial, startX, startY, endX, startY, 650);
+      ready: async () => {
+        if (!queryMapFollowProbe(serial)?.following) return null;
+        const surface = await driver.readElement("map-surface");
+        const point = surface && await driver.findMapInspectionPoint(surface);
+        return point ? { surface, point } : null;
+      },
+      act: async ({ surface, point }) => {
+        // Follow coordinates are viewport-local and can lie behind instrument
+        // cells. Use an exposed point in actual screen geometry, as taps do.
+        const bounds = rectOfBounds(surface.bounds);
+        const end = clampDragEndpoint(
+          { x: point.screenX, y: point.screenY }, { x: 240, y: 0 },
+          { x: bounds.left + 8, y: bounds.top + 8 },
+          { x: bounds.right - 8, y: bounds.bottom - 8 },
+        );
+        await swipe(serial, point.screenX, point.screenY, end.x, end.y, 650);
       },
       complete: async () => {
         const nextProbe = queryMapFollowProbe(serial);

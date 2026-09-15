@@ -1006,6 +1006,10 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     this.seededScalarProjections = new Set();
   }
 
+  readStartupProjection() {
+    return queryAndroidStartupProjection(this.serial);
+  }
+
   readScalarProjection(prefix) {
     const semanticTag = ANDROID_EXACT_SCALAR_PROJECTIONS.get(prefix);
     const boundedOnly = this.seededScalarProjections.has(semanticTag);
@@ -1316,6 +1320,14 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readProjection(probe) {
     const prefix = androidSemanticTag(probe);
+    if (prefix === "parity:startup-state:") {
+      // Startup is process state, not a visible control. A modal can hide the
+      // legacy Compose tag without removing the indexed read-only projection.
+      const fields = this.readStartupProjection();
+      if (!fields) return [];
+      const state = Object.entries(fields).flat().join(":");
+      return [{ id: `${prefix}${state}`, state, text: "", enabled: true, pressed: null }];
+    }
     if (prefix.startsWith("parity:map-selection-selected:")) {
       const expected = prefix.slice("parity:map-selection-selected:".length);
       const queried = this.readScalarProjection("parity:map-selection-state:");

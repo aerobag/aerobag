@@ -258,6 +258,40 @@ production state, weaken assertions, or erase failure artifacts.
   response-order preloads under `/tmp/aerobag-cloud-journey-B1ArLy`. This is
   focused regression evidence, not a new full hosted qualification.
 
+- 2026-09-15: [Release 2026-09-15.1 journeys](https://github.com/aerobag/aerobag/actions/runs/34918083928)
+  failed in nine jobs for three deterministic harness integration errors, not
+  another Chrome-startup stall. Five native smoke jobs skipped building the
+  newly required `service-bulletin-contract` in their empty artifact-local
+  target. Three cloud jobs tried to navigate an independent fresh web peer
+  behind its automatic introduction. Android's guided-tour journey queried a
+  legacy startup accessibility tag hidden by that modal, despite its bootstrap
+  already successfully reading the indexed startup provider.
+  The repairs explicitly build the package-server dependency before the HTTP
+  deadline, share first-use handling between main journeys and browser peers,
+  and route shared Android startup observations through the indexed provider.
+  Cheap regressions cover cold package-server startup and early exit with real
+  validated publication, delayed/missing startup observations, accepted profiles
+  with outstanding introductions, retained tours, and modal-independent Android
+  state. No app assertion, application timeout, or retry policy was relaxed.
+  Exact hosted app/fixture inputs and focused diagnostic evidence are retained
+  under `/tmp/aerobag-sep15-harness-GlNHY9` and the diagnostic directories printed
+  by `tools/ci/diagnose_release_journey.py`; these are not qualification receipts.
+- The now-unblocked native reruns exposed another harness error in CTR drag:
+  the follow projection's viewport-local center `(540,1136)` was treated as
+  screen coordinates. The retained UI hierarchy places that point inside
+  `flight-data-cell:final_fuel`, not exposed map input. The journey now asks the
+  semantic driver for an unobscured rendered point and uses screen coordinates
+  with a bounded endpoint. A reduced-geometry regression covers the 128px
+  window inset and overlaid instrument grid; the wiring check forbids returning
+  to follow-projection coordinates for input. Follow-state projections remain
+  the completion oracle, with unchanged offset/stability assertions.
+  Local focused verification passed cloud crossfill, account upgrade, and the
+  guided tour on both web and Android against the unchanged hosted app bundle
+  (six runs), plus all five native smoke journeys. Native failures and passes
+  are separately retained under `native-logs` and `native-fixed/logs` in the
+  input directory above. Full exact-tag hosted qualification still belongs to
+  the next staging attempt; these focused passes do not substitute for it.
+
 ## Ownership and causal-completion audit
 
 - 2026-09-11: Promotion of `2026-09-11.1` committed intent but failed activation

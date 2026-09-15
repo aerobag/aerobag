@@ -3085,6 +3085,7 @@ test("Android coordinate actions settle geometry while atomic web actions use on
 
 test("mandatory disclaimer response and application startup use separate budgets", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const startup = readFileSync(new URL("./first-use-startup.mjs", import.meta.url), "utf8");
   const implementation = readFileSync(
     new URL("./release-journey-implementations.mjs", import.meta.url),
     "utf8",
@@ -3105,13 +3106,10 @@ test("mandatory disclaimer response and application startup use separate budgets
     /complete:[\s\S]*?parity:disclaimer-accept-button/,
   );
   assert.match(
-    implementation,
+    startup,
     /accept mandatory disclaimer[\s\S]*const completed = await startupState\(runtime\)/,
   );
-  const sharedAcceptance = implementation.slice(
-    implementation.indexOf("async function acceptDisclaimer(runtime"),
-    implementation.indexOf("async function selectedRasterMap"),
-  );
+  const sharedAcceptance = startup.slice(startup.indexOf("export async function acceptDisclaimer(runtime"));
   assert.match(
     sharedAcceptance,
     /complete:[\s\S]*readStartupState\(runtime\)[\s\S]*disclaimer_required === "false"/,
@@ -3128,9 +3126,13 @@ test("mandatory disclaimer response and application startup use separate budgets
   );
   assert.doesNotMatch(startupJourney, /readElement\("disclaimer-accept-button"\)/);
   assert.match(
-    implementation,
+    startup,
     /runtime\.platform === "web"[\s\S]*readElement\("startup-fatal-error"\)/,
   );
+  assert.match(implementation, /import \{ acceptDisclaimer, readStartupState, startupState \} from "\.\/first-use-startup\.mjs"/);
+  const peer = readFileSync(new URL("./cloud-journey-peer.mjs", import.meta.url), "utf8");
+  assert.match(peer, /import \{ acceptDisclaimer \} from "\.\/first-use-startup\.mjs"/);
+  assert.match(peer, /await acceptDisclaimer\(createJourneyRuntime/);
 });
 
 test("Android app restart observes a stable process node without dumping the UI", () => {
@@ -5093,18 +5095,37 @@ test("Android layer regression uses the shared typed popup-control contract", ()
   assert.doesNotMatch(layerHelpers + layerJourney, /queryAndroidSemanticNodes|dumpAndroid\(/);
 });
 
-test("Android CTR gestures use the exact follow projection instead of traversing the map", () => {
+test("Android CTR gestures use rendered geometry, not viewport-local follow coordinates", () => {
   const suite = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
   const dragJourney = suite.slice(
     suite.indexOf("async function dragMapWhileFollowing"),
     suite.indexOf("async function zoomMapOneStepWhileFollowing"),
   );
-  assert.match(dragJourney, /ready: async \(\) => queryMapFollowProbe\(serial\)/);
-  assert.match(dragJourney, /followProbe\.centerX/);
-  assert.match(dragJourney, /followProbe\.centerY/);
+  assert.match(dragJourney, /queryMapFollowProbe\(serial\)\?\.following/);
+  assert.match(dragJourney, /driver\.readElement\("map-surface"\)/);
+  assert.match(dragJourney, /driver\.findMapInspectionPoint\(surface\)/);
+  assert.match(dragJourney, /swipe\(serial, point\.screenX, point\.screenY, end\.x, end\.y/);
+  assert.doesNotMatch(dragJourney, /followProbe\.center[XY]/);
   assert.doesNotMatch(dragJourney, /queryAndroidSemanticNodes\(/);
   assert.doesNotMatch(dragJourney, /dumpAndroid\(/);
-  assert.doesNotMatch(dragJourney, /parity:map-surface/);
+});
+
+test("native map drags avoid an instrument grid covering the local viewport center", () => {
+  // Reduced geometry from the failing 2026-09-15 native-smoke screenshot.
+  // The map starts below a 128px window inset; (540,1136) hits an instrument.
+  const surface = { left: 0, top: 128, width: 1080, height: 2272 };
+  const instruments = { left: 16, top: 394, width: 1048, height: 790 };
+  const point = chooseUnobscuredMapPoint(surface, [surface, instruments]);
+  assert.ok(point);
+  assert.ok(point.screenY > instruments.top + instruments.height + 8);
+  assert.equal(point.screenY, surface.top + surface.height * point.y);
+  const end = clampDragEndpoint(
+    { x: point.screenX, y: point.screenY }, { x: 240, y: 0 },
+    { x: surface.left + 8, y: surface.top + 8 },
+    { x: surface.left + surface.width - 8, y: surface.top + surface.height - 8 },
+  );
+  assert.equal(end.x - point.screenX, 240);
+  assert.equal(end.y, point.screenY);
 });
 
 test("map-family completion compares the fixed projection instead of scanning a derived suffix", () => {

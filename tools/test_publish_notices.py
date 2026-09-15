@@ -8,6 +8,7 @@ import gzip
 import http.client
 from http.server import ThreadingHTTPServer
 import os
+import socket
 from pathlib import Path
 import subprocess
 import tempfile
@@ -115,6 +116,63 @@ class BulletinPublicationTests(unittest.TestCase):
             connection.request(method, path)
             response = connection.getresponse(); response.read()
             self.assertEqual(response.status, status)
+
+    def check_package_server(self, listen=None):
+        # Exercise the exact native-smoke entrypoint without an emulator, FAA
+        # fixtures, or a pre-existing artifact-local target/debug directory.
+        artifacts = self.root / "artifacts"
+        (artifacts / "published").mkdir(parents=True)
+        (artifacts / "published/current_artifacts.json").write_text("[]\n")
+        target = self.root / "ui-target"
+        (target / "shared").mkdir(parents=True)
+        # Keep the executable directory cold too: ordinary Cargo tests may have
+        # built extra binaries that native-smoke dependency preparation omitted.
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        result = subprocess.run([
+            "bash", str(publisher.REPO / "ui/android-app/scripts/run_e2e_ci.sh"),
+            "--check-package-server",
+        ], env={
+            **os.environ,
+            "AEROBAG_ARTIFACT_WRITE_PATH": str(artifacts),
+            "AEROBAG_ARTIFACT_READ_PATH": str(artifacts / "published"),
+            "AEROBAG_TEST_ARTIFACTS_ROOT": "",
+            "AEROBAG_E2E_PACKAGE_ARTIFACT_ROOT": "",
+            "AEROBAG_UI_TARGET_ROOT": str(target),
+            "AEROBAG_E2E_ARTIFACT_DIR": str(self.root / "logs"),
+            "PACKAGE_SOURCE_PORT": str(port),
+            "PACKAGE_SERVER_LISTEN": listen or f"127.0.0.1:{port}",
+            "START_PACKAGE_SERVER": "auto",
+            "KEEP_EMULATOR": "0",
+        }, capture_output=True, text=True, timeout=180)
+        return artifacts, result
+
+    def test_cold_package_only_launcher_builds_and_publishes_its_dependencies(self):
+        artifacts, result = self.check_package_server()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("package server readiness check passed", result.stdout)
+        self.assertNotIn("[2/4]", result.stdout)
+        document = artifacts / "dev-stack/service/bulletins-v1.json"
+        self.assertTrue(document.is_file())
+        validated = subprocess.run([str(self.validator)], input=document.read_bytes(), capture_output=True)
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        self.assertFalse((artifacts / "target").exists())
+        log = next((self.root / "logs").glob("package-server-*.log")).read_text()
+        self.assertIn("serving dev stack", log)
+        self.assertIn("service-bulletin-contract", log)
+
+    def test_package_server_exit_fails_before_http_deadline_with_retained_cause(self):
+        # Startup reaches the real validator but fails before binding HTTP.
+        # Check the early-exit path, not an elapsed budget that would also count
+        # contention with the parallel cheap-preflight Cargo builds.
+        _, result = self.check_package_server(listen="127.0.0.1:invalid-port")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("package server exited before readiness", result.stderr)
+        self.assertIn("invalid-port", result.stderr)
+        self.assertIn("package-server-", result.stderr)
+        self.assertNotIn("package server did not become ready", result.stderr)
+        self.assertNotIn("[2/4]", result.stdout)
 
     def test_parallel_section_writers_retain_each_others_changes(self):
         self.publish()

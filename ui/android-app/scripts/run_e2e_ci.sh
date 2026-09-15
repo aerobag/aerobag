@@ -11,10 +11,13 @@ APP_DIR="$ROOT/ui/android-app"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 PACKAGE_SERVER_PID=""
 PACKAGE_SERVER_ARTIFACT_ROOT=""
+PACKAGE_SERVER_LOG=""
+PACKAGE_SERVER_CHECK_ONLY=0
+EMULATOR_STARTED=0
 
 usage() {
   cat <<'EOF'
-usage: run_e2e_ci.sh [--apk PATH] [--driver-apk PATH] [--route "KRNT KPWT"] [--test TEST_ID] [--release-fixture fixture.json] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
+usage: run_e2e_ci.sh [--apk PATH] [--driver-apk PATH] [--route "KRNT KPWT"] [--test TEST_ID] [--release-fixture fixture.json] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install] [--check-package-server]
 
 Starts a CI-suitable Android E2E environment:
   1. ensures the configured Android emulator system image is installed
@@ -27,6 +30,8 @@ When AEROBAG_TEST_ARTIFACTS_ROOT is set, the package server uses the pinned
 e2e/android-smoke-publication fixture from that checkout.
 CI defaults to headless emulator mode. Local runs default to VNC so the emulator
 can be inspected.
+--check-package-server exercises real package-server startup and exits without
+installing an Android image or touching an emulator.
 EOF
 }
 
@@ -89,6 +94,10 @@ while [[ "$#" -gt 0 ]]; do
     --skip-system-image-install)
       INSTALL_ANDROID_SYSTEM_IMAGE=0
       ;;
+    --check-package-server)
+      PACKAGE_SERVER_CHECK_ONLY=1
+      INSTALL_ANDROID_SYSTEM_IMAGE=0
+      ;;
     -h|--help)
       usage
       exit 0
@@ -128,7 +137,7 @@ cleanup() {
   if [[ -n "$PACKAGE_SERVER_ARTIFACT_ROOT" ]]; then
     rm -rf "$PACKAGE_SERVER_ARTIFACT_ROOT"
   fi
-  if [[ "$KEEP_EMULATOR" -eq 0 ]]; then
+  if [[ "$EMULATOR_STARTED" -eq 1 && "$KEEP_EMULATOR" -eq 0 ]]; then
     "$APP_DIR/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
   fi
 }
@@ -179,29 +188,57 @@ ensure_package_server() {
     stack_env+=("AEROBAG_ARTIFACT_WRITE_PATH=$PACKAGE_SERVER_ARTIFACT_ROOT")
     echo "using compact E2E publication: $PACKAGE_ARTIFACT_ROOT"
   fi
+  local log_dir="${AEROBAG_E2E_ARTIFACT_DIR:-$AEROBAG_UI_TARGET_ROOT/e2e}"
+  mkdir -p "$log_dir"
+  PACKAGE_SERVER_LOG="$(mktemp "$log_dir/package-server-XXXXXX.log")"
+  # Package-only startup still publishes a validated service bulletin. Build its
+  # dependency explicitly, outside the disposable publication root, with the
+  # same checkout-owned Cargo cache used by the other inexpensive checks.
+  # Compilation has a separate budget; HTTP readiness starts after it finishes.
+  echo "Building package server dependency: service-bulletin-contract" >>"$PACKAGE_SERVER_LOG"
+  if ! timeout 180 env CARGO_TARGET_DIR="$AEROBAG_UI_TARGET_ROOT/shared/rust-target" \
+    cargo build --locked --manifest-path "$ROOT/product/preprocessor/Cargo.toml" \
+      -p product-contracts --bin service-bulletin-contract >>"$PACKAGE_SERVER_LOG" 2>&1; then
+    echo "package server dependency build failed; log: $PACKAGE_SERVER_LOG" >&2
+    tail -n 80 "$PACKAGE_SERVER_LOG" >&2
+    exit 1
+  fi
   setsid env "${stack_env[@]}" python3 "$ROOT/tools/run_dev_stack.py" \
     --listen "$PACKAGE_SERVER_LISTEN" \
+    --target-dir "$AEROBAG_UI_TARGET_ROOT/shared/rust-target" \
     --skip-binary-build \
     --disable-live-feeds \
     --disable-cloud-server \
     --disable-build-watch \
-    --disable-pipeline-health &
+    --disable-pipeline-health >>"$PACKAGE_SERVER_LOG" 2>&1 &
   PACKAGE_SERVER_PID="$!"
   for _ in $(seq 1 60); do
+    if ! kill -0 "$PACKAGE_SERVER_PID" 2>/dev/null; then
+      echo "package server exited before readiness; log: $PACKAGE_SERVER_LOG" >&2
+      tail -n 80 "$PACKAGE_SERVER_LOG" >&2
+      exit 1
+    fi
     if package_server_ready; then
       return
     fi
     sleep 1
   done
   echo "package server did not become ready: $PACKAGE_CURRENT_URL" >&2
+  echo "package server log: $PACKAGE_SERVER_LOG" >&2
+  tail -n 80 "$PACKAGE_SERVER_LOG" >&2
   exit 1
 }
 
 ensure_android_system_image
 ensure_package_server
+if [[ "$PACKAGE_SERVER_CHECK_ONLY" -eq 1 ]]; then
+  echo "package server readiness check passed: $PACKAGE_CURRENT_URL"
+  exit 0
+fi
 
 echo "[2/4] clean and start emulator stack"
 "$APP_DIR/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
+EMULATOR_STARTED=1
 EMULATOR_HEADLESS="$EMULATOR_HEADLESS" "$APP_DIR/scripts/start_emulator_stack.sh"
 
 echo "[3/4] run Android E2E"

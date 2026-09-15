@@ -12,6 +12,8 @@ import { editSemanticText, WebSemanticJourneyDriver } from "./semantic-journey-d
 import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
+import { acceptDisclaimer } from "./first-use-startup.mjs";
+import { createJourneyRuntime } from "./release-journey-runtime.mjs";
 
 export function rewriteRequestOrigin(url, sourceOrigin, targetOrigin) {
   const original = new URL(url);
@@ -50,26 +52,10 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
     await page.waitForLoad();
     const transport = new WebSemanticTransport(page, { url });
     const driver = new WebSemanticJourneyDriver(transport);
-    const readStartupState = () => page.evaluate(`(() => ({
-        disclaimer: Boolean(document.querySelector('[data-testid="parity:disclaimer-accept-button"]')),
-        map: Boolean(document.querySelector('[data-testid="parity:page:map"]')),
-        error: document.querySelector('.startupErrorModal')?.textContent ?? null,
-      }))()`);
-    const startup = await observeUntil("cloud journey peer startup surface", async () => {
-      const state = await readStartupState();
-      if (state.error) throw new Error(state.error);
-      return state.disclaimer || state.map ? state : null;
-    }, { timeoutMs: E2E_TIMING.startupMs });
-    if (startup.value.disclaimer) {
-      await performTransition("cloud journey peer disclaimer", {
-        ready: () => driver.readElement("disclaimer-accept-button"),
-        act: (readyElement) => driver.performAction("disclaimer-accept-button", readyElement),
-        complete: async () => {
-          const state = await readStartupState();
-          return !state.disclaimer && state.map ? state : null;
-        },
-      });
-    }
+    await acceptDisclaimer(createJourneyRuntime({
+      journey: { id: "cloud-peer-startup", assertions: [] },
+      platform: "web", driver, artifactDir: userDataDir,
+    }), { required: true });
 
     return {
       page,

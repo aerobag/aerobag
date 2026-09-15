@@ -71,6 +71,26 @@ or journey timeouts to conceal leaks. Separate Chrome peers must also use
 separate netlogs, never overwrite the main browser's inherited netlog. The
 account-upgrade journey retains peer network errors and individual netlogs.
 
+Main journeys and independent cloud browser peers share `first-use-startup.mjs`.
+Accepting the disclaimer is not the end of startup: wait for the introduction
+decision, dismiss its rendered Close control unless the journey tests the tour,
+and only then navigate. An already accepted disclaimer must not skip an
+outstanding introduction. Controlled helper tests cover delayed decisions,
+temporarily missing projections, and preservation of the tour under test.
+Android's shared startup observation uses the same indexed read-only provider
+as its bootstrap, not the legacy accessibility-tree tag: a modal intentionally
+hides covered controls, but must not hide operational state from observers.
+
+Native smoke's package-only server still needs the Rust bulletin validator.
+Its launcher builds that dependency in the checkout-owned shared Cargo target
+before starting the bounded HTTP readiness wait. Retain build/startup logs and
+fail immediately when the child exits. `run_e2e_ci.sh --check-package-server`
+exercises this exact entrypoint without installing an image or touching an
+emulator. Python bulletin tests run it with fresh data roots and a tiny local
+publication, validate the resulting bulletin with the real Rust binary, and
+exercise early process failure. A warm build cache must not imply a populated
+artifact-local `target/debug` directory.
+
 Cheap preflight, fast/full release preflight, and the hosted harness job all use
 `ui/web-app/scripts/run-target-workspace.sh inner:test:harness`. This prepares
 lockfile-controlled dependencies and exports their workspace before selecting

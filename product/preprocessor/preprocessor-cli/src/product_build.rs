@@ -839,6 +839,9 @@ enum NodeCacheState {
 
 #[derive(Debug, Clone)]
 enum ScheduledTaskKind {
+    TppCachedPackage {
+        region: Region,
+    },
     ChartFetch {
         family: ChartFamily,
     },
@@ -890,6 +893,7 @@ enum ScheduledTaskKind {
 
 #[derive(Debug, Clone)]
 enum TaskValue {
+    TppSubgraphHit(CachedTppSubgraph),
     None,
     ChartFetch {
         record: NodeRecord,
@@ -912,6 +916,7 @@ enum TaskValue {
         source_root: PathBuf,
         plan: TppRegionRenderPlan,
         source_content_fingerprint: String,
+        subgraph_inputs: BTreeMap<String, String>,
     },
     TppRender {
         record: NodeRecord,
@@ -938,6 +943,7 @@ enum TaskValue {
 
 #[derive(Debug, Clone)]
 enum ProductTaskValue {
+    TppSubgraphHit(CachedTppSubgraph),
     None,
     SourceUrls {
         dir: PathBuf,
@@ -968,6 +974,7 @@ enum ProductTaskValue {
         source_root: PathBuf,
         plan: TppRegionRenderPlan,
         source_content_fingerprint: String,
+        subgraph_inputs: BTreeMap<String, String>,
     },
     TppRender {
         record: NodeRecord,
@@ -1979,6 +1986,8 @@ use cycle_nodes::*;
 
 mod node_cache;
 use node_cache::*;
+mod subgraph_cache;
+use subgraph_cache::*;
 
 fn manifest_chart_name(family: ChartFamily) -> &'static str {
     match family {

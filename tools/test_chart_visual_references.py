@@ -84,6 +84,87 @@ class ChartFixture(unittest.TestCase):
 
 
 class ChartVisualReferencesTest(ChartFixture):
+    def test_real_cache_miss_preserves_visible_attempt_and_last_completed_report(self):
+        previous = self.check()
+        check_region = quality.check_region
+
+        def observe_attempt(*args, **kwargs):
+            progress = json.loads((self.output / "current.json").read_text())
+            self.assertEqual(progress["status"], "checking")
+            self.assertTrue((self.output / "reports" / previous["report_id"] / "report.json").is_file())
+            return check_region(*args, **kwargs)
+
+        cached = self.root / "cached"
+        with patch.object(quality, "check_region", side_effect=observe_attempt):
+            report = quality.run_check(self.sources, self.metadata, "SEC", cached,
+                                       "new-inputs", "2611", monitor_output=self.output)
+        self.assertEqual(json.loads((self.output / "current.json").read_text()), report)
+        self.assertEqual(json.loads((cached / "current.json").read_text()), report)
+        self.assertTrue((self.output / "reports" / report["report_id"] / "index.html").is_file())
+
+    def test_interrupted_cache_miss_keeps_pending_attempt_visible_for_overdue_alarm(self):
+        previous = self.check()
+        with patch.object(quality, "check_region", side_effect=SystemExit("interrupted")):
+            with self.assertRaises(SystemExit):
+                quality.run_check(self.sources, self.metadata, "SEC", self.root / "cached",
+                                  "new-inputs", "2611", monitor_output=self.output)
+        self.assertEqual(json.loads((self.output / "current.json").read_text())["status"], "checking")
+        self.assertTrue((self.output / "reports" / previous["report_id"] / "report.json").is_file())
+
+    def test_cached_verdict_republishes_completed_evidence_without_checking(self):
+        report = self.check()
+        cached = self.root / "cached"
+        self.output.rename(cached)
+        original = (cached / "current.json").read_bytes()
+        with patch.object(quality, "run_check", side_effect=AssertionError("must reuse verdict")):
+            self.assertEqual(quality.publish_cached_report(cached, self.output), report)
+            self.assertEqual(quality.publish_cached_report(cached, self.output), report)
+        self.assertEqual((self.output / "current.json").read_bytes(), original)
+        self.assertEqual(
+            (self.output / "reports" / report["report_id"] / "index.html").read_bytes(),
+            (cached / "reports" / report["report_id"] / "index.html").read_bytes(),
+        )
+
+    def test_cached_verdict_copy_failure_does_not_publish_partial_evidence(self):
+        report = self.check()
+        cached = self.root / "cached"
+        self.output.rename(cached)
+        def interrupted(source, destination, **kwargs):
+            (destination / "partial").write_text("incomplete")
+            raise OSError("interrupted copy")
+
+        with patch.object(shutil, "copytree", side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, "interrupted copy"):
+                quality.publish_cached_report(cached, self.output)
+        self.assertFalse((self.output / "current.json").exists())
+        self.assertEqual(list((self.output / "reports").iterdir()), [])
+        quality.publish_cached_report(cached, self.output)
+        self.assertTrue((self.output / "reports" / report["report_id"] / "index.html").is_file())
+
+    def test_cached_verdict_rejects_pending_and_retains_bounded_review_assets(self):
+        cached = self.root / "cached"
+        cached.mkdir()
+        for index in range(5):
+            report_id = f"{index:032x}"
+            report = {"schema_version": quality.REPORT_SCHEMA, "report_id": report_id,
+                      "status": "ok", "completed_at": "2026-09-15T00:00:00Z"}
+            (cached / "current.json").write_text(json.dumps(report))
+            assets = cached / "reports" / report_id
+            assets.mkdir(parents=True)
+            (assets / "index.html").write_text("evidence")
+            assets.chmod(0o555)
+            try:
+                quality.publish_cached_report(cached, self.output)
+            finally:
+                assets.chmod(0o755)
+        self.assertEqual(len(list((self.output / "reports").iterdir())), 3)
+        current = (self.output / "current.json").read_bytes()
+        report["status"] = "checking"
+        (cached / "current.json").write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            quality.publish_cached_report(cached, self.output)
+        self.assertEqual((self.output / "current.json").read_bytes(), current)
+
     def test_approval_cli_initializes_its_own_metadata_reader(self):
         report = self.check()
         region = self.inset(report)

@@ -154,7 +154,7 @@ pub(super) fn build_chart_process_node(
     source_fetch_record: &NodeRecord,
     supplemental_source_fetch_record: Option<&NodeRecord>,
     cpu_jobs: usize,
-) -> anyhow::Result<NodeRecord> {
+) -> anyhow::Result<(NodeRecord, NodeRecord)> {
     let family_id = family_slug(family).to_string();
     let node_name = format!("charts-{family_id}-process");
     let source_fetch_root =
@@ -171,9 +171,8 @@ pub(super) fn build_chart_process_node(
         &source_fingerprint,
         cpu_jobs,
     )?;
-    // Quality is checked even on a tile-cache hit, and before tiling/publication.
-    // The report is outside disposable render work so failed builds remain inspectable.
-    let publication_inputs = check_chart_visual_references(
+    // A matching verified quality node is required even on a tile-cache hit.
+    let (quality, publication_inputs) = check_chart_visual_references(
         config,
         family,
         &source_fetch_root,
@@ -184,6 +183,13 @@ pub(super) fn build_chart_process_node(
         "publication_inputs".to_string(),
         publication_inputs.fingerprint()?,
     );
+    inputs.insert(
+        "quality_fingerprint".to_string(),
+        quality.fingerprint.clone(),
+    );
+    let quality_record_path = build_shared_node_dir(config, &quality.name)?
+        .join(&quality.fingerprint)
+        .join("build-record.json");
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -196,7 +202,7 @@ pub(super) fn build_chart_process_node(
     let thumbnails_root = work_dir.join("thumbnails");
     let reference_catalog_path = work_dir.join(CHART_REFERENCE_CATALOG_NAME);
     let publication_inputs_path = work_dir.join("chart-publication-inputs.json");
-    run_cached_node(
+    let record = run_cached_node(
         prepared,
         inputs,
         &[
@@ -231,6 +237,10 @@ pub(super) fn build_chart_process_node(
             prune_chart_render_intermediates(&work_dir)?;
             Ok(BTreeMap::from([
                 (
+                    "quality_node_record".to_string(),
+                    relative_artifact_path(&quality_record_path, &config.build_root),
+                ),
+                (
                     "publication_inputs".to_string(),
                     relative_artifact_path(&publication_inputs_path, &config.build_root),
                 ),
@@ -260,7 +270,8 @@ pub(super) fn build_chart_process_node(
                 ),
             ]))
         },
-    )
+    )?;
+    Ok((record, quality))
 }
 
 pub(super) fn prune_chart_render_intermediates(work_dir: &Path) -> anyhow::Result<()> {
@@ -1587,7 +1598,7 @@ fn prefetch_request_file_name(request: &PrefetchRequest) -> anyhow::Result<Strin
         .with_context(|| format!("prefetch request URL has no file name: {}", request.url))
 }
 
-fn tpp_source_content_fingerprint(record: &NodeRecord) -> anyhow::Result<&str> {
+pub(super) fn tpp_source_content_fingerprint(record: &NodeRecord) -> anyhow::Result<&str> {
     source_content_fingerprint(record)
 }
 
@@ -3129,7 +3140,7 @@ mod tests {
         fetch
             .outputs
             .insert("source_root".to_string(), source_root.display().to_string());
-        let render = |family| {
+        let render_nodes = |family| {
             build_chart_process_node(
                 &config,
                 family,
@@ -3141,6 +3152,7 @@ mod tests {
             )
             .unwrap()
         };
+        let render = |family| render_nodes(family).0;
         let work = |record: &NodeRecord| {
             resolve_artifact_path(&config, output_path(record, "work_dir").unwrap())
         };
@@ -3157,7 +3169,32 @@ mod tests {
         let clean = render(ChartFamily::Sec);
         let clean_tiles = tiles(&clean);
         assert!(!clean_tiles.is_empty());
+        let current = config
+            .build_root
+            .join("state/chart-quality/SEC/current.json");
+        let clean_report = fs::read(&current).unwrap();
+        let attempts = fs::read_dir(config.build_root.join("logs/chart-quality"))
+            .unwrap()
+            .count();
         assert!(render(ChartFamily::Sec).cache_hit);
+        assert_eq!(
+            fs::read(&current).unwrap(),
+            clean_report,
+            "cache reuse must not invent a new verification timestamp or pending state"
+        );
+        assert_eq!(
+            fs::read_dir(config.build_root.join("logs/chart-quality"))
+                .unwrap()
+                .count(),
+            attempts,
+            "a quality hit must not execute the image checker"
+        );
+        let (_, quality) = render_nodes(ChartFamily::Sec);
+        assert_eq!(quality.name, "charts-sec-quality");
+        assert!(
+            quality.cache_hit,
+            "report actual quality-node reuse to the build manifest"
+        );
         let clean_tac = render(ChartFamily::Tac);
         let clean_fly = render(ChartFamily::Flyway);
         assert!(!tiles(&clean_tac).is_empty());

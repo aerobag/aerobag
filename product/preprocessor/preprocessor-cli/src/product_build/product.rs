@@ -23,6 +23,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
     ))?;
     #[derive(Debug, Clone)]
     enum ProductScheduledTaskKind {
+        TppCachedPackage {
+            cycle: String,
+            region: Region,
+        },
         SourceUrls {
             cycle: String,
         },
@@ -128,38 +132,56 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         format!("{cycle}:{name}")
     }
 
-    fn product_tpp_render_tasks_for_plan(
+    fn product_tpp_tasks_for_plan(
         cycle: &str,
-        plan_task_id: &str,
         region: Region,
-        plan: &TppRegionRenderPlan,
+        plan: Option<&TppRegionRenderPlan>,
     ) -> Vec<GraphScheduledTask<ProductScheduledTaskKind>> {
-        let mut render_ids = Vec::with_capacity(plan.units().len());
-        let mut tasks = Vec::with_capacity(plan.units().len() + 1);
-        for unit in plan.units() {
-            let render_id = cycle_task_id(cycle, &tpp_render_unit_task_name(region, unit));
-            render_ids.push(render_id.clone());
-            tasks.push(GraphScheduledTask {
-                id: render_id,
-                deps: vec![plan_task_id.to_string()],
-                weight: TPP_RENDER_UNIT_WEIGHT,
-                kind: ProductScheduledTaskKind::TppRenderUnit {
-                    cycle: cycle.to_string(),
-                    region,
-                    unit: Box::new(unit.clone()),
-                },
-            });
-        }
-        tasks.push(GraphScheduledTask {
-            id: cycle_task_id(cycle, &tpp_render_assemble_task_name(region)),
-            deps: render_ids,
-            weight: LIGHT_TASK_WEIGHT,
-            kind: ProductScheduledTaskKind::TppRenderAssemble {
-                cycle: cycle.to_string(),
-                region,
-            },
-        });
-        tasks
+        let plan_id = format!("tpp-{}-plan", region.code().to_ascii_lowercase());
+        cycle::tpp_tasks_for_plan(&plan_id, region, plan)
+            .into_iter()
+            .map(|task| {
+                let cycle = cycle.to_string();
+                let kind = match task.kind {
+                    ScheduledTaskKind::TppCachedPackage { region } => {
+                        ProductScheduledTaskKind::TppCachedPackage {
+                            cycle: cycle.clone(),
+                            region,
+                        }
+                    }
+                    ScheduledTaskKind::TppRenderUnit { region, unit } => {
+                        ProductScheduledTaskKind::TppRenderUnit {
+                            cycle: cycle.clone(),
+                            region,
+                            unit,
+                        }
+                    }
+                    ScheduledTaskKind::TppRenderAssemble { region } => {
+                        ProductScheduledTaskKind::TppRenderAssemble {
+                            cycle: cycle.clone(),
+                            region,
+                        }
+                    }
+                    ScheduledTaskKind::TppPackagePlan { region } => {
+                        ProductScheduledTaskKind::TppPackagePlan {
+                            cycle: cycle.clone(),
+                            region,
+                        }
+                    }
+                    _ => unreachable!("unexpected TPP expansion task"),
+                };
+                GraphScheduledTask {
+                    id: cycle_task_id(&cycle, &task.id),
+                    deps: task
+                        .deps
+                        .iter()
+                        .map(|id| cycle_task_id(&cycle, id))
+                        .collect(),
+                    weight: task.weight,
+                    kind,
+                }
+            })
+            .collect()
     }
 
     fn product_tpp_package_tasks_for_plan(
@@ -392,8 +414,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             for region in Region::ALL.iter() {
                 let region_id = region.code().to_ascii_lowercase();
                 let plan_id = cycle_task_id(cycle, &format!("tpp-{region_id}-plan"));
-                let assemble_id = cycle_task_id(cycle, &tpp_render_assemble_task_name(*region));
-                let package_plan_id = cycle_task_id(cycle, &tpp_package_plan_task_name(*region));
                 let package_id = cycle_task_id(cycle, &format!("tpp-{region_id}-package"));
                 pending_tasks.push(GraphScheduledTask {
                     id: plan_id,
@@ -403,15 +423,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     ],
                     weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::TppPlan {
-                        cycle: cycle.clone(),
-                        region: *region,
-                    },
-                });
-                pending_tasks.push(GraphScheduledTask {
-                    id: package_plan_id,
-                    deps: vec![assemble_id],
-                    weight: LIGHT_TASK_WEIGHT,
-                    kind: ProductScheduledTaskKind::TppPackagePlan {
                         cycle: cycle.clone(),
                         region: *region,
                     },
@@ -766,7 +777,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             } else {
                                 None
                             };
-                        let record = build_chart_process_node(
+                        let (record, quality) = build_chart_process_node(
                             &cycle_config,
                             family,
                             &cycle_config.chart_metadata_root,
@@ -777,10 +788,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         )?;
                         let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
-                            node_records: vec![normalize_node_record_paths(
-                                record.clone(),
-                                &cycle_config.packaged_dir,
-                            )],
+                            node_records: vec![
+                                quality,
+                                normalize_node_record_paths(
+                                    record.clone(),
+                                    &cycle_config.packaged_dir,
+                                ),
+                            ],
                             value: ProductTaskValue::ChartProcess { record },
                             completion_detail: format!("cache_hit={cache_hit}"),
                         })
@@ -876,9 +890,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         })
                     }
                     ProductScheduledTaskKind::TppPlan { cycle, region } => {
-                        let source_urls =
+                        let (source_urls, version) =
                             match task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls")) {
-                                Some(ProductTaskValue::SourceUrls { dir, .. }) => dir.clone(),
+                                Some(ProductTaskValue::SourceUrls {
+                                    dir, tpp_versions, ..
+                                }) => (
+                                    dir,
+                                    tpp_versions[&region.code().to_ascii_lowercase()].clone(),
+                                ),
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
                         let source_fetch =
@@ -891,6 +910,23 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let region_id = region.code().to_ascii_lowercase();
                         let source_urls_path =
                             source_urls.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        let subgraph_inputs = tpp_subgraph_inputs(
+                            &cycle_config,
+                            region,
+                            &source_urls_path,
+                            &source_fetch,
+                            &version,
+                        )?;
+                        if let Some(cached) =
+                            lookup_tpp_subgraph(&cycle_config, region, &subgraph_inputs)?
+                        {
+                            return Ok(ProductTaskCompletion {
+                                node_records: vec![],
+                                value: ProductTaskValue::TppSubgraphHit(cached),
+                                completion_detail: "subgraph_cache_hit=true children_not_expanded"
+                                    .into(),
+                            });
+                        }
                         let (record, source_root, plan, source_content_fingerprint) =
                             build_tpp_plan_node(
                                 &cycle_config,
@@ -911,11 +947,41 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 source_root,
                                 plan,
                                 source_content_fingerprint,
+                                subgraph_inputs,
                             },
                             completion_detail: format!(
                                 "units={} cache_hit={}",
                                 unit_count, cache_hit
                             ),
+                        })
+                    }
+                    ProductScheduledTaskKind::TppCachedPackage { cycle, region } => {
+                        let plan_id = cycle_task_id(
+                            &cycle,
+                            &format!("tpp-{}-plan", region.code().to_ascii_lowercase()),
+                        );
+                        let Some(ProductTaskValue::TppSubgraphHit(cached)) =
+                            task_values_snapshot.get(&plan_id)
+                        else {
+                            bail!("missing cached TPP subgraph")
+                        };
+                        let Some(ProductTaskValue::SourceUrls { dir, .. }) =
+                            task_values_snapshot.get(&cycle_task_id(&cycle, "source-urls"))
+                        else {
+                            bail!("missing TPP source URLs")
+                        };
+                        let urls = dir.join(format!(
+                            "tpp-{}/source_urls.jsonl",
+                            region.code().to_ascii_lowercase()
+                        ));
+                        let (node_records, source, fingerprint) = cached.result(&config, &urls)?;
+                        Ok(ProductTaskCompletion {
+                            node_records,
+                            value: ProductTaskValue::FingerprintedTppSource {
+                                source,
+                                fingerprint,
+                            },
+                            completion_detail: "subgraph_cache_hit=true".into(),
                         })
                     }
                     ProductScheduledTaskKind::TppRenderUnit {
@@ -1297,11 +1363,25 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
+                        let Some(ProductTaskValue::TppPlan {
+                            subgraph_inputs, ..
+                        }) = task_values_snapshot
+                            .get(&cycle_task_id(&cycle, &format!("tpp-{region_id}-plan")))
+                        else {
+                            bail!("missing TPP subgraph inputs")
+                        };
+                        let subgraph_record = save_tpp_subgraph(
+                            &cycle_config,
+                            region,
+                            subgraph_inputs,
+                            &record,
+                            &scoped_task_records,
+                        )?;
                         Ok(ProductTaskCompletion {
-                            node_records: vec![normalize_node_record_paths(
-                                record,
-                                &cycle_config.packaged_dir,
-                            )],
+                            node_records: vec![
+                                subgraph_record,
+                                normalize_node_record_paths(record, &cycle_config.packaged_dir),
+                            ],
                             value: ProductTaskValue::FingerprintedTppSource {
                                 source,
                                 fingerprint,
@@ -2256,12 +2336,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             |task_id, kind, completion, _task_values, _task_node_records| match kind {
                 ProductScheduledTaskKind::TppPlan { cycle, region } => {
                     let plan = match &completion.value {
-                        ProductTaskValue::TppPlan { plan, .. } => plan,
+                        ProductTaskValue::TppSubgraphHit(_) => None,
+                        ProductTaskValue::TppPlan { plan, .. } => Some(plan),
                         _ => unreachable!("tpp plan completion should carry plan value"),
                     };
-                    Ok(product_tpp_render_tasks_for_plan(
-                        cycle, task_id, *region, plan,
-                    ))
+                    Ok(product_tpp_tasks_for_plan(cycle, *region, plan))
                 }
                 ProductScheduledTaskKind::TppPackagePlan { cycle, region } => {
                     let plan = match &completion.value {

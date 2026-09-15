@@ -479,12 +479,17 @@ def approve(candidate_path, metadata_root, reviewer):
     return path
 
 
-def run_check(source_root, metadata_root, family, output, source_id, cycle, charts=None):
+def run_check(source_root, metadata_root, family, output, source_id, cycle, charts=None,
+              monitor_output=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     # Serializes attempts for one family, including the report's atomic current pointer.
     import fcntl
-    with (output / ".lock").open("w") as lock:
+    monitor_output = Path(monitor_output) if monitor_output else output
+    monitor_output.mkdir(parents=True, exist_ok=True)
+    # Preserve the family-wide attempt lifecycle on real misses. Cache hits only
+    # take this lock briefly to republish completed evidence.
+    with (monitor_output / ".lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         report_id = uuid.uuid4().hex
         report_root = output / "reports" / report_id
@@ -493,6 +498,8 @@ def run_check(source_root, metadata_root, family, output, source_id, cycle, char
                   "source_id": source_id, "report_id": report_id, "started_at": now(),
                   "status": "checking", "policy": POLICY, "regions": []}
         atomic_json(output / "current.json", report)
+        if monitor_output != output:
+            atomic_json(monitor_output / "current.json", report)
         try:
             initialize_rendering()
             selected = publication_regions(metadata_root, family, charts)
@@ -526,7 +533,57 @@ def run_check(source_root, metadata_root, family, output, source_id, cycle, char
                           key=lambda p: p.stat().st_mtime, reverse=True)
         for old in retained[2:]:
             shutil.rmtree(old)
+        if monitor_output != output:
+            _publish_cached_report_locked(output, monitor_output, report)
         return report
+
+
+def publish_cached_report(cached_output, output):
+    """Publish a completed verdict; never turn reuse into a new checking attempt."""
+    import fcntl
+    cached_output, output = Path(cached_output), Path(output)
+    report = json.loads((cached_output / "current.json").read_text())
+    report_id = report["report_id"]
+    if (report["schema_version"] != REPORT_SCHEMA or report["status"] == "checking"
+            or not report.get("completed_at") or len(report_id) != 32
+            or any(c not in "0123456789abcdef" for c in report_id)):
+        raise ValueError("Cannot publish an incomplete cached chart verdict")
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / ".lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _publish_cached_report_locked(cached_output, output, report)
+    return report
+
+
+def _publish_cached_report_locked(cached_output, output, report):
+    """Caller holds output/.lock across the report copy and pointer switch."""
+    import tempfile
+    report_id = report["report_id"]
+    reports = output / "reports"
+    reports.mkdir(exist_ok=True)
+    target = reports / report_id
+    if not target.exists():
+        # Copy instead of symlink: the HTTP report handler deliberately
+        # confines review assets to state/chart-quality.
+        pending = Path(tempfile.mkdtemp(prefix=".publishing-", dir=reports))
+        try:
+            shutil.copytree(cached_output / "reports" / report_id, pending,
+                            dirs_exist_ok=True)
+            # Node-cache directories are immutable; the monitoring copy
+            # must remain removable by the producer during retention GC.
+            for directory, _, _ in os.walk(pending):
+                Path(directory).chmod(0o755)
+            pending.rename(target)
+        finally:
+            if pending.exists():
+                for directory, _, _ in os.walk(pending):
+                    Path(directory).chmod(0o755)
+                shutil.rmtree(pending)
+    atomic_json(output / "current.json", report)
+    retained = sorted((p for p in reports.iterdir() if p != target),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in retained[2:]:
+        shutil.rmtree(old)
 
 
 def main(argv=None):
@@ -536,12 +593,20 @@ def main(argv=None):
     parser.add_argument("--metadata-root", type=Path, default=Path("product/chart-metadata"))
     parser.add_argument("--family")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--publish-cached", type=Path)
+    parser.add_argument("--monitor-output", type=Path,
+                        help="Publish attempt progress and completed evidence here while caching output separately")
     parser.add_argument("--source-id", default="manual-review")
     parser.add_argument("--cycle", default="manual-review")
     parser.add_argument("--chart", action="append")
     parser.add_argument("--approve-reference", type=Path)
     parser.add_argument("--reviewed-by")
     args = parser.parse_args(argv)
+    if args.publish_cached:
+        if not args.output:
+            parser.error("--output is required with --publish-cached")
+        print(json.dumps(publish_cached_report(args.publish_cached, args.output)))
+        return 0
     if args.approve_reference:
         if not args.reviewed_by:
             parser.error("--reviewed-by is required for approval")
@@ -550,7 +615,7 @@ def main(argv=None):
     if not all((args.family, args.source_root, args.output)):
         parser.error("--family, --source-root and --output are required for checks")
     report = run_check(args.source_root, args.metadata_root, args.family, args.output,
-                       args.source_id, args.cycle, args.chart)
+                       args.source_id, args.cycle, args.chart, args.monitor_output)
     # stdout is the result of THIS invocation, not the racy monitoring current.json.
     print(json.dumps(report))
     return 2 if report['publication']['state'] == 'blocked' else 0

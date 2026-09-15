@@ -4,11 +4,21 @@
 
 use super::*;
 
-fn tpp_render_tasks_for_plan(
+// No render plan means a completed region hit: expose just its package node.
+// Both the single-cycle and multi-cycle schedulers use this expansion boundary.
+pub(super) fn tpp_tasks_for_plan(
     plan_task_id: &str,
     region: Region,
-    plan: &TppRegionRenderPlan,
+    plan: Option<&TppRegionRenderPlan>,
 ) -> Vec<GraphScheduledTask<ScheduledTaskKind>> {
+    let Some(plan) = plan else {
+        return vec![GraphScheduledTask {
+            id: format!("tpp-{}-package", region.code().to_ascii_lowercase()),
+            deps: vec![plan_task_id.to_string()],
+            weight: LIGHT_TASK_WEIGHT,
+            kind: ScheduledTaskKind::TppCachedPackage { region },
+        }];
+    };
     let mut render_ids = Vec::with_capacity(plan.units().len());
     let mut tasks = Vec::with_capacity(plan.units().len() + 1);
     for unit in plan.units() {
@@ -26,9 +36,18 @@ fn tpp_render_tasks_for_plan(
     }
     tasks.push(GraphScheduledTask {
         id: tpp_render_assemble_task_name(region),
-        deps: render_ids,
+        deps: render_ids
+            .into_iter()
+            .chain([plan_task_id.to_string()])
+            .collect(),
         weight: LIGHT_TASK_WEIGHT,
         kind: ScheduledTaskKind::TppRenderAssemble { region },
+    });
+    tasks.push(GraphScheduledTask {
+        id: tpp_package_plan_task_name(region),
+        deps: vec![tpp_render_assemble_task_name(region)],
+        weight: LIGHT_TASK_WEIGHT,
+        kind: ScheduledTaskKind::TppPackagePlan { region },
     });
     tasks
 }
@@ -240,20 +259,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
             let plan_id = format!("tpp-{region_id}-plan");
-            let assemble_id = tpp_render_assemble_task_name(*region);
-            let package_plan_id = tpp_package_plan_task_name(*region);
             let package_id = format!("tpp-{region_id}-package");
             pending_tasks.push(GraphScheduledTask {
                 id: plan_id,
                 deps: vec!["tpp-fetch".to_string()],
                 weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::TppPlan { region: *region },
-            });
-            pending_tasks.push(GraphScheduledTask {
-                id: package_plan_id,
-                deps: vec![assemble_id],
-                weight: LIGHT_TASK_WEIGHT,
-                kind: ScheduledTaskKind::TppPackagePlan { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("tpp-{region_id}-unpack"),
@@ -385,8 +396,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             supplemental_source_fetch.as_ref(),
                             config.cpu_jobs.clamp(1, 8),
                         )
-                        .map(|record| TaskCompletion {
-                            node_records: vec![record.clone()],
+                        .map(|(record, quality)| TaskCompletion {
+                            node_records: vec![quality, record.clone()],
                             value: TaskValue::ChartProcess { record },
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
@@ -458,6 +469,23 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         let region_id = region.code().to_ascii_lowercase();
                         let source_urls_path =
                             source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        let subgraph_inputs = tpp_subgraph_inputs(
+                            &config,
+                            region,
+                            &source_urls_path,
+                            &source_fetch,
+                            &tpp_versions[&region_id],
+                        )?;
+                        if let Some(cached) =
+                            lookup_tpp_subgraph(&config, region, &subgraph_inputs)?
+                        {
+                            return Ok(TaskCompletion {
+                                node_records: vec![],
+                                value: TaskValue::TppSubgraphHit(cached),
+                                completion_detail: "subgraph_cache_hit=true children_not_expanded"
+                                    .into(),
+                            });
+                        }
                         build_tpp_plan_node(
                             &config,
                             region,
@@ -476,6 +504,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                         source_root,
                                         plan,
                                         source_content_fingerprint,
+                                        subgraph_inputs,
                                     },
                                     completion_detail: format!(
                                         "units={} cache_hit={}",
@@ -484,6 +513,25 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 }
                             },
                         )
+                    }
+                    ScheduledTaskKind::TppCachedPackage { region } => {
+                        let region_id = region.code().to_ascii_lowercase();
+                        let Some(TaskValue::TppSubgraphHit(cached)) =
+                            task_values_snapshot.get(&format!("tpp-{region_id}-plan"))
+                        else {
+                            bail!("missing cached TPP subgraph")
+                        };
+                        let urls =
+                            source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        let (node_records, source, fingerprint) = cached.result(&config, &urls)?;
+                        Ok(TaskCompletion {
+                            node_records,
+                            value: TaskValue::FingerprintedTppSource {
+                                source,
+                                fingerprint,
+                            },
+                            completion_detail: "subgraph_cache_hit=true".into(),
+                        })
                     }
                     ScheduledTaskKind::TppRenderUnit { region, unit } => {
                         let region_id = region.code().to_ascii_lowercase();
@@ -803,8 +851,21 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             })?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
+                        let Some(TaskValue::TppPlan {
+                            subgraph_inputs, ..
+                        }) = task_values_snapshot.get(&format!("tpp-{region_id}-plan"))
+                        else {
+                            bail!("missing TPP subgraph inputs")
+                        };
+                        let subgraph_record = save_tpp_subgraph(
+                            &config,
+                            region,
+                            subgraph_inputs,
+                            &record,
+                            &task_node_records_snapshot.iter().collect(),
+                        )?;
                         Ok(TaskCompletion {
-                            node_records: vec![record],
+                            node_records: vec![subgraph_record, record],
                             value: TaskValue::FingerprintedTppSource {
                                 source,
                                 fingerprint,
@@ -990,10 +1051,11 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             |task_id, kind, completion, _task_values, _task_node_records| match kind {
                 ScheduledTaskKind::TppPlan { region } => {
                     let plan = match &completion.value {
-                        TaskValue::TppPlan { plan, .. } => plan,
+                        TaskValue::TppSubgraphHit(_) => None,
+                        TaskValue::TppPlan { plan, .. } => Some(plan),
                         _ => unreachable!("tpp plan completion should carry plan value"),
                     };
-                    Ok(tpp_render_tasks_for_plan(task_id, *region, plan))
+                    Ok(tpp_tasks_for_plan(task_id, *region, plan))
                 }
                 ScheduledTaskKind::TppPackagePlan { region } => {
                     let plan = match &completion.value {

@@ -100,7 +100,166 @@ pub(super) fn check_chart_visual_references(
     source_root: &Path,
     supplemental: Option<&NodeRecord>,
     source_id: &str,
-) -> anyhow::Result<ChartPublicationInputs> {
+) -> anyhow::Result<(NodeRecord, ChartPublicationInputs)> {
+    let cycle = config
+        .target_cycle
+        .as_deref()
+        .context("chart quality requires a target cycle")?;
+    let mut roots = vec![source_root.to_path_buf()];
+    if let Some(record) = supplemental {
+        roots.push(resolve_artifact_path(
+            config,
+            output_path(record, "source_root")?,
+        ));
+    }
+    let inputs = chart_quality_inputs(config, family, cycle, source_id, &roots)?;
+    let name = format!("charts-{}-quality", family_slug(family));
+    let prepared = prepare_node_at(&build_shared_node_dir(config, &name)?, &name, &inputs)?;
+    let verdict_root = prepared.dir.join("verdict");
+    let record = run_cached_node(
+        prepared,
+        inputs,
+        &[
+            verdict_root.join("current.json"),
+            verdict_root.join("reports"),
+        ],
+        |_| {
+            run_chart_visual_references(
+                config,
+                family,
+                source_root,
+                supplemental,
+                source_id,
+                &verdict_root,
+            )?;
+            Ok(BTreeMap::from([(
+                "verdict".to_string(),
+                relative_artifact_path(&verdict_root, &config.build_root),
+            )]))
+        },
+    )?;
+    let report: ChartQualityReport =
+        serde_json::from_slice(&fs::read(verdict_root.join("current.json"))?)?;
+    if report.schema_version != 2
+        || report.family != manifest_chart_name(family)
+        || report.cycle != cycle
+        || report.source_id != source_id
+    {
+        bail!("cached chart verdict does not match this build");
+    }
+    if record.cache_hit {
+        publish_chart_verdict(config, family, &verdict_root)?;
+    }
+    match report.publication {
+        PublicationDecision::Ready(inputs) => Ok((record, inputs)),
+        PublicationDecision::Blocked { reason } => bail!("chart publication blocked: {reason}"),
+    }
+}
+
+fn chart_quality_inputs(
+    config: &ProductBuildConfig,
+    family: ChartFamily,
+    cycle: &str,
+    source_id: &str,
+    roots: &[PathBuf],
+) -> anyhow::Result<BTreeMap<String, String>> {
+    // The fetched content identity is supplemented with actual file identities:
+    // replacing a source behind an unchanged fetch record must invalidate the
+    // verdict. This uses the same identity as artifact_verification: ctime is
+    // deliberately excluded because creating/removing render hardlinks changes
+    // ctime without changing pixels. This stats sources, not gigabytes of data.
+    let mut identities = Vec::new();
+    for (overlay, root) in roots.iter().enumerate() {
+        let mut files = Vec::new();
+        collect_files(root, root, &mut files)?;
+        for (relative, path) in files {
+            let stat = fs::metadata(path)?;
+            identities.push(serde_json::json!([
+                overlay,
+                relative,
+                stat.dev(),
+                stat.ino(),
+                stat.len(),
+                stat.mtime(),
+                stat.mtime_nsec(),
+            ]));
+        }
+    }
+    let versions = Command::new("python3").args(["-c", "import sys,numpy; from osgeo import gdal; print(sys.version); print(numpy.__version__); print(gdal.VersionInfo('--version'))"]).output()?;
+    if !versions.status.success() {
+        bail!(
+            "cannot identify chart verification tools: {}",
+            String::from_utf8_lossy(&versions.stderr)
+        );
+    }
+    Ok(BTreeMap::from([
+        ("family".into(), manifest_chart_name(family).into()),
+        ("cycle".into(), cycle.into()),
+        ("source_content".into(), source_id.into()),
+        (
+            "source_files".into(),
+            hash_text(&serde_json::to_string(&identities)?),
+        ),
+        (
+            "metadata_and_approvals".into(),
+            hash_tree(&config.chart_metadata_root)?,
+        ),
+        (
+            "checker".into(),
+            hash_text(include_str!(
+                "../../../preprocessor-charts/chart_quality.py"
+            )),
+        ),
+        (
+            "cutlines".into(),
+            hash_text(include_str!(
+                "../../../preprocessor-charts/chart_cutlines.py"
+            )),
+        ),
+        (
+            "tools".into(),
+            hash_text(&String::from_utf8(versions.stdout)?),
+        ),
+    ]))
+}
+
+fn publish_chart_verdict(
+    config: &ProductBuildConfig,
+    family: ChartFamily,
+    verdict_root: &Path,
+) -> anyhow::Result<()> {
+    let result = Command::new("python3")
+        .args([
+            "-c",
+            include_str!("../../../preprocessor-charts/chart_quality.py"),
+            "--publish-cached",
+        ])
+        .arg(verdict_root)
+        .arg("--output")
+        .arg(
+            config
+                .build_root
+                .join("state/chart-quality")
+                .join(manifest_chart_name(family)),
+        )
+        .output()?;
+    if !result.status.success() {
+        bail!(
+            "cannot publish chart verdict: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn run_chart_visual_references(
+    config: &ProductBuildConfig,
+    family: ChartFamily,
+    source_root: &Path,
+    supplemental: Option<&NodeRecord>,
+    source_id: &str,
+    verdict_root: &Path,
+) -> anyhow::Result<()> {
     let report_root = config
         .build_root
         .join("state/chart-quality")
@@ -142,6 +301,8 @@ pub(super) fn check_chart_visual_references(
         "--source-id".to_string(),
         source_id.to_string(),
         "--output".to_string(),
+        verdict_root.display().to_string(),
+        "--monitor-output".to_string(),
         report_root.display().to_string(),
     ];
     if let Some(record) = supplemental {
@@ -161,6 +322,8 @@ pub(super) fn check_chart_visual_references(
         stdin_text: None,
     };
     let outcome = invocation.run_logged(&attempt)?;
+    // The checker publishes this real attempt (including failures) separately
+    // from its cache output. Only successful runs become reusable node entries.
     invocation.ensure_success(
         &outcome,
         &format!(
@@ -179,7 +342,7 @@ pub(super) fn check_chart_visual_references(
         bail!("chart publication decision does not match this build");
     }
     match report.publication {
-        PublicationDecision::Ready(inputs) => Ok(inputs),
+        PublicationDecision::Ready(_) => Ok(()),
         PublicationDecision::Blocked { reason } => bail!("chart publication blocked: {reason}"),
     }
 }

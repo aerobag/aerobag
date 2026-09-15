@@ -3,6 +3,10 @@
 This workspace builds the authoritative Aerobag product artifacts. Product
 builds and app/core tests are the contract.
 
+See [warm product refresh caching](../../docs/product-refresh-caching.md) for
+subgraph reuse, chart-verdict caching, GC retention, and the proposed relocatable
+preprocessor tool bundle.
+
 ## Common Commands
 
 Build the cycle product:

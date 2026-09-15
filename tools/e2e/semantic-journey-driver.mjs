@@ -1320,7 +1320,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     ]);
   }
 
-  async readProjection(probe) {
+  async readProjection(probe, { indexed = false } = {}) {
     const prefix = androidSemanticTag(probe);
     if (prefix === "parity:startup-state:") {
       // Startup is process state, not a visible control. A modal can hide the
@@ -1362,7 +1362,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       const state = stateNode?.["state-description"] ?? "";
       return androidDataStatusRowsFromStateTag(`parity:data-status-state:${state}`);
     }
-    const queried = queryAndroidSemanticNodes(this.serial, prefix, { prefix: true });
+    const queried = queryAndroidSemanticNodes(this.serial, prefix, { prefix: true, providerOnly: indexed });
     if (queried) {
       return queried.map((node) => ({
         id: androidTag(node),

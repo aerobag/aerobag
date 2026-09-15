@@ -500,9 +500,9 @@ const SERVICE_AGGREGATE = "data-status-box-service:unread";
 const SERVICE_INBOX_ACTION = "data-status-action-service:unread-service:inbox";
 
 async function serviceSection(runtime, expanded) {
-  const page = await runtime.driver.readElement("page:data_status");
-  const section = await runtime.driver.readElement("parity:service:section");
-  const toggle = await runtime.driver.readElement("parity:service:toggle");
+  const page = await runtime.driver.readElement("page:data_status", { indexed: true });
+  const section = await runtime.driver.readElement("parity:service:section", { indexed: true });
+  const toggle = await runtime.driver.readElement("parity:service:toggle", { indexed: true });
   // Web exposes aria-expanded. Android's indexed state-description includes
   // other fields such as window-focus; compare the expanded field, not the wire.
   const fields = semanticProjectionFields(section?.state ?? section?.disabled_reason);
@@ -523,10 +523,10 @@ async function revealServiceNotice(runtime, notice) {
 }
 
 async function openServiceNoticeBody(runtime, notice, identity) {
-  if (!(await runtime.driver.readProjection(identity.bodyTag)).length) {
+  if (!(await runtime.driver.readProjection(identity.bodyTag, { indexed: true })).length) {
     await runtime.action(`open ${notice.title}`, identity.tag, {
       complete: async () => {
-        const bodies = await runtime.driver.readProjection(identity.bodyTag);
+        const bodies = await runtime.driver.readProjection(identity.bodyTag, { indexed: true });
         return bodies.find((body) => projectionId(body) === identity.bodyTag);
       },
     });
@@ -535,14 +535,14 @@ async function openServiceNoticeBody(runtime, notice, identity) {
   // rendered body after that transition, then require its actual visible text.
   await runtime.revealElement(identity.bodyTag);
   await runtime.eventually(`visible body of ${notice.title}`, async () => {
-    const body = await runtime.driver.readElement(identity.bodyTag);
+    const body = await runtime.driver.readElement(identity.bodyTag, { indexed: true });
     return body?.text === notice.body ? body : null;
   });
 }
 
 async function openStatusBadge(runtime) {
   await runtime.action("open /!\\ status panel", "data-status-launcher", {
-    complete: () => runtime.driver.readElement("data-status-panel"),
+    complete: () => runtime.driver.readElement("data-status-panel", { indexed: true }),
   });
 }
 
@@ -579,8 +579,8 @@ async function serviceNotifications(runtime) {
     await openStatusBadge(runtime);
     await runtime.revealElement(SERVICE_INBOX_ACTION);
     const inbox = await runtime.eventually("Read notifications entry in /!\\ panel", async () => {
-      const action = await runtime.driver.readElement(SERVICE_INBOX_ACTION);
-      const aggregate = await runtime.driver.readElement(SERVICE_AGGREGATE);
+      const action = await runtime.driver.readElement(SERVICE_INBOX_ACTION, { indexed: true });
+      const aggregate = await runtime.driver.readElement(SERVICE_AGGREGATE, { indexed: true });
       const label = (action?.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
       return label === "read notifications" && aggregate ? { action, aggregate } : null;
     });
@@ -589,13 +589,13 @@ async function serviceNotifications(runtime) {
     await runtime.action("Read notifications opens Status", SERVICE_INBOX_ACTION, {
       complete: async () => {
         const section = await serviceSection(runtime, true);
-        const panel = await runtime.driver.readElement("data-status-panel");
+        const panel = await runtime.driver.readElement("data-status-panel", { indexed: true });
         return section && !panel ? section : null;
       },
     });
     runtime.check("service.status-entry", Boolean(await serviceSection(runtime, true)) &&
-      !await runtime.driver.readElement("data-status-panel"));
-    if ((await runtime.driver.readProjection("parity:service:body:")).length > 0) {
+      !await runtime.driver.readElement("data-status-panel", { indexed: true }));
+    if ((await runtime.driver.readProjection("parity:service:body:", { indexed: true })).length > 0) {
       throw new Error("entering Status opened a notice body without a title click");
     }
     await runtime.driver.captureFrame(`${runtime.artifactDir}/status-unread.png`);
@@ -605,13 +605,13 @@ async function serviceNotifications(runtime) {
     for (const [index, notice] of unread.entries()) {
       const identity = await revealServiceNotice(runtime, notice);
       identities.set(notice.id, identity);
-      if (await runtime.driver.readElement(identity.bodyTag)) {
+      if (await runtime.driver.readElement(identity.bodyTag, { indexed: true })) {
         throw new Error(`${notice.title} body appeared without opening its title`);
       }
       await openServiceNoticeBody(runtime, notice, identity);
       if (index < unread.length - 1) {
         await runtime.revealElement("parity:service:mark-all-read");
-        if (!await runtime.driver.readElement("parity:service:mark-all-read")) {
+        if (!await runtime.driver.readElement("parity:service:mark-all-read", { indexed: true })) {
           throw new Error("opening one notice marked other notices read");
         }
       }
@@ -620,10 +620,10 @@ async function serviceNotifications(runtime) {
 
     await runtime.openPage("map");
     const statusPresence = await runtime.stable("map status launcher after reading notices", async () => {
-      if (!await runtime.driver.readElement("page:map")) return null;
-      const launcher = await runtime.driver.readElement("data-status-launcher");
-      const projected = await runtime.driver.readProjection("data-status-launcher");
-      const panel = await runtime.driver.readElement("data-status-panel");
+      if (!await runtime.driver.readElement("page:map", { indexed: true })) return null;
+      const launcher = await runtime.driver.readElement("data-status-launcher", { indexed: true });
+      const projected = await runtime.driver.readProjection("data-status-launcher", { indexed: true });
+      const panel = await runtime.driver.readElement("data-status-panel", { indexed: true });
       return { launcher_present: Boolean(launcher) || projected.length > 0, panel_present: Boolean(panel) };
     });
     if (!statusPresence.launcher_present) {
@@ -633,35 +633,35 @@ async function serviceNotifications(runtime) {
     } else {
       await openStatusBadge(runtime);
       const cleared = await runtime.eventually("read notices remove only the service aggregate", async () => {
-        const panel = await runtime.driver.readElement("data-status-panel");
-        const aggregate = await runtime.driver.readElement(SERVICE_AGGREGATE);
-        const action = await runtime.driver.readElement(SERVICE_INBOX_ACTION);
+        const panel = await runtime.driver.readElement("data-status-panel", { indexed: true });
+        const aggregate = await runtime.driver.readElement(SERVICE_AGGREGATE, { indexed: true });
+        const action = await runtime.driver.readElement(SERVICE_INBOX_ACTION, { indexed: true });
         return panel && !aggregate && !action ? panel : null;
       });
       // Android's panel is virtualized. Absence in its first viewport is not
       // evidence of removal: scan every rendered status row through physical scroll.
       let boxes;
       await runtime.transition("scan status panel after reading notices", {
-        ready: () => runtime.driver.readElement("data-status-panel"),
+        ready: () => runtime.driver.readElement("data-status-panel", { indexed: true }),
         act: async () => { boxes = await runtime.driver.scanProjection("data-status-box-"); },
-        complete: async () => boxes?.length ? runtime.driver.readElement("data-status-panel") : null,
+        complete: async () => boxes?.length ? runtime.driver.readElement("data-status-panel", { indexed: true }) : null,
       });
       runtime.check("service.read-hides-aggregate", Boolean(cleared) && boxes.length > 0 &&
         !boxes.some((box) => projectionId(box).replace(/^parity:/, "") === SERVICE_AGGREGATE), JSON.stringify(boxes));
       // Web Back clicks an exposed scrim point; Android Back dismisses its popup.
       // The launcher behind the modal scrim is not an available closing control.
       await runtime.transition("dismiss status popup", {
-        ready: () => runtime.driver.readElement("data-status-panel"),
+        ready: () => runtime.driver.readElement("data-status-panel", { indexed: true }),
         act: () => runtime.driver.back(),
-        complete: async () => !await runtime.driver.readElement("data-status-panel"),
+        complete: async () => !await runtime.driver.readElement("data-status-panel", { indexed: true }),
       });
     }
 
     await runtime.openPage("data_status");
     await runtime.revealElement("parity:service:toggle");
     await runtime.eventually("Status reentry folds read history", () => serviceSection(runtime, false));
-    const foldedNotices = await runtime.driver.readProjection("parity:service:notice:");
-    const foldedBodies = await runtime.driver.readProjection("parity:service:body:");
+    const foldedNotices = await runtime.driver.readProjection("parity:service:notice:", { indexed: true });
+    const foldedBodies = await runtime.driver.readProjection("parity:service:body:", { indexed: true });
     runtime.check("service.reentry-folded", foldedNotices.length === 0 && foldedBodies.length === 0);
 
     await runtime.action("explicitly expand notification history", "parity:service:toggle", {
@@ -675,7 +675,7 @@ async function serviceNotifications(runtime) {
       await openServiceNoticeBody(runtime, notice, identity);
     }
     await runtime.revealElement("parity:service:toggle");
-    runtime.check("service.expand-history", !await runtime.driver.readElement("parity:service:mark-all-read"));
+    runtime.check("service.expand-history", !await runtime.driver.readElement("parity:service:mark-all-read", { indexed: true }));
   } finally {
     await setFixtureControl(runtime, { reset: true });
   }
@@ -2322,16 +2322,16 @@ async function mapModesAndOverlays(runtime) {
 export async function openAndDismissDataStatus(runtime) {
   const warning = await runtime.eventually(
     "data status warning launcher",
-    () => runtime.driver.readElement("data-status-launcher"),
+    () => runtime.driver.readElement("data-status-launcher", { indexed: true }),
   );
 
   await runtime.action("open data status popup", "data-status-launcher", {
-    complete: () => runtime.driver.readElement("data-status-panel"),
+    complete: () => runtime.driver.readElement("data-status-panel", { indexed: true }),
   });
   await runtime.transition("dismiss data status popup", {
-    ready: () => runtime.driver.readElement("data-status-panel"),
+    ready: () => runtime.driver.readElement("data-status-panel", { indexed: true }),
     act: () => runtime.driver.back(),
-    complete: async () => (await runtime.driver.readElement("data-status-panel")) ? null : true,
+    complete: async () => (await runtime.driver.readElement("data-status-panel", { indexed: true })) ? null : true,
   });
   return warning;
 }

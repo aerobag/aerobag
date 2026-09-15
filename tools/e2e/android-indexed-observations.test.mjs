@@ -187,3 +187,26 @@ test("native map-follow state uses the shared scalar reader for presence and abs
   respondWith({ status: 28, stdout: "", stderr: "provider busy" });
   assert.throws(() => read("no-device"), TransientObservationError);
 });
+
+test("status popup and service collections prove absence without tree access", async () => {
+  const { driver, snapshots, respondWith } = device();
+  const panelTag = "parity:data-status-panel";
+  const panel = () => driver.readElement("data-status-panel", { indexed: true });
+  assert.equal(await panel(), null, "never-mounted popup");
+  snapshots.set(panelTag, { "resource-id": panelTag, visible: "true", bounds: "[10,10][400,600]" });
+  assert.equal((await panel()).bounds, "[10,10][400,600]");
+  snapshots.delete(panelTag);
+  assert.equal(await panel(), null, "dismissed popup");
+  const bodies = () => driver.readProjection("parity:service:body:", { indexed: true });
+  assert.equal((await bodies()).length, 0, "folded history");
+  const bodyTag = `parity:service:body:${"a".repeat(64)}`;
+  snapshots.set(bodyTag, { "resource-id": bodyTag, text: "notice body", enabled: "true" });
+  assert.equal((await bodies())[0].text, "notice body");
+  snapshots.delete(bodyTag);
+  assert.equal((await bodies()).length, 0, "folded again");
+  respondWith({ status: 28, stdout: "", stderr: "provider busy" });
+  await assert.rejects(panel(), TransientObservationError);
+  await assert.rejects(bodies(), TransientObservationError);
+  const page = readFileSync(new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/DataStatusPage.kt", import.meta.url), "utf8");
+  assert.match(page, /\.e2eIndexedControl\("parity:\$testTagPrefix-panel", enabled = true\)/);
+});

@@ -131,7 +131,7 @@ internal fun DataStatusBadge(
             ) {
                 Surface(
                     modifier = Modifier
-                        .testTag("parity:$testTagPrefix-panel")
+                        .e2eIndexedControl("parity:$testTagPrefix-panel", enabled = true)
                         .semantics { testTagsAsResourceId = true }
                         .width(panelWidth)
                         .heightIn(max = ThumbSize * 7.2f),

@@ -109,6 +109,13 @@ a point outside the rendered controls; never interpret a missing/stale surface
 as an unobscured map. Protocol 30 makes older driver APKs fail explicitly
 instead of silently ignoring this query's provider-only requirement.
 
+The September 15.4 hosted run exposed another instance in service notifications:
+proving the status popup was closed still searched the tree. Status popup
+presence/absence now uses its positioned indexed control, and service
+collections use `readProjection(prefix, { indexed: true })` so folded history
+is an authoritative empty collection. The service-journey model rejects any
+non-indexed Android observation, in addition to the actual-reader no-tree tests.
+
 App-owned state projections intentionally remain readable behind modals and
 external activities. They cannot prove that Android returned from a browser.
 External-navigation journeys must observe the OS's resumed activity and a

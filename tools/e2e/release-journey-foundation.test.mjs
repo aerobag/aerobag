@@ -3824,7 +3824,7 @@ test("Android status popups export their semantic identity", () => {
   const badge = source.slice(source.indexOf("internal fun DataStatusBadge"));
   assert.match(
     badge,
-    /\.testTag\("parity:\$testTagPrefix-panel"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
+    /\.e2eIndexedControl\("parity:\$testTagPrefix-panel", enabled = true\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
   );
 });
 
@@ -5862,7 +5862,7 @@ test("Android zoom key direction matches web wheel semantics", () => {
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const androidZoom = driver.slice(
     driver.indexOf("async zoom(surfaceId, amount, readyElement = null)"),
-    driver.indexOf("async readProjection(probe)", driver.indexOf("async zoom(surfaceId, amount, readyElement = null)")),
+    driver.indexOf("async readProjection(", driver.indexOf("async zoom(surfaceId, amount, readyElement = null)")),
   );
   assert.match(androidZoom, /readinessEvidenceMatchesTag\(semanticTag, readyElement\)/);
   assert.doesNotMatch(androidZoom, /dumpAndroid\(/);

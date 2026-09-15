@@ -3129,7 +3129,7 @@ test("mandatory disclaimer response and application startup use separate budgets
     startup,
     /runtime\.platform === "web"[\s\S]*readElement\("startup-fatal-error"\)/,
   );
-  assert.match(implementation, /import \{ acceptDisclaimer, readStartupState, startupState \} from "\.\/first-use-startup\.mjs"/);
+  assert.match(implementation, /import \{ acceptDisclaimer, readGuidedTourPanel, readStartupState, startupState \} from "\.\/first-use-startup\.mjs"/);
   const peer = readFileSync(new URL("./cloud-journey-peer.mjs", import.meta.url), "utf8");
   assert.match(peer, /import \{ acceptDisclaimer \} from "\.\/first-use-startup\.mjs"/);
   assert.match(peer, /await acceptDisclaimer\(createJourneyRuntime/);
@@ -5483,7 +5483,7 @@ test("Android reveal requires reachability and traverses only known scroll colle
   assert.match(revealMethod, /!androidElementMayRequireVerticalScroll\(elementId\)/);
   assert.match(revealMethod, /traverse: async \(\) => false/);
   const readElementMethod = source.slice(
-    source.lastIndexOf("  async readElement(elementId)"),
+    source.lastIndexOf("  async readElement(elementId, { indexed = false } = {})"),
     source.lastIndexOf("  async revealElement(elementId)"),
   );
   assert.match(readElementMethod, /requireVisible: true/);

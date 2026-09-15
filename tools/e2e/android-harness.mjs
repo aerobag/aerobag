@@ -46,6 +46,23 @@ export function adbArgs(serial, args) {
   return serial ? ["-s", serial, ...args] : args;
 }
 
+export function androidResumedActivityFromDumpsys(activities) {
+  const resumed = activities.match(
+    /^\s*(?:topResumedActivity|mResumedActivity)\s*[=:]\s*ActivityRecord\{([^\s}]+)\s+u\d+\s+([^\s}]+)/m,
+  );
+  if (!resumed) return null;
+  // An old VIEW intent remains in task history after Back. Only the record
+  // identified by the OS as resumed describes the current external activity.
+  const record = activities.split(/^\s*\* Hist\s+#\d+:\s*ActivityRecord\{/m)
+    .slice(1).find(block => block.startsWith(`${resumed[1]} `));
+  if (!record) return null;
+  const intent = record.match(/^\s*Intent \{([^\n}]*)\}/m)?.[1] ?? "";
+  return {
+    component: resumed[2],
+    url: intent.match(/(?:^|\s)dat=([^\s}]+)/)?.[1] ?? null,
+  };
+}
+
 export function adb(serial, args, options = {}) {
   const res = spawnSync("adb", adbArgs(serial, args), {
     encoding: "utf8",
@@ -1517,8 +1534,14 @@ export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = fal
     consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
   });
   if (!keepIntroduction) {
-    const node = (tag) => queryAndroidSemanticNodes(serial, tag, { first: true })?.[0] ?? null;
-    if (node("parity:guided-tour-panel")) {
+    // These are app-owned indexed controls. /query falls back to a serialized
+    // full-tree scan when the panel disappears, stalling an otherwise complete
+    // transition. Indexed absence must remain a cheap, authoritative read.
+    const node = (tag) => queryAndroidExactProjection(serial, tag, { providerOnly: true })?.[0] ?? null;
+    const { panel } = (await observeUntil("first-use introduction visibility", () => ({
+      panel: node("parity:guided-tour-panel"),
+    }))).value;
+    if (panel) {
       await performTransition("close first-use tour", {
         readinessSamples: 1,
         ready: () => node("parity:guided-tour-close"),

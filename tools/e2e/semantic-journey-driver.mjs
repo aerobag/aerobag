@@ -4,7 +4,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import {
-  adb, androidImeShown, androidNodeLabel, androidTag, clickAndroidSemanticNode,
+  adb, androidImeShown, androidNodeLabel, androidTag, androidResumedActivityFromDumpsys, clickAndroidSemanticNode,
   displayBoundsFromXml, dumpAndroid, findNode, findNodes, focusAndroidSemanticNode,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
@@ -142,7 +142,10 @@ export class SemanticJourneyDriver {
   async zoom(_surfaceId, _amount) { throw new Error(`${this.platform} driver does not implement zoom`); }
   async hover(_elementId) { throw new Error(`${this.platform} driver does not implement hover`); }
   async copyText(_elementId) { throw new Error(`${this.platform} driver does not implement copyText`); }
-  async readElement(_elementId) { throw new Error(`${this.platform} driver does not implement readElement`); }
+  // { indexed: true } declares that the app's rendered-element index owns
+  // this element, including absence. It forbids Android hierarchy fallback;
+  // web already observes elements through its DOM index.
+  async readElement(_elementId, _options) { throw new Error(`${this.platform} driver does not implement readElement`); }
   async readTextElement(elementId) { return this.readElement(elementId); }
   async readModal(modalId) { return this.readElement(modalId); }
   async revealElement(_elementId) { throw new Error(`${this.platform} driver does not implement revealElement`); }
@@ -1466,7 +1469,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return findMatch(dumpAndroid(this.serial));
   }
 
-  async readElement(elementId) {
+  async readElement(elementId, { indexed = false } = {}) {
     if (elementId === "software-keyboard") {
       return androidImeShown(this.serial) ? {
         test_id: elementId,
@@ -1487,7 +1490,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     }
     if (elementId === "external-page:about") {
       const activities = adb(this.serial, ["shell", "dumpsys", "activity", "activities"]);
-      return activities.includes("https://aerobag.org/about") ? {
+      const resumed = androidResumedActivityFromDumpsys(activities);
+      return resumed?.url === "https://aerobag.org/about" &&
+        !resumed.component.startsWith("org.aerobag.app/") ? {
         test_id: elementId,
         text: "https://aerobag.org/about",
         enabled: true,
@@ -1505,9 +1510,10 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       {
         requireVisible: true,
         includeDescendantText: elementId !== "map-surface",
-        // This tray is Compose-indexed, including its disappearance. Falling
-        // back to the accessibility tree for absence can stall the query queue.
-        providerOnly: semanticTag === "parity:map-selection-tray",
+        // App-owned indexes are authoritative for absence too. Never search
+        // the accessibility tree after an indexed control has unmounted (or
+        // has not been mounted in this process at all).
+        providerOnly: indexed || semanticTag === "parity:map-selection-tray",
       },
     );
     if (!queried) return null;

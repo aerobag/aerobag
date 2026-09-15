@@ -7,7 +7,7 @@ import {
   E2E_TIMING, TransientObservationError,
 } from "./transition-contract.mjs";
 import { semanticOptionSelected } from "./release-journey-runtime.mjs";
-import { acceptDisclaimer, readStartupState, startupState } from "./first-use-startup.mjs";
+import { acceptDisclaimer, readGuidedTourPanel, readStartupState, startupState } from "./first-use-startup.mjs";
 import { liveFeedProviderCutover } from "./live-feed-cutover-journey.mjs";
 import { semanticProjectionFields } from "./android-harness.mjs";
 import {
@@ -1721,10 +1721,11 @@ async function aboutAndSavedState(runtime) {
     await runtime.transition("return from external About page", {
       ready: () => runtime.driver.readElement("external-page:about"),
       act: () => runtime.driver.back(),
-      complete: async () => {
-        const entries = await runtime.driver.readProjection("parity:startup-state:");
-        return taggedFields(entries[0], "parity:startup-state:");
-      },
+      // App state stays readable while another activity is in front. Prove
+      // the OS returned from the browser AND Home can receive input, not just
+      // that the background app still has its startup projection.
+      complete: async () => !(await runtime.driver.readElement("external-page:about")) &&
+        await runtime.driver.readNavigationAction("map"),
     });
   }
 
@@ -2692,13 +2693,14 @@ async function guidedTour(runtime) {
   if (runtime.platform === "web") await runtime.resetApplicationData();
   await acceptDisclaimer(runtime, { required: runtime.platform === "web", keepIntroduction: true });
   runtime.check("tour.first-use", Boolean(await runtime.eventually("automatic welcome", async () => {
-    const panel = await runtime.driver.readElement("guided-tour-panel");
+    const panel = await readGuidedTourPanel(runtime);
     return panel?.text.includes("Three pages for most of your flying") ? panel : null;
   })));
-  await runtime.action("close automatic tour", "guided-tour-close", { complete: async () => !(await runtime.driver.readElement("guided-tour-panel")) && await runtime.driver.readPage("home") });
+  await runtime.action("close automatic tour", "guided-tour-close", { complete: async () => !(await readGuidedTourPanel(runtime)) && await runtime.driver.readPage("home") });
   await runtime.reload();
   await startupState(runtime);
-  runtime.check("tour.offered-once", !(await runtime.driver.readElement("guided-tour-panel")) && (await readStartupState(runtime))?.tour_pending === "false");
+  runtime.check("tour.offered-once", Boolean(await runtime.eventually("welcome remains dismissed after reload", async () =>
+    !(await readGuidedTourPanel(runtime)) && (await readStartupState(runtime))?.tour_pending === "false")));
   await runtime.openPage("flight_plan");
   const airway = runtime.capability("airway");
   await appendRoute(runtime, `${airway.entry} ${airway.exit}`);
@@ -2708,7 +2710,7 @@ async function guidedTour(runtime) {
   const originalMap = (await runtime.driver.readElement("chart-family-button"))?.text;
   if (!originalMap) throw new Error("The original base map control is missing.");
   await runtime.openPage("home");
-  const panel = () => runtime.driver.readElement("guided-tour-panel");
+  const panel = () => readGuidedTourPanel(runtime);
   const at = async (text) => { const value = await panel(); return value?.text.includes(text) ? value : null; };
   const start = (title = "Three pages for most of your flying") => runtime.action("start guided tour", runtime.platform === "web" ? "home-button-guided_tour" : "home-button:GuidedTour", {
     complete: () => at(title),

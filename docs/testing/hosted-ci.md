@@ -103,6 +103,11 @@ one indexed snapshot of core-exported options; airport scroll readiness uses
 the modal's positioned indexed bounds, not its changing descendant text.
 `android-indexed-observations.test.mjs` executes the real readers and HTTP
 encoder with all tree access forbidden and transport failures preserved.
+Map gesture obstacle collection also uses a provider-only batch query. The
+batch must still include the map surface with matching bounds before choosing
+a point outside the rendered controls; never interpret a missing/stale surface
+as an unobscured map. Protocol 30 makes older driver APKs fail explicitly
+instead of silently ignoring this query's provider-only requirement.
 
 App-owned state projections intentionally remain readable behind modals and
 external activities. They cannot prove that Android returned from a browser.

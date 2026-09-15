@@ -1137,10 +1137,16 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async findMapInspectionPoint(readyElement) {
     if (!readyElement?.bounds) return null;
-    const obstacles = queryAndroidSemanticNodes(this.serial, "", {
+    const indexed = queryAndroidSemanticNodes(this.serial, "", {
       prefix: true,
       includeDescendantText: false,
-    })
+      providerOnly: true,
+    });
+    // The same snapshot must still contain the positioned map. An absent or
+    // changed surface is not proof that it has no overlying controls.
+    if (!indexed.some((node) => androidTag(node) === "parity:map-surface" &&
+        node.bounds === readyElement.bounds)) return null;
+    const obstacles = indexed
       .filter((node) => androidTag(node) !== "parity:map-surface")
       .map((node) => {
         try {

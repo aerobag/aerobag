@@ -5031,10 +5031,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/29/);
-  assert.match(service, /aerobag-semantic-driver\/29/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/29/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/29/);
+  assert.match(harness, /aerobag-semantic-driver\/30/);
+  assert.match(service, /aerobag-semantic-driver\/30/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/30/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/30/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

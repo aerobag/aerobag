@@ -51,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/29";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/30";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
     private static final long EXACT_PROJECTION_TIME_LIMIT_NANOS = TimeUnit.MILLISECONDS.toNanos(750);
     private static final long PROVIDER_QUERY_TIMEOUT_MS = 500;
@@ -269,7 +269,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static boolean requiresSerializedAccessibility(String endpoint, String path) {
         if (!isSemanticEndpoint(endpoint)) return false;
         Map<String, String> query = queryOf(path);
-        if ("/exact-projection".equals(endpoint) &&
+        if (("/exact-projection".equals(endpoint) || "/query".equals(endpoint)) &&
             "true".equals(query.getOrDefault("provider_only", "false"))) {
             return false;
         }
@@ -312,18 +312,20 @@ public final class SemanticDriverService extends AccessibilityService {
         String tag = query.getOrDefault("tag", "");
         boolean prefix = "true".equals(query.getOrDefault("prefix", "false"));
         boolean first = "true".equals(query.getOrDefault("first", "false"));
+        boolean providerOnly = "true".equals(query.getOrDefault("provider_only", "false"));
         boolean includeDescendantText = !"false".equals(
             query.getOrDefault("descendant_text", "true")
         );
         ProviderProjection providerProjection = prefix
             ? providerProjectionPrefix(tag)
-            : ProviderProjection.unhandled();
+            : (providerOnly ? providerProjection(tag, false) : ProviderProjection.unhandled());
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
             (providerProjection.handled
                 ? providerProjection.values
-                : renderNodeQuery(tag, prefix, first, includeDescendantText)).toString() + "\n",
+                : (providerOnly ? new JSONArray()
+                    : renderNodeQuery(tag, prefix, first, includeDescendantText))).toString() + "\n",
             200
         );
     }

@@ -33,7 +33,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/29";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/30";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -480,7 +480,7 @@ export function waitForAndroidSemanticEvent(serial, timeoutMs) {
 export function queryAndroidSemanticNodes(
   serial,
   tag,
-  { prefix = false, first = false, includeDescendantText = true } = {},
+  { prefix = false, first = false, includeDescendantText = true, providerOnly = false } = {},
 ) {
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({
@@ -488,6 +488,7 @@ export function queryAndroidSemanticNodes(
     prefix: String(prefix),
     first: String(first),
     descendant_text: String(includeDescendantText),
+    provider_only: String(providerOnly),
   });
   const response = semanticDriverObservationRequest(state.port, `/query?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);

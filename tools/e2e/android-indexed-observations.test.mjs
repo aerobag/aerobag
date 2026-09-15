@@ -10,7 +10,8 @@ import {
   AndroidSemanticJourneyDriver, androidElementEnabled, androidElementSemanticTag,
   androidSemanticTag, androidDataStatusRowsFromStateTag,
 } from "./semantic-journey-driver.mjs";
-import { androidTag, queryAndroidExactProjection } from "./android-harness.mjs";
+import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
+import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 import { TransientObservationError } from "./transition-contract.mjs";
 
 const source = readFileSync(new URL("semantic-journey-driver.mjs", import.meta.url), "utf8");
@@ -28,31 +29,39 @@ function device() {
   let responseOverride = null;
   const context = {
     URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag,
-    androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag,
+    androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
+    chooseUnobscuredMapPoint,
     ANDROID_EXACT_SCALAR_PROJECTIONS: projections,
     requiredSemanticDriver: () => ({ port: 19191 }),
     semanticDriverObservationUnavailable: response => response.status === 28,
     semanticDriverObservationRequest(_port, path) {
       const url = new URL(path, "http://device");
-      assert.equal(url.pathname, "/exact-projection");
+      assert.ok(["/exact-projection", "/query"].includes(url.pathname));
       assert.equal(url.searchParams.get("provider_only"), "true", "no serialized accessibility queue");
       const tag = url.searchParams.get("tag");
       requests.push(tag);
+      if (url.pathname === "/query") {
+        assert.equal(url.searchParams.get("prefix"), "true");
+        return responseOverride ?? {
+          status: 0, stdout: JSON.stringify([...snapshots.entries()]
+            .filter(([id]) => id.startsWith(tag)).map(([, node]) => node)),
+        };
+      }
       return responseOverride ?? {
         status: 0, stdout: JSON.stringify(snapshots.has(tag) ? [snapshots.get(tag)] : []),
       };
     },
-    queryAndroidSemanticNodes: () => assert.fail("no prefix-tree fallback"),
     dumpAndroid: () => assert.fail("no full-tree fallback"),
   };
   const helper = (name, next) => runInNewContext(`(${source.slice(
     source.indexOf(`function ${name}(`), source.indexOf(`function ${next}(`),
   ).trim()})`, context);
   context.queryAndroidExactProjection = runInNewContext(`(${queryAndroidExactProjection})`, context);
+  context.queryAndroidSemanticNodes = runInNewContext(`(${queryAndroidSemanticNodes})`, context);
   context.queryFirstAndroidSemanticNode = helper("queryFirstAndroidSemanticNode", "readinessEvidenceMatchesTag");
   context.androidProjectedElement = helper("androidProjectedElement", "queryFirstAndroidSemanticNode");
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readScalarProjection", "readProjection", "readElement"]) {
+  for (const name of ["readScalarProjection", "readProjection", "readElement", "findMapInspectionPoint"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
   return { driver, snapshots, requests, respondWith(value) { responseOverride = value; } };
@@ -125,4 +134,32 @@ test("provider unavailability and permanent failures stay errors, never absence 
   modeled.respondWith({ status: 7, stdout: "", stderr: "connection refused" });
   assert.throws(() => modeled.driver.readScalarProjection("parity:airport-info-scroll:"), /persistent Android/);
   assert.equal(modeled.requests.length, 3);
+});
+
+test("map gesture geometry bypasses the tree without ignoring controls or stale surfaces", async () => {
+  const { driver, snapshots, respondWith } = device();
+  const surface = { bounds: "[0,0][1000,1000]", "resource-id": "parity:map-surface" };
+  const read = () => driver.findMapInspectionPoint(surface);
+  assert.equal(await read(), null, "an absent surface is not evidence of an unobscured map");
+  snapshots.set(surface["resource-id"], surface);
+  snapshots.set("parity:instrument-panel", {
+    "resource-id": "parity:instrument-panel", bounds: "[200,600][400,800]",
+  });
+  const point = await read();
+  assert.ok(point);
+  assert.equal(point.screenX, 700, "skip the first candidate because an instrument covers it");
+  assert.equal(point.screenY, 700);
+  snapshots.set(surface["resource-id"], { ...surface, bounds: "[0,0][500,1000]" });
+  assert.equal(await read(), null, "re-observe after a layout change");
+  respondWith({ status: 28, stdout: "", stderr: "provider busy" });
+  await assert.rejects(read(), TransientObservationError);
+});
+
+test("provider-only batch requests bypass the server's accessibility queue and fallback", () => {
+  const service = readFileSync(new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url), "utf8");
+  const lock = service.slice(service.indexOf("private static boolean requiresSerializedAccessibility"), service.indexOf("private void handleSetText"));
+  assert.match(lock, /\("\/exact-projection"\.equals\(endpoint\) \|\| "\/query"\.equals\(endpoint\)\) &&\s*"true"\.equals\(query\.getOrDefault\("provider_only", "false"\)\)\) \{\s*return false/);
+  const handler = service.slice(service.indexOf("private void handleQuery"), service.indexOf("private void handleExactProjection"));
+  assert.match(handler, /prefix\s*\? providerProjectionPrefix\(tag\)/);
+  assert.match(handler, /providerOnly \? new JSONArray\(\)\s*: renderNodeQuery/);
 });

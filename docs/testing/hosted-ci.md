@@ -147,6 +147,18 @@ measurement or intentionally removing coverage.
 
 ## Hermetic Inputs
 
+Every `android-actions/setup-android` step must specify `packages` explicitly,
+including `platform-tools` but never the obsolete `tools` package. The pinned
+action already installs modern command-line tools, yet defaults to requesting
+`tools platform-tools`. On 2026-09-14 that unchanged default succeeded at 15:56
+UTC and failed at 20:29 with "Failed to find package 'tools'", blocking E2E
+before the app build. Ordinary CI's explicit package list was unaffected.
+Keep each job's platform, build-tools, NDK and emulator requirements explicit
+in its dependency step. `android-sdk-workflow.test.mjs` parses all workflows
+and guards this policy in cheap preflight and hosted harness tests; it failed
+at all five E2E setup sites before the fix. The YAML parser is a pinned test-only
+dependency, not part of the shipped web app.
+
 Fixture-free jobs must make the absence of production data explicit. Core tests
 set `AEROBAG_ARTIFACT_READ_PATH` to an empty runner-owned directory. A local
 `/root/aerobag-artifacts` tree once allowed an overbroad ignored-test selection

@@ -70,6 +70,8 @@ jobs:
           rustup target add wasm32-unknown-unknown x86_64-linux-android --toolchain "$RUST_TOOLCHAIN"
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "platform-tools"
       - name: Install Android build dependencies
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -275,6 +277,8 @@ jobs:
           --output "${{ github.workspace }}/.ci/release-journey-materialized"
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "platform-tools"
       - name: Install emulator image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -395,6 +399,8 @@ jobs:
           --output "${{ github.workspace }}/.ci/release-journey-materialized"
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "platform-tools"
       - name: Install emulator image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -506,6 +512,8 @@ jobs:
           rustup target add x86_64-linux-android --toolchain "$RUST_TOOLCHAIN"
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "platform-tools"
       - name: Install emulator, image, platform, and NDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -604,6 +612,8 @@ jobs:
         run: ./tools/ci/install_wasm_bindgen.sh
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "platform-tools"
       - name: Install emulator and Google APIs image
         run: |
           yes | sdkmanager --licenses >/dev/null || true

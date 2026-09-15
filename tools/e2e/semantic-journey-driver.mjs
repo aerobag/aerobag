@@ -1520,7 +1520,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         // App-owned indexes are authoritative for absence too. Never search
         // the accessibility tree after an indexed control has unmounted (or
         // has not been mounted in this process at all).
-        providerOnly: indexed || semanticTag === "parity:map-selection-tray",
+        providerOnly: indexed || semanticTag === "parity:map-selection-tray" ||
+          semanticTag === "parity:map-surface",
       },
     );
     if (!queried) return null;

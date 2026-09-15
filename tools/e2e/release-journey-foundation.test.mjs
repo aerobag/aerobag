@@ -27,6 +27,7 @@ import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
   chooseForecastWindModel, dismissMapSelectionIfPresent, dismissPlanRowTray,
   openAndDismissDataStatus,
+  observeNexradFrameAdvance,
   offlineSyncButtonIsIdle,
   publicationArtifactRequestCount,
   publicationCatalogRequestCount,
@@ -1215,6 +1216,41 @@ test("flight data controls project their core-owned action on both platforms", (
     "portrait and landscape must use the same core-owned action");
   assert.match(indexed, /state\?\.let \{ append\(":state:"\)\.append\(Uri.encode\(it\)\) \}/);
 });
+
+function nexradFrameRuntime(states) {
+  let index = 0;
+  return boundedObservationRuntime({
+    async readProjection() {
+      const [frame, frames, tiles = 184] = states[Math.min(index++, states.length - 1)];
+      return [{ id: `parity:nexrad-state:tiles:${tiles}:frame:${frame}:frames:${frames}` }];
+    },
+  });
+}
+
+test("NEXRAD animation survives history arriving between the first and second paint", async () => {
+  const { first, next } = await observeNexradFrameAdvance(nexradFrameRuntime([
+    [1, 2], [2, 3], ["none", 0, 0], [2, 3], [0, 3],
+  ]));
+  assert.equal(first.frames, 3);
+  assert.equal(first.frame, 2);
+  assert.equal(next.frames, 3);
+  assert.equal(next.frame, 0);
+});
+
+for (const states of [
+  [[1, 2], [2, 3]], // A growing history alone is not animation.
+  [[2, 3], [2, 3]], // A frozen painted frame is still a failure.
+  [[2, 3], ["none", 0, 0]], // Blank phase is not another painted frame.
+]) {
+  test(`NEXRAD rejects non-advancing frames ${JSON.stringify(states)}`, async () => {
+    await assert.rejects(observeNexradFrameAdvance(nexradFrameRuntime(states)), error => {
+      assert.ok(error instanceof ObservationTimeoutError);
+      assert.equal(error.diagnostics.first_frame.frame, states[0][0]);
+      assert.ok(error.diagnostics.frame_samples.length > 0, "retain rejected observations");
+      return true;
+    });
+  });
+}
 
 for (const held of [true, false]) {
   test(`NEXRAD ${held ? "hold" : "resume"} proves mode and painted frame through the strict action contract`, async () => {

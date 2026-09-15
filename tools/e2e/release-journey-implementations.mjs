@@ -3239,19 +3239,46 @@ export async function setNexradAnimationHeld(runtime, held, previousFrame = null
   });
 }
 
+export async function observeNexradFrameAdvance(runtime) {
+  const first = await runtime.eventually("painted NEXRAD history frame", async () => {
+    const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+    return state && state.tiles > 0 && state.frames >= 2 && state.frame !== null ? state : null;
+  }, E2E_TIMING.externalConsistencyMs);
+  let reference = first;
+  const started = performance.now();
+  const samples = [];
+  try {
+    const next = await runtime.eventually("advanced NEXRAD history frame", async () => {
+      const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+      if (JSON.stringify(samples.at(-1)?.state) !== JSON.stringify(state)) {
+        samples.push({ elapsed_ms: Math.round(performance.now() - started), state });
+        if (samples.length > 32) samples.shift();
+      }
+      if (!state || state.tiles <= 0 || state.frames < 2 || state.frame === null) return null;
+      // History manifests arrive independently. A count change is neither
+      // animation nor failure: establish a new reference, then require another
+      // painted frame within that history. Keep the original deadline.
+      if (state.frames !== reference.frames) {
+        reference = state;
+        return null;
+      }
+      return state.frame !== reference.frame ? state : null;
+    }, E2E_TIMING.animationCycleMs, 100);
+    return { first: reference, next };
+  } catch (error) {
+    error.diagnostics = {
+      ...error.diagnostics, first_frame: first, reference_frame: reference, frame_samples: samples,
+    };
+    throw error;
+  }
+}
+
 async function nexradFrames(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
   await runtime.openPage("map");
   await setLayerVisible(runtime, "nexrad", true);
-  const first = await runtime.eventually("painted NEXRAD history frame", async () => {
-    const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
-    return state && state.tiles > 0 && state.frames >= 2 && state.frame !== null ? state : null;
-  }, E2E_TIMING.externalConsistencyMs);
-  const next = await runtime.eventually("advanced NEXRAD history frame", async () => {
-    const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
-    return state && state.tiles > 0 && state.frames === first.frames && state.frame !== first.frame ? state : null;
-  }, E2E_TIMING.animationCycleMs, 100);
+  const { first, next } = await observeNexradFrameAdvance(runtime);
   runtime.check("livefeed.nexrad-frames", Boolean(next), `${JSON.stringify(first)} -> ${JSON.stringify(next)}`);
 
   const held = await setNexradAnimationHeld(runtime, true);

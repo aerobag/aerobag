@@ -138,8 +138,15 @@ test("provider unavailability and permanent failures stay errors, never absence 
 
 test("map gesture geometry bypasses the tree without ignoring controls or stale surfaces", async () => {
   const { driver, snapshots, respondWith } = device();
-  const surface = { bounds: "[0,0][1000,1000]", "resource-id": "parity:map-surface" };
-  const read = () => driver.findMapInspectionPoint(surface);
+  const surface = {
+    bounds: "[0,0][1000,1000]", "resource-id": "parity:map-surface", visible: "true",
+  };
+  // Exercise the surface lookup too, as both shared taps and native CTR drags
+  // do. Supplying fake geometry here missed its tree-queue dependency.
+  const read = async () => {
+    const ready = await driver.readElement("map-surface");
+    return ready && driver.findMapInspectionPoint(ready);
+  };
   assert.equal(await read(), null, "an absent surface is not evidence of an unobscured map");
   snapshots.set(surface["resource-id"], surface);
   snapshots.set("parity:instrument-panel", {
@@ -149,8 +156,9 @@ test("map gesture geometry bypasses the tree without ignoring controls or stale 
   assert.ok(point);
   assert.equal(point.screenX, 700, "skip the first candidate because an instrument covers it");
   assert.equal(point.screenY, 700);
+  const ready = await driver.readElement("map-surface");
   snapshots.set(surface["resource-id"], { ...surface, bounds: "[0,0][500,1000]" });
-  assert.equal(await read(), null, "re-observe after a layout change");
+  assert.equal(await driver.findMapInspectionPoint(ready), null, "re-observe after a layout change");
   respondWith({ status: 28, stdout: "", stderr: "provider busy" });
   await assert.rejects(read(), TransientObservationError);
 });

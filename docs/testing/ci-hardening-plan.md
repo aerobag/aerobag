@@ -294,6 +294,22 @@ production state, weaken assertions, or erase failure artifacts.
 
 ## Ownership and causal-completion audit
 
+- 2026-09-15 follow-up: the parallel main run for staged `.4` exposed two
+  remaining harness hazards. Native CTR readiness still sent its **surface**
+  lookup through the serialized accessibility queue, although its state and
+  obstacle reads already bypassed it. The shared surface reader now uses the
+  rendered index; its fixture-free regression exercises the lookup and geometry
+  together, including absent/stale surfaces and transport failure.
+  NEXRAD's first overlay was queried while history manifests were still arriving.
+  Its journey fixed the initial frame count forever, making later valid animation
+  impossible to accept if history grew. A count change now establishes a new
+  reference; passing still requires two different painted frames with the same
+  count, within the original deadline. Tests cover history growth, frozen frames,
+  and blank phases. Failures retain the first/reference frames and a bounded raw
+  sample history. The old hosted report discarded those samples, so the history
+  race is a demonstrated defect consistent with the log, not a proven account
+  of every observation in that run.
+
 - 2026-09-11: Promotion of `2026-09-11.1` committed intent but failed activation
   when outgoing `2026-09-08.1` was retained in sunset. Both use NAV25 and identical
   package contract sets; the controller passed both to a merger that correctly

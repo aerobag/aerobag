@@ -33,6 +33,12 @@ for (const name of readdirSync(workflows).filter((name) => /\.ya?ml$/.test(name)
   const workflow = parse(readFileSync(new URL(name, workflows), "utf8"));
   for (const [jobId, job] of Object.entries(workflow.jobs ?? {})) {
     for (const [index, step] of (job.steps ?? []).entries()) {
+      if (step.run?.includes("sdkmanager") || step.run?.includes("install_android_sdk.py")) {
+        test(`${name}: ${jobId} step ${index + 1} uses bounded SDK dependency installation`, () => {
+          assert.doesNotMatch(step.run, /^\s*sdkmanager\s/m, "package downloads use the shared installer");
+          assert.match(step.run, /python3 tools\/ci\/install_android_sdk\.py/);
+        });
+      }
       if (!step.uses?.startsWith("android-actions/setup-android@")) continue;
       setupSteps += 1;
       test(`${name}: ${jobId} step ${index + 1} explicitly installs supported Android SDK packages`, () => {

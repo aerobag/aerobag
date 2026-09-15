@@ -75,7 +75,7 @@ jobs:
       - name: Install Android build dependencies
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager \
+          python3 tools/ci/install_android_sdk.py \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
@@ -282,7 +282,7 @@ jobs:
       - name: Install emulator image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "emulator" "platforms;android-34" "$AVD_PACKAGE_PATH"
+          python3 tools/ci/install_android_sdk.py "platform-tools" "emulator" "platforms;android-34" "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
       - name: Start package-only Android baseline publication
@@ -404,7 +404,7 @@ jobs:
       - name: Install emulator image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager \
+          python3 tools/ci/install_android_sdk.py \
             "platform-tools" \
             "emulator" \
             "platforms;android-34" \
@@ -517,7 +517,7 @@ jobs:
       - name: Install emulator, image, platform, and NDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager \
+          python3 tools/ci/install_android_sdk.py \
             "platform-tools" \
             "emulator" \
             "platforms;android-34" \
@@ -617,7 +617,7 @@ jobs:
       - name: Install emulator and Google APIs image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager \
+          python3 tools/ci/install_android_sdk.py \
             "platform-tools" \
             "emulator" \
             "system-images;android-34;google_apis;x86_64"

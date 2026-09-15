@@ -294,6 +294,16 @@ production state, weaken assertions, or erase failure artifacts.
 
 ## Ownership and causal-completion audit
 
+- 2026-09-15.5: Android shard 2 failed before installing Aerobag: sdkmanager
+  could not read the downloaded emulator ZIP (`SeekableByteChannel` error).
+  All SDK package installs now share a bounded installer: at most three
+  attempts within ten minutes, retrying only that diagnosed archive error.
+  Every attempt's output is retained in the job log. Unknown errors, disk-full,
+  bad package names and deadline expiry fail directly. No journey is retried;
+  sdkmanager retains ownership of its install transactions and existing SDK.
+  Fixture-free tests cover transient recovery, persistent failure, shared
+  deadline, and non-retryable errors; a workflow audit covers every install site.
+
 - 2026-09-15 follow-up: the parallel main run for staged `.4` exposed two
   remaining harness hazards. Native CTR readiness still sent its **surface**
   lookup through the serialized accessibility queue, although its state and

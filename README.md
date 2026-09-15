@@ -3,6 +3,7 @@
 Aerobag is a flight-planning tool and electronic flight bag. It provides the
 same application as a web app for planning on a larger screen and as an Android
 app for carrying charts, plates, and other aviation data offline.
+Try it at https://aerobag.org.
 
 The platform interfaces share a Rust application core so navigation behavior,
 data contracts, and user-visible policy remain consistent across web and

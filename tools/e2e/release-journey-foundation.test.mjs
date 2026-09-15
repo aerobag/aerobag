@@ -27,6 +27,7 @@ import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
   chooseForecastWindModel, dismissMapSelectionIfPresent, dismissPlanRowTray,
   openAndDismissDataStatus,
+  openPlateGeometryDetail,
   observeNexradFrameAdvance,
   offlineSyncButtonIsIdle,
   publicationArtifactRequestCount,
@@ -1216,6 +1217,39 @@ test("flight data controls project their core-owned action on both platforms", (
     "portrait and landscape must use the same core-owned action");
   assert.match(indexed, /state\?\.let \{ append\(":state:"\)\.append\(Uri.encode\(it\)\) \}/);
 });
+
+for (const missing of [null, "panel", "text"]) {
+  test(`plate warning reads its rendered row, not empty container text (${missing ?? "complete"})`, async () => {
+    let opened = false;
+    let reads = 0;
+    const runtime = {
+      driver: {
+        async readElement(id, options) {
+          assert.equal(id, "procedure-status-panel");
+          assert.equal(options.indexed, true);
+          return opened && missing !== "panel" ? { text: "", enabled: true } : null;
+        },
+        async readProjection(prefix, options) {
+          assert.equal(prefix, "data-status-box-plate:procedure_geometry:");
+          assert.equal(options.indexed, true);
+          reads += 1;
+          return reads < 2 ? [] : [{ text: missing === "text" ? "" : "This publication reports a warning" }];
+        },
+      },
+      async action(_description, id, { complete }) {
+        assert.equal(id, "procedure-status-launcher");
+        opened = true;
+        return (await observeUntil("warning content", complete, { timeoutMs: 40, intervalMs: 1 })).value;
+      },
+    };
+    if (missing) {
+      await assert.rejects(openPlateGeometryDetail(runtime), ObservationTimeoutError);
+    } else {
+      assert.match((await openPlateGeometryDetail(runtime)).text, /This publication/);
+      assert.equal(reads, 2);
+    }
+  });
+}
 
 function nexradFrameRuntime(states) {
   let index = 0;

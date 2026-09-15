@@ -294,6 +294,16 @@ production state, weaken assertions, or erase failure artifacts.
 
 ## Ownership and causal-completion audit
 
+- The parallel main run for `.5` caught a regression introduced by indexing
+  the shared status popup: the procedure-warning journey still expected the
+  container's text to concatenate descendants. The actual warning was rendered
+  (confirmed in the retained UI tree), but indexed container text was empty.
+  Completion now requires the popup and its rendered, indexed procedure-warning
+  row with the expected text; dismissal observes indexed absence. Cheap tests
+  cover empty container text, delayed row arrival, missing text, and missing
+  popup, plus the real Android reader/HTTP encoder's row projection. This is a
+  harness-contract regression, not evidence that the warning disappeared.
+
 - 2026-09-15.5: Android shard 2 failed before installing Aerobag: sdkmanager
   could not read the downloaded emulator ZIP (`SeekableByteChannel` error).
   All SDK package installs now share a bounded installer: at most three

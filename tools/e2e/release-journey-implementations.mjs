@@ -1542,6 +1542,18 @@ async function plateOperate(runtime) {
   runtime.check("plate.return-folder", Boolean(returned), returned.text);
 }
 
+export async function openPlateGeometryDetail(runtime) {
+  return runtime.action("open plate procedure geometry detail", "procedure-status-launcher", {
+    complete: async () => {
+      if (!await runtime.driver.readElement("procedure-status-panel", { indexed: true })) return null;
+      // An indexed container owns geometry, not concatenated descendant text.
+      // Read the positioned row that actually renders the core-owned warning.
+      const rows = await runtime.driver.readProjection("data-status-box-plate:procedure_geometry:", { indexed: true });
+      return rows.find((row) => row.text?.includes("This publication")) ?? null;
+    },
+  });
+}
+
 async function plateAdvisoriesAndReferences(runtime) {
   const notam = runtime.capability("plate.notam");
   const warning = runtime.capability("plate.geometry_warning");
@@ -1556,21 +1568,17 @@ async function plateAdvisoriesAndReferences(runtime) {
   });
   await selectPlateFolderTileMatching(runtime, warning.label_contains);
   const warningLauncher = await runtime.eventually("plate procedure geometry warning", () =>
-    runtime.driver.readElement("procedure-status-launcher"), E2E_TIMING.resourceMs);
-  const warningPanel = await runtime.action(
-    "open plate procedure geometry detail",
-    "procedure-status-launcher",
-    { complete: () => runtime.driver.readElement("procedure-status-panel") },
-  );
+    runtime.driver.readElement("procedure-status-launcher", { indexed: true }), E2E_TIMING.resourceMs);
+  const warningRow = await openPlateGeometryDetail(runtime);
   runtime.check(
     "plate.geometry-warning",
-    Boolean(warningLauncher && warningPanel?.text?.includes("This publication")),
-    warningPanel?.text,
+    Boolean(warningLauncher && warningRow?.text?.includes("This publication")),
+    warningRow?.text,
   );
   await runtime.transition("dismiss plate geometry detail", {
-    ready: () => runtime.driver.readElement("procedure-status-panel"),
+    ready: () => runtime.driver.readElement("procedure-status-panel", { indexed: true }),
     act: () => runtime.driver.back(),
-    complete: async () => (await runtime.driver.readElement("procedure-status-panel")) ? null : true,
+    complete: async () => (await runtime.driver.readElement("procedure-status-panel", { indexed: true })) ? null : true,
   });
 
   if (notam.airport_id !== warning.airport_id || notam.label_contains !== warning.label_contains) {

@@ -212,6 +212,10 @@ test("status popup and service collections prove absence without tree access", a
   assert.equal((await bodies())[0].text, "notice body");
   snapshots.delete(bodyTag);
   assert.equal((await bodies()).length, 0, "folded again");
+  const rowTag = "parity:data-status-box-plate:procedure_geometry:0";
+  snapshots.set(rowTag, { "resource-id": rowTag, text: "This publication reports a warning", enabled: "true" });
+  const rows = await driver.readProjection("data-status-box-plate:procedure_geometry:", { indexed: true });
+  assert.equal(rows[0].text, "This publication reports a warning");
   respondWith({ status: 28, stdout: "", stderr: "provider busy" });
   await assert.rejects(panel(), TransientObservationError);
   await assert.rejects(bodies(), TransientObservationError);

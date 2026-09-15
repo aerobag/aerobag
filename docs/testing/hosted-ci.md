@@ -94,6 +94,16 @@ disposed panels. Transport unavailability is not evidence of absence: optional
 presence probes must use the bounded observation contract too, without
 replaying a successful action or extending the transition deadline.
 
+The same rule applies to fixed state projections: `readScalarProjection`
+always uses `providerOnly`, including the first read and reads after disposal.
+Do not "seed" an accessibility path first. The September 15.3 release failed
+before live-feed assertions and before the airport-info swipe because layer
+state and modal readiness still entered that queue. Map-layer probes now read
+one indexed snapshot of core-exported options; airport scroll readiness uses
+the modal's positioned indexed bounds, not its changing descendant text.
+`android-indexed-observations.test.mjs` executes the real readers and HTTP
+encoder with all tree access forbidden and transport failures preserved.
+
 App-owned state projections intentionally remain readable behind modals and
 external activities. They cannot prove that Android returned from a browser.
 External-navigation journeys must observe the OS's resumed activity and a

@@ -55,10 +55,17 @@ class MapSelectionHeaderPolicyTest {
         val modalBody = balancedBlockAfterMarker(source, "internal fun AirportInfoModal")
 
         assertTrue(
-            "Popup content must export its test tag from the popup's separate semantics tree.",
-            modalBody.contains(".testTag(\"parity:airport-info-modal:") &&
+            "Popup content must publish its positioned bounds and identity through the shared indexed modifier.",
+            modalBody.contains(".e2eIndexedControl(\"parity:airport-info-modal:") &&
                 modalBody.contains(".semantics { testTagsAsResourceId = true }"),
         )
+        val indexed = sourceFile("src/main/java/org/aerobag/app/E2eProjectionView.kt").readText()
+        assertTrue(indexed.contains(
+            ").testTag(semanticTag).guidedTourAnchor(semanticTag)",
+        ))
+        assertTrue(indexed.contains("return onGloballyPositioned { coordinates ->"))
+        assertTrue(indexed.contains("E2eProjectionRegistry.publish(semanticTag, publishedState, owner, encoded)"))
+        assertTrue(indexed.contains("E2eProjectionRegistry.remove(semanticTag, owner)"))
         assertTrue(
             "The scroll probe must be attached to the scrollable node, not a prunable spacer.",
             Regex(

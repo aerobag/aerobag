@@ -34,6 +34,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:plan-state:", "org.aerobag.app:id/e2e_flight_plan_state_projection"],
   ["parity:flight-plan-overlay-state:", "org.aerobag.app:id/e2e_flight_plan_overlay_projection"],
   ["parity:map-family:", "org.aerobag.app:id/e2e_map_family_projection"],
+  ["parity:map-layers:", "org.aerobag.app:id/e2e_map_layers_projection"],
   ["parity:raster-state:", "org.aerobag.app:id/e2e_raster_state_projection"],
   ["parity:vector-state:", "org.aerobag.app:id/e2e_vector_state_projection"],
   ["parity:flight-plan-route-overlay:", "org.aerobag.app:id/e2e_flight_plan_route_overlay_projection"],
@@ -1006,7 +1007,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     this.reloadAppCallback = reloadApp;
     this.pressBackCallback = pressBack ?? (() => pressKey(this.serial, "KEYCODE_BACK"));
     this.softwareKeyboardShown = softwareKeyboardShown ?? (() => androidImeShown(this.serial));
-    this.seededScalarProjections = new Set();
   }
 
   readStartupProjection() {
@@ -1015,20 +1015,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   readScalarProjection(prefix) {
     const semanticTag = ANDROID_EXACT_SCALAR_PROJECTIONS.get(prefix);
-    const boundedOnly = this.seededScalarProjections.has(semanticTag);
-    let queried = queryAndroidExactProjection(
+    // App-owned state is authoritative, including absence. Never enter the
+    // serialized accessibility queue or rediscover a disposed projection.
+    return queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { boundedOnly },
+      { providerOnly: true },
     );
-    if (boundedOnly && queried.length === 0) {
-      // Compose popups are separate accessibility windows. Re-rendezvous once
-      // when the fixed projection moves between the page and popup window.
-      this.seededScalarProjections.delete(semanticTag);
-      queried = queryAndroidExactProjection(this.serial, semanticTag);
-    }
-    if (queried.length > 0) this.seededScalarProjections.add(semanticTag);
-    return queried;
   }
 
   async waitForObservation(intervalMs) {
@@ -1338,6 +1331,16 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       const entry = androidMapSelectionEntryFromState(state, expected);
       return entry ? [entry] : [];
     }
+    if (prefix.startsWith("parity:map-layer:")) {
+      const state = this.readScalarProjection("parity:map-layers:")[0]?.["state-description"] ?? "";
+      return state.split("|").filter(Boolean).map((entry) => ({
+        id: `parity:map-layer:${entry}`,
+        text: "",
+        enabled: entry.endsWith(":enabled:true"),
+        pressed: null,
+        state: null,
+      })).filter((entry) => entry.id.startsWith(prefix));
+    }
     if (ANDROID_EXACT_SCALAR_PROJECTIONS.has(prefix)) {
       const queried = this.readScalarProjection(prefix);
       return queried.map((node) => ({
@@ -1351,9 +1354,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     if (prefix === "parity:data-status-row:") {
       const stateNode = this.readScalarProjection("parity:data-status-state:")[0];
       const state = stateNode?.["state-description"] ?? "";
-      if (state) {
-        return androidDataStatusRowsFromStateTag(`parity:data-status-state:${state}`);
-      }
+      return androidDataStatusRowsFromStateTag(`parity:data-status-state:${state}`);
     }
     const queried = queryAndroidSemanticNodes(this.serial, prefix, { prefix: true });
     if (queried) {

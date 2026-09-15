@@ -2438,7 +2438,7 @@ async function airportInfo(runtime) {
   const initialScroll = await runtime.stable("settled airport-info scroll position", async () =>
     projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]));
   const scrolled = await runtime.transition("scroll airport info", {
-    ready: () => runtime.driver.readElement(`airport-info-modal:${complexAirport}`),
+    ready: () => runtime.driver.readElement(`airport-info-modal:${complexAirport}`, { indexed: true }),
     act: (readyElement) => runtime.driver.drag(
       `airport-info-modal:${complexAirport}`, { x: 0, y: -500 }, readyElement,
     ),

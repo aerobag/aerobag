@@ -3472,18 +3472,11 @@ internal fun MapExplorerPage(
                     .offset(x = 2.dp)
                     .size(1.dp),
             )
-            mapLayerState.options.forEachIndexed { index, option ->
-                val state = mapLayerState.toggleState(option.layerId)
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .offset(x = (4 + index * 2).dp)
-                        .size(1.dp)
-                        .testTag(
-                            "parity:map-layer:${option.layerId.name}:visible:${state.visible}:enabled:${state.enabled}",
-                        ),
-                )
-            }
+            E2eProjectionView(
+                viewId = R.id.e2e_map_layers_projection,
+                state = buildMapLayersProjectionState(mapLayerState),
+                modifier = Modifier.align(Alignment.TopStart).offset(x = 4.dp).size(1.dp),
+            )
             RasterImageLayers(
                 tiles = tiles,
                 tileRects = tileRects,
@@ -5474,7 +5467,8 @@ internal fun AirportInfoModal(
     val scrollState = rememberScrollState()
     Surface(
         modifier = modifier
-            .testTag("parity:airport-info-modal:${detail.airportId}").guidedTourAnchor("tour:airport-info")
+            .e2eIndexedControl("parity:airport-info-modal:${detail.airportId}", enabled = true)
+            .guidedTourAnchor("tour:airport-info")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),

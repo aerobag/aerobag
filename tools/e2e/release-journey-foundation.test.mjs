@@ -3772,7 +3772,7 @@ test("Android airport-info popups export their semantic identity", () => {
   const modal = mapPage.slice(mapPage.indexOf("internal fun AirportInfoModal"));
   assert.match(
     modal,
-    /\.testTag\("parity:airport-info-modal:\$\{detail\.airportId\}"\)\s*\.guidedTourAnchor\("tour:airport-info"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
+    /\.e2eIndexedControl\("parity:airport-info-modal:\$\{detail\.airportId\}", enabled = true\)\s*\.guidedTourAnchor\("tour:airport-info"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
   );
   assert.match(
     modal,
@@ -4451,17 +4451,14 @@ test("map scalar projections occupy distinct accessibility bounds", () => {
   }
 });
 
-test("Android scalar projections traverse once and then use only their proven path", () => {
+test("Android scalar projections use only the app-owned provider, including absence", () => {
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const method = source.slice(
     source.indexOf("  readScalarProjection(prefix)"),
     source.indexOf("  async waitForObservation(intervalMs)"),
   );
-  assert.match(method, /this\.seededScalarProjections\.has\(semanticTag\)/);
-  assert.match(method, /\{ boundedOnly \}/);
-  assert.match(method, /if \(boundedOnly && queried\.length === 0\)/);
-  assert.match(method, /this\.seededScalarProjections\.delete\(semanticTag\)/);
-  assert.match(method, /if \(queried\.length > 0\) this\.seededScalarProjections\.add\(semanticTag\)/);
+  assert.match(method, /\{ providerOnly: true \}/);
+  assert.doesNotMatch(method, /seededScalarProjections|boundedOnly/);
 });
 
 test("Android action delivery cannot rediscover a different control after readiness", async () => {

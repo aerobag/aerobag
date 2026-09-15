@@ -1,16 +1,19 @@
 {
   "production": {
-    "tag": "2026-09-13.2"
-  },
-  "schema_version": 2,
-  "staging": {
     "tag": "2026-09-15.6"
   },
+  "schema_version": 2,
+  "staging": null,
   "sunset": [
     {
       "live_feeds": "share_if_compatible",
       "tag": "2026-09-11.2",
       "until_utc": "2026-09-17T16:34:21Z"
+    },
+    {
+      "live_feeds": "share_if_compatible",
+      "tag": "2026-09-13.2",
+      "until_utc": "2026-09-19T21:01:53Z"
     }
   ]
 }

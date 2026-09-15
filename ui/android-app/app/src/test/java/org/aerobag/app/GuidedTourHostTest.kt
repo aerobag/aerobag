@@ -218,6 +218,51 @@ class GuidedTourHostTest {
         compose.onNodeWithText("Airport information").assertExists()
     }
 
+    @Test fun closeDisposesAnUnknownMenuWhenRestoringTheSamePage() = verifyMenuDisposal(false)
+    @Test fun closeDisposesAnUnknownMenuBeforeReturningHome() = verifyMenuDisposal(true)
+
+    private fun verifyMenuDisposal(returnHome: Boolean) {
+        var tour by mutableStateOf<UiGuidedTour?>(step())
+        var home by mutableStateOf(false)
+        var mounts = 0
+        var disposals = 0
+        var ordinaryClicks = 0
+        compose.setContent {
+            GuidedTourHost(tour,false,null,{ action ->
+                if (action == UiTourAction.Close) { tour=null; home=returnHome }
+                if (action == UiTourAction.Next) tour=tour!!.copy(generation=tour!!.generation+1)
+            },Modifier.size(700.dp,700.dp)) {
+                if (home) {
+                    Box(Modifier.size(100.dp).testTag("home-return").clickable { home=false })
+                } else {
+                    // A future page with no Close-tour cleanup hook. Its local
+                    // popup and effects must belong to the host's demo lifetime.
+                    val inTour = LocalGuidedTour.current != null
+                    var open by remember { mutableStateOf(inTour) }
+                    DisposableEffect(Unit) { mounts++; onDispose { disposals++ } }
+                    Box(Modifier.size(100.dp).testTag("future-launcher").clickable { open=!open; ordinaryClicks++ })
+                    if (open) TourAwarePopup(position=Offset(200f,200f),onDismiss={open=false}) {
+                        Text("Future menu",Modifier.testTag("future-menu"))
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("future-menu").assertExists()
+        compose.onNodeWithTag("parity:guided-tour-next").performTouchInput { click() }
+        compose.runOnIdle { assertEquals(1,mounts); assertEquals(0,disposals) }
+        compose.onNodeWithTag("future-menu").assertExists()
+        compose.onNodeWithTag("parity:guided-tour-close").performTouchInput { click() }
+        compose.onNodeWithTag("future-menu").assertDoesNotExist()
+        compose.runOnIdle { assertTrue(disposals >= 1) }
+        if (returnHome) compose.onNodeWithTag("home-return").performTouchInput { click() }
+        compose.onNodeWithTag("future-menu").assertDoesNotExist()
+        compose.onNodeWithTag("future-launcher").performTouchInput { click() }
+        compose.onNodeWithTag("future-menu").assertExists()
+        compose.runOnIdle { assertEquals(1,ordinaryClicks); home=true }
+        compose.onNodeWithTag("home-return").performTouchInput { click() }
+        compose.onNodeWithTag("future-menu").assertDoesNotExist()
+    }
+
     @Test fun popupStaysInsideTheAppAtWindowEdges() {
         compose.setContent {
             GuidedTourHost(step(),false,null,{},Modifier.size(400.dp,700.dp)) {

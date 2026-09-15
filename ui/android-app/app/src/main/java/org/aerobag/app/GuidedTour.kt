@@ -118,12 +118,15 @@ private val tourAnchorIds = mapOf(
     "offline-help-panel" to listOf("tour:offline-help-panel"), "offline-apply" to listOf("parity:offline-sync-button"),
 )
 
-/** A structural input plane: no child's local zIndex can escape the app plane. */
+/** A structural input plane: no child's local zIndex can escape the app plane.
+ * Page-local state, popups and effects have a disposable demo lifetime. Core
+ * session state and the saved view stay above this host. Key the mode, not the
+ * step, so unknown future pages get cleanup without per-menu tour hooks. */
 @Composable
 internal fun GuidedTourHost(
     tour: UiGuidedTour?, busy: Boolean, error: String?, onAction: (UiTourAction) -> Unit,
     modifier: Modifier = Modifier, onSceneError: (Long, String) -> Unit = { _, _ -> }, content: @Composable () -> Unit,
-) {
+) = key(tour != null) {
     val registry = remember { TourAnchors() }
     CompositionLocalProvider(LocalGuidedTourFeedback provides onSceneError, LocalGuidedTour provides tour, LocalGuidedTourAnchors provides if (tour != null) registry else null) {
         Box(modifier.fillMaxSize()) {

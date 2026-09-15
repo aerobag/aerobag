@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Aerobag contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { UiGuidedTour, UiTourAction } from "./generated/sessionPageWire";
 import "./guidedTour.css";
@@ -9,6 +9,15 @@ import "./guidedTour.css";
 export const GuidedTourContext = createContext<UiGuidedTour | null>(null);
 export const GuidedTourFeedback = createContext<(generation: number, error: string) => void>(() => {});
 export const useGuidedTour = () => useContext(GuidedTourContext);
+
+/** Page-local state and portals belong to either the demo or the user's UI.
+ * Consume context below PageLayer's memo boundary so even a retained hidden
+ * page disposes its demo UI when core ends the tour. Session/view state lives
+ * above this boundary and is restored by the tour coordinator. */
+export function GuidedTourPageBoundary({children}: {children: ReactNode}) {
+  const touring = useGuidedTour() !== null;
+  return <Fragment key={touring ? "tour" : "user"}>{children}</Fragment>;
+}
 
 // Semantic anchors belong to the presentation adapter. Tour content and actions
 // are exported by core; these selectors only locate the rendered controls.

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { BrowserGeolocationWatch } from "./domain/browserGeolocationWatch";
-import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, useGuidedTour } from "./GuidedTour";
+import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, GuidedTourPageBoundary, useGuidedTour } from "./GuidedTour";
 import type { UiTourAction } from "./generated/sessionPageWire";
 import { useMapGeometryBinding } from "./MapGeometryLayer";
 import { AirwayRoutingOverlay } from "./AirwayRoutingOverlay";
@@ -2244,7 +2244,7 @@ export const PageLayer = memo(
     return (
       <PageVisibilityContext.Provider value={props.active}>
         <div className={`pageLayer${props.active ? " isActive" : ""}`} aria-hidden={!props.active}>
-          {props.children}
+          <GuidedTourPageBoundary>{props.children}</GuidedTourPageBoundary>
         </div>
       </PageVisibilityContext.Provider>
     );

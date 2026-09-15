@@ -17,6 +17,15 @@ ownship selection, plate selection, navigation history and viewport. Demo edits
 are neither persisted nor sent to Cloud Sync. Live resources and receiver data
 continue to advance. An app restart loads the user's persisted state.
 
+Page presentation has a separate lifetime for normal use and for the tour.
+Web's shared `PageLayer` and Android's `GuidedTourHost` recreate page-local UI
+when core starts or ends the tour. This disposes demo menus, dialogs, portals,
+and page effects even when the restored page is the same page, or a web page
+is retained while hidden. New pages inherit this boundary; they must not add
+per-tray Close-tour cleanup lists. Step changes keep the same presentation
+lifetime. The session and saved view remain above this boundary; transient
+page controls reopen closed when returning to normal use.
+
 The script, platform eligibility, scene state and actions live in
 `ui/core-rust/crates/app-core/src/guided_tour.rs` and
 `guided_tour_session.rs`. Demo routes use the ordinary airway picker and router,

@@ -835,6 +835,18 @@ export function androidElementEnabled(node) {
   return projected == null ? node.enabled === "true" : projected === "true";
 }
 
+export function androidMapInspectionPoint(readyElement, indexed) {
+  if (!readyElement?.bounds || !indexed.some((node) =>
+    androidTag(node) === "parity:map-surface" && node.bounds === readyElement.bounds)) return null;
+  const obstacles = indexed
+    .filter((node) => androidTag(node) !== "parity:map-surface")
+    .map((node) => {
+      try { return rectOfBounds(node.bounds); } catch { return null; }
+    })
+    .filter(Boolean);
+  return chooseUnobscuredMapPoint(rectOfBounds(readyElement.bounds), obstacles);
+}
+
 function androidProjectedElement(node, elementId = androidTag(node)) {
   if (!node) return null;
   return {
@@ -1142,21 +1154,24 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       includeDescendantText: false,
       providerOnly: true,
     });
-    // The same snapshot must still contain the positioned map. An absent or
-    // changed surface is not proof that it has no overlying controls.
-    if (!indexed.some((node) => androidTag(node) === "parity:map-surface" &&
-        node.bounds === readyElement.bounds)) return null;
-    const obstacles = indexed
-      .filter((node) => androidTag(node) !== "parity:map-surface")
-      .map((node) => {
-        try {
-          return rectOfBounds(node.bounds);
-        } catch (_error) {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    return chooseUnobscuredMapPoint(rectOfBounds(readyElement.bounds), obstacles);
+    return androidMapInspectionPoint(readyElement, indexed);
+  }
+
+  async readMapInteractionSnapshot() {
+    // Native gesture readiness needs follow state, map bounds and obstacles.
+    // Fetch them together, not three device round trips per readiness sample.
+    const indexed = queryAndroidSemanticNodes(this.serial, "", {
+      prefix: true, includeDescendantText: false, providerOnly: true,
+    });
+    const map = indexed.find((node) => androidTag(node) === "parity:map-surface" && node.visible === "true");
+    const surface = map ? androidProjectedElement(map, "map-surface") : null;
+    const follow = indexed.find((node) =>
+      node["resource-id"] === ANDROID_EXACT_SCALAR_PROJECTIONS.get("parity:map-follow-state:"));
+    return {
+      surface,
+      point: androidMapInspectionPoint(surface, indexed),
+      followTag: follow ? `parity:map-follow-state:${follow["state-description"] ?? ""}` : null,
+    };
   }
 
   async performAction(actionId, readyElement = null) {

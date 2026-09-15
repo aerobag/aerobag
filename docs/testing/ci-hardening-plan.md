@@ -294,6 +294,19 @@ production state, weaken assertions, or erase failure artifacts.
 
 ## Ownership and causal-completion audit
 
+- The parallel main run for `.6` still timed out before native CTR drag, with
+  a rendered map and no input dispatched. A constrained two-CPU local replay
+  passed; the old runner had discarded the failed readiness samples, so the
+  precise hosted cause remains unproven. Native readiness previously serialized
+  three device requests per sample (follow state, map bounds, then obstacles).
+  It now reads all three from one indexed snapshot, retaining the same follow,
+  exposed-point, offset, and stability requirements. Real-reader tests execute
+  the native readiness closure and enforce one request per probe, including
+  missing/follow-disabled/obscured inputs and transport failure. Failures now
+  preserve native transition results and sample timings in `result.json` rather
+  than replacing them with a fresh empty result. Do not call a future timeout
+  solved without inspecting this retained evidence.
+
 - The parallel main run for `.5` caught a regression introduced by indexing
   the shared status popup: the procedure-warning journey still expected the
   container's text to concatenate descendants. The actual warning was rendered

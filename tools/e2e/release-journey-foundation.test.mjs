@@ -5195,9 +5195,9 @@ test("Android CTR gestures use rendered geometry, not viewport-local follow coor
     suite.indexOf("async function dragMapWhileFollowing"),
     suite.indexOf("async function zoomMapOneStepWhileFollowing"),
   );
-  assert.match(dragJourney, /queryMapFollowProbe\(serial\)\?\.following/);
-  assert.match(dragJourney, /driver\.readElement\("map-surface"\)/);
-  assert.match(dragJourney, /driver\.findMapInspectionPoint\(surface\)/);
+  assert.match(dragJourney, /driver\.readMapInteractionSnapshot\(\)/);
+  assert.match(dragJourney, /parseMapFollowTag\(followTag\)\?\.following/);
+  assert.match(dragJourney, /return following && point \? \{ surface, point \} : null/);
   assert.match(dragJourney, /swipe\(serial, point\.screenX, point\.screenY, end\.x, end\.y/);
   assert.doesNotMatch(dragJourney, /followProbe\.center[XY]/);
   assert.doesNotMatch(dragJourney, /queryAndroidSemanticNodes\(/);

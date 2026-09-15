@@ -957,15 +957,23 @@ async function prepareRouteViewportForRotations(serial, result, route, expectedS
 
 async function dragMapWhileFollowing(serial, result) {
   const driver = nativeSemanticDriver(serial);
+  const readiness = [];
+  result.diagnostics.map_readiness = readiness;
   let probe = null;
   try {
     probe = await nativeTransition(result, "map drag keeps CTR engaged with an offset ownship", {
       ready: async () => {
-        if (!queryMapFollowProbe(serial)?.following) return null;
-        const surface = await driver.readElement("map-surface");
-        const point = surface && await driver.findMapInspectionPoint(surface);
-        return point ? { surface, point } : null;
+        const started = performance.now();
+        const { surface, point, followTag } = await driver.readMapInteractionSnapshot();
+        const following = parseMapFollowTag(followTag)?.following;
+        readiness.push({
+          snapshot_ms: Math.round(performance.now() - started),
+          following, bounds: surface?.bounds, point,
+        });
+        if (readiness.length > 8) readiness.shift();
+        return following && point ? { surface, point } : null;
       },
+      diagnose: () => readiness,
       act: async ({ surface, point }) => {
         // Follow coordinates are viewport-local and can lie behind instrument
         // cells. Use an exposed point in actual screen geometry, as taps do.
@@ -984,9 +992,16 @@ async function dragMapWhileFollowing(serial, result) {
       responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
     });
   } catch (error) {
-    probe = queryMapFollowProbe(serial);
-    throw new Error(`${error.message}; lastProbe=${describeMapFollowProbe(probe)}`);
+    try {
+      probe = queryMapFollowProbe(serial);
+      error.message += `; lastProbe=${describeMapFollowProbe(probe)}`;
+    } catch (diagnosticError) {
+      error.message += `; lastProbe unavailable: ${diagnosticError.message}`;
+    }
+    error.nativeResult = result;
+    throw error;
   }
+  recordStep(result, "map gesture readiness", readiness.map((sample) => `${sample.snapshot_ms}ms`).join(", "));
   const stable = await assertConditionRemains(
     "CTR offset remains stable after drag",
     async () => queryMapFollowProbe(serial),
@@ -1843,11 +1858,13 @@ async function main() {
     try {
       suite.results.push(await test.run(args));
     } catch (error) {
-      const failed = createTestResult(test.id);
+      const failed = error.nativeResult ?? createTestResult(test.id);
       failed.status = "fail";
       failed.finished_at = new Date().toISOString();
       failed.error = error.message;
+      if (error.diagnostics) failed.diagnostics.failure_observation = error.diagnostics;
       failed.artifacts = captureAndroidFailureDiagnostics(args.serial, E2E_ARTIFACT_DIR, test.id);
+      writeFileSync(join(E2E_ARTIFACT_DIR, "result.json"), `${JSON.stringify(failed, null, 2)}\n`);
       suite.results.push(failed);
       if (args.json) {
         console.log(JSON.stringify(suite, null, 2));

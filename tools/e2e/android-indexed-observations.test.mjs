@@ -8,7 +8,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import {
   AndroidSemanticJourneyDriver, androidElementEnabled, androidElementSemanticTag,
-  androidSemanticTag, androidDataStatusRowsFromStateTag,
+  androidSemanticTag, androidDataStatusRowsFromStateTag, androidMapInspectionPoint,
 } from "./semantic-journey-driver.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
@@ -30,7 +30,7 @@ function device() {
   const context = {
     URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag,
     androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
-    chooseUnobscuredMapPoint,
+    chooseUnobscuredMapPoint, androidMapInspectionPoint,
     ANDROID_EXACT_SCALAR_PROJECTIONS: projections,
     requiredSemanticDriver: () => ({ port: 19191 }),
     semanticDriverObservationUnavailable: response => response.status === 28,
@@ -61,7 +61,7 @@ function device() {
   context.queryFirstAndroidSemanticNode = helper("queryFirstAndroidSemanticNode", "readinessEvidenceMatchesTag");
   context.androidProjectedElement = helper("androidProjectedElement", "queryFirstAndroidSemanticNode");
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readScalarProjection", "readProjection", "readElement", "findMapInspectionPoint"]) {
+  for (const name of ["readScalarProjection", "readProjection", "readElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
   return { driver, snapshots, requests, respondWith(value) { responseOverride = value; } };
@@ -170,6 +170,47 @@ test("provider-only batch requests bypass the server's accessibility queue and f
   const handler = service.slice(service.indexOf("private void handleQuery"), service.indexOf("private void handleExactProjection"));
   assert.match(handler, /prefix\s*\? providerProjectionPrefix\(tag\)/);
   assert.match(handler, /providerOnly \? new JSONArray\(\)\s*: renderNodeQuery/);
+});
+
+test("native gesture readiness takes one device snapshot, retaining follow and obstacle checks", async () => {
+  const { driver, snapshots, requests, respondWith } = device();
+  const native = readFileSync(new URL("run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const drag = native.slice(native.indexOf("async function dragMapWhileFollowing"), native.indexOf("async function zoomMapOneStepWhileFollowing"));
+  const context = { driver, performance, readiness: [] };
+  context.parseMapFollowTag = runInNewContext(`(${native.slice(
+    native.indexOf("function parseMapFollowTag("), native.indexOf("function mapFollowOffsetPx("),
+  ).trim()})`);
+  const ready = runInNewContext(`(async () => {${drag.match(/ready: async \(\) => \{([\s\S]*?)\n      \},\n      diagnose:/)[1]}})`, context);
+  const read = async () => {
+    const before = requests.length;
+    try { return await ready(); } finally {
+      assert.equal(requests.length - before, 1, "never serialize separate state/surface/obstacle round trips");
+    }
+  };
+  assert.equal(await read(), null);
+  snapshots.set("parity:map-surface", {
+    "resource-id": "parity:map-surface", visible: "true", bounds: "[0,0][1000,1000]",
+  });
+  const followId = projections.get("parity:map-follow-state:");
+  const follow = (following) => snapshots.set(followId, {
+    "resource-id": followId,
+    "state-description": `following:${following}:ownship-x:500:ownship-y:500:center-x:500:center-y:500:zoom-centi:1139`,
+  });
+  assert.equal(await read(), null, "geometry without follow state is not readiness");
+  follow(0);
+  assert.equal(await read(), null, "CTR must be engaged");
+  follow(1);
+  snapshots.set("parity:instrument-panel", {
+    "resource-id": "parity:instrument-panel", bounds: "[200,600][400,800]",
+  });
+  assert.equal((await read()).point.screenX, 700, "avoid the first candidate behind instruments");
+  snapshots.delete("parity:map-surface");
+  assert.equal(await read(), null, "follow state alone is insufficient");
+  respondWith({ status: 28, stdout: "", stderr: "provider busy" });
+  await assert.rejects(read(), TransientObservationError);
+  assert.match(drag, /error\.nativeResult = result;\s*throw error/);
+  assert.match(native, /const failed = error\.nativeResult \?\? createTestResult/);
+  assert.match(native, /writeFileSync\(join\(E2E_ARTIFACT_DIR, "result\.json"\)/);
 });
 
 test("native map-follow state uses the shared scalar reader for presence and absence", () => {

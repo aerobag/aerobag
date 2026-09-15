@@ -118,6 +118,7 @@ impl SituationController {
     /// A tour rewinds preview/playback and selection, while live receiver data
     /// continues to arrive. Keep those new samples and receiver capabilities.
     pub fn restore_user_state(&mut self, saved: SituationModelCheckpoint) {
+        let revision_before_restore = self.model.revision;
         let live_sources = self
             .model
             .ownship
@@ -135,6 +136,11 @@ impl SituationController {
             .cloned()
             .collect::<Vec<_>>();
         self.rollback_model(saved);
+        // Restoring user choices is a new published mutation, not a transaction
+        // rollback. Rewinding this dependency counter can collide with the tour
+        // revision and omit the restored situation from the session delta.
+        // select_source below advances the live revision and clears the cache.
+        self.model.revision = revision_before_restore;
         for mut source in live_sources {
             if let Some(previous) = self
                 .model
@@ -407,6 +413,44 @@ mod tests {
             Some(crate::OwnshipSourcePowerState::Paused)
         );
         assert_eq!(gps.status_label, "New receiver status");
+    }
+
+    #[test]
+    fn restoring_user_state_publishes_a_new_revision_even_after_one_tour_change() {
+        let mut controller = SituationController::default();
+        let saved = controller.checkpoint_model();
+        let viewport = MapViewport {
+            center: crate::LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        controller.disengage_map_follow(viewport);
+        let tour_revision = controller.revision();
+        assert!(
+            !controller
+                .project()
+                .projection
+                .map_follow_ui_state
+                .following
+        );
+
+        controller.restore_user_state(saved);
+
+        assert!(
+            controller
+                .project()
+                .projection
+                .map_follow_ui_state
+                .following
+        );
+        assert!(
+            controller.revision() > tour_revision,
+            "restoring the saved model must invalidate the visible tour state, not reuse its revision"
+        );
     }
 
     #[test]

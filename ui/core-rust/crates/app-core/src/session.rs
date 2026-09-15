@@ -15204,6 +15204,47 @@ mod tests {
     }
 
     #[test]
+    fn closing_welcome_publishes_restored_follow_state_without_an_ownship_tick() {
+        use app_ui_contracts::tour::UiTourAction;
+        let init = create_ui_session(FlightPlan::empty(), &[], None, None).unwrap();
+        assert!(
+            get_session_snapshot(init.handle)
+                .unwrap()
+                .map_follow_ui_state
+                .following
+        );
+        session_update_from_outcome(
+            perform_guided_tour_action_in_session(init.handle, UiTourAction::Start, None).unwrap(),
+        );
+        let started = get_session_snapshot(init.handle).unwrap();
+        assert!(!started.map_follow_ui_state.following);
+        let generation = started.guided_tour.unwrap().generation;
+        let update = session_update_from_outcome(
+            perform_guided_tour_action_in_session(
+                init.handle,
+                UiTourAction::Close,
+                Some(generation),
+            )
+            .unwrap(),
+        );
+        assert!(
+            get_session_snapshot(init.handle)
+                .unwrap()
+                .map_follow_ui_state
+                .following
+        );
+        let situation = update.situation.expect(
+            "Close must publish the restored follow state immediately, without an unrelated ownship update",
+        );
+        assert!(situation
+            .assignments
+            .iter()
+            .any(|assignment| assignment.path == ["map_follow_ui_state"]
+                && assignment.value["following"] == true));
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn guided_tour_restores_choices_and_never_persists_the_demo() {
         use app_ui_contracts::tour::UiTourAction;
         fn advance(

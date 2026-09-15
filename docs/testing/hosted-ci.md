@@ -81,6 +81,36 @@ Android's shared startup observation uses the same indexed read-only provider
 as its bootstrap, not the legacy accessibility-tree tag: a modal intentionally
 hides covered controls, but must not hide operational state from observers.
 
+For elements registered by Android's indexed-control modifiers, presence and
+absence both belong to that index. Use `readElement(id, { indexed: true })` in
+shared journeys (or `queryAndroidExactProjection(..., { providerOnly: true })`
+in native bootstrap). `indexedOnly` is a different, accessibility-based index;
+it does not bypass the serialized tree queue. In particular, never use a
+full-tree fallback to prove a modal has closed or was never mounted. This
+stalled first-use/tour checks on hosted runners even though the app had already
+completed the transition. The first-use tests execute the actual lookup and
+request encoder with tree access forbidden, including never-mounted and
+disposed panels. Transport unavailability is not evidence of absence: optional
+presence probes must use the bounded observation contract too, without
+replaying a successful action or extending the transition deadline.
+
+App-owned state projections intentionally remain readable behind modals and
+external activities. They cannot prove that Android returned from a browser.
+External-navigation journeys must observe the OS's resumed activity and a
+reachable app control after Back. A URL anywhere in task history is not an
+active browser: old VIEW intents survive navigation. Cheap activity/journey
+models retain that history and readable background state, and reject a lost
+Back action instead of accepting the unchanged startup projection.
+
+Restoring user choices must advance live dependency revisions; only an
+unpublished transaction rollback may rewind them. Tour restoration once reused
+the situation revision from its welcome step, so Close restored core's CTR state
+but omitted that state from the platform update. It appeared later on an
+unrelated ownship tick. Fixture-free tests now cover both the controller's
+revision and the actual Start/Close mutation envelope with no intervening tick.
+Do not hide that class of missing invalidation by normalizing a journey's toggle
+state or adding delays before the next action.
+
 Native smoke's package-only server still needs the Rust bulletin validator.
 Its launcher builds that dependency in the checkout-owned shared Cargo target
 before starting the bounded HTTP readiness wait. Retain build/startup logs and

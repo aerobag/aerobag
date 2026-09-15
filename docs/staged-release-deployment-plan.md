@@ -74,8 +74,17 @@ make and apply its commits, but they do not introduce a second state model:
   or repairs the host and fully converges the checked-in assignments. When
   production is already converged it reports that state and performs no deploy.
 
-Commands that would mutate intent retain the remote-idle safety check before and
-after confirmation. Reconciliation also rejects an overlapping reconciler.
+Commands that would mutate intent retain a remote-idle safety check after
+confirmation, before mutation. Plain staging and promotion also check before
+confirmation. Reconciliation rejects an overlapping reconciler.
+With `--stage --watch`, the operator confirms first, then the idle check waits
+up to twenty minutes for an automatic scheduled product refresh, polling every
+ten seconds and showing its current progress. There is no second confirmation
+after waiting. This budget is separate from the qualification watch budget.
+An operator-initiated reconciliation, an unknown lock owner, or a status-read
+failure still stops immediately. A timeout or interrupt leaves release intent
+and tags unchanged; the refresh is never canceled. Plain `--stage` remains
+fail-fast. The checkout is revalidated after confirmation/waiting before mutation.
 Direct desired-state edits followed by `--reconcile` remain the complete
 lower-level interface.
 

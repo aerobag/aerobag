@@ -108,6 +108,12 @@ class ProductPublicationTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.returncode, 255)
 
+    def test_idle_probe_bounds_its_ssh_process_with_the_supplied_budget(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as ssh:
+            deploy_prod.assert_release_reconciliation_idle(config, dry_run=False, timeout_seconds=7)
+        self.assertEqual(ssh.call_args.kwargs["timeout_seconds"], 7)
+
     def test_live_feed_publication_path_matches_current_contract(self) -> None:
         self.assertEqual(deploy_prod.LIVE_FEEDS_CONTRACT_PATH, "v3")
         core_contract = (

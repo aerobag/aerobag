@@ -1072,7 +1072,10 @@ class StageOrderingTests(unittest.TestCase):
         self.assertEqual(result, 0)
         preflight.assert_called_once_with(full=False)
         candidate.assert_not_called()
-        self.assertEqual(idle.call_count, 2)
+        self.assertEqual(idle.call_args_list, [
+            mock.call(mock.ANY, wait_for_scheduled_refresh=False),
+            mock.call(mock.ANY, wait_for_scheduled_refresh=False),
+        ])
         mutation_calls = [
             args
             for args, capture in git_calls
@@ -1174,16 +1177,23 @@ class StageOrderingTests(unittest.TestCase):
                 events.append("watch")
                 return watch_result
 
+            def confirm():
+                events.append("confirm")
+                return True
+
+            def idle_check(*_args, **_kwargs):
+                events.append("idle")
+
             with (
                 self.subTest(deployment=deployment_result, watch=watch_result),
                 mock.patch.object(prod_manage, "git", side_effect=fake_git),
                 mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
                 mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
-                mock.patch.object(prod_manage, "assert_remote_idle"),
+                mock.patch.object(prod_manage, "assert_remote_idle", side_effect=idle_check) as idle,
                 mock.patch.object(prod_manage, "run_stage_preflight"),
                 mock.patch.object(prod_manage, "next_release_name", return_value=identity.tag),
                 mock.patch.object(prod_manage, "print_proposal"),
-                mock.patch.object(prod_manage, "confirmed", return_value=True),
+                mock.patch.object(prod_manage, "confirmed", side_effect=confirm) as confirmed,
                 mock.patch.object(prod_manage, "write_atomic"),
                 mock.patch.object(prod_manage.releases, "resolve_release_tag", side_effect=resolve),
                 mock.patch.object(prod_manage, "reconcile", side_effect=reconcile),
@@ -1195,6 +1205,12 @@ class StageOrderingTests(unittest.TestCase):
                     watch=True, watch_timeout_seconds=90,
                 )
             self.assertEqual(result, expected)
+            self.assertEqual(idle.call_args_list, [
+                mock.call({}, wait_for_scheduled_refresh=True),
+            ])
+            confirmed.assert_called_once()
+            self.assertLess(events.index("confirm"), events.index("idle"))
+            self.assertLess(events.index("idle"), events.index("commit"))
             self.assertLess(events.index("commit"), events.index("resolve"))
             self.assertLess(events.index("resolve"), events.index("push"))
             if deployment_result == 0:
@@ -1202,6 +1218,102 @@ class StageOrderingTests(unittest.TestCase):
                 self.assertEqual(events[-2:], ["reconcile", "watch"])
             else:
                 watcher.assert_not_called()
+
+    def test_refresh_timeout_or_interrupt_cannot_mutate_release_intent(self) -> None:
+        busy = prod_manage.deployment.ReleaseReconciliationBusy(
+            kind="service", active_state="activating", automatic=True,
+            progress="Refreshing cycle products",
+        )
+        for interrupt in (False, True):
+            now = [0.0]
+
+            def sleep(seconds):
+                if interrupt:
+                    raise KeyboardInterrupt()
+                now[0] += seconds
+
+            with (
+                self.subTest(interrupt=interrupt),
+                mock.patch.object(prod_manage, "git", side_effect=self.clean_git) as git,
+                mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
+                mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+                mock.patch.object(prod_manage.deployment, "assert_release_reconciliation_idle", side_effect=busy),
+                mock.patch.object(prod_manage.time, "monotonic", side_effect=lambda: now[0]),
+                mock.patch.object(prod_manage.time, "sleep", side_effect=sleep),
+                mock.patch.object(prod_manage, "run_stage_preflight"),
+                mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
+                mock.patch.object(prod_manage, "print_proposal"),
+                mock.patch.object(prod_manage, "confirmed", return_value=True) as confirmed,
+                mock.patch.object(prod_manage, "write_atomic") as write,
+                mock.patch.object(prod_manage, "reconcile") as reconcile,
+                redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(KeyboardInterrupt if interrupt else prod_manage.ManagementError):
+                    prod_manage.stage(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True)
+                confirmed.assert_called_once()
+                write.assert_not_called()
+                reconcile.assert_not_called()
+                self.assertFalse(any(call.args[0] in {"add", "commit", "tag", "push"}
+                                     and call.kwargs.get("capture") is False
+                                     for call in git.call_args_list))
+
+    def test_declining_watched_stage_never_probes_or_waits_for_refresh(self) -> None:
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+            mock.patch.object(prod_manage.time, "sleep") as sleep,
+            mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "confirmed", return_value=False),
+            mock.patch.object(prod_manage, "write_atomic") as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(prod_manage.stage(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True,
+            ), 1)
+        idle.assert_not_called()
+        sleep.assert_not_called()
+        write.assert_not_called()
+
+    def test_checkout_changes_during_wait_abort_before_mutation(self) -> None:
+        for change in ("dirty", "new-commit", "behind"):
+            confirmed = False
+
+            def fake_git(*args, **kwargs):
+                if confirmed:
+                    if change == "dirty" and args[:2] == ("status", "--porcelain"):
+                        return " M app"
+                    if change == "new-commit" and args[:2] == ("rev-parse", "HEAD"):
+                        return "c" * 40
+                    if change == "behind" and args[:3] == ("rev-list", "--left-right", "--count"):
+                        return "1 0"
+                return self.clean_git(*args, **kwargs)
+
+            def confirm():
+                nonlocal confirmed
+                confirmed = True
+                return True
+
+            with (
+                self.subTest(change=change),
+                mock.patch.object(prod_manage, "git", side_effect=fake_git),
+                mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
+                mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+                mock.patch.object(prod_manage, "assert_remote_idle"),
+                mock.patch.object(prod_manage, "run_stage_preflight"),
+                mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
+                mock.patch.object(prod_manage, "print_proposal"),
+                mock.patch.object(prod_manage, "confirmed", side_effect=confirm),
+                mock.patch.object(prod_manage, "write_atomic") as write,
+                mock.patch.object(prod_manage, "reconcile") as reconcile,
+                self.assertRaises(prod_manage.ManagementError),
+            ):
+                prod_manage.stage(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True)
+            write.assert_not_called()
+            reconcile.assert_not_called()
 
     def test_stage_does_not_consult_candidate_qualification(self) -> None:
         document = desired_document()

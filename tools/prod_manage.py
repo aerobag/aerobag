@@ -46,6 +46,8 @@ LOCAL_CANDIDATE_QUALIFICATION = (
 FAST_RELEASE_PREFLIGHT = REPO_ROOT / "tools/ci/fast_release_preflight.py"
 QUALIFICATION_POLL_SECONDS = 30
 DEFAULT_WATCH_TIMEOUT_SECONDS = 3600
+SCHEDULED_REFRESH_WAIT_SECONDS = 20 * 60
+SCHEDULED_REFRESH_POLL_SECONDS = 10
 DEFAULT_SUNSET_DAYS = 4
 DEFAULT_GITHUB_TOKEN_HELPER = Path(
     "/root/aerobag-credentials/github-ci-reader/with-token"
@@ -99,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--watch", action="store_true",
-        help="with --stage or --qualification-status, poll exact-release qualification until done",
+        help="poll exact-release qualification; after confirmation, --stage also waits up to 20 minutes for a scheduled product refresh",
     )
     parser.add_argument(
         "--watch-timeout", type=int, metavar="SECONDS",
@@ -475,11 +477,51 @@ def write_atomic(path: Path, content: str) -> None:
     os.replace(temporary, path)
 
 
-def assert_remote_idle(config: dict[str, Any]) -> None:
-    try:
-        deployment.assert_release_reconciliation_idle(config, dry_run=False)
-    except deployment.ReleaseReconciliationBusy as error:
-        raise ManagementError(str(error)) from error
+def assert_remote_idle(
+    config: dict[str, Any], *, wait_for_scheduled_refresh: bool = False,
+) -> None:
+    started = time.monotonic()
+    deadline = started + SCHEDULED_REFRESH_WAIT_SECONDS
+    last_busy: deployment.ReleaseReconciliationBusy | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if last_busy is not None and remaining <= 0:
+            raise ManagementError(
+                f"Timed out after {SCHEDULED_REFRESH_WAIT_SECONDS}s waiting for the "
+                f"scheduled product refresh; staging has not started. {last_busy}"
+            ) from last_busy
+        try:
+            if wait_for_scheduled_refresh:
+                deployment.assert_release_reconciliation_idle(
+                    config, dry_run=False, timeout_seconds=min(30, max(0.001, remaining)),
+                )
+            else:
+                deployment.assert_release_reconciliation_idle(config, dry_run=False)
+        except deployment.ReleaseReconciliationBusy as error:
+            # Only the known automatic refresh is safe to wait out. Do not
+            # obscure an operator's deployment, an unknown lock owner, or an
+            # unrelated SSH failure, and never retry a deployment operation.
+            if not (wait_for_scheduled_refresh and error.kind == "service" and error.automatic):
+                raise ManagementError(str(error)) from error
+            last_busy = error
+            remaining = max(0.0, deadline - time.monotonic())
+            progress = f" Current progress: {error.progress}." if error.progress else ""
+            print(
+                f"Waiting for scheduled product refresh before staging "
+                f"({int(time.monotonic() - started)}s elapsed; {remaining:.0f}s remaining)."
+                f"{progress}",
+                flush=True,
+            )
+            time.sleep(min(SCHEDULED_REFRESH_POLL_SECONDS, remaining))
+        except subprocess.TimeoutExpired as error:
+            raise ManagementError(
+                "Could not check whether the scheduled product refresh finished: "
+                "the production status probe timed out; staging has not started. Retry --stage --watch."
+            ) from error
+        else:
+            if last_busy is not None:
+                print("Scheduled product refresh finished; continuing staging.", flush=True)
+            return
 
 
 def load_remote_observed(
@@ -1020,7 +1062,10 @@ def stage(
             )
 
     config = deployment.load_config(config_path)
-    assert_remote_idle(config)
+    # Watch mode must get the operator's answer before a potentially long wait.
+    # No release intent is mutated until the post-confirmation idle check passes.
+    if not watch:
+        assert_remote_idle(config, wait_for_scheduled_refresh=False)
     run_stage_preflight(full=False)
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
@@ -1052,8 +1097,12 @@ def stage(
         print("aborted")
         return 1
 
-    assert_remote_idle(config)
+    assert_remote_idle(config, wait_for_scheduled_refresh=watch)
     git("fetch", "--tags", "origin", capture=False)
+    assert_clean_checkout("stage")
+    assert_main_not_behind(require_synchronized=True)
+    if git("rev-parse", "HEAD") != head:
+        raise ManagementError("checkout changed while preparing staging; retry with the current commit")
     if tag in existing_release_tags():
         raise ManagementError(f"release tag {tag} appeared during confirmation; retry")
     write_atomic(releases_path, new_text)

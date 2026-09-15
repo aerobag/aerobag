@@ -800,7 +800,8 @@ def stop_stale_units(config: dict[str, Any], *, dry_run: bool) -> None:
 
 
 def assert_release_reconciliation_idle(
-    config: dict[str, Any], *, dry_run: bool
+    config: dict[str, Any], *, dry_run: bool,
+    timeout_seconds: float | None = None,
 ) -> None:
     """Reject source/config replacement while the release controller is running."""
 
@@ -838,7 +839,10 @@ def assert_release_reconciliation_idle(
         """
     ).strip()
     try:
-        run_ssh(config, command, capture=True, dry_run=dry_run)
+        run_ssh(
+            config, command, capture=True, dry_run=dry_run,
+            timeout_seconds=timeout_seconds,
+        )
     except subprocess.CalledProcessError as error:
         _raise_reconciliation_busy(error)
 

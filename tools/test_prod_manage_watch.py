@@ -63,6 +63,104 @@ class WatchCliTests(unittest.TestCase):
                 )
 
 
+class ScheduledRefreshWaitTests(unittest.TestCase):
+    def setUp(self):
+        self.now = 0.0
+        self.output = io.StringIO()
+        self.enterContext(redirect_stdout(self.output))
+        self.enterContext(mock.patch.object(manage.time, "monotonic", side_effect=lambda: self.now))
+        self.sleep = self.enterContext(mock.patch.object(manage.time, "sleep", side_effect=self.advance))
+        self.probe = self.enterContext(mock.patch.object(manage.deployment, "assert_release_reconciliation_idle"))
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def busy(self, *, automatic=True, kind="service", progress="Refreshing cycle products for release A"):
+        return manage.deployment.ReleaseReconciliationBusy(
+            kind=kind, active_state="activating", automatic=automatic, progress=progress,
+        )
+
+    def test_idle_returns_without_sleep_or_wait_message(self):
+        manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.sleep.assert_not_called()
+        self.probe.assert_called_once_with({}, dry_run=False, timeout_seconds=30)
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_scheduled_refresh_resumes_and_reports_changing_progress(self):
+        self.probe.side_effect = [self.busy(), self.busy(progress="Switching release channels"), None]
+        manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(10), mock.call(10)])
+        self.assertEqual(self.probe.call_count, 3)
+        self.assertIn("Refreshing cycle products for release A", self.output.getvalue())
+        self.assertIn("Switching release channels", self.output.getvalue())
+        self.assertIn("finished; continuing staging", self.output.getvalue())
+
+    def test_plain_stage_still_fails_fast(self):
+        self.probe.side_effect = self.busy()
+        with self.assertRaisesRegex(manage.ManagementError, "automatic scheduled product refresh"):
+            manage.assert_remote_idle({})
+        self.sleep.assert_not_called()
+        self.probe.assert_called_once_with({}, dry_run=False)
+
+    def test_operator_reconciliation_and_unknown_locks_are_not_retried(self):
+        for error in (self.busy(automatic=False), self.busy(automatic=False, kind="lock")):
+            with self.subTest(error=str(error)):
+                self.probe.side_effect = error
+                with self.assertRaises(manage.ManagementError):
+                    manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.assertEqual(self.probe.call_count, 2)
+        self.sleep.assert_not_called()
+
+    def test_new_operator_reconciliation_is_not_mistaken_for_the_previous_refresh(self):
+        self.probe.side_effect = [self.busy(), self.busy(automatic=False)]
+        with self.assertRaisesRegex(manage.ManagementError, "another production release reconciliation"):
+            manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.sleep.assert_called_once_with(10)
+
+    def test_twenty_minute_timeout_is_bounded_and_preserves_last_progress(self):
+        self.probe.side_effect = self.busy()
+        with self.assertRaisesRegex(manage.ManagementError, "Timed out after 1200s.*staging has not started.*release A"):
+            manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.assertEqual(self.now, 1200)
+        self.assertEqual(self.probe.call_count, 120)
+        self.assertEqual(self.probe.call_args.kwargs["timeout_seconds"], 10)
+        self.assertNotIn("finished; continuing", self.output.getvalue())
+
+    def test_slow_probes_consume_the_same_budget_as_sleep(self):
+        def slow_probe(*_args, **kwargs):
+            self.advance(kwargs["timeout_seconds"])
+            raise self.busy()
+
+        self.probe.side_effect = slow_probe
+        with self.assertRaisesRegex(manage.ManagementError, "Timed out after 1200s"):
+            manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.assertEqual(self.now, 1200)
+        self.assertEqual(self.probe.call_count, 30)
+        self.assertEqual(self.probe.call_args.kwargs["timeout_seconds"], 30)
+
+    def test_status_read_failures_stop_without_retry(self):
+        for error, expected, message in (
+            (subprocess.CalledProcessError(255, "ssh"), subprocess.CalledProcessError, "255"),
+            (subprocess.TimeoutExpired("ssh", 30), manage.ManagementError, "status probe timed out"),
+        ):
+            with self.subTest(error=str(error)):
+                self.probe.side_effect = error
+                with self.assertRaisesRegex(expected, message):
+                    manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.sleep.assert_not_called()
+        self.assertNotIn("continuing staging", self.output.getvalue())
+
+    def test_interrupt_during_probe_or_sleep_propagates_to_cli(self):
+        self.probe.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.probe.side_effect = self.busy()
+        self.sleep.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            manage.assert_remote_idle({}, wait_for_scheduled_refresh=True)
+        self.assertNotIn("finished; continuing", self.output.getvalue())
+
+
 class QualificationWatchTests(unittest.TestCase):
     def setUp(self):
         self.identity = releases.ResolvedTag("2026-09-10.2", "b" * 40, "a" * 40)

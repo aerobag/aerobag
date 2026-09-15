@@ -84,6 +84,8 @@ import {
   deliverAndroidSemanticText,
   semanticDriverActionRequest,
   semanticDriverObservationRequest,
+  semanticDriverObservationUnavailable,
+  queryAndroidExactProjection,
   setAndroidWallClockAndWait,
 } from "./android-harness.mjs";
 import { establishChromeRuntime, prepareWebApp } from "./run-android-chrome-livefeed-e2e.mjs";
@@ -4880,7 +4882,7 @@ test("Android semantic probes cannot create an accessibility traversal herd", ()
   );
   assert.match(service, /semanticRequestMonitor\.notifyAll\(\)/);
   assert.match(harness, /semanticDriverObservationUnavailable\(response\)/);
-  assert.match(harness, /response\.stdout\.includes\("semantic request busy"\)/);
+  assert.match(harness, /\(response\.stdout \?\? ""\)\.includes\("semantic request busy"\)/);
   assert.match(service, /requiresSerializedAccessibility\(endpoint, path\)/);
   assert.match(
     service,
@@ -4927,13 +4929,38 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   assert.equal(requests[0][1], requests[2][1]);
   assert.match(requests[1][1], /^\/await-idle\?/);
 
-  let timeoutRequests = 0;
-  const timedOut = semanticDriverActionRequest(19191, "/tap?bounds=timeout", "POST", () => {
-    timeoutRequests += 1;
-    return { status: 28, stdout: "", stderr: "Operation timed out" };
+  for (const response of [
+    { status: 28, stdout: "", stderr: "Operation timed out" },
+    { status: null, stdout: null, stderr: null, error: Object.assign(new Error("spawnSync curl ETIMEDOUT"), { code: "ETIMEDOUT" }) },
+    { status: null, stdout: "semantic request busy", stderr: "HTTP 503", error: Object.assign(new Error("spawnSync curl ETIMEDOUT"), { code: "ETIMEDOUT" }) },
+  ]) {
+    let timeoutRequests = 0;
+    const timedOut = semanticDriverActionRequest(19191, "/tap?bounds=timeout", "POST", () => {
+      timeoutRequests += 1;
+      return response;
+    });
+    assert.equal(timedOut, response);
+    assert.equal(timeoutRequests, 1, "an ambiguous action timeout must never replay the action");
+  }
+});
+
+test("Android process watchdog timeouts remain bounded observation errors, not missing controls", () => {
+  let code = "ETIMEDOUT";
+  let requests = 0;
+  const query = runInNewContext(`(${queryAndroidExactProjection})`, {
+    URLSearchParams, TransientObservationError, semanticDriverObservationUnavailable,
+    requiredSemanticDriver: () => ({ port: 19191 }),
+    semanticDriverObservationRequest() {
+      requests++;
+      return { status: null, stdout: null, stderr: null,
+        error: Object.assign(new Error(`spawnSync curl ${code}`), { code }) };
+    },
   });
-  assert.equal(timedOut.status, 28);
-  assert.equal(timeoutRequests, 1);
+  assert.throws(() => query("test", "parity:page:home", { providerOnly: true }), TransientObservationError);
+  assert.equal(requests, 1, "indexed observation recovery belongs to the outer deadline");
+  code = "ENOENT";
+  assert.throws(() => query("test", "parity:page:home", { providerOnly: true }), error =>
+    !(error instanceof TransientObservationError) && /ENOENT/.test(error.message));
 });
 
 test("Android semantic observations recover one timed-out read without creating a traversal herd", () => {
@@ -5505,8 +5532,9 @@ test("Android vertical reveals settle semantic scrolling before exposing a targe
     harness.indexOf("export async function findNodeByScrolling"),
   );
   assert.match(settleHelper, /const before = dumpAndroid\(serial\)/);
-  assert.match(settleHelper, /awaitAndroidScrollProjectionSettled\(serial, before\)/);
+  assert.match(settleHelper, /awaitAndroidScrollProjectionSettled\(serial, before, surface\["semantic-path"\]\)/);
   assert.match(settleHelper, /observeChangedValueUntilStable/);
+  assert.match(settleHelper, /valueKey: \(xml\) => androidScrollGeometrySignature\(xml, scrollPath\)/);
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",

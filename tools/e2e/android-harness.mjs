@@ -186,15 +186,19 @@ function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
 }
 
 function semanticDriverRequestTimedOut(response) {
-  return response.status === 28 || response.stderr.includes("Operation timed out");
+  return response.error?.code === "ETIMEDOUT" || response.status === 28 ||
+    (response.stderr ?? "").includes("Operation timed out");
 }
 
 function semanticDriverRequestBusy(response) {
-  return response.stdout.includes("semantic request busy") ||
-    response.stderr.includes("503");
+  // An incomplete response cannot prove that an action was rejected before
+  // delivery, even if part of its output mentions a busy request.
+  if (semanticDriverRequestTimedOut(response)) return false;
+  return (response.stdout ?? "").includes("semantic request busy") ||
+    (response.stderr ?? "").includes("503");
 }
 
-function semanticDriverObservationUnavailable(response) {
+export function semanticDriverObservationUnavailable(response) {
   return semanticDriverRequestTimedOut(response) || semanticDriverRequestBusy(response);
 }
 
@@ -1255,17 +1259,33 @@ export function verticalScrollTargetIsReachable(xml, tag, { prefix = false } = {
 
 export async function scrollAndroidAndAwait(serial, bounds, direction) {
   const before = dumpAndroid(serial);
+  const surface = findNode(before, node => node.scrollable === "true" && node.bounds === bounds);
+  if (!surface?.["semantic-path"]) return false;
   if (!scrollAndroidSemanticNode(serial, bounds, direction)) return false;
-  return awaitAndroidScrollProjectionSettled(serial, before);
+  return awaitAndroidScrollProjectionSettled(serial, before, surface["semantic-path"]);
 }
 
 async function scrollAndroidSemanticSurfaceAndAwait(serial, orientation, direction) {
   const before = dumpAndroid(serial);
+  const surface = orientation === "vertical" ? findVerticalScrollSurface(before) : findHorizontalScrollSurface(before);
+  if (!surface?.["semantic-path"]) return false;
   if (!scrollAndroidSemanticSurface(serial, orientation, direction)) return false;
-  return awaitAndroidScrollProjectionSettled(serial, before);
+  return awaitAndroidScrollProjectionSettled(serial, before, surface["semantic-path"]);
 }
 
-async function awaitAndroidScrollProjectionSettled(serial, before) {
+export function androidScrollGeometrySignature(xml, scrollPath) {
+  // Observe the scrolled collection, not clocks, ETA values, or ownship state
+  // elsewhere in the hierarchy. Interactive identities distinguish recycled
+  // lazy-list rows even when their on-screen geometry is identical.
+  return JSON.stringify(findNodes(xml, node =>
+    node["semantic-path"] === scrollPath || node["semantic-path"]?.startsWith(`${scrollPath}/`),
+  ).map(node => [
+    node["semantic-path"], node.bounds, node.class,
+    node.clickable === "true" ? node["resource-id"] : "",
+  ]));
+}
+
+async function awaitAndroidScrollProjectionSettled(serial, before, scrollPath) {
   try {
     await observeChangedValueUntilStable(
       "Android semantic scroll projection settled",
@@ -1274,6 +1294,7 @@ async function awaitAndroidScrollProjectionSettled(serial, before) {
         initialValue: before,
         timeoutMs: E2E_TIMING.userTransitionDeadlineMs,
         intervalMs: E2E_TIMING.pollIntervalMs,
+        valueKey: (xml) => androidScrollGeometrySignature(xml, scrollPath),
       },
     );
     return true;

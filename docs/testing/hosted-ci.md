@@ -111,6 +111,20 @@ revision and the actual Start/Close mutation envelope with no intervening tick.
 Do not hide that class of missing invalidation by normalizing a journey's toggle
 state or adding delays before the next action.
 
+Observation transport timeouts include both curl's exit 28 and Node's
+`spawnSync` watchdog `ETIMEDOUT`. Classify both as unavailable observations,
+never absent controls, and let the existing outer deadline decide whether
+recovery was timely. A watchdog timeout on an action is still terminal: it may
+already have reached the app and must not be replayed. Missing executables and
+other permanent transport errors must not enter the observation retry path.
+
+Scroll completion observes geometry and interactive row identities within the
+scrolled surface, not equality of the entire accessibility XML. Live ETA/clock
+updates once prevented a successfully scrolled flight-plan list from settling,
+so traversal stopped midway and reported a reachable row missing. Controlled
+tests keep clocks ticking on every read: real scroll geometry must settle, and
+clock changes alone must never count as scroll progress.
+
 Native smoke's package-only server still needs the Rust bulletin validator.
 Its launcher builds that dependency in the checkout-owned shared Cargo target
 before starting the bounded HTTP readiness wait. Retain build/startup logs and

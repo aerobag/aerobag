@@ -111,49 +111,25 @@ class MultiVersionPublicationWorktreeTests(unittest.TestCase):
             ],
         )
 
-    def test_build_ref_runs_the_preserved_revision_binary(self) -> None:
+    def test_build_ref_runs_the_leased_exact_revision_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            worktree = root / "worktree"
-            preprocessor_dir = worktree / publication.PREPROCESSOR_DIR
-            preprocessor_dir.mkdir(parents=True)
-            target = root / "target"
-            source_binary = target / "debug" / "preprocessor-cli"
-            source_binary.parent.mkdir(parents=True)
-            source_binary.write_bytes(b"primary executable")
-            source_binary.chmod(0o755)
-            preserved_binary = root / "preserved" / "preprocessor-cli"
             manifest = root / "product_artifacts.json"
-            manifest.write_text("{}", encoding="utf-8")
-            completed = [
-                subprocess.CompletedProcess(["cargo"], 0, ""),
-                subprocess.CompletedProcess(
-                    [str(preserved_binary)],
-                    0,
-                    f"product_artifacts {manifest}\n",
-                ),
-            ]
-
-            with mock.patch.object(publication, "create_worktree"), mock.patch.object(
-                publication, "run", side_effect=completed
-            ) as run:
+            manifest.write_text("{}")
+            tool = mock.Mock(binary=root / "cached/preprocessor-cli", cwd=root / "cached/resources")
+            cache = mock.Mock(env={"PYTHONDONTWRITEBYTECODE": "1"})
+            cache.ensure.return_value = tool
+            with mock.patch.object(publication, "run", return_value=subprocess.CompletedProcess([], 0, f"product_artifacts {manifest}\n")) as run:
                 built = publication.build_ref(
-                    repo_root=root,
-                    ref="main",
-                    sha="a" * 40,
-                    worktree=worktree,
-                    env={"CARGO_TARGET_DIR": str(target)},
-                    build_root=root / "artifacts",
-                    publish_label="main-aaaaaaaaaaaa",
-                    publish_timestamp="20260817T000000Z",
-                    release=False,
-                    build_args=[],
-                    preserved_binary=preserved_binary,
+                    ref="main", sha="a" * 40,
+                    build_root=root, publish_label="main", publish_timestamp="now",
+                    release=True, build_args=[], tool_cache=cache,
                 )
-
-            self.assertEqual(built.binary, preserved_binary)
-            self.assertEqual(preserved_binary.read_bytes(), b"primary executable")
-            self.assertEqual(run.call_args_list[1].args[0][0], str(preserved_binary))
+            cache.ensure.assert_called_once_with("a" * 40, release=True)
+            self.assertEqual(built.binary, tool.binary)
+            self.assertEqual(run.call_args.args[0][0], str(tool.binary))
+            self.assertEqual(run.call_args.kwargs["cwd"], tool.cwd)
+            self.assertEqual(run.call_args.kwargs["env"], cache.env)
 
     def test_publication_log_records_parseable_task_lifecycle_and_rotates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,7 +185,8 @@ class MultiVersionPublicationWorktreeTests(unittest.TestCase):
             self.assertFalse(abandoned.exists())
             sha = self.git(repo, "rev-parse", "HEAD").stdout.strip()
             checkout = worktree_root / "run-test" / "master"
-            publication.create_worktree(repo, checkout, sha)
+            checkout.parent.mkdir(parents=True)
+            self.git(repo, "worktree", "add", "--detach", str(checkout), sha)
             self.assertEqual(
                 self.git(checkout, "rev-parse", "HEAD").stdout.strip(), sha
             )

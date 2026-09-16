@@ -17,13 +17,16 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[3]
-PREPROCESSOR_DIR = Path("product/preprocessor")
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from preprocessor_tool_cache import ToolCache, CACHE_RELATIVE  # noqa: E402
+
 PRODUCT_ARTIFACTS_RE = re.compile(r"^product_artifacts\s+(.+)$")
 
 
@@ -293,38 +296,21 @@ def remove_abandoned_worktrees(repo_root: Path, worktree_root: Path) -> None:
     prune_worktree_metadata(repo_root)
 
 
-def create_worktree(repo_root: Path, path: Path, sha: str) -> None:
-    if path.exists():
-        raise RuntimeError(f"ephemeral worktree path already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    run(["git", "worktree", "add", "--detach", str(path), sha], cwd=repo_root)
-
-
 def build_ref(
     *,
-    repo_root: Path,
     ref: str,
     sha: str,
-    worktree: Path,
-    env: dict[str, str],
     build_root: Path,
     publish_label: str,
     publish_timestamp: str,
     release: bool,
     build_args: list[str],
-    preserved_binary: Path,
+    tool_cache: ToolCache,
 ) -> BuiltRevision:
-    create_worktree(repo_root, worktree, sha)
-    cargo_command = ["cargo", "build"]
-    if release:
-        cargo_command.append("--release")
-    cargo_command.extend(["-p", "preprocessor-cli"])
-    run(cargo_command, cwd=worktree / PREPROCESSOR_DIR, env=env)
-
-    target_profile = "release" if release else "debug"
-    binary = Path(env["CARGO_TARGET_DIR"]) / target_profile / "preprocessor-cli"
-    preserved_binary.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(binary, preserved_binary)
+    tool = tool_cache.ensure(sha, release=release)
+    preserved_binary = tool.binary
+    worktree = tool.cwd
+    env = tool_cache.env
     command = [
         str(preserved_binary),
         "build-product",
@@ -336,7 +322,7 @@ def build_ref(
         publish_timestamp,
     ]
     command.extend(build_args)
-    result = run(command, cwd=worktree / PREPROCESSOR_DIR, env=env, capture=True)
+    result = run(command, cwd=worktree, env=env, capture=True)
     print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
 
     product_artifacts = None
@@ -417,7 +403,13 @@ def main() -> int:
     )
     worktree_root.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
-    worktree_lock = acquire_worktree_lock(worktree_root)
+    leases = ExitStack()
+    leases.enter_context(acquire_worktree_lock(worktree_root))
+    try:
+        tool_cache = leases.enter_context(ToolCache(build_root / CACHE_RELATIVE, repo_root, target_dir, os.environ))
+    except BaseException:
+        leases.close()
+        raise
     publication_log = PublicationLog(publication_log_path(build_root))
     publication_log.log(
         "begin "
@@ -425,49 +417,37 @@ def main() -> int:
         f"publish_label={','.join(ordered_refs)} scheduler=multi_version_publication "
         f"primary_ref={args.primary_ref} refs={','.join(ordered_refs)}"
     )
-    worktrees: list[Path] = []
     builds: list[BuiltRevision] = []
     current_artifacts_path: Path | None = None
     try:
         try:
             with publication_log.task("publication-prepare"):
                 remove_abandoned_worktrees(repo_root, worktree_root)
-                run_label = f"run-{build_timestamp()}-{os.getpid()}"
-                run_worktree_root = worktree_root / run_label
-                run_worktree_root.mkdir()
-                binary_root = target_dir / "multi-version-binaries" / run_label
-                binary_root.mkdir(parents=True)
 
-            env = os.environ.copy()
-            env["CARGO_TARGET_DIR"] = str(target_dir)
+            env = tool_cache.env
             env.setdefault("AEROBAG_ARTIFACT_WRITE_PATH", str(root))
 
             for ref in ordered_refs:
                 sha = resolve_commit(repo_root, ref)
                 ref_name = safe_ref_name(ref, sha)
-                worktree = run_worktree_root / ref_name
                 timestamp = build_timestamp()
-                worktrees.append(worktree)
                 print(
                     f"building ref={ref} sha={sha} publish_label={ref_name} "
-                    f"publish_timestamp={timestamp} worktree={worktree}",
+                    f"publish_timestamp={timestamp}",
                     flush=True,
                 )
                 with publication_log.task(
                     f"build-ref-{ref_name}", ref=ref, sha=sha
                 ):
                     build = build_ref(
-                        repo_root=repo_root,
                         ref=ref,
                         sha=sha,
-                        worktree=worktree,
-                        env=env,
                         build_root=build_root,
                         publish_label=ref_name,
                         publish_timestamp=timestamp,
                         release=args.release,
                         build_args=args.build_args,
-                        preserved_binary=binary_root / ref_name / "preprocessor-cli",
+                        tool_cache=tool_cache,
                     )
                 builds.append(build)
 
@@ -487,7 +467,7 @@ def main() -> int:
                 ):
                     result = run(
                         merge,
-                        cwd=primary.worktree / PREPROCESSOR_DIR,
+                        cwd=primary.worktree,
                         env=env,
                         capture=True,
                     )
@@ -519,20 +499,14 @@ def main() -> int:
                 ):
                     run(
                         gc,
-                        cwd=primary.worktree / PREPROCESSOR_DIR,
+                        cwd=primary.worktree,
                         env=env,
                         capture=True,
                     )
         finally:
             with publication_log.task("publication-cleanup"):
-                for worktree in reversed(worktrees):
-                    remove_worktree(repo_root, worktree)
-                if "run_worktree_root" in locals() and run_worktree_root.exists():
-                    shutil.rmtree(run_worktree_root)
-                if "binary_root" in locals() and binary_root.exists():
-                    shutil.rmtree(binary_root)
                 prune_worktree_metadata(repo_root)
-                print(f"removed ephemeral worktrees under {worktree_root}", flush=True)
+                print("Version-matched tools retained for reuse", flush=True)
     except BaseException as error:
         publication_log.log(f"complete FAIL error={one_line(error)}")
         raise
@@ -549,7 +523,7 @@ def main() -> int:
         publication_log.log(f"complete PASS {result_name}")
         return 0
     finally:
-        worktree_lock.close()
+        leases.close()
         publication_log.close()
 
 

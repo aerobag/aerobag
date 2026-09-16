@@ -1175,6 +1175,19 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     Ok(lines.join("\n") + "\n")
 }
 
+/// Diagnostic identities exercise the same source/resource paths as real nodes.
+/// This is also the relocation test's checkout-independent execution probe.
+pub(crate) fn tool_source_fingerprints() -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "nav_db": source_fingerprints::nav_kv_builder_fingerprint()?,
+        "terrain_discovery": source_fingerprints::terrain_discovery_builder_fingerprint()?,
+        "vectors": vectors_code_fingerprint()?,
+        "tpp_subgraph": tpp_subgraph_recipe()?,
+        "water_mask_script": hash_file(water_mask_tile_script_path())?,
+        "shaded_relief_script": hash_file(shaded_relief_tile_script_path())?,
+    }))
+}
+
 mod product;
 pub use product::build_product;
 

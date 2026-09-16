@@ -22,6 +22,7 @@ preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }
 preprocessor-procedure-geometry = { path = "../preprocessor-procedure-geometry" }
 preprocessor-resource-index = { path = "../preprocessor-resource-index" }
+preprocessor-resources = { path = "../preprocessor-resources" }
 preprocessor-tpp = { path = "../preprocessor-tpp" }
 preprocessor-tools = { path = "../preprocessor-tools" }
 preprocessor-vectors = { path = "../preprocessor-vectors" }
@@ -42,3 +43,4 @@ tempfile.workspace = true
 
 [build-dependencies]
 sha2.workspace = true
+serde_json.workspace = true

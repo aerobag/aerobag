@@ -19,8 +19,12 @@ pub(super) fn build_source_urls_node(
             .last()
             .context("no published FAA cycles discovered")?,
     };
-    let emit_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/emit_source_urls.rs");
-    let mut inputs = BTreeMap::from([("emit_source".to_string(), hash_file(&emit_source)?)]);
+    let mut inputs = BTreeMap::from([(
+        "emit_source".to_string(),
+        crate::compiled_sources::file(
+            "product/preprocessor/preprocessor-cli/src/emit_source_urls.rs",
+        )?,
+    )]);
     inputs.insert("target_cycle".to_string(), hash_text(&resolved_cycle));
     let shared_root = build_shared_node_dir(config, "source-urls")?;
     let prepared = prepare_node_at(&shared_root, "source-urls", &inputs)?;
@@ -393,12 +397,7 @@ fn single_source_fetch_inputs(
         ),
         (
             "fetch_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-fetch/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-fetch/src/lib.rs")?,
         ),
     ]);
     Ok((inputs, requests))
@@ -462,12 +461,7 @@ pub(super) fn build_chart_package_nodes(
         ("contract_id".to_string(), contract_id.to_string()),
         (
             "chart_package_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-charts/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-charts/src/lib.rs")?,
         ),
     ]);
     let prepared = prepare_node_at(
@@ -869,12 +863,7 @@ pub(super) fn build_csup_package_nodes(
         ("contract_id".to_string(), contract_id.to_string()),
         (
             "csup_package".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-csup/src/package.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-csup/src/package.rs")?,
         ),
     ]);
     for region in Region::ALL.iter() {
@@ -1540,12 +1529,7 @@ fn tpp_fetch_inputs(
         ),
         (
             "fetch_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-fetch/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-fetch/src/lib.rs")?,
         ),
     ]);
     Ok((inputs, requests))
@@ -1974,12 +1958,7 @@ pub(super) fn chart_process_inputs(
         ),
         (
             "chart_render_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-charts/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-charts/src/lib.rs")?,
         ),
     ]))
 }
@@ -1996,12 +1975,7 @@ pub(super) fn csup_process_inputs(
         ),
         (
             "csup_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-csup/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-csup/src/lib.rs")?,
         ),
     ]))
 }
@@ -2022,20 +1996,17 @@ pub(super) fn csup_render_inputs(
         ("version_label".to_string(), version_label.to_string()),
         (
             "csup_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-csup/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-csup/src/lib.rs")?,
         ),
         (
             "png_tools".to_string(),
-            hash_file(preprocessor_tools_src_path("png.rs"))?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-tools/src/png.rs")?,
         ),
         (
             "tool_invocation".to_string(),
-            hash_file(preprocessor_tools_src_path("tool_invocation.rs"))?,
+            crate::compiled_sources::file(
+                "product/preprocessor/preprocessor-tools/src/tool_invocation.rs",
+            )?,
         ),
     ]))
 }
@@ -2060,11 +2031,15 @@ pub(super) fn tpp_plan_inputs(
         ),
         (
             "find_plate_pages_script".to_string(),
-            hash_file(tpp_crate_path().join("scripts/find_plate_pages.py"))?,
+            crate::compiled_sources::file(
+                "product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py",
+            )?,
         ),
         (
             "detect_landscape_rotation_script".to_string(),
-            hash_file(tpp_crate_path().join("scripts/detect_landscape_rotation.py"))?,
+            crate::compiled_sources::file(
+                "product/preprocessor/preprocessor-tpp/scripts/detect_landscape_rotation.py",
+            )?,
         ),
     ]);
     if let Some(fingerprint) = source_content_fingerprint {
@@ -2163,7 +2138,7 @@ fn tpp_package_plan_inputs(
         ),
         (
             "tpp_package".to_string(),
-            hash_file(tpp_crate_path().join("src/package.rs"))?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-tpp/src/package.rs")?,
         ),
     ]))
 }
@@ -2188,7 +2163,9 @@ fn tpp_thumbnail_inputs(
         ),
         (
             "tpp_thumbnail".to_string(),
-            hash_file(tpp_crate_path().join("src/thumbnail.rs"))?,
+            crate::compiled_sources::file(
+                "product/preprocessor/preprocessor-tpp/src/thumbnail.rs",
+            )?,
         ),
     ]))
 }
@@ -2239,26 +2216,9 @@ fn tpp_package_assemble_inputs(
         ),
         (
             "tpp_package".to_string(),
-            hash_file(tpp_crate_path().join("src/package.rs"))?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-tpp/src/package.rs")?,
         ),
     ]))
-}
-
-fn workspace_preprocessor_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("preprocessor-cli should live under workspace root")
-        .to_path_buf()
-}
-
-fn preprocessor_tools_src_path(file_name: &str) -> PathBuf {
-    workspace_preprocessor_path()
-        .join("preprocessor-tools/src")
-        .join(file_name)
-}
-
-fn tpp_crate_path() -> PathBuf {
-    workspace_preprocessor_path().join("preprocessor-tpp")
 }
 
 pub(super) fn build_data_nodes(
@@ -2289,12 +2249,7 @@ pub(super) fn build_data_nodes(
         ("artifact_stem".to_string(), artifact_stem.clone()),
         (
             "data_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-data/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-data/src/lib.rs")?,
         ),
     ]);
     let prepared = prepare_node_at(
@@ -2370,30 +2325,17 @@ pub(super) fn build_data_match_node(
         ("artifact_stem".to_string(), artifact_stem.to_string()),
         (
             "matching_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-data/src/tpp_cifp_matching.rs"),
+            crate::compiled_sources::file(
+                "product/preprocessor/preprocessor-data/src/tpp_cifp_matching.rs",
             )?,
         ),
         (
             "data_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-data/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-data/src/lib.rs")?,
         ),
         (
             "core_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-core/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-core/src/lib.rs")?,
         ),
     ]);
     let mut tpp_zips = Vec::new();
@@ -2608,12 +2550,7 @@ pub(super) fn build_data_input_node(
         ),
         (
             "fetch_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-fetch/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-fetch/src/lib.rs")?,
         ),
     ]);
     let prepared = prepare_node_at(
@@ -2739,21 +2676,13 @@ pub(super) fn build_resource_index_node(
         ("csup_sources".to_string(), hash_text(&csup_json)),
         (
             "resource_index_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-resource-index/src/lib.rs"),
+            crate::compiled_sources::file(
+                "product/preprocessor/preprocessor-resource-index/src/lib.rs",
             )?,
         ),
         (
             "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-tools/src/lib.rs")?,
         ),
     ]);
     let prepared = prepare_node_at(&node_root, "resource-index", &inputs)?;

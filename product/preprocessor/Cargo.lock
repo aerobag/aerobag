@@ -1243,6 +1243,7 @@ dependencies = [
  "preprocessor-live-feeds",
  "preprocessor-procedure-geometry",
  "preprocessor-resource-index",
+ "preprocessor-resources",
  "preprocessor-tools",
  "preprocessor-tpp",
  "preprocessor-vectors",
@@ -1375,6 +1376,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "preprocessor-resources"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "preprocessor-tools"
 version = "0.1.0"
 dependencies = [
@@ -1394,6 +1404,7 @@ dependencies = [
  "preprocessor-core",
  "preprocessor-data",
  "preprocessor-fetch",
+ "preprocessor-resources",
  "preprocessor-tools",
  "roxmltree",
  "serde",

@@ -30,6 +30,7 @@ class RetirementTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.now = datetime(2026, 9, 11, tzinfo=timezone.utc)
         self.instance = controller.Controller.__new__(controller.Controller)
+        self.instance.source_root = self.root / "source"
         self.instance.artifact_root = self.root
         self.instance.args = SimpleNamespace(
             observed=self.root / "state/releases-observed.json",

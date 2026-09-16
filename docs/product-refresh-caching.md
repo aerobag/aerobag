@@ -47,37 +47,46 @@ Rendering depends on the quality fingerprint and publication decision. Build
 manifests retain the quality node for GC. Monitoring receives an atomic, bounded
 copy of review evidence, not symlinks outside the HTTP handler's permitted tree.
 
-## Proposed: relocatable per-build preprocessor tools
+## Implemented: per-build preprocessor tools
 
-Not implemented in this change. The multi-version coordinator still builds in
-ephemeral worktrees. Merely preserving its executable is unsafe: runtime code
-uses the baked-in `CARGO_MANIFEST_DIR` to hash sources and locate Python scripts
-and chart metadata after that directory has been removed.
+The coordinator and periodic production controller use
+`tools/preprocessor_tool_cache.py`. Tools live under
+`<artifact_root>/preprocessor-tools/entries/<build-identity>/`, outside the
+prunable shared Cargo target directory. The identity pins the exact source commit,
+Rust/Cargo versions, profile, external Cargo configuration and relevant compiler
+environment. Toolchain selection comes from that historical commit, with the
+same external configuration ancestry as its build. Cold entries build through
+the shared dependency target; validated
+warm entries skip Cargo compilation entirely.
 
-Recommended boundary:
+New preprocessors hash source code at compile time using repo-relative identities.
+Cargo dependencies include source directories, so added/deleted files invalidate
+the fingerprints too. Runtime code never reopens Rust source to identify itself.
+The `preprocessor-resources` crate builds a version-matched resource manifest and
+copy of chart metadata and Python scripts. Installed tools carry `resources/`
+beside their executable. Local Cargo builds use a copy in Cargo's build output,
+not the source checkout. Explicit `AEROBAG_PREPROCESSOR_RESOURCE_ROOT` overrides
+are validated against the binary's embedded manifest digest; release coordination
+clears inherited overrides. Intentional chart-metadata experiments can still use
+`--chart-metadata-root`.
 
-1. Compute source fingerprints at compile time, with repo-relative identities
-   and explicit Cargo rebuild dependencies. Runtime code must not reopen Rust
-   source files to identify the code it is executing.
-2. Package runtime scripts and authored chart metadata in an immutable, explicit
-   resource bundle alongside the binary. Resolve this bundle by a declared tool
-   root, not the working directory or a search for an arbitrary live checkout.
-3. Cache the binary and matching resource manifest as one validated build
-   identity: exact source commit, toolchain/target/profile, relevant build flags
-   and resource digests. Reuse an intact entry without invoking Cargo; retain the
-   shared dependency target directory for real misses. Reject partial entries.
-4. Retain tool entries for active release intents and in-progress builds; remove
-   unreferenced entries through bounded ownership-aware GC. Do not create another
-   indefinitely retained per-release Cargo target directory.
-5. Test relocation by building the bundle, making the original checkout
-   inaccessible, and running fingerprint/script/metadata-dependent commands from
-   an unrelated directory. Include corruption, build-identity changes, concurrent
-   creation and retirement tests.
+A new entry is committed only after its binary and resources verify. Warm lookups
+verify their content digests. The source checkout is removed for bundle-capable
+producers. Historical producers keep an exact, clean, stable checkout alongside
+the cached executable, because their existing runtime source lookups cannot be
+changed retroactively. They also benefit from skipping repeated compilation.
+No newer executable is substituted for an older release.
 
-Already-published producer revisions cannot gain this architecture retroactively.
-They need the existing checkout-backed execution until retired, or an explicitly
-retained, stable build-identity checkout. Do not silently run current producer
-code on behalf of an old release.
+The cache lock covers building and executing product tools. The controller takes
+an additional per-entry execution lease. Retirement maintenance uses the same
+locks, retains the most recently used tool identity for every desired/serving/
+rollback/draining release plus the controller commit, and removes unreferenced
+entries after a 24-hour grace period. Old compiler variants are also collected.
+Unknown/unowned directories and symlinks are never deletion authority. New release
+artifacts include their preprocessor's resources as well.
+
+Periodic refreshes no longer reinstall SDKs or run toolchain setup; deployment
+reconciliation still installs those prerequisites. There is no new daemon/timer.
 
 ## Validation and rollout
 
@@ -88,9 +97,24 @@ Chart fixtures exercise real GDAL comparisons, moved-sheet quarantine, explicit
 reapproval, render/package propagation, repeated-hit reuse, interrupted attempts,
 atomic evidence copying and bounded retention.
 
+Tool-cache unit tests cover warm reuse, corrupt binaries/resources, changed legacy
+checkouts, profile/flag identities, failed creation, concurrent leases, and GC.
+The explicit native relocation check snapshots the working tree into a disposable
+repository, builds a real tool, removes its compilation checkout, verifies an
+actual warm hit, relocates it again, compares node fingerprints, executes bundled
+TPP scripts on a tiny PDF and loads terrain scripts, then checks corruption refusal:
+
+```sh
+python3 tools/ci/check_preprocessor_relocation.py --target /path/to/shared/cargo-target
+```
+
+It needs normal preprocessor tool dependencies, but no FAA downloads or full
+product build. It is separate from the cheap working-tree checks.
+
 These Rust changes take effect in a newly built producer release; reconciling a
 controller does not retrofit old producer binaries. The first run populates the
 new parent and quality nodes (and quality-keyed render nodes); subsequent refreshes
-get the savings. Production wall time has not yet been measured. Compare warm
-refresh logs for the same release and unchanged inputs before setting a new
-latency expectation.
+get the savings. Observed production `.15.6` warm runs scheduled 156 tasks and took
+47–61 seconds (excluding compilation), while retained older producers still
+expanded 91,334 tasks. These measurements predate the per-build tool cache; its
+production wall time still needs measurement after deployment.

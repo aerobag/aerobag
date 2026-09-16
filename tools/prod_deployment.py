@@ -59,6 +59,7 @@ RUNTIME_SOURCE_PATHS = (
     "tools/build_release.py",
     "tools/admin_index.py",
     "tools/publish_notices.py",
+    "tools/preprocessor_tool_cache.py",
     "crates/product-contracts/src/service_bulletins.rs",
     "crates/product-contracts/src/bin/service-bulletin-contract.rs",
     "tools/live_feed_contract.py",
@@ -1149,14 +1150,19 @@ progress_tmp="$PROGRESS_FILE.$$"
 printf '%s\n' 'Preparing release tooling' > "$progress_tmp"
 mv "$progress_tmp" "$PROGRESS_FILE"
 
-/usr/local/bin/aerobag-ensure-toolchain
-
-# Historical release builds share Cargo's target cache and may replace its
-# top-level binary. Pin the controller tool before entering the reconciler.
+# Toolchains and runtime dependencies are installed by reconciliation. A periodic
+# refresh only needs the exact controller tool, not SDK/rustup setup or Cargo hits.
 CONTROLLER_REV="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
 CONTROLLER_TOOL_ROOT="$ARTIFACT_ROOT/release-controller/$CONTROLLER_REV"
 mkdir -p "$CONTROLLER_TOOL_ROOT"
-install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" "$CONTROLLER_TOOL_ROOT/preprocessor-cli"
+python3 "$SOURCE_ROOT/tools/preprocessor_tool_cache.py" \\
+  --repo "$SOURCE_ROOT" --root "$ARTIFACT_ROOT/preprocessor-tools" \\
+  --target "$CARGO_TARGET_DIR" --ref "$CONTROLLER_REV" --release \\
+  --path-output "$CONTROLLER_TOOL_ROOT/preprocessor-path"
+CONTROLLER_PREPROCESSOR="$(<"$CONTROLLER_TOOL_ROOT/preprocessor-path")"
+# Keep runtime resources alive through the whole controller invocation.
+exec 9>"$(dirname "$CONTROLLER_PREPROCESSOR")/use.lock"
+flock -s 9
 
 force_args=()
 if [ -n "${{AEROBAG_FORCE_PRODUCTION_TAG:-}}" ]; then
@@ -1171,7 +1177,7 @@ fi
   --service-root "$DATA_ROOT/service" \\
   --public-origin {shell_quote(config['service_public_base_url'])} \\
   --cargo-target-dir "$CARGO_TARGET_DIR" \\
-  --controller-preprocessor "$CONTROLLER_TOOL_ROOT/preprocessor-cli" \\
+  --controller-preprocessor "$CONTROLLER_PREPROCESSOR" \\
   --ui-target-root "$AEROBAG_UI_TARGET_ROOT" \\
   --live-port-base {config['release_live_port_base']} \\
   --legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev" \\

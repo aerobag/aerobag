@@ -146,29 +146,11 @@ pub(super) fn scoped_scratch_dir(
     anyhow::bail!("failed to allocate scratch dir under {}", root.display())
 }
 
-pub(super) fn preprocessor_workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("preprocessor-cli should live under workspace root")
-        .to_path_buf()
-}
-
-pub(super) fn repo_root_from_preprocessor_workspace() -> PathBuf {
-    preprocessor_workspace_root()
-        .parent()
-        .expect("preprocessor workspace should live under product/")
-        .parent()
-        .expect("product should live under repo root")
-        .to_path_buf()
-}
-
 pub(super) fn vectors_code_fingerprint() -> anyhow::Result<String> {
-    let workspace_root = preprocessor_workspace_root();
-    let repo_root = repo_root_from_preprocessor_workspace();
     let inputs = serde_json::json!({
-        "preprocessor_core": hash_tree(&workspace_root.join("preprocessor-core"))?,
-        "preprocessor_vectors": hash_tree(&workspace_root.join("preprocessor-vectors"))?,
-        "airspace_geometry": hash_tree(&repo_root.join("crates/airspace-geometry"))?,
+        "preprocessor_core": crate::compiled_sources::tree("product/preprocessor/preprocessor-core")?,
+        "preprocessor_vectors": crate::compiled_sources::tree("product/preprocessor/preprocessor-vectors")?,
+        "airspace_geometry": crate::compiled_sources::tree("crates/airspace-geometry")?,
     });
     Ok(hash_text(
         &serde_json::to_string(&inputs).context("vectors code fingerprint json")?,

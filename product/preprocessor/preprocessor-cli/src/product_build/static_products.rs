@@ -735,12 +735,7 @@ pub(super) fn build_world_basemap_source_node(
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
         (
             "fetch_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-fetch/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-fetch/src/lib.rs")?,
         ),
         (
             "source_node_version".to_string(),
@@ -1226,12 +1221,7 @@ pub(super) fn prepare_shaded_relief_overlay_sources(
         ("fetch_jobs".to_string(), config.fetch_jobs.to_string()),
         (
             "fetch_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-fetch/src/lib.rs"),
-            )?,
+            crate::compiled_sources::file("product/preprocessor/preprocessor-fetch/src/lib.rs")?,
         ),
         (
             "source_node_version".to_string(),
@@ -3087,15 +3077,15 @@ fn build_shaded_relief_region_tiles(input: ShadedReliefRegionTilesInput<'_>) -> 
 }
 
 pub(super) fn shaded_relief_tile_script_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("build_shaded_relief_tiles.py")
+    preprocessor_resources::path(
+        "product/preprocessor/preprocessor-cli/scripts/build_shaded_relief_tiles.py",
+    )
 }
 
 pub(super) fn water_mask_tile_script_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("build_water_mask_tiles.py")
+    preprocessor_resources::path(
+        "product/preprocessor/preprocessor-cli/scripts/build_water_mask_tiles.py",
+    )
 }
 
 pub(super) fn zip_directory_deterministic(

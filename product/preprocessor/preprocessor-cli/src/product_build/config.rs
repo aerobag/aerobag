@@ -6,19 +6,8 @@ use super::*;
 
 impl ProductBuildConfig {
     pub fn from_env_and_args(args: &[String]) -> anyhow::Result<Self> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("preprocessor-cli crate should live under the workspace root")
-            .to_path_buf();
-        let repo_root = workspace_root
-            .parent()
-            .expect("workspace root should live under product/")
-            .parent()
-            .expect("product should live under the repo root")
-            .to_path_buf();
-        let mut build_root = default_artifact_write_path(&repo_root);
-
-        let mut chart_metadata_root = repo_root.join("product").join("chart-metadata");
+        let mut build_root = None;
+        let mut chart_metadata_root = preprocessor_resources::path("product/chart-metadata");
         let mut publish_label = env::var("AEROBAG_PUBLISH_LABEL")
             .ok()
             .map(|value| parse_publish_component("AEROBAG_PUBLISH_LABEL", value))
@@ -45,10 +34,10 @@ impl ProductBuildConfig {
                     index += 2;
                 }
                 "--build-root" => {
-                    build_root = PathBuf::from(
+                    build_root = Some(PathBuf::from(
                         args.get(index + 1)
                             .context("missing value for --build-root")?,
-                    );
+                    ));
                     index += 2;
                 }
                 "--publish-label" => {
@@ -115,6 +104,9 @@ impl ProductBuildConfig {
             }
         }
 
+        let build_root = build_root.unwrap_or_else(|| {
+            default_artifact_write_path(&env::current_dir().expect("current directory"))
+        });
         let publish_label = publish_label.unwrap_or_else(|| "local".to_string());
         let publish_dir = build_root
             .join("published")

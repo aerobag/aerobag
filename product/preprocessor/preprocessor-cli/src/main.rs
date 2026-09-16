@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::Context;
 use chrono::{DateTime, NaiveDate, Utc};
+mod compiled_sources;
 mod emit_source_urls;
 mod product_build;
 use preprocessor_charts::{
@@ -97,94 +98,6 @@ fn long_usage() -> &'static str {
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
-fn collect_workspace_hash_inputs(root: &Path) -> Vec<PathBuf> {
-    fn walk(root: &Path, path: &Path, files: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(path) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let child = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if child
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == "target" || name == ".git")
-                {
-                    continue;
-                }
-                walk(root, &child, files);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            let include = child
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "rs")
-                || child
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == "Cargo.toml" || name == "Cargo.lock");
-            if include {
-                files.push(
-                    child
-                        .strip_prefix(root)
-                        .expect("hashed file should live under workspace root")
-                        .to_path_buf(),
-                );
-            }
-        }
-    }
-
-    let mut files = Vec::new();
-    walk(root, root, &mut files);
-    files.sort();
-    files
-}
-
-fn hash_preprocessor_workspace(root: &Path) -> anyhow::Result<String> {
-    let mut hasher = Sha256::new();
-    for relative in collect_workspace_hash_inputs(root) {
-        hasher.update(relative.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(
-            fs::read(root.join(&relative))
-                .with_context(|| format!("failed to read {}", root.join(&relative).display()))?,
-        );
-        hasher.update([0xff]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn ensure_binary_matches_workspace() -> anyhow::Result<()> {
-    let expected = env!("PREPROCESSOR_WORKSPACE_HASH");
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("preprocessor-cli should live under workspace root")
-        .to_path_buf();
-    if !workspace_root.exists() {
-        return Ok(());
-    }
-    let actual = hash_preprocessor_workspace(&workspace_root)?;
-    if actual == expected {
-        return Ok(());
-    }
-    let binary = env::current_exe()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    anyhow::bail!(
-        "binary/source mismatch: {} was built from workspace hash {} but current source tree is {}; rebuild preprocessor-cli from {} before running mutating commands",
-        binary,
-        expected,
-        actual,
-        workspace_root.display()
-    );
-}
-
 fn obstacle_snapshot_label(value: &str) -> anyhow::Result<String> {
     Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .with_context(|| format!("failed to parse obstacle snapshot date {value}"))?
@@ -202,18 +115,6 @@ fn fetch_cache_config_from_root(root: PathBuf) -> anyhow::Result<FetchCacheConfi
 }
 
 fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("preprocessor-cli crate should live under the workspace root")
-        .to_path_buf();
-    let repo_root = workspace_root
-        .parent()
-        .expect("workspace root should live under product/")
-        .parent()
-        .expect("product should live under the repo root")
-        .to_path_buf();
-    let artifact_root = default_artifact_write_path(&repo_root);
-
     let mut build_root = None;
     let mut fetch_jobs = 4_usize;
     let mut snapshot_date = env::var("AEROBAG_OBSTACLE_SNAPSHOT_DATE").ok();
@@ -254,7 +155,7 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
             .unwrap_or(&Utc::now().format("%Y-%m-%d").to_string()),
     )?;
     let build_root = build_root.unwrap_or_else(|| {
-        artifact_root
+        default_artifact_write_path(&env::current_dir().expect("current directory"))
             .join("cache")
             .join("obstacles")
             .join(&snapshot_label)
@@ -270,7 +171,11 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
 
     let fetch_cache_root = env::var("FETCH_CACHE_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| artifact_root.join("cache").join("fetch"));
+        .unwrap_or_else(|_| {
+            default_artifact_write_path(&env::current_dir().expect("current directory"))
+                .join("cache")
+                .join("fetch")
+        });
     let fetch_cache = fetch_cache_config_from_root(fetch_cache_root)?;
 
     let work_dir = build_root.join("work");
@@ -1855,10 +1760,22 @@ fn main() -> anyhow::Result<()> {
                 | "run-chart"
         )
     ) {
-        ensure_binary_matches_workspace()?;
+        preprocessor_resources::validate(&preprocessor_resources::root())?;
     }
 
     match args.get(1).map(String::as_str) {
+        Some("verify-tool-bundle") => {
+            preprocessor_resources::validate(&preprocessor_resources::root())?;
+            println!("{}", product_build::tool_source_fingerprints()?);
+        }
+        Some("tool-bundle-info") => {
+            let root = preprocessor_resources::root();
+            preprocessor_resources::validate(&root)?;
+            println!(
+                "{}",
+                serde_json::json!({"schema_version": 1, "resource_root": root, "resource_sha256": preprocessor_resources::DIGEST})
+            );
+        }
         Some("print-cache-layout") => {
             if args.get(2).map(String::as_str) != Some("--cache-root")
                 || args.get(4).map(String::as_str) != Some("--url")
@@ -1907,15 +1824,7 @@ fn main() -> anyhow::Result<()> {
             compare_provenance(&left_provenance_dir, &right_provenance_dir)?;
         }
         Some("audit-cifp-tpp-matching") => {
-            let mut artifact_root = default_artifact_write_path(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli crate should live under workspace")
-                    .parent()
-                    .expect("workspace should live under product")
-                    .parent()
-                    .expect("product should live under repo root"),
-            );
+            let mut artifact_root = default_artifact_write_path(&env::current_dir()?);
             let mut bundle = None;
             let mut limit = 20_usize;
             let mut index = 2;

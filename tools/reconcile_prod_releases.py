@@ -31,6 +31,7 @@ import release_reconciler as releases  # noqa: E402
 import release_retirement as retirement  # noqa: E402
 import live_feed_launch  # noqa: E402
 import live_feed_retirement  # noqa: E402
+import preprocessor_tool_cache  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -484,6 +485,13 @@ class Controller:
         ]))
         protected.update(instance.release_tag for instance in self.observed.live_feed_instances.values()
                          if instance.status in {"running", "unavailable"})
+        tool_commits = {record.commit for tag, record in self.observed.releases.items()
+                        if tag in protected}
+        tool_commits.add(self.observed.desired_commit)
+        preprocessor_tool_cache.collect_retired_tools(
+            self.artifact_root / preprocessor_tool_cache.CACHE_RELATIVE,
+            self.source_root, tool_commits, now=now.timestamp(),
+        )
         self.stop_completed_drains(protected_tags=protected, now=now)
         candidates = []
         recovered_drain = False

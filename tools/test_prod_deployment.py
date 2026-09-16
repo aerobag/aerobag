@@ -148,14 +148,15 @@ class ProductPublicationTests(unittest.TestCase):
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         script = deploy_prod.build_product_script(config)
 
-        self.assertIn(
-            'install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" '
-            '"$CONTROLLER_TOOL_ROOT/preprocessor-cli"',
-            script,
-        )
+        self.assertIn('python3 "$SOURCE_ROOT/tools/preprocessor_tool_cache.py"', script)
+        self.assertIn('--root "$ARTIFACT_ROOT/preprocessor-tools"', script)
+        self.assertIn('--ref "$CONTROLLER_REV" --release', script)
+        self.assertIn('flock -s 9', script)
+        self.assertNotIn("aerobag-ensure-toolchain", script)
+        self.assertNotIn('install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli"', script)
         self.assertIn("tools/reconcile_prod_releases.py", script)
         self.assertIn(
-            '--controller-preprocessor "$CONTROLLER_TOOL_ROOT/preprocessor-cli"',
+            '--controller-preprocessor "$CONTROLLER_PREPROCESSOR"',
             script,
         )
         self.assertIn("--desired \"$SOURCE_ROOT/deploy/releases.json\"", script)
@@ -171,7 +172,7 @@ class ProductPublicationTests(unittest.TestCase):
         self.assertNotIn("build_multi_version_publication.py", script)
         self.assertLess(
             script.index("Preparing release tooling"),
-            script.index("/usr/local/bin/aerobag-ensure-toolchain"),
+            script.index("tools/preprocessor_tool_cache.py"),
         )
         self.assertLess(
             script.index('"$SOURCE_ROOT/tools/reconcile_prod_releases.py"'),

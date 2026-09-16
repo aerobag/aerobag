@@ -15,6 +15,7 @@ preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-data = { path = "../preprocessor-data" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-tools = { path = "../preprocessor-tools" }
+preprocessor-resources = { path = "../preprocessor-resources" }
 
 [dev-dependencies]
 tempfile.workspace = true

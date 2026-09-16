@@ -1813,44 +1813,23 @@ fn find_plate_pages_by_airport(
 }
 
 fn find_plate_pages_script() -> anyhow::Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut candidates = vec![manifest_dir.join("scripts").join("find_plate_pages.py")];
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        for ancestor in current_exe.ancestors() {
-            candidates.push(
-                ancestor.join("product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py"),
-            );
-        }
+    let path = preprocessor_resources::path(
+        "product/preprocessor/preprocessor-tpp/scripts/find_plate_pages.py",
+    );
+    if !path.is_file() {
+        bail!("missing bundled script {}", path.display());
     }
-
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    bail!("could not locate find_plate_pages.py in any known workspace layout")
+    Ok(path)
 }
 
 fn detect_landscape_rotation_script() -> anyhow::Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut candidates = vec![manifest_dir
-        .join("scripts")
-        .join("detect_landscape_rotation.py")];
-    if let Ok(current_exe) = std::env::current_exe() {
-        for ancestor in current_exe.ancestors() {
-            candidates.push(ancestor.join(
-                "product/preprocessor/preprocessor-tpp/scripts/detect_landscape_rotation.py",
-            ));
-        }
+    let path = preprocessor_resources::path(
+        "product/preprocessor/preprocessor-tpp/scripts/detect_landscape_rotation.py",
+    );
+    if !path.is_file() {
+        bail!("missing bundled script {}", path.display());
     }
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    bail!("could not locate detect_landscape_rotation.py in any known workspace layout")
+    Ok(path)
 }
 
 fn read_gdalinfo(path: &Path) -> anyhow::Result<String> {
@@ -2136,12 +2115,9 @@ fn minimum_plate_fingerprint(
 }
 
 fn preprocessor_tools_source_hash() -> anyhow::Result<String> {
-    hash_file(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("preprocessor-tpp crate should live under workspace root")?
-            .join("preprocessor-tools/src/lib.rs"),
-    )
+    Ok(preprocessor_fetch::hash_text(include_str!(
+        "../../preprocessor-tools/src/lib.rs"
+    )))
 }
 
 fn hash_fingerprint_components(parts: &[&str]) -> String {

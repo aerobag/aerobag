@@ -2,14 +2,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Context;
-use preprocessor_fetch::hash_file;
 use sha2::{Digest, Sha256};
 
 fn crate_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+    PathBuf::from("product/preprocessor/preprocessor-cli")
 }
 
 fn workspace_root() -> PathBuf {
@@ -30,25 +31,18 @@ fn repo_root() -> PathBuf {
 
 fn hash_sources(label: &str, paths: &[PathBuf]) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
-    let repo_root = repo_root();
     hasher.update(label.as_bytes());
     hasher.update([0xff]);
     for path in paths {
-        let source_identity = source_hash_identity(path, &repo_root);
+        let source_identity = path;
         hasher.update(source_identity.to_string_lossy().as_bytes());
         hasher.update([0]);
         hasher.update(
-            hash_file(path)
-                .with_context(|| format!("failed to hash source {}", path.display()))?
-                .as_bytes(),
+            crate::compiled_sources::file(path.to_str().context("source identity")?)?.as_bytes(),
         );
         hasher.update([0xff]);
     }
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn source_hash_identity<'a>(path: &'a Path, repo_root: &'a Path) -> &'a Path {
-    path.strip_prefix(repo_root).unwrap_or(path)
 }
 
 fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
@@ -118,7 +112,7 @@ mod tests {
             .chain(terrain_discovery_builder_source_paths())
         {
             assert!(
-                path.is_file(),
+                crate::compiled_sources::file(path.to_str().unwrap()).is_ok(),
                 "missing builder fingerprint source {}",
                 path.display()
             );
@@ -135,7 +129,7 @@ mod tests {
     fn builder_source_hash_uses_repo_relative_paths() {
         let path = crate_root().join("src/product_build/nav_db.rs");
         assert_eq!(
-            source_hash_identity(&path, &repo_root()),
+            path,
             Path::new("product/preprocessor/preprocessor-cli/src/product_build/nav_db.rs")
         );
     }

@@ -69,7 +69,7 @@ pub(super) fn tpp_subgraph_inputs(
     Ok(inputs)
 }
 
-fn tpp_subgraph_recipe() -> anyhow::Result<String> {
+pub(super) fn tpp_subgraph_recipe() -> anyhow::Result<String> {
     static RECIPE: OnceLock<Result<String, String>> = OnceLock::new();
     RECIPE
         .get_or_init(|| compute_tpp_subgraph_recipe().map_err(|e| format!("{e:#}")))
@@ -80,7 +80,7 @@ fn tpp_subgraph_recipe() -> anyhow::Result<String> {
 fn compute_tpp_subgraph_recipe() -> anyhow::Result<String> {
     // Cover descendants' implementation, not just the planner's recipe.
     // A recipe miss still reuses every unchanged fine-grained child.
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workspace = preprocessor_resources::path("product/preprocessor");
     let mut inputs = vec![
         hash_text(include_str!("cycle_nodes.rs")),
         hash_text(include_str!("cycle.rs")),
@@ -96,7 +96,9 @@ fn compute_tpp_subgraph_recipe() -> anyhow::Result<String> {
         "preprocessor-core",
         "preprocessor-zip",
     ] {
-        inputs.push(hash_tree(&workspace.join(name).join("src"))?);
+        inputs.push(crate::compiled_sources::tree(&format!(
+            "product/preprocessor/{name}/src"
+        ))?);
     }
     inputs.push(tpp_script_fingerprint(
         &workspace.join("preprocessor-tpp/scripts"),

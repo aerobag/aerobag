@@ -346,6 +346,13 @@ def build_release(args: argparse.Namespace) -> Path:
         shutil.copy2(live_binary, binary_dir / live_binary.name)
         preprocessor_binary = args.cargo_target_dir.resolve() / "release/preprocessor-cli"
         shutil.copy2(preprocessor_binary, binary_dir / preprocessor_binary.name)
+        # New tools are relocatable; do not ship a binary whose resources still
+        # point into the disposable build checkout or the prunable Cargo target.
+        import preprocessor_tool_cache
+        if (repo_root / preprocessor_tool_cache.RESOURCE_CRATE).is_file():
+            resource_env = dict(env, PYTHONDONTWRITEBYTECODE="1")
+            resource_env.pop("AEROBAG_PREPROCESSOR_RESOURCE_ROOT", None)
+            preprocessor_tool_cache.install_resources(binary_dir / preprocessor_binary.name, repo_root, resource_env)
         live_feed_inventory = copy_live_feed_inventory(repo_root, temporary_root)
 
         _run(["npm", "run", "install:wasm-opt"], cwd=repo_root / "ui/web-app", env=env)

@@ -1002,14 +1002,28 @@ async function flightPlanEditAndNavigate(runtime) {
   runtime.check("plan.direct-to", Boolean(directState));
   const stopped = await runtime.action("stop navigation", "stop_navigation", {
     complete: async () => {
-      const control = await planControl(runtime, "stop_navigation");
-      return control && !control.enabled ? control : null;
+      return await planControl(runtime, "start_navigation");
     },
   });
   runtime.check("plan.stop-navigation", Boolean(stopped));
 
   await planAction(runtime, "KPAE", "activate_leg");
 
+  await runtime.action("stop activated leg", "stop_navigation", {
+    complete: () => planControl(runtime, "start_navigation"),
+  });
+  await enabledPlanControl(runtime, "start_navigation");
+  await runtime.action("start navigation from position", "start_navigation", {
+    complete: async () => {
+      const control = await planControl(runtime, "stop_navigation");
+      return control?.enabled ? control : null;
+    },
+  });
+  runtime.check("plan.start-navigation", Boolean(await enabledPlanControl(runtime, "stop_navigation")));
+
+  // START follows the current simulated position, which can be on a later leg.
+  // NEXT has its own fixture: activate the earlier leg with successors again.
+  await planAction(runtime, "KPAE", "activate_leg");
   const beforeNext = await planState(runtime);
   await runtime.action("activate next leg", "activate_next_leg", {
     complete: async () => {

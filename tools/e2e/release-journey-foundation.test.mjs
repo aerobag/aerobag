@@ -5528,6 +5528,14 @@ test("Android semantic lookup prefers an exact action over an earlier prefix mat
 });
 
 test("Android semantic aliases map shared flight-plan controls to core enum ids", () => {
+  const ids = JSON.parse(readFileSync(new URL(
+    "../../ui/core-rust/schemas/session-page-wire.schema.json", import.meta.url,
+  ), "utf8")).$defs.FlightPlanControlId.enum;
+  for (const id of ids) {
+    const kotlinName = id.split("_").map((word) => word[0].toUpperCase() + word.slice(1)).join("");
+    assert.equal(androidSemanticTag(`plan-control:${id}`), `parity:plan-control:${kotlinName}`);
+    assert.deepEqual(androidActionCandidates(id), [`parity:plan-control:${kotlinName}`]);
+  }
   assert.equal(
     androidSemanticTag("plan-control:stop_navigation"),
     "parity:plan-control:StopNavigation",

@@ -63,6 +63,7 @@ describe("flight plan layout CSS", () => {
       "redo",
       "activate_next_leg",
       "stop_navigation",
+      "start_navigation",
       "toggle_sequencing_suspension",
       "restore_direct_to",
     ];

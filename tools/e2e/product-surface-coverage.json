@@ -45,6 +45,7 @@
       "activate_next_leg": "plan.activate-next-leg",
       "redo": "plan.redo",
       "restore_direct_to": "plan.restore-direct-to",
+      "start_navigation": "plan.start-navigation",
       "stop_navigation": "plan.stop-navigation",
       "toggle_sequencing_suspension": "plan.suspend-sequencing",
       "undo": "plan.undo"

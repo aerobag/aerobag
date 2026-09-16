@@ -26,7 +26,7 @@ export type UiNavigationPageState = {
   options: UiNavigationPageOption[];
 };
 
-export type FlightPlanControlId = "activate_next_leg" | "redo" | "restore_direct_to" | "stop_navigation" | "toggle_sequencing_suspension" | "undo";
+export type FlightPlanControlId = "activate_next_leg" | "redo" | "restore_direct_to" | "start_navigation" | "stop_navigation" | "toggle_sequencing_suspension" | "undo";
 
 export type FlightPlanControlUiView = {
   disabled_reason?: string | null;

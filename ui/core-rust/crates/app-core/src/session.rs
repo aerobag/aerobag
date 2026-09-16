@@ -4279,6 +4279,7 @@ fn perform_flight_plan_control_in_session(
         crate::FlightPlanControlId::ActivateNextLeg => activate_next_leg_in_session(handle),
         crate::FlightPlanControlId::Redo => redo_flight_plan_edit_in_session(handle),
         crate::FlightPlanControlId::RestoreDirectTo => restore_direct_to_in_session(handle),
+        crate::FlightPlanControlId::StartNavigation => start_navigation_in_session(handle),
         crate::FlightPlanControlId::StopNavigation => stop_navigation_in_session(handle),
         crate::FlightPlanControlId::ToggleSequencingSuspension => {
             toggle_sequencing_suspension_in_session(handle)
@@ -4857,7 +4858,7 @@ pub fn perform_flight_plan_column_action_in_session(
 }
 
 pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_navigation_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller, _| {
         controller.plan_after_activate_next_leg()
     })
 }
@@ -4871,27 +4872,38 @@ pub(crate) fn redo_flight_plan_edit_in_session(handle: u32) -> AppResult<HadOper
 }
 
 pub(crate) fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_navigation_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller, _| {
         controller.plan_after_stop_navigation()
+    })
+}
+
+fn start_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    mutate_session_navigation_controller(handle, |controller, input| {
+        controller.plan_after_start_navigation(input)
     })
 }
 
 pub(crate) fn toggle_sequencing_suspension_in_session(
     handle: u32,
 ) -> AppResult<HadOperationOutcome> {
-    mutate_session_navigation_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller, _| {
         controller.plan_after_toggle_sequencing_suspension()
     })
 }
 
 fn mutate_session_navigation_controller(
     handle: u32,
-    mutation: impl FnOnce(&FlightPlanController) -> AppResult<FlightPlan>,
+    mutation: impl FnOnce(
+        &FlightPlanController,
+        crate::navigation_start::NavigationStartInput,
+    ) -> AppResult<FlightPlan>,
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let next_plan = mutation(&session.flight_plan)?;
+    let input =
+        crate::navigation_start::NavigationStartInput::from(&session.situation.ownship().render);
+    let next_plan = mutation(&session.flight_plan, input)?;
     commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
 }
 
@@ -13462,6 +13474,7 @@ fn project_session_app_ui_state(
         FlightPlanProjectionInputs {
             ownship_position: situation_projection.ownship.render.position,
             ownship_speed_kt: situation_projection.ownship.render.speed_kt,
+            ownship_track_deg_true: situation_projection.ownship.render.track_deg_true,
             ownship_altitude_ft: situation_projection
                 .ownship
                 .render
@@ -17215,7 +17228,7 @@ mod tests {
     }
 
     fn manually_sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-        mutate_session_navigation_controller(handle, |controller| {
+        mutate_session_navigation_controller(handle, |controller, _| {
             crate::sequence_active_leg(
                 controller
                     .active_plan()

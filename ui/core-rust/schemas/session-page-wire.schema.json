@@ -313,6 +313,7 @@
         "activate_next_leg",
         "redo",
         "restore_direct_to",
+        "start_navigation",
         "stop_navigation",
         "toggle_sequencing_suspension",
         "undo"

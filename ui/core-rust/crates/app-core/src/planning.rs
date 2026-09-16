@@ -2149,6 +2149,7 @@ pub(crate) fn flight_plan_control_symbol_id(id: FlightPlanControlId) -> &'static
         FlightPlanControlId::ActivateNextLeg => "activate_next_leg",
         FlightPlanControlId::Redo => "redo",
         FlightPlanControlId::RestoreDirectTo => "restore_direct_to",
+        FlightPlanControlId::StartNavigation => "start_navigation",
         FlightPlanControlId::StopNavigation => "stop_navigation",
         FlightPlanControlId::ToggleSequencingSuspension => "toggle_sequencing_suspension",
         FlightPlanControlId::Undo => "undo",
@@ -2182,13 +2183,23 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
             false,
             "No next leg is available.",
         ),
-        flight_plan_control(
-            FlightPlanControlId::StopNavigation,
-            "STOP",
-            has_guidance,
-            false,
-            "No active guidance is available to stop.",
-        ),
+        if has_guidance {
+            flight_plan_control(
+                FlightPlanControlId::StopNavigation,
+                "STOP",
+                has_guidance,
+                false,
+                "No active guidance is available to stop.",
+            )
+        } else {
+            flight_plan_control(
+                FlightPlanControlId::StartNavigation,
+                "START",
+                !plan.resolved_legs.is_empty(),
+                false,
+                "No flight-plan leg is available to start.",
+            )
+        },
         flight_plan_control(
             FlightPlanControlId::ToggleSequencingSuspension,
             "SUSP",
@@ -9624,7 +9635,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_navigation_control_is_enabled_only_when_guidance_exists() {
+    fn stop_navigation_control_becomes_start_when_guidance_is_stopped() {
         let guided = project_ui_state(&sample_guided_waypoint_plan());
         let stopped = project_ui_state(&stop_navigation(&sample_guided_waypoint_plan()).unwrap());
 
@@ -9636,8 +9647,12 @@ mod tests {
         assert!(stopped
             .controls
             .iter()
-            .find(|control| matches!(&control.id, FlightPlanControlId::StopNavigation))
-            .is_some_and(|control| !control.enabled));
+            .find(|control| matches!(&control.id, FlightPlanControlId::StartNavigation))
+            .is_some_and(|control| control.enabled));
+        assert!(!stopped
+            .controls
+            .iter()
+            .any(|control| control.id == FlightPlanControlId::StopNavigation));
     }
 
     #[test]

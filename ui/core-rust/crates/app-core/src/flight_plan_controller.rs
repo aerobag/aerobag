@@ -147,6 +147,7 @@ impl FlightPlanDefinitionController {
 #[derive(Debug, Clone, PartialEq)]
 struct FlightPlanNavigationController {
     guidance: Option<GuidanceState>,
+    stopped_guidance: Option<GuidanceState>,
     guidance_leg_geometry: Arc<HashMap<String, GuidanceLegGeometry>>,
 }
 
@@ -154,6 +155,7 @@ impl Default for FlightPlanNavigationController {
     fn default() -> Self {
         Self {
             guidance: None,
+            stopped_guidance: None,
             guidance_leg_geometry: Arc::new(HashMap::new()),
         }
     }
@@ -175,6 +177,7 @@ struct FlightPlanModel {
 pub(crate) struct FlightPlanProjectionInputs {
     pub ownship_position: Option<LatLon>,
     pub ownship_speed_kt: Option<f64>,
+    pub ownship_track_deg_true: Option<f64>,
     pub ownship_altitude_ft: Option<f64>,
     pub now_epoch_ms: i64,
     pub nav_data_generation: u64,
@@ -268,6 +271,7 @@ impl FlightPlanController {
                 definition: FlightPlanDefinitionController::new(definition),
                 navigation: FlightPlanNavigationController {
                     guidance,
+                    stopped_guidance: None,
                     guidance_leg_geometry: Arc::new(geometry_map(guidance_leg_geometry)),
                 },
                 active_plan: Some(active_plan),
@@ -340,6 +344,12 @@ impl FlightPlanController {
             })?;
         combined.guidance = normalized.guidance;
         let combined = crate::build_flight_plan(combined)?;
+        if combined.guidance.is_some() {
+            self.model.navigation.stopped_guidance = None;
+        } else if let Some(previous) = self.model.navigation.guidance.as_ref() {
+            self.model.navigation.stopped_guidance =
+                (previous.sequencing_mode != SequencingMode::DirectTo).then(|| previous.clone());
+        }
         self.model.navigation.guidance = combined.guidance.clone();
         self.model.active_plan = Some(combined);
         self.model.route_revision = self.model.route_revision.saturating_add(1);
@@ -444,6 +454,53 @@ impl FlightPlanController {
 
     pub fn plan_after_stop_navigation(&self) -> AppResult<FlightPlan> {
         crate::stop_navigation(self.required_plan("stop navigation")?)
+    }
+
+    fn start_selection(
+        &self,
+        input: crate::navigation_start::NavigationStartInput,
+    ) -> AppResult<(usize, usize)> {
+        let plan = self.required_plan("start navigation")?;
+        if plan.guidance.is_some() {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "Navigation is already active.".into(),
+            });
+        }
+        crate::navigation_start::select_start_detail(
+            plan,
+            &self.model.navigation.guidance_leg_geometry,
+            self.model.navigation.stopped_guidance.as_ref(),
+            input,
+        )
+        .map_err(|message| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: message.into(),
+        })
+    }
+
+    pub(crate) fn plan_after_start_navigation(
+        &self,
+        input: crate::navigation_start::NavigationStartInput,
+    ) -> AppResult<FlightPlan> {
+        let (leg, detail) = self.start_selection(input)?;
+        let mut plan = crate::planning::activate_leg_at_detail_index(
+            self.required_plan("start navigation")?,
+            leg,
+            detail,
+        )?;
+        if let Some(stopped) = self
+            .model
+            .navigation
+            .stopped_guidance
+            .as_ref()
+            .filter(|stopped| {
+                stopped.active_leg_index == leg && stopped.active_detail_index == Some(detail)
+            })
+        {
+            plan.guidance = Some(stopped.clone());
+        }
+        Ok(plan)
     }
 
     pub fn plan_after_toggle_sequencing_suspension(&self) -> AppResult<FlightPlan> {
@@ -752,6 +809,21 @@ impl FlightPlanController {
             }
         };
         if let Some(ui_state) = projection.ui_state.as_mut() {
+            if let Some(start) = ui_state
+                .controls
+                .iter_mut()
+                .find(|control| control.id == FlightPlanControlId::StartNavigation)
+            {
+                let error = self
+                    .start_selection(crate::navigation_start::NavigationStartInput {
+                        position: inputs.ownship_position,
+                        track_deg_true: inputs.ownship_track_deg_true,
+                        speed_kt: inputs.ownship_speed_kt,
+                    })
+                    .err();
+                start.enabled = error.is_none();
+                start.disabled_reason = error.map(|error| error.message);
+            }
             ui_state.data_columns = computer.flight_plan_columns();
             crate::planning::apply_flight_plan_live_action_availability(
                 ui_state,
@@ -840,6 +912,7 @@ impl FlightPlanController {
     fn install_normalized_plan(&mut self, plan: FlightPlan) -> AppResult<()> {
         let geometry = self_contained_guidance_leg_geometry_for_plan(&plan)?.unwrap_or_default();
         self.model.navigation.guidance = plan.guidance.clone();
+        self.model.navigation.stopped_guidance = None;
         self.model.navigation.guidance_leg_geometry = Arc::new(geometry_map(geometry));
         self.model.airway_picker.close();
         self.model.routing_editor.close();
@@ -1161,6 +1234,7 @@ mod tests {
         FlightPlanProjectionInputs {
             ownship_position: None,
             ownship_speed_kt: None,
+            ownship_track_deg_true: None,
             ownship_altitude_ft: None,
             now_epoch_ms: 0,
             nav_data_generation: 0,
@@ -1175,6 +1249,137 @@ mod tests {
 
     fn atmosphere() -> crate::had_ops::PlannerAtmosphereSelection<'static> {
         crate::had_ops::PlannerAtmosphereSelection::no_wind(None)
+    }
+
+    fn start_test_controller() -> FlightPlanController {
+        let plan = FlightPlan {
+            route_components: [0.0, 1.0, 2.0]
+                .map(|lon| crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(LatLon { lat: 0.0, lon }),
+                })
+                .to_vec(),
+            ..FlightPlan::empty()
+        };
+        let mut controller = FlightPlanController::default();
+        controller.replace_plan(plan).unwrap();
+        controller
+    }
+
+    fn start_input(lon: f64) -> crate::navigation_start::NavigationStartInput {
+        crate::navigation_start::NavigationStartInput {
+            position: Some(LatLon { lat: 0.0, lon }),
+            track_deg_true: Some(90.0),
+            speed_kt: Some(120.0),
+        }
+    }
+
+    #[test]
+    fn start_stop_uses_current_position_preserves_suspension_and_leaves_history_alone() {
+        let mut controller = start_test_controller();
+        let start = controller
+            .plan_after_start_navigation(start_input(0.5))
+            .unwrap();
+        controller.apply_navigation_update(start).unwrap();
+        let suspended = controller
+            .plan_after_toggle_sequencing_suspension()
+            .unwrap();
+        controller.apply_navigation_update(suspended).unwrap();
+        let remembered = controller.active_plan().unwrap().guidance.clone();
+        let stopped = controller.plan_after_stop_navigation().unwrap();
+        controller.apply_navigation_update(stopped).unwrap();
+        let resumed = controller
+            .plan_after_start_navigation(start_input(0.6))
+            .unwrap();
+        assert_eq!(resumed.guidance, remembered);
+        let moved = controller
+            .plan_after_start_navigation(start_input(1.5))
+            .unwrap();
+        let guidance = moved.guidance.unwrap();
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert!(!controller.can_undo());
+        assert!(!controller.can_redo());
+    }
+
+    #[test]
+    fn start_availability_and_command_revalidate_position_without_mutation() {
+        let mut controller = start_test_controller();
+        let mut projection_inputs = inputs();
+        projection_inputs.ownship_position = start_input(0.5).position;
+        projection_inputs.ownship_speed_kt = Some(120.0);
+        projection_inputs.ownship_track_deg_true = Some(90.0);
+        let projection = controller
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                projection_inputs,
+                atmosphere(),
+            )
+            .unwrap();
+        let start = projection
+            .projection
+            .ui_state
+            .unwrap()
+            .controls
+            .into_iter()
+            .find(|c| c.id == FlightPlanControlId::StartNavigation)
+            .unwrap();
+        assert!(start.enabled);
+        let before = controller.checkpoint_model();
+        let error = controller
+            .plan_after_start_navigation(crate::navigation_start::NavigationStartInput {
+                position: None,
+                ..start_input(0.5)
+            })
+            .unwrap_err();
+        assert_eq!(error.message, crate::navigation_start::NO_POSITION);
+        assert_eq!(controller.model, before.model);
+        let projection = controller
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                inputs(),
+                atmosphere(),
+            )
+            .unwrap();
+        let start = projection
+            .projection
+            .ui_state
+            .unwrap()
+            .controls
+            .into_iter()
+            .find(|c| c.id == FlightPlanControlId::StartNavigation)
+            .unwrap();
+        assert!(!start.enabled);
+        assert_eq!(
+            start.disabled_reason.as_deref(),
+            Some(crate::navigation_start::NO_POSITION)
+        );
+    }
+
+    #[test]
+    fn definition_edits_and_reload_discard_stop_hint() {
+        let mut controller = start_test_controller();
+        let start = controller
+            .plan_after_start_navigation(start_input(0.5))
+            .unwrap();
+        controller.apply_navigation_update(start).unwrap();
+        controller
+            .apply_navigation_update(controller.plan_after_stop_navigation().unwrap())
+            .unwrap();
+        assert!(controller.model.navigation.stopped_guidance.is_some());
+        let mut edited = controller.active_plan().unwrap().clone();
+        edited
+            .route_components
+            .push(crate::RouteComponent::Waypoint {
+                waypoint: NavRef::LatLon(LatLon { lat: 0.0, lon: 3.0 }),
+            });
+        controller.apply_definition_edit(edited).unwrap();
+        assert!(controller.model.navigation.stopped_guidance.is_none());
+        controller.undo_definition_edit().unwrap();
+        assert!(controller.model.navigation.stopped_guidance.is_none());
     }
 
     fn direct_to_plan() -> FlightPlan {

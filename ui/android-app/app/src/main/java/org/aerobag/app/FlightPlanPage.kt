@@ -459,7 +459,12 @@ internal fun FlightPlanPage(
     val altitudePlanner = projectedPlanUiState.altitudePlanner
     fun performFlightPlanControl(controlId: FlightPlanControlId) {
         applySessionCommand("performFlightPlanControl") {
-            uiSession.performFlightPlanControl(controlId)
+            try {
+                uiSession.performFlightPlanControl(controlId)
+            } catch (error: org.aerobag.app.domain.NativeSessionCommandRejectedException) {
+                showDisabledActionToast(context, error.cause?.message ?: error.message.orEmpty())
+                error.refreshedSnapshot
+            }
         }
     }
     val rows = remember(projectedPlanUiState.displayRows) {

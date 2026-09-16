@@ -351,6 +351,7 @@
     "redo": "action_redo",
     "activate_next_leg": "action_next",
     "stop_navigation": "action_stop_navigation",
+    "start_navigation": "action_play",
     "toggle_sequencing_suspension": "action_suspend",
     "pause_nexrad_animation": "action_suspend",
     "resume_nexrad_animation": "action_play",

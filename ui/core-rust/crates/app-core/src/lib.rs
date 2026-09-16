@@ -43,6 +43,7 @@ mod map_inspection;
 pub mod map_overlay;
 mod nav_data_controller;
 pub mod navdb_types;
+mod navigation_start;
 pub mod navkv;
 pub mod ownship;
 mod package_controller;

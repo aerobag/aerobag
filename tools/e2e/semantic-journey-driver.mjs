@@ -702,14 +702,11 @@ function androidOptionTag(launcherId, optionId) {
   return `parity:tray-option:${androidOptionId}`;
 }
 
-const ANDROID_PLAN_CONTROL_IDS = Object.freeze({
-  undo: "Undo",
-  redo: "Redo",
-  activate_next_leg: "ActivateNextLeg",
-  stop_navigation: "StopNavigation",
-  toggle_sequencing_suspension: "ToggleSequencingSuspension",
-  restore_direct_to: "RestoreDirectTo",
-});
+const ANDROID_PLAN_CONTROL_IDS = Object.freeze(Object.fromEntries(JSON.parse(readFileSync(
+  new URL("../../ui/core-rust/schemas/session-page-wire.schema.json", import.meta.url), "utf8",
+)).$defs.FlightPlanControlId.enum.map((id) => [
+  id, id.split("_").map((word) => word[0].toUpperCase() + word.slice(1)).join(""),
+])));
 const ANDROID_PLAN_ROW_ACTION_IDS = new Set([
   "activate_leg", "add_airway", "direct_to", "insert_after", "insert_before",
   "move_down", "move_up", "remove", "remove_all_above", "remove_procedure",

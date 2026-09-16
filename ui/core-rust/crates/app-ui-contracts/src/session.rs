@@ -59,6 +59,7 @@ pub enum FlightPlanControlId {
     ActivateNextLeg,
     Redo,
     RestoreDirectTo,
+    StartNavigation,
     StopNavigation,
     ToggleSequencingSuspension,
     Undo,

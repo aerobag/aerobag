@@ -9701,6 +9701,13 @@ function FlightPlanPage(props: {
   }
   const guidance = planUiState.guidance ?? null;
   const planControls = planUiState.controls;
+  const performFlightPlanControl = useCallback(async (controlId: FlightPlanControlId) => {
+    try {
+      await props.onPerformFlightPlanControl(controlId);
+    } catch (error) {
+      showDisabledAction(errorMessage(error));
+    }
+  }, [props.onPerformFlightPlanControl, showDisabledAction]);
   useEffect(() => {
     if (props.page !== "plan") {
       return;
@@ -9717,11 +9724,11 @@ function FlightPlanPage(props: {
       if (!planControls.some((control) => control.id === controlId && control.enabled)) {
         return;
       }
-      void props.onPerformFlightPlanControl(controlId);
+      void performFlightPlanControl(controlId);
     };
     window.addEventListener("keydown", handleHistoryKeyDown);
     return () => window.removeEventListener("keydown", handleHistoryKeyDown);
-  }, [planControls, props.onPerformFlightPlanControl, props.page]);
+  }, [planControls, performFlightPlanControl, props.page]);
   const activeFromRowUid = guidance?.active_from_row_uid ?? null;
   const activeToRowUid = guidance?.active_to_row_uid ?? null;
   const activeGuidanceRowsKey = guidance?.active_leg
@@ -10495,7 +10502,7 @@ function FlightPlanPage(props: {
                   }
                   return;
                 }
-                void props.onPerformFlightPlanControl(control.id);
+                void performFlightPlanControl(control.id);
               }}
             >
               {symbol ? <ActionIcon layers={symbol} /> : null}

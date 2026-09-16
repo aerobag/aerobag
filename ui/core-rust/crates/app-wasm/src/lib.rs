@@ -830,6 +830,23 @@ pub fn perform_barometer_command_in_session(
 }
 
 #[wasm_bindgen]
+pub fn perform_map_inspection_command_in_session(
+    session_handle: u32,
+    command_json: &str,
+    now_epoch_ms: f64,
+) -> Result<String, JsValue> {
+    let command = serde_json::from_str(command_json)
+        .map_err(|err| JsValue::from_str(&format!("map inspection command: {err}")))?;
+    let outcome = app_core::perform_map_inspection_command_in_session(
+        session_handle,
+        command,
+        now_epoch_ms as i64,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_flight_plan_column_action_in_session(
     session_handle: u32,
     action_id: &str,

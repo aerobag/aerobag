@@ -437,6 +437,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     performTimeDisplayAction: (...args) => updateSnapshot(call("performTimeDisplayAction", args)),
     performFlightDataBannerCellAction: (...args) => updateSnapshot(call("performFlightDataBannerCellAction", args)),
     performBarometerCommand: (...args) => updateSnapshot(call("performBarometerCommand", args)),
+    performMapInspectionCommand: (...args) => updateSnapshot(call("performMapInspectionCommand", args)),
     performFlightPlanColumnAction: (...args) => updateSnapshot(call("performFlightPlanColumnAction", args)),
     statusActionDecision: (...args) => call("statusActionDecision", args),
     performStatusAction: (...args) => updateSnapshot(call("performStatusAction", args)),

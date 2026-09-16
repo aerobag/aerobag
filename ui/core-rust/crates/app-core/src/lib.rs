@@ -39,6 +39,7 @@ pub mod live_feed_runtime;
 pub mod live_feeds;
 mod map_controller;
 pub mod map_follow;
+mod map_inspection;
 pub mod map_overlay;
 mod nav_data_controller;
 pub mod navdb_types;
@@ -327,10 +328,10 @@ pub use session::{
     perform_aircraft_library_action_in_session, perform_barometer_command_in_session,
     perform_cloud_ui_action_in_session, perform_flight_data_banner_cell_action_in_session,
     perform_flight_plan_column_action_in_session, perform_flight_plan_command_in_session,
-    perform_map_selection_ui_action_in_session, perform_ownship_text_action_in_session,
-    perform_settings_action_in_session, perform_status_action_in_session,
-    perform_time_display_action_in_session, play_playback_in_session,
-    prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
+    perform_map_inspection_command_in_session, perform_map_selection_ui_action_in_session,
+    perform_ownship_text_action_in_session, perform_settings_action_in_session,
+    perform_status_action_in_session, perform_time_display_action_in_session,
+    play_playback_in_session, prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
     push_situation_sample_in_session, query_flight_plan_in_session,
     record_offline_package_preferences_in_session, record_session_serialized_payload_bytes,
     register_ownship_source_in_session, render_terrain_overlay_tile_by_key_in_session,

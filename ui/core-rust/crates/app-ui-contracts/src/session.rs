@@ -989,4 +989,20 @@ pub struct UiMapInteraction {
     pub inspect: bool,
     pub hover_weather: bool,
     pub edit_route: bool,
+    /// Changes only when core dismisses an inspector, never on background redraws.
+    pub inspector_dismissal_revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum MapInspectionCommand {
+    Open,
+    Activity,
+    TouchStarted,
+    TouchEnded,
+    DetailOpened,
+    Dismiss,
+    // Report only gestures starting on the map/backdrop, not inside the tray.
+    MapGesture,
 }

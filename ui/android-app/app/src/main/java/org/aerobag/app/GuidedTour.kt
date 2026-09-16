@@ -66,13 +66,26 @@ internal fun TourAwarePopup(position: Offset = Offset.Zero, offset: IntOffset = 
     if (registry == null) {
         Popup(offset=offset,onDismissRequest=onDismiss,properties=properties,content=content)
     } else {
-        val owner=remember { Any() }
-        val latest=rememberUpdatedState(content)
-        val render = remember { movableContentOf { latest.value() } }
-        DisposableEffect(registry,owner,position,offset) {
-            registry.menus[owner]=TourMenu(position+Offset(offset.x.toFloat(),offset.y.toFloat()),render)
-            onDispose { registry.menus.remove(owner) }
-        }
+        TourMenuPortal(position+Offset(offset.x.toFloat(),offset.y.toFloat()), content)
+    }
+}
+
+/** Inline map inspectors share pointer ownership normally, but still sit above the tour scrim. */
+@Composable
+internal fun TourAwareInlineOverlay(content: @Composable () -> Unit) {
+    if (LocalGuidedTourAnchors.current == null) content()
+    else TourMenuPortal(Offset.Zero, content)
+}
+
+@Composable
+private fun TourMenuPortal(position: Offset, content: @Composable () -> Unit) {
+    val registry = requireNotNull(LocalGuidedTourAnchors.current)
+    val owner = remember { Any() }
+    val latest = rememberUpdatedState(content)
+    val render = remember { movableContentOf { latest.value() } }
+    DisposableEffect(registry, owner, position) {
+        registry.menus[owner] = TourMenu(position, render)
+        onDispose { registry.menus.remove(owner) }
     }
 }
 

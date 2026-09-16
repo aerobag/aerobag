@@ -863,6 +863,7 @@ export interface UiSession {
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
   performFlightDataBannerCellAction(cellId: string): Promise<UiSessionSnapshot>;
   performBarometerCommand(command: BarometerCommand): Promise<UiSessionSnapshot>;
+  performMapInspectionCommand(command: import("../generated/sessionPageWire").MapInspectionCommand): Promise<UiSessionSnapshot>;
   statusActionDecision(actionId: string): Promise<UiStatusActionDecision>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   mapSelectionActionDecision(actionUid: string): Promise<MapSelectionActionDecision>;
@@ -1067,6 +1068,11 @@ type WasmModule = {
   perform_barometer_command_in_session(
     sessionHandle: number,
     commandJson: string,
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_map_inspection_command_in_session(
+    sessionHandle: number,
+    commandJson: string,
+    nowEpochMs: number,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_flight_plan_column_action_in_session(
     sessionHandle: number,
@@ -1812,6 +1818,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return runSessionMutation(() =>
           this.module.perform_barometer_command_in_session(handle, JSON.stringify(command)),
         );
+      },
+      performMapInspectionCommand: async (command) => {
+        return runSessionMutation(() => this.module.perform_map_inspection_command_in_session(
+          handle, JSON.stringify(command), Date.now(),
+        ));
       },
       performFlightPlanColumnAction: async (actionId) => {
         return runSessionMutation(() =>

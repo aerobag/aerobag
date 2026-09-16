@@ -1763,6 +1763,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun performMapInspectionCommand(command: org.aerobag.app.generated.MapInspectionCommand): UiSessionSnapshot {
+        return runPagedSnapshot("performMapInspectionCommand") {
+            bridge.performMapInspectionCommandInSessionJson(handle, json.encodeToString(command), System.currentTimeMillis())
+        }
+    }
+
     fun performFlightPlanColumnAction(actionId: String): UiSessionSnapshot {
         return runPagedSnapshot("performFlightPlanColumnAction") {
             bridge.performFlightPlanColumnActionInSessionJson(handle, actionId)

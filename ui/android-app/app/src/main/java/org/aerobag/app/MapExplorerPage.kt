@@ -46,9 +46,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
@@ -145,7 +143,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChanged
@@ -188,8 +185,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
+import org.aerobag.app.generated.MapInspectionCommand
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -2105,6 +2101,30 @@ internal fun MapExplorerPage(
         }
     }
     val chartSearchInspectionGate = remember(uiSession) { ChartSearchInspectionGate() }
+    var inspectionDismissalRevision by remember { mutableLongStateOf(mapInteraction?.inspectorDismissalRevision ?: 0L) }
+    fun applyInspectionDismissal(revision: Long) {
+        if (revision != inspectionDismissalRevision) {
+            inspectionDismissalRevision = revision
+            inspectionGeneration += 1
+            chartSearchInspectionGate.invalidate()
+            mapSelection = null
+        }
+    }
+    fun inspectionCommand(command: MapInspectionCommand) {
+        applySessionCommand("performMapInspectionCommand") {
+            uiSession.performMapInspectionCommand(command)
+        }?.appUiState?.mapInteraction?.let { applyInspectionDismissal(it.inspectorDismissalRevision) }
+    }
+    LaunchedEffect(mapInteraction?.inspectorDismissalRevision) {
+        mapInteraction?.let { applyInspectionDismissal(it.inspectorDismissalRevision) }
+    }
+    LaunchedEffect(mapSelection != null, mapSelection?.detailModal != null) {
+        inspectionCommand(when {
+            mapSelection == null -> MapInspectionCommand.Dismiss
+            mapSelection?.detailModal != null -> MapInspectionCommand.DetailOpened
+            else -> MapInspectionCommand.Open
+        })
+    }
     LaunchedEffect(mapInteraction?.mode) { chartSearchInspectionGate.invalidate() }
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
@@ -3206,7 +3226,7 @@ internal fun MapExplorerPage(
         )
     }
     fun mapInputBlockedAt(position: Offset): Boolean {
-        if (menuTrayOpen) {
+        if (menuTrayOpen || mapSelection?.detailModal != null) {
             return true
         }
         val mapBounds = mapSurfaceBounds ?: return false
@@ -3253,6 +3273,7 @@ internal fun MapExplorerPage(
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN ||
+                    menuTrayOpen || mapSelection?.detailModal != null ||
                     surfaceWidthPx == 0f ||
                     surfaceHeightPx == 0f
                 ) {
@@ -3284,151 +3305,50 @@ internal fun MapExplorerPage(
                 true
             }
             .focusable()
-            .pointerInput(
-                selectedMapId,
-                surfaceSize,
-                menuTrayOpen,
-                mapSelection,
-                mapSelectionTrayBounds,
-                mapSurfaceBounds,
-                mapFollowUiState.following,
-                ownshipControls.selection,
-                plannedMapUpDeg,
-            ) {
-                if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
-                    return@pointerInput
-                }
-                awaitEachGesture {
-                    var dragPointerId: PointerId? = null
-                    var dragLastPosition: Offset? = null
-                    var pinchSnapshot: org.aerobag.app.domain.PinchSnapshot? = null
-                    var gestureViewport = viewportState.value
-                    var movedViewportDuringGesture = false
-                    var loggedGestureSeed = false
-                    try {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val activeChanges = event.changes.filter { !it.isConsumed }
-                            val pressed = activeChanges.filter { it.pressed }
-                            if (pressed.isEmpty()) {
-                                val endingDragChange = dragPointerId?.let { pointerId ->
-                                    activeChanges.firstOrNull { it.id == pointerId }
-                                }
-                                val last = dragLastPosition
-                                if (endingDragChange != null && last != null && !mapInputBlockedAt(endingDragChange.position)) {
-                                    val dx = endingDragChange.position.x - last.x
-                                    val dy = endingDragChange.position.y - last.y
-                                    if (dx != 0f || dy != 0f) {
-                                        gestureViewport = dragViewport(
-                                            viewportState.value.copy(rotationDeg = plannedMapUpDeg),
-                                            dx = dx,
-                                            dy = dy,
-                                        )
-                                        movedViewportDuringGesture = true
-                                        updateViewport(
-                                            gestureViewport,
-                                            MapViewportUpdateSource.UserInput,
-                                            syncFollow = false,
-                                        )
-                                        actions.onViewportGestureActivity()
-                                        endingDragChange.consume()
-                                    }
-                                }
-                                break
-                            }
-                            if (pressed.any { mapInputBlockedAt(it.position) }) {
-                                break
-                            }
-                            if (!mapGestureActive) {
-                                mapGestureActive = true
-                                actions.onViewportGestureActiveChange(true)
-                            }
-                                if (!loggedGestureSeed) {
-                                    perfLogInfo(MapViewportLogTag) {
-                                        "gesture-start map=$selectedMapId seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)} center=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}"
-                                    }
-                                    gestureViewport = viewportState.value
-                                    loggedGestureSeed = true
-                            }
-                            if (pressed.size == 1) {
-                                val change = pressed.first()
-                                if (dragPointerId != change.id || dragLastPosition == null) {
-                                    dragPointerId = change.id
-                                    dragLastPosition = change.position
-                                    pinchSnapshot = null
-                                    gestureViewport = viewportState.value
-                                } else {
-                                    val last = dragLastPosition ?: change.position
-                                    gestureViewport = viewportState.value
-                                    gestureViewport = dragViewport(
-                                        gestureViewport.copy(rotationDeg = plannedMapUpDeg),
-                                        dx = change.position.x - last.x,
-                                        dy = change.position.y - last.y,
-                                    )
-                                    movedViewportDuringGesture = true
-                                    updateViewport(
-                                        gestureViewport,
-                                        MapViewportUpdateSource.UserInput,
-                                        syncFollow = false,
-                                    )
-                                    actions.onViewportGestureActivity()
-                                    dragLastPosition = change.position
-                                }
-                                change.consume()
-                            } else {
-                                val first = pressed[0]
-                                val second = pressed[1]
-                                if (pinchSnapshot == null) {
-                                    gestureViewport = viewportState.value
-                                    pinchSnapshot = createPinchSnapshot(
-                                        viewport = gestureViewport.copy(rotationDeg = plannedMapUpDeg),
-                                        first = ScreenPoint(first.position.x, first.position.y),
-                                        second = ScreenPoint(second.position.x, second.position.y),
-                                        widthPx = surfaceWidthPx,
-                                        heightPx = surfaceHeightPx,
-                                    )
-                                }
-                                gestureViewport = viewportState.value
-                                gestureViewport =
-                                    applyPinchGesture(
-                                        snapshot = pinchSnapshot,
-                                        currentFirst = ScreenPoint(first.position.x, first.position.y),
-                                        currentSecond = ScreenPoint(second.position.x, second.position.y),
-                                        minZoom = selectedMap.minZoom,
-                                        maxZoom = interactiveMaxZoom,
-                                        widthPx = surfaceWidthPx,
-                                        heightPx = surfaceHeightPx,
-                                    )
-                                movedViewportDuringGesture = true
-                                updateViewport(
-                                    gestureViewport,
-                                    MapViewportUpdateSource.UserInput,
-                                    syncFollow = false,
-                                )
-                                actions.onViewportGestureActivity()
-                                first.consume()
-                                second.consume()
-                            }
-                        }
-                    } finally {
-                        val completedGestureSyncViewport = mapFollowSyncViewportForCompletedGesture(
-                            movedViewportDuringGesture = movedViewportDuringGesture,
-                            finalGestureViewport = gestureViewport,
-                            displayRotationDeg = plannedMapUpDeg,
+            .mapGestureInput(
+                enabled = surfaceWidthPx > 0f && surfaceHeightPx > 0f &&
+                    !menuTrayOpen && mapSelection?.detailModal == null,
+                onTap = { point ->
+                    if (mapSelection != null) inspectionCommand(MapInspectionCommand.Dismiss)
+                    else requestMapSelection(point)
+                },
+                onGesture = {
+                    inspectionGeneration += 1
+                    chartSearchInspectionGate.invalidate()
+                    inspectionCommand(MapInspectionCommand.MapGesture)
+                },
+                onTransform = { previous, current ->
+                    val base = viewportState.value.copy(rotationDeg = plannedMapUpDeg)
+                    val next = if (previous.size >= 2) {
+                        applyPinchGesture(
+                            createPinchSnapshot(base,
+                                ScreenPoint(previous[0].x, previous[0].y), ScreenPoint(previous[1].x, previous[1].y),
+                                surfaceWidthPx, surfaceHeightPx),
+                            ScreenPoint(current[0].x, current[0].y), ScreenPoint(current[1].x, current[1].y),
+                            selectedMap.minZoom, interactiveMaxZoom, surfaceWidthPx, surfaceHeightPx,
                         )
-                        if (completedGestureSyncViewport != null) {
-                            syncFollowStateForViewport(completedGestureSyncViewport)
-                        } else if (loggedGestureSeed && dragLastPosition != null) {
-                            val point = dragLastPosition
-                            requestMapSelection(point)
-                        }
-                        if (mapGestureActive) {
-                            mapGestureActive = false
-                            actions.onViewportGestureActiveChange(false)
-                        }
+                    } else {
+                        dragViewport(base, dx = current[0].x - previous[0].x, dy = current[0].y - previous[0].y)
                     }
-                }
-            }
+                    updateViewport(
+                        next,
+                        MapViewportUpdateSource.UserInput,
+                        syncFollow = false,
+                    )
+                    actions.onViewportGestureActivity()
+                },
+                onActiveChange = { active ->
+                    mapGestureActive = active
+                    actions.onViewportGestureActiveChange(active)
+                },
+                onFinished = {
+                    mapFollowSyncViewportForCompletedGesture(
+                        movedViewportDuringGesture = true,
+                        finalGestureViewport = viewportState.value,
+                        displayRotationDeg = plannedMapUpDeg,
+                    )?.let(::syncFollowStateForViewport)
+                },
+            )
             .pointerInteropFilter { event ->
                 if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInteropFilter false
@@ -3437,6 +3357,7 @@ internal fun MapExplorerPage(
                     return@pointerInteropFilter false
                 }
                 if (event.action == MotionEvent.ACTION_SCROLL) {
+                    inspectionCommand(MapInspectionCommand.MapGesture)
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
                         ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
                     val nextViewport = zoomAroundPoint(
@@ -3844,12 +3765,11 @@ internal fun MapExplorerPage(
             }
 
             mapSelection?.takeIf { mapInteraction?.inspect == true }?.let { selection ->
-                TourAwarePopup(
-                    onDismiss = { mapSelection = null },
-                    properties = PopupProperties(focusable = true, clippingEnabled = false),
+                MapInspectionOverlay(
+                    detailOpen = selection.detailModal != null,
+                    onDismiss = { inspectionCommand(MapInspectionCommand.Dismiss) },
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        Scrim { mapSelection = null }
                         E2eProjectionView(
                             viewId = R.id.e2e_map_selection_projection,
                             state = mapSelectionProjectionState,
@@ -3907,6 +3827,9 @@ internal fun MapExplorerPage(
                                 centerProbeTag = mapSelectionCenterProbeTag,
                                 onBoundsChange = { mapSelectionTrayBounds = it },
                                 modifier = Modifier
+                                    .inspectorInputBoundary { touching ->
+                                        inspectionCommand(if (touching) MapInspectionCommand.TouchStarted else MapInspectionCommand.TouchEnded)
+                                    }
                                     .zIndex(OverlayPlaneModal)
                                     .align(
                                         when {
@@ -3918,6 +3841,7 @@ internal fun MapExplorerPage(
                                     )
                                     .padding(ThumbGap),
                                 onSelectItem = { item ->
+                                    inspectionCommand(MapInspectionCommand.Activity)
                                     mapSelection = selection.copy(
                                         selectedItem = item,
                                         detailModal = null,
@@ -3927,6 +3851,7 @@ internal fun MapExplorerPage(
                                         ?.let(::performSelectedMapAction)
                                 },
                                 onSelectAction = { _, action ->
+                                    inspectionCommand(MapInspectionCommand.Activity)
                                     if (!action.enabled) {
                                         action.disabledReason
                                             ?.takeIf { it.isNotBlank() }

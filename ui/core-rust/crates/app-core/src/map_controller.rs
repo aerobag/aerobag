@@ -19,6 +19,7 @@ use crate::{
 
 #[derive(Clone)]
 struct MapModel {
+    inspection: crate::map_inspection::MapInspection,
     layer_state: UiMapLayerState,
     overlay_config: Arc<MapOverlayConfig>,
     vector_manifest_loaded: bool,
@@ -29,6 +30,7 @@ struct MapModel {
 impl Default for MapModel {
     fn default() -> Self {
         Self {
+            inspection: crate::map_inspection::MapInspection::default(),
             layer_state: default_map_layer_state(),
             overlay_config: Arc::new(uninitialized_map_overlay_config()),
             vector_manifest_loaded: false,
@@ -76,6 +78,15 @@ pub(crate) struct MapController {
 }
 
 impl MapController {
+    pub fn inspection(&self) -> &crate::map_inspection::MapInspection {
+        &self.model.inspection
+    }
+
+    pub fn inspection_mut(&mut self) -> &mut crate::map_inspection::MapInspection {
+        self.note_change();
+        &mut self.model.inspection
+    }
+
     pub fn revision(&self) -> u64 {
         self.model.revision
     }
@@ -418,6 +429,7 @@ pub(crate) fn interaction_policy(
             inspect: false,
             hover_weather: false,
             edit_route: true,
+            inspector_dismissal_revision: 0,
         }
     } else {
         UiMapInteraction {
@@ -425,6 +437,7 @@ pub(crate) fn interaction_policy(
             inspect: true,
             hover_weather: true,
             edit_route: false,
+            inspector_dismissal_revision: 0,
         }
     }
 }

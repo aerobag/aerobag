@@ -1749,6 +1749,17 @@ fn session_wall_clock_utc(session: &UiSession) -> DateTime<Utc> {
 
 fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
     session.coordinator.wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms.max(epoch_ms);
+    if session
+        .map
+        .inspection()
+        .next_refresh()
+        .is_some_and(|deadline| session.coordinator.wall_clock_epoch_ms >= deadline)
+    {
+        session
+            .map
+            .inspection_mut()
+            .refresh(session.coordinator.wall_clock_epoch_ms);
+    }
 }
 
 fn next_nav_db_maintenance_epoch_ms(session: &UiSession) -> Option<i64> {
@@ -4786,6 +4797,31 @@ pub fn perform_barometer_command_in_session(
             .situation
             .barometer_mut()
             .apply(command, now, nearest.as_ref());
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
+}
+
+pub fn perform_map_inspection_command_in_session(
+    handle: u32,
+    command: app_ui_contracts::session::MapInspectionCommand,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    run_session_model_transaction(&mut session_guard, |session| {
+        // Apply the user's activity before checking deadlines so an input queued
+        // at the boundary does not dismiss the tray being touched.
+        let now = session.coordinator.wall_clock_epoch_ms.max(now_epoch_ms);
+        // A tour owns its demonstration inspector until the step changes.
+        let command = if command == app_ui_contracts::session::MapInspectionCommand::Open
+            && session.coordinator.guided_tour.is_some()
+        {
+            app_ui_contracts::session::MapInspectionCommand::DetailOpened
+        } else {
+            command
+        };
+        session.map.inspection_mut().apply(command, now);
+        advance_session_wall_clock(session, now);
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -12970,6 +13006,7 @@ fn try_snapshot_for_session(
                     .map(|report| report.expires_at())
                     .unwrap_or(i64::MAX),
             )
+            .min(session.map.inspection().next_refresh().unwrap_or(i64::MAX))
             .min(
                 session
                     .coordinator
@@ -13513,6 +13550,8 @@ fn project_session_app_ui_state(
             .and_then(|plan| plan.airway_routing.as_ref())
             .is_some_and(|editor| editor.map_open),
     );
+    app_ui_state.map_interaction.inspector_dismissal_revision =
+        session.map.inspection().dismissal_revision;
     refresh_registered_flight_plan_row_actions(session, app_ui_state.active_plan.as_ref())
         .map_err(|error| HadReadError::Fatal(error.message))?;
     app_ui_state.flight_data_banner = project_flight_data_banner(
@@ -31719,6 +31758,60 @@ mod tests {
         assert_eq!(
             awake.app_ui_state.ownship.controls.sources[0].power_state,
             Some(crate::OwnshipSourcePowerState::Running)
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn session_deadline_dismisses_idle_inspector_without_any_new_input() {
+        use app_ui_contracts::session::MapInspectionCommand;
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        perform_map_inspection_command_in_session(init.handle, MapInspectionCommand::Open, 60_001)
+            .unwrap();
+        let opened = get_session_snapshot_at_epoch_ms(init.handle, 60_001).unwrap();
+        assert_eq!(opened.next_session_snapshot_refresh_epoch_ms, 70_001);
+        let revision = opened
+            .app_ui_state
+            .map_interaction
+            .inspector_dismissal_revision;
+        let still_open = get_session_snapshot_at_epoch_ms(init.handle, 70_000).unwrap();
+        assert_eq!(
+            still_open
+                .app_ui_state
+                .map_interaction
+                .inspector_dismissal_revision,
+            revision
+        );
+        let expired = get_session_snapshot_at_epoch_ms(init.handle, 70_001).unwrap();
+        assert_eq!(
+            expired
+                .app_ui_state
+                .map_interaction
+                .inspector_dismissal_revision,
+            revision + 1
+        );
+        assert!(expired.next_session_snapshot_refresh_epoch_ms > 70_001);
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn guided_tour_inspector_is_not_subject_to_idle_dismissal() {
+        use app_ui_contracts::session::MapInspectionCommand;
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.coordinator.guided_tour = Some(crate::guided_tour::view(0, 1, false));
+        }
+        perform_map_inspection_command_in_session(init.handle, MapInspectionCommand::Open, 60_001)
+            .unwrap();
+        let later = get_session_snapshot_at_epoch_ms(init.handle, 100_001).unwrap();
+        assert_eq!(
+            later
+                .app_ui_state
+                .map_interaction
+                .inspector_dismissal_revision,
+            0
         );
         destroy_session(init.handle);
     }

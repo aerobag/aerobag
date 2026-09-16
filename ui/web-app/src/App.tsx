@@ -160,6 +160,7 @@ import { resolveSituationOverlay } from "./domain/situationGeometry";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { MapSelectionRequests } from "./domain/mapSelectionRequests";
+import { MapInspectionBackdrop, MapInspectionPane } from "./MapInspectionPane";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { fetchTextResource } from "./domain/fetchTextResource";
@@ -4777,6 +4778,7 @@ function MapPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const clickCandidateRef = useRef<{ pointerId: number; start: ScreenPoint; latest: ScreenPoint } | null>(null);
+  const inspectorGestureRef = useRef(false);
   const mapSelectionRequests = useRef(new MapSelectionRequests()).current;
   const gestureActiveRef = useRef(false);
   const viewportGestureUntilRef = useRef(0);
@@ -4816,6 +4818,23 @@ function MapPage(props: {
   const mapSelectionDistanceItemId = mapSelection?.detailModal === null
     ? mapSelection.selectedItem?.id ?? null
     : null;
+  const inspectorDismissalRevision = useRef(mapInteraction.inspector_dismissal_revision);
+  function inspectionCommand(command: import("./generated/sessionPageWire").MapInspectionCommand) {
+    if (!uiSession) return;
+    void uiSession.performMapInspectionCommand(command).then((snapshot) => {
+      props.onSessionSnapshot(snapshot, "map_inspection");
+    }).catch((error) => debugLog("map.inspection.command.failed", { error: errorMessage(error) }));
+  }
+  useEffect(() => {
+    if (inspectorDismissalRevision.current !== mapInteraction.inspector_dismissal_revision) {
+      inspectorDismissalRevision.current = mapInteraction.inspector_dismissal_revision;
+      cancelMapSelectionRequests();
+      setMapSelection(null);
+    }
+  }, [mapInteraction.inspector_dismissal_revision]);
+  useEffect(() => {
+    inspectionCommand(!mapSelection ? "dismiss" : mapSelection.detailModal ? "detail_opened" : "open");
+  }, [!!mapSelection, !!mapSelection?.detailModal]);
   const mapSelectionDistanceTarget = mapSelection?.detailModal === null
     ? mapSelection.selectedItem?.distance_target ?? null
     : null;
@@ -6826,9 +6845,10 @@ function MapPage(props: {
   }, [followSyncPendingSerial, followTargetRetryToken, mapFollowTargetViewport, mapFollowUiState.following, viewport]);
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || mapSelection) {
+    if (trayGroup.scrimOpen || mapSelection?.detailModal) {
       return;
     }
+    if (activePointersRef.current.size === 0) inspectorGestureRef.current = mapSelection !== null;
     if (event.pointerType === "mouse") {
       activePointersRef.current.clear();
       dragRef.current = null;
@@ -6859,7 +6879,7 @@ function MapPage(props: {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || mapSelection || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || mapSelection?.detailModal || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
@@ -6873,6 +6893,10 @@ function MapPage(props: {
     }
     const pointers = Array.from(activePointersRef.current.entries());
     if (pointers.length === 1 && dragRef.current?.id === event.pointerId) {
+      if (clickCandidateRef.current && distanceBetween(clickCandidateRef.current.start, point) <= 8) return;
+      clickCandidateRef.current = null;
+      if (inspectorGestureRef.current) inspectionCommand("map_gesture");
+      inspectorGestureRef.current = false;
       const dx = point.x - dragRef.current.last.x;
       const dy = point.y - dragRef.current.last.y;
       const nextViewport = dragViewport(viewportRef.current, dx, dy, mapUpDegRef.current);
@@ -6888,12 +6912,11 @@ function MapPage(props: {
       updateViewport(nextViewport, { deferReactCommit: true });
       syncFollowStateForViewport(nextViewport);
       dragRef.current = { id: event.pointerId, last: point };
-      if (clickCandidateRef.current && distanceBetween(clickCandidateRef.current.start, point) > 8) {
-        clickCandidateRef.current = null;
-      }
       return;
     }
     if (pointers.length >= 2) {
+      if (inspectorGestureRef.current) inspectionCommand("map_gesture");
+      inspectorGestureRef.current = false;
       const [first, second] = pointers;
       if (!pinchRef.current) {
         pinchRef.current = createPinchSnapshot(
@@ -6926,7 +6949,7 @@ function MapPage(props: {
   }
 
   function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || mapSelection) {
+    if (trayGroup.scrimOpen || mapSelection?.detailModal) {
       activePointersRef.current.delete(event.pointerId);
       clickCandidateRef.current = null;
       pinchRef.current = null;
@@ -6935,6 +6958,8 @@ function MapPage(props: {
       return;
     }
     const clickCandidate = clickCandidateRef.current;
+    const dismissedInspector = inspectorGestureRef.current;
+    if (dismissedInspector && event.type === "pointerup") inspectionCommand("dismiss");
     activePointersRef.current.delete(event.pointerId);
     setViewportGestureActive(activePointersRef.current.size > 0);
     if (activePointersRef.current.size === 0) {
@@ -6951,6 +6976,8 @@ function MapPage(props: {
     }
     if (
       mapInteraction.inspect &&
+      !dismissedInspector &&
+      event.type === "pointerup" &&
       clickCandidate &&
       clickCandidate.pointerId === event.pointerId &&
       activePointersRef.current.size === 0 &&
@@ -7004,15 +7031,17 @@ function MapPage(props: {
   }
 
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || mapSelection || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || mapSelection?.detailModal || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       event.preventDefault();
       return;
     }
     event.preventDefault();
+    if (mapSelection) inspectionCommand("map_gesture");
+    const rect = event.currentTarget.getBoundingClientRect();
     const nextViewport = zoomAroundPoint(
       viewportRef.current,
       selectedMap,
-      { x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY },
+      { x: event.clientX - rect.left, y: event.clientY - rect.top },
       surfaceSize.width,
       surfaceSize.height,
       viewportRef.current.zoom - event.deltaY / 360,
@@ -7587,10 +7616,10 @@ function MapPage(props: {
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {mapInteraction.inspect && mapSelection ? (
           <>
-            <TrayScrim ariaLabel="Close map selection" onClose={() => {
-              cancelMapSelectionRequests();
-              setMapSelection(null);
-            }} />
+            {mapSelection.detailModal
+              ? <TrayScrim ariaLabel="Close map selection" onClose={() => inspectionCommand("dismiss")} />
+              : <MapInspectionBackdrop onDismiss={() => inspectionCommand("dismiss")} />}
+            <MapInspectionPane onCommand={inspectionCommand}>
             {mapSelection.detailModal?.kind === "weather" ? (
               <WeatherDetailModal detail={mapSelection.detailModal.detail} />
             ) : mapSelection.detailModal?.kind === "airport" ? (
@@ -7642,6 +7671,7 @@ function MapPage(props: {
                 onSelectAction={(action) => void performSelectedMapAction(action)}
               />
             )}
+            </MapInspectionPane>
           </>
         ) : null}
         {mapInteraction.hover_weather && !mapSelection && hoverWeather ? (

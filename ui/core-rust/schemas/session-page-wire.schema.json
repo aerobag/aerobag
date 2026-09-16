@@ -362,6 +362,19 @@
       ],
       "type": "string"
     },
+    "MapInspectionCommand": {
+      "enum": [
+        "open",
+        "activity",
+        "touch_started",
+        "touch_ended",
+        "detail_opened",
+        "dismiss",
+        "map_gesture"
+      ],
+      "title": "MapInspectionCommand",
+      "type": "string"
+    },
     "MapLayerId": {
       "enum": [
         "world_basemap",
@@ -1571,6 +1584,12 @@
         "inspect": {
           "type": "boolean"
         },
+        "inspector_dismissal_revision": {
+          "description": "Changes only when core dismisses an inspector, never on background redraws.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "mode": {
           "$ref": "#/$defs/UiMapInteractionMode"
         }
@@ -1579,7 +1598,8 @@
         "mode",
         "inspect",
         "hover_weather",
-        "edit_route"
+        "edit_route",
+        "inspector_dismissal_revision"
       ],
       "type": "object"
     },
@@ -2563,6 +2583,7 @@
     "MapLayerId",
     "UiMapInteractionMode",
     "UiMapInteraction",
+    "MapInspectionCommand",
     "DebugFlagId",
     "UiDebugState",
     "UiSettingsSliderStop",

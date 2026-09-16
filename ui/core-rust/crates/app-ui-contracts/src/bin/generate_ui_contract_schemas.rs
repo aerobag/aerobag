@@ -51,6 +51,7 @@ fn session_schema() -> Value {
     add_definition::<session::FlightDataColumn>(&mut root, "FlightDataColumn");
     add_definition::<session::FlightDataBannerModel>(&mut root, "FlightDataBannerModel");
     add_definition::<session::BarometerCommand>(&mut root, "BarometerCommand");
+    add_definition::<session::MapInspectionCommand>(&mut root, "MapInspectionCommand");
     add_definition::<session::MapLayerId>(&mut root, "MapLayerId");
     add_definition::<session::DebugFlagId>(&mut root, "DebugFlagId");
     root
@@ -228,6 +229,7 @@ fn main() {
                 "MapLayerId",
                 "UiMapInteractionMode",
                 "UiMapInteraction",
+                "MapInspectionCommand",
                 "DebugFlagId",
                 "UiDebugState",
                 "UiSettingsSliderStop",

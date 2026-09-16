@@ -105,12 +105,12 @@ const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 15] = [
         "vertical_speed",
         "VS fpm",
     ),
-    banner_cell(FlightDataBannerField::Track, "track", "TRK °M"),
     banner_cell(
         FlightDataBannerField::DesiredTrack,
         "desired_track",
         "DTK °M",
     ),
+    banner_cell(FlightDataBannerField::Track, "track", "TRK °M"),
     banner_cell(FlightDataBannerField::GroundSpeed, "ground_speed", "GS kt"),
     banner_cell(
         FlightDataBannerField::WaypointDistance,
@@ -1059,8 +1059,8 @@ mod tests {
                 "altitude",
                 "agl",
                 "vertical_speed",
-                "track",
                 "desired_track",
+                "track",
                 "ground_speed",
                 "waypoint_distance",
                 "waypoint_ete",

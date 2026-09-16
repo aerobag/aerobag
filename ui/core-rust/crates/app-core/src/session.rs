@@ -2952,6 +2952,18 @@ fn run_session_model_transaction_projecting(
     }
 }
 
+pub fn set_external_power_connected_in_session(
+    handle: u32,
+    connected: bool,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    run_session_model_transaction_without_persistence(&mut session_guard, move |session| {
+        session.settings.set_external_power_connected(connected);
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
+}
+
 pub fn perform_settings_action_in_session(
     handle: u32,
     action: UiSettingsAction,
@@ -17849,9 +17861,10 @@ mod tests {
         )
         .expect("configure platform capabilities");
 
-        assert_eq!(snapshot.settings_page_state.rows.len(), 3);
+        assert_eq!(snapshot.settings_page_state.rows.len(), 4);
         assert_eq!(snapshot.settings_page_state.rows[1].value_id, "2m");
-        assert_eq!(snapshot.settings_page_state.rows[2].value_id, "1h");
+        assert_eq!(snapshot.settings_page_state.rows[2].value_id, "off");
+        assert_eq!(snapshot.settings_page_state.rows[3].value_id, "1h");
         assert_eq!(
             snapshot
                 .display_policy
@@ -17916,6 +17929,88 @@ mod tests {
     }
 
     #[test]
+    fn battery_only_dimming_persists_and_power_events_publish_the_display_policy() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        let capabilities = PlatformCapabilities {
+            display_policy: Some(PlatformDisplayPolicyCapability::default()),
+            ..Default::default()
+        };
+        configure_platform_capabilities_in_session(
+            init.handle,
+            capabilities.clone(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "display_dim_on_battery_only".to_string(),
+                value_id: "on".to_string(),
+            },
+            100,
+        )
+        .unwrap();
+        let persisted = storage.read_settings().unwrap().unwrap();
+        let persisted_json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
+        assert_eq!(
+            persisted_json["preferences"]["display_dim_on_battery_only"],
+            true
+        );
+
+        // Inspect the actual incremental wire output, not a fresh snapshot that could
+        // conceal a missing invalidation. Android must immediately undo an idle dim.
+        for connected in [true, false, true] {
+            let update = session_update_from_outcome(
+                super::set_external_power_connected_in_session(init.handle, connected).unwrap(),
+            );
+            let settings = update
+                .settings
+                .expect("power change publishes settings group");
+            let assignment = settings
+                .assignments
+                .iter()
+                .find(|assignment| assignment.path == ["display_policy"])
+                .expect("power change publishes effective display policy");
+            let policy: UiDisplayPolicy = serde_json::from_value(assignment.value.clone()).unwrap();
+            assert_eq!(
+                policy.dim_after_ms,
+                if connected { None } else { Some(120_000) }
+            );
+            assert!(policy.keep_screen_on);
+            assert_eq!(policy.allow_screen_off_after_ms, Some(3_600_000));
+            assert_eq!(
+                storage.read_settings().unwrap().unwrap(),
+                persisted,
+                "power observations must not persist or publish cloud edits"
+            );
+        }
+
+        let next = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        let restored =
+            configure_platform_capabilities_in_session(next.handle, capabilities, Some(storage))
+                .unwrap();
+        assert_eq!(restored.settings_page_state.rows[2].value_id, "on");
+        assert_eq!(
+            restored.display_policy.unwrap().dim_after_ms,
+            Some(120_000),
+            "power source is observed anew, not restored from preferences"
+        );
+        let update = session_update_from_outcome(
+            super::set_external_power_connected_in_session(next.handle, true).unwrap(),
+        );
+        assert!(update.settings.is_some());
+        assert_eq!(
+            get_session_snapshot(next.handle)
+                .unwrap()
+                .display_policy
+                .unwrap()
+                .dim_after_ms,
+            None
+        );
+    }
+
+    #[test]
     fn inactivity_sleep_setting_is_persisted_as_a_cloud_record() {
         let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
         let init =
@@ -17939,7 +18034,7 @@ mod tests {
             1_234,
         )
         .expect("change inactivity sleep timeout");
-        assert_eq!(changed.settings_page_state.rows[2].value_id, "2h");
+        assert_eq!(changed.settings_page_state.rows[3].value_id, "2h");
         assert_eq!(
             changed
                 .display_policy
@@ -17974,7 +18069,7 @@ mod tests {
             Some(storage),
         )
         .expect("restore setting");
-        assert_eq!(restored.settings_page_state.rows[2].value_id, "2h");
+        assert_eq!(restored.settings_page_state.rows[3].value_id, "2h");
         assert_eq!(
             restored
                 .display_policy

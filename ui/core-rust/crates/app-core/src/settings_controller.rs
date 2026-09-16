@@ -20,6 +20,7 @@ const NO_WARRANTY_DISCLAIMER_HTML: &str = include_str!("../../../../shared/no-wa
 const NO_WARRANTY_DISCLAIMER_AGREEMENT_ID: &str = "no-warranty-v1";
 const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
 const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
+const DISPLAY_DIM_ON_BATTERY_ONLY_ID: &str = "display_dim_on_battery_only";
 const INACTIVITY_SLEEP_TIMEOUT_ROW_ID: &str = "inactivity_sleep_timeout";
 const INACTIVITY_SLEEP_TIMEOUT_ACTION_ID: &str = "inactivity_sleep_timeout";
 const NEXRAD_COVERAGE_ACTION_ID: &str = "nexrad_coverage";
@@ -35,7 +36,7 @@ const SETTINGS_TOGGLE_ON: &str = "on";
 const SETTINGS_TOGGLE_OFF: &str = "off";
 const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
 const FLIGHT_DATA_VISIBILITY_HELP: &str = "Select which data items appear on the chart page.";
-const DISPLAY_DIM_TIMEOUT_HELP: &str = "Save power while keeping the screen unlocked.";
+const DISPLAY_DIM_TIMEOUT_HELP: &str = "Save power while keeping the screen unlocked. Select 'Only dim when on battery' to stay bright while plugged in.";
 const INACTIVITY_SLEEP_TIMEOUT_HELP: &str =
     "Avoid battery drain when you leave your tablet in your flight bag.";
 const NEXRAD_COVERAGE_HELP: &str = "Visible loads on demand, uses less data. Full offline loads eagerly, useful when network coverage is sketchy.";
@@ -376,6 +377,8 @@ pub struct SettingsPreferences {
     #[serde(default)]
     pub display_dim_timeout: DisplayDimTimeout,
     #[serde(default)]
+    pub display_dim_on_battery_only: bool,
+    #[serde(default)]
     pub inactivity_sleep_timeout: InactivitySleepTimeout,
     #[serde(default)]
     pub nexrad_acquisition: NexradAcquisitionPreferences,
@@ -416,6 +419,7 @@ struct SettingsProjectionCache {
 #[derive(Clone, Default)]
 pub(crate) struct SettingsController {
     preferences: SettingsPreferences,
+    external_power_connected: bool,
     aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
     revision: u64,
     static_revision: u64,
@@ -425,6 +429,7 @@ pub(crate) struct SettingsController {
 #[derive(Clone)]
 pub(crate) struct SettingsModelCheckpoint {
     preferences: SettingsPreferences,
+    external_power_connected: bool,
     aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
     revision: u64,
     static_revision: u64,
@@ -442,6 +447,7 @@ impl SettingsController {
     pub fn checkpoint_model(&self) -> SettingsModelCheckpoint {
         SettingsModelCheckpoint {
             preferences: self.preferences.clone(),
+            external_power_connected: self.external_power_connected,
             aircraft_editor: self.aircraft_editor.clone(),
             revision: self.revision,
             static_revision: self.static_revision,
@@ -450,6 +456,7 @@ impl SettingsController {
 
     pub fn rollback_model(&mut self, checkpoint: SettingsModelCheckpoint) {
         self.preferences = checkpoint.preferences;
+        self.external_power_connected = checkpoint.external_power_connected;
         self.aircraft_editor = checkpoint.aircraft_editor;
         self.revision = checkpoint.revision;
         self.static_revision = checkpoint.static_revision;
@@ -462,6 +469,14 @@ impl SettingsController {
 
     pub fn persistent_preferences(&self) -> SettingsPreferences {
         self.preferences.clone()
+    }
+
+    pub fn set_external_power_connected(&mut self, connected: bool) {
+        if self.external_power_connected != connected {
+            self.external_power_connected = connected;
+            // Display policy shares the static settings projection group.
+            self.note_change(true);
+        }
     }
 
     pub fn airway_navigation_mode(&self) -> crate::AirwayNavigationMode {
@@ -499,6 +514,8 @@ impl SettingsController {
         preferences.nexrad_acquisition = preferences.nexrad_acquisition.normalize();
         let static_changed = self.preferences.display_dim_timeout
             != preferences.display_dim_timeout
+            || self.preferences.display_dim_on_battery_only
+                != preferences.display_dim_on_battery_only
             || self.preferences.inactivity_sleep_timeout != preferences.inactivity_sleep_timeout
             || self.preferences.nexrad_acquisition != preferences.nexrad_acquisition
             || self.preferences.accepted_disclaimer_agreement_ids
@@ -529,6 +546,24 @@ impl SettingsController {
             return Err(invalid_settings_action(&action.action_id));
         }
         let (changed, static_changed) = match action.action_id.as_str() {
+            DISPLAY_DIM_ON_BATTERY_ONLY_ID => {
+                if !display_policy_available {
+                    return Err(invalid_settings_action(&action.action_id));
+                }
+                let enabled = match action.value_id.as_str() {
+                    SETTINGS_TOGGLE_ON => true,
+                    SETTINGS_TOGGLE_OFF => false,
+                    _ => {
+                        return Err(invalid_settings_action_value(
+                            &action.action_id,
+                            &action.value_id,
+                        ))
+                    }
+                };
+                let changed = self.preferences.display_dim_on_battery_only != enabled;
+                self.preferences.display_dim_on_battery_only = enabled;
+                (changed, changed)
+            }
             DISPLAY_DIM_TIMEOUT_ACTION_ID => {
                 if !display_policy_available {
                     return Err(invalid_settings_action(&action.action_id));
@@ -760,7 +795,11 @@ impl SettingsController {
                 flight_data_banner,
                 debug_state,
             ),
-            display_policy: project_display_policy(&self.preferences, display_policy_available),
+            display_policy: project_display_policy(
+                &self.preferences,
+                display_policy_available,
+                self.external_power_connected,
+            ),
             disclaimer_state: project_disclaimer_state(&self.preferences),
             flight_data_banner: filtered_flight_data_banner(&self.preferences, flight_data_banner),
         };
@@ -833,6 +872,23 @@ fn project_settings_page_state(
                 .collect(),
             items: Vec::new(),
             action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
+        });
+        rows.push(UiSettingsPageRow {
+            kind: "toggle".to_string(),
+            id: DISPLAY_DIM_ON_BATTERY_ONLY_ID.to_string(),
+            title: "Only dim when on battery".to_string(),
+            help_text: None,
+            sync_indicator: None,
+            indent_level: 1,
+            value_id: if preferences.display_dim_on_battery_only {
+                SETTINGS_TOGGLE_ON
+            } else {
+                SETTINGS_TOGGLE_OFF
+            }
+            .to_string(),
+            stops: Vec::new(),
+            items: Vec::new(),
+            action_id: DISPLAY_DIM_ON_BATTERY_ONLY_ID.to_string(),
         });
         rows.push(UiSettingsPageRow {
             kind: "slider".to_string(),
@@ -1192,10 +1248,15 @@ fn debug_flag_enabled(state: &UiDebugState, flag_id: DebugFlagId) -> bool {
 fn project_display_policy(
     preferences: &SettingsPreferences,
     display_policy_available: bool,
+    external_power_connected: bool,
 ) -> Option<UiDisplayPolicy> {
     display_policy_available.then(|| UiDisplayPolicy {
         keep_screen_on: true,
-        dim_after_ms: preferences.display_dim_timeout.dim_after_ms(),
+        dim_after_ms: if preferences.display_dim_on_battery_only && external_power_connected {
+            None
+        } else {
+            preferences.display_dim_timeout.dim_after_ms()
+        },
         dim_brightness: DISPLAY_DIM_BRIGHTNESS,
         allow_screen_off_after_ms: preferences.inactivity_sleep_timeout.sleep_after_ms(),
     })
@@ -1295,6 +1356,98 @@ mod tests {
     }
 
     #[test]
+    fn battery_only_dimming_combines_preference_and_observed_power_in_core() {
+        for timeout in DisplayDimTimeout::all_stops() {
+            for only_on_battery in [false, true] {
+                let mut controller = SettingsController::default();
+                controller.restore_preferences(SettingsPreferences {
+                    display_dim_timeout: timeout,
+                    display_dim_on_battery_only: only_on_battery,
+                    ..Default::default()
+                });
+                // Includes initial unknown power (conservatively battery), plug/unplug,
+                // and repeated observations with a warm projection cache.
+                for connected in [false, true, true, false, true, false] {
+                    controller.set_external_power_connected(connected);
+                    let projection =
+                        controller.project(true, false, None, &banner(), &debug_state());
+                    let policy = projection.projection.display_policy.unwrap();
+                    let expected_timeout = if only_on_battery && connected {
+                        None
+                    } else {
+                        timeout.dim_after_ms()
+                    };
+                    assert_eq!(policy.dim_after_ms, expected_timeout);
+                    assert!(policy.keep_screen_on);
+                    assert_eq!(policy.allow_screen_off_after_ms, Some(3_600_000));
+                    assert!(
+                        !controller
+                            .project(true, false, None, &banner(), &debug_state())
+                            .rebuilt
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn battery_only_checkbox_is_capability_gated_and_rejects_invalid_values() {
+        let mut controller = SettingsController::default();
+        let action = UiSettingsAction {
+            action_id: DISPLAY_DIM_ON_BATTERY_ONLY_ID.to_string(),
+            value_id: "on".to_string(),
+        };
+        assert!(controller.perform_action(&action, false, false).is_err());
+        assert!(!controller
+            .project(false, false, None, &banner(), &debug_state())
+            .projection
+            .settings_page_state
+            .rows
+            .iter()
+            .any(|row| row.id == DISPLAY_DIM_ON_BATTERY_ONLY_ID));
+        assert!(controller
+            .perform_action(
+                &UiSettingsAction {
+                    value_id: "surprise".to_string(),
+                    ..action.clone()
+                },
+                true,
+                false
+            )
+            .is_err());
+        assert!(controller.perform_action(&action, true, false).unwrap());
+        assert!(!controller.perform_action(&action, true, false).unwrap());
+        let projection = controller
+            .project(true, false, None, &banner(), &debug_state())
+            .projection;
+        let row = &projection.settings_page_state.rows[2];
+        assert_eq!(row.id, DISPLAY_DIM_ON_BATTERY_ONLY_ID);
+        assert_eq!(row.title, "Only dim when on battery");
+        assert_eq!(row.kind, "toggle");
+        assert_eq!(row.value_id, "on");
+        assert_eq!(row.action_id, DISPLAY_DIM_ON_BATTERY_ONLY_ID);
+    }
+
+    #[test]
+    fn old_preferences_preserve_dimming_on_external_power() {
+        let preferences: SettingsPreferences =
+            serde_json::from_str(r#"{"display_dim_timeout":"30s"}"#).unwrap();
+        assert!(!preferences.display_dim_on_battery_only);
+        let mut controller = SettingsController::default();
+        controller.restore_preferences(preferences);
+        controller.set_external_power_connected(true);
+        assert_eq!(
+            controller
+                .project(true, false, None, &banner(), &debug_state())
+                .projection
+                .display_policy
+                .unwrap()
+                .dim_after_ms,
+            Some(30_000)
+        );
+    }
+
+    #[test]
     fn projection_cache_tracks_owned_and_typed_external_inputs() {
         let mut controller = SettingsController::default();
         let input = banner();
@@ -1313,7 +1466,7 @@ mod tests {
         assert!(capability_changed.rebuilt);
         assert_eq!(
             capability_changed.projection.settings_page_state.rows.len(),
-            3
+            4
         );
 
         let mut changed_banner = input;
@@ -1351,7 +1504,11 @@ mod tests {
             .project(true, true, Some(&bytes), &banner(), &debug_state())
             .projection
             .settings_page_state;
-        for local_id in [FLIGHT_DATA_VISIBILITY_ROW_ID, DISPLAY_DIM_TIMEOUT_ROW_ID] {
+        for local_id in [
+            FLIGHT_DATA_VISIBILITY_ROW_ID,
+            DISPLAY_DIM_TIMEOUT_ROW_ID,
+            DISPLAY_DIM_ON_BATTERY_ONLY_ID,
+        ] {
             assert!(linked
                 .rows
                 .iter()

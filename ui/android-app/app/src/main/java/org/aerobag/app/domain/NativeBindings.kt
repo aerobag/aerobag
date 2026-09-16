@@ -292,6 +292,8 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    fun setExternalPowerConnectedInSessionJson(handle: Long, connected: Boolean): String
+
     fun setOwnshipSourceSleepingInSessionJson(
         handle: Long,
         sourceId: String,
@@ -971,6 +973,8 @@ object NativeBindings : NativeBridge {
         inputJson: String,
         nowEpochMs: Double,
     ): String
+
+    external override fun setExternalPowerConnectedInSessionJson(handle: Long, connected: Boolean): String
 
     external override fun setOwnshipSourceSleepingInSessionJson(
         handle: Long,

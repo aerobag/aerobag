@@ -1523,6 +1523,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
+    fun setExternalPowerConnected(connected: Boolean): UiSessionSnapshot =
+        runPagedSnapshot("setExternalPowerConnected") {
+            bridge.setExternalPowerConnectedInSessionJson(handle, connected)
+        }
+
     fun setOwnshipSourceSleeping(
         sourceId: String,
         sleeping: Boolean,

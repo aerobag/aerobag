@@ -1192,6 +1192,16 @@ pub fn configure_platform_capabilities_in_session(
 }
 
 #[wasm_bindgen]
+pub fn set_external_power_connected_in_session(
+    handle: u32,
+    connected: bool,
+) -> Result<String, JsValue> {
+    let outcome = app_core::set_external_power_connected_in_session(handle, connected)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn accept_disclaimer_in_session(handle: u32, agreement_id: &str) -> Result<String, JsValue> {
     let snapshot = app_core::accept_disclaimer_in_session(handle, agreement_id)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;

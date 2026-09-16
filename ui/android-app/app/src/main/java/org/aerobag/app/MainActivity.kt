@@ -3207,6 +3207,17 @@ internal fun AerobagApp(
     val barometerLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(uiSession, barometerLifecycle) {
         barometerLifecycle.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            AndroidExternalPowerSource(appContext).observations().collect { connected ->
+                uiSessionWorkRunner.submitExternalPowerConnected(
+                    connected = connected,
+                    onResult = { applySessionSnapshot(it) },
+                    onError = { recoverSessionCommandFailure(it, notifyUser = false) },
+                )
+            }
+        }
+    }
+    LaunchedEffect(uiSession, barometerLifecycle) {
+        barometerLifecycle.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
             AndroidBarometerSource(appContext).observations().collect { observation ->
                 try {
                     applySessionSnapshot(uiSessionWorkRunner.awaitFlightDataObservation(observation))

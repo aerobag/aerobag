@@ -597,6 +597,15 @@ pub fn apply_situation_control_input_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn set_external_power_connected_in_session_json(
+    handle: u64,
+    connected: bool,
+) -> Result<String, String> {
+    let outcome = app_core::set_external_power_connected_in_session(handle as u32, connected)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn set_ownship_source_sleeping_in_session_json(
     handle: u64,
     source_id: &str,
@@ -4259,6 +4268,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_applySituation
         apply_situation_control_input_in_session_json(handle as u64, &input_json, now_epoch_ms)
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setExternalPowerConnectedInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    connected: bool,
+) -> jstring {
+    return_string(
+        &mut env,
+        set_external_power_connected_in_session_json(handle as u64, connected),
+    )
 }
 
 #[unsafe(no_mangle)]

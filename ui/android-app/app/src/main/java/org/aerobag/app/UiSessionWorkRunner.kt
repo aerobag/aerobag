@@ -147,6 +147,19 @@ class UiSessionWorkRunner(
         )
     }
 
+    fun submitExternalPowerConnected(
+        connected: Boolean,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "setExternalPowerConnected",
+            operation = { it.setExternalPowerConnected(connected) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
     fun submitSettingsAction(
         actionId: String,
         valueId: String,

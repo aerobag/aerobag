@@ -34,7 +34,19 @@ pub struct GcReport {
 
 impl CloudStore {
     pub fn run_gc(&self, now_epoch_ms: i64, grace_ms: i64) -> StoreResult<GcReport> {
-        let _reclamation_lock = self.inner.layout.acquire_reclamation_lock()?;
+        self.run_gc_observing_reclamation_contention(now_epoch_ms, grace_ms, || {})
+    }
+
+    pub(crate) fn run_gc_observing_reclamation_contention(
+        &self,
+        now_epoch_ms: i64,
+        grace_ms: i64,
+        on_contention: impl FnOnce(),
+    ) -> StoreResult<GcReport> {
+        let _reclamation_lock = self
+            .inner
+            .layout
+            .acquire_reclamation_lock_observing_contention(on_contention)?;
         let started = Instant::now();
         let mut report = self.run_gc_inner(now_epoch_ms, grace_ms)?;
         report.total_elapsed_ms = elapsed_ms(started);

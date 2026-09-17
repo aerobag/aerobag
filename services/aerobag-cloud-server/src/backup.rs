@@ -763,9 +763,9 @@ mod tests {
     }
 
     #[test]
-    fn pinned_wal_reader_does_not_block_writes_and_reclamation_lock_blocks_gc() {
+    fn pinned_wal_reader_allows_writes() {
         let root = TempDir::new().unwrap();
-        let (config, store) = store_with_blob(&root);
+        let (_config, store) = store_with_blob(&root);
         let source = Connection::open_with_flags(
             StorageLayout::new(root.path().to_path_buf()).database_path(),
             OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -777,39 +777,62 @@ mod tests {
                 row.get::<_, u32>(0)
             })
             .unwrap();
-        let (write_sender, write_receiver) = std::sync::mpsc::channel();
-        let writer = store.clone();
-        let write_thread = std::thread::spawn(move || {
-            write_sender
-                .send(writer.create_object(
-                    "account",
-                    "during-backup",
-                    &AcsEncryptedValue::from_ciphertext(b"new value", vec![]),
-                    30,
-                ))
-                .unwrap();
-        });
-        write_receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("a pinned WAL reader must not stop ACS writes")
+        // The SELECT above pins an actual SQLite snapshot. Write while that
+        // transaction is open; machine speed is not the property under test.
+        store
+            .create_object(
+                "account",
+                "during-backup",
+                &AcsEncryptedValue::from_ciphertext(b"new value", vec![]),
+                30,
+            )
+            .expect("a pinned WAL reader must not stop ACS writes");
+        let pinned_count: u64 = source
+            .query_row("SELECT COUNT(*) FROM objects", [], |row| row.get(0))
             .unwrap();
+        assert_eq!(pinned_count, 1, "reader must retain its pre-write snapshot");
         source.execute_batch("ROLLBACK").unwrap();
-        write_thread.join().unwrap();
+        let latest_count: u64 = source
+            .query_row("SELECT COUNT(*) FROM objects", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(latest_count, 2, "the concurrent write must be committed");
+    }
 
+    #[test]
+    fn reclamation_lock_blocks_gc_until_backup_releases_it() {
+        // These bounds diagnose a stuck worker; they are not throughput assertions
+        // and are not used to infer that a worker reached the contention point.
+        const DEADLOCK_WATCHDOG: Duration = Duration::from_secs(30);
+        let root = TempDir::new().unwrap();
+        let (config, store) = store_with_blob(&root);
         let layout = StorageLayout::new(config.storage_root.clone());
         let reclamation_lock = layout.acquire_reclamation_lock().unwrap();
+        let (contended_sender, contended_receiver) = std::sync::mpsc::channel();
         let (gc_sender, gc_receiver) = std::sync::mpsc::channel();
         let collector = store.clone();
         let gc_thread = std::thread::spawn(move || {
-            gc_sender.send(collector.run_gc(100, 0)).unwrap();
+            let result = collector.run_gc_observing_reclamation_contention(100, 0, || {
+                contended_sender.send(()).unwrap();
+            });
+            gc_sender.send(result).unwrap();
         });
-        assert!(gc_receiver.recv_timeout(Duration::from_millis(50)).is_err());
+        let contended = contended_receiver.recv_timeout(DEADLOCK_WATCHDOG);
+        let premature_result = gc_receiver.try_recv();
+        // Release even if observing contention failed, so an assertion does not
+        // strand a worker behind a lock still owned by the failed test.
         drop(reclamation_lock);
-        gc_receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("GC should continue after backup releases reclamation")
-            .unwrap();
+        contended.expect("GC never reported kernel contention on the backup reclamation lock");
+        assert!(matches!(
+            premature_result,
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        let report = gc_receiver
+            .recv_timeout(DEADLOCK_WATCHDOG)
+            .expect("GC did not resume after backup released the reclamation lock")
+            .expect("GC failed after acquiring reclamation");
         gc_thread.join().unwrap();
+        assert_eq!(report.deleted_objects, 1);
+        assert_eq!(report.deleted_blob_files, 1);
     }
 
     #[test]

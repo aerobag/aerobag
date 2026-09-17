@@ -66,14 +66,26 @@ impl StorageLayout {
     }
 
     pub fn acquire_serve_lock(&self) -> StoreResult<File> {
-        self.acquire_lock("serve.lock", true)
+        self.acquire_lock("serve.lock", true, || {})
     }
 
     pub fn acquire_reclamation_lock(&self) -> StoreResult<File> {
-        self.acquire_lock("blob-reclamation.lock", false)
+        self.acquire_reclamation_lock_observing_contention(|| {})
     }
 
-    fn acquire_lock(&self, name: &str, fail_if_busy: bool) -> StoreResult<File> {
+    pub(crate) fn acquire_reclamation_lock_observing_contention(
+        &self,
+        on_contention: impl FnOnce(),
+    ) -> StoreResult<File> {
+        self.acquire_lock("blob-reclamation.lock", false, on_contention)
+    }
+
+    fn acquire_lock(
+        &self,
+        name: &str,
+        fail_if_busy: bool,
+        on_contention: impl FnOnce(),
+    ) -> StoreResult<File> {
         fs::create_dir_all(self.locks_root())
             .map_err(|error| StoreError::io("create cloud lock directory", error))?;
         let path = self.locks_root().join(name);
@@ -84,10 +96,17 @@ impl StorageLayout {
             .write(true)
             .open(&path)
             .map_err(|error| StoreError::io("open cloud storage lock", error))?;
-        let result = if fail_if_busy {
-            file.try_lock_exclusive()
-        } else {
-            file.lock_exclusive()
+        let result = match file.try_lock_exclusive() {
+            Err(error)
+                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                    && !fail_if_busy =>
+            {
+                // Observe actual kernel contention, not a guess based on how long
+                // a worker takes to start. The normal path still blocks on flock.
+                on_contention();
+                file.lock_exclusive()
+            }
+            result => result,
         };
         result.map_err(|error| {
             StoreError::io(
@@ -100,5 +119,43 @@ impl StorageLayout {
             )
         })?;
         Ok(file)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn reclamation_guard_retains_kernel_lock_until_drop() {
+        let root = TempDir::new().unwrap();
+        let layout = StorageLayout::new(root.path().to_path_buf());
+        let guard = layout
+            .acquire_reclamation_lock_observing_contention(|| {
+                panic!("an uncontended acquisition must not report contention")
+            })
+            .unwrap();
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(layout.locks_root().join("blob-reclamation.lock"))
+            .unwrap();
+        assert_eq!(
+            probe.try_lock_exclusive().unwrap_err().raw_os_error(),
+            fs2::lock_contended_error().raw_os_error()
+        );
+        drop(guard);
+        probe.try_lock_exclusive().unwrap();
+    }
+
+    #[test]
+    fn serve_lock_still_rejects_a_second_owner() {
+        let root = TempDir::new().unwrap();
+        let layout = StorageLayout::new(root.path().to_path_buf());
+        let guard = layout.acquire_serve_lock().unwrap();
+        assert!(layout.acquire_serve_lock().is_err());
+        drop(guard);
+        layout.acquire_serve_lock().unwrap();
     }
 }

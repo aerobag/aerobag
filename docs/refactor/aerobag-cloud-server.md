@@ -804,6 +804,11 @@ must be added to this plan or discussed; they are not license to expand scope.
   and blob hashes. Offline restore atomically replaces `live/` while preserving
   the previous tree under `recovery/`. GC is the only code allowed to unlink an
   installed blob generation.
+- Backup concurrency tests verify a pinned WAL reader retains its old snapshot
+  while a write commits, and observe actual kernel-reported reclamation-lock
+  contention before releasing GC. Lock lifetime is checked with a separate file
+  handle. Timeouts bound stuck workers; elapsed time is not evidence of exclusion
+  or a throughput requirement for these correctness tests.
 - Production systemd and the dev-stack supervisor both invoke the same
   `backup-if-due` operation. The persisted due-time decision is serialized with
   backup creation; `backup-now` is the explicit operator/testing override.

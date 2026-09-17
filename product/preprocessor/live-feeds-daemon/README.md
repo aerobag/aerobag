@@ -9,6 +9,15 @@ the loaded union's `schema_version`, canonical `sha256`, and `airport_count`.
 `sha256`. Both object and array publication manifests use every listed bundle.
 Unknown manifest/catalog schemas and invalid airport identifiers are rejected.
 
+Ordinary serving uses the same loader with per-association recovery: invalid
+aliases, conflicts, and cycles are omitted while valid associations remain.
+Bad catalog/bundle inputs can be omitted when other catalogs are usable. These
+omissions are never treated as healthy: [operational status v5](../../../docs/contracts/live-feed-status-v5.md)
+reports metadata errors and Pipeline Health alarms critical on any nonzero
+count, even while NOTAM publication succeeds. Offline qualification and
+`--check-config` stay strict. The runtime catalog identity always fingerprints
+the actual retained associations. Unbound source notices remain on disk.
+
 `GET /live-feeds/compatibility.json` on the direct daemon listener returns a
 separate schema-v1 runtime envelope with `Cache-Control: no-cache, no-store`.
 `HEAD` returns the same headers without a body. This is deployment evidence,

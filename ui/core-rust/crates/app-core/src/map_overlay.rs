@@ -514,7 +514,7 @@ pub struct AirportNotamUiView {
     priority: u8,
 }
 
-pub const NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION: u32 = 4;
+pub const NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 
 /// Binary-safe form of the shared rendezvous key used across the worker boundary.
 ///
@@ -552,6 +552,7 @@ pub struct NotamDisplayRecord {
     pub id: String,
     pub subjects: BTreeSet<product_contracts::NotamSubjectKey>,
     pub airport_id: Option<String>,
+    pub airport_aliases: BTreeSet<String>,
     pub procedure_rendezvous_keys: BTreeSet<NotamDisplayProcedureKey>,
     pub label: String,
     pub text: String,
@@ -669,6 +670,9 @@ impl NotamDisplayIndex {
         if let Some(airport_id) = &record.airport_id {
             insert_projected_notam_id(&mut self.by_airport, airport_id.clone(), &record.id)?;
         }
+        for alias in &record.airport_aliases {
+            insert_projected_notam_id(&mut self.by_airport, alias.clone(), &record.id)?;
+        }
         for key in &record.procedure_rendezvous_keys {
             insert_projected_notam_id(&mut self.by_procedure, key.clone(), &record.id)?;
         }
@@ -685,6 +689,9 @@ impl NotamDisplayIndex {
         };
         if let Some(airport_id) = &record.airport_id {
             remove_projected_notam_id(&mut self.by_airport, airport_id, notam_id)?;
+        }
+        for alias in &record.airport_aliases {
+            remove_projected_notam_id(&mut self.by_airport, alias, notam_id)?;
         }
         for key in &record.procedure_rendezvous_keys {
             remove_projected_notam_id(&mut self.by_procedure, key, notam_id)?;
@@ -831,6 +838,7 @@ fn project_notam_display_record(record: &NotamRecord) -> Option<NotamDisplayReco
     Some(NotamDisplayRecord {
         id: record.id.clone(),
         subjects: record.subjects.clone(),
+        airport_aliases: record.airport_aliases.clone(),
         airport_id,
         procedure_rendezvous_keys: record
             .procedure_rendezvous_keys
@@ -859,6 +867,7 @@ fn validate_notam_display_projection_schema(schema_version: u32) -> Result<(), N
 }
 
 fn validate_projection_record(record: &NotamDisplayRecord) -> Result<(), NotamStateError> {
+    notam_state::validate_airport_aliases(record.airport_id.as_deref(), &record.airport_aliases)?;
     if record.id.is_empty() || record.id.trim() != record.id {
         return Err(NotamStateError::InvalidRecord(format!(
             "invalid projected NOTAM ID {:?}",
@@ -10238,6 +10247,7 @@ mod tests {
                 (
                     "airport".to_string(),
                     NotamRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "airport".to_string(),
                         airport_id: Some("AAA".to_string()),
@@ -10254,6 +10264,7 @@ mod tests {
                 (
                     "other-airport".to_string(),
                     NotamRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "other-airport".to_string(),
                         airport_id: Some("KBBB".to_string()),
@@ -10270,6 +10281,7 @@ mod tests {
                 (
                     "not-airport".to_string(),
                     NotamRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "not-airport".to_string(),
                         airport_id: None,
@@ -10311,6 +10323,7 @@ mod tests {
             (
                 id.to_string(),
                 NotamRecord {
+                    airport_aliases: Default::default(),
                     subjects: Default::default(),
                     id: id.to_string(),
                     airport_id: Some("KAAA".to_string()),
@@ -10423,6 +10436,7 @@ mod tests {
     #[test]
     fn notam_display_delta_matches_reprojected_canonical_state() {
         let record = |id: &str, airport_id: Option<&str>, text: &str| NotamRecord {
+            airport_aliases: Default::default(),
             subjects: Default::default(),
             id: id.to_string(),
             airport_id: airport_id.map(str::to_string),
@@ -10532,6 +10546,7 @@ mod tests {
         let first = ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap();
         let second = ProcedureRendezvousKey::shared_arrival("GLASR3").unwrap();
         let record = |key: Option<ProcedureRendezvousKey>| NotamRecord {
+            airport_aliases: Default::default(),
             subjects: Default::default(),
             id: "STAR-NOTAM".to_string(),
             airport_id: None,
@@ -10593,9 +10608,75 @@ mod tests {
     }
 
     #[test]
+    fn airport_aliases_survive_preparation_retarget_and_cancellation() {
+        let record = |airport: &str, aliases: &[&str]| {
+            serde_json::from_value::<NotamRecord>(
+                serde_json::json!({"id":"NOTICE", "airport_id":airport,
+                "airport_aliases":aliases, "text":"RWY CLSD"}),
+            )
+            .unwrap()
+        };
+        let mut source = NotamState::empty();
+        source
+            .apply_mutation(
+                NotamMutation::Upsert {
+                    record: record("PAFT", &["FLT"]),
+                },
+                &mut Default::default(),
+            )
+            .unwrap();
+        let prepared = postcard::to_allocvec(&notam_display_checkpoint(&source)).unwrap();
+        let mut index =
+            NotamDisplayIndex::from_projection_checkpoint(postcard::from_bytes(&prepared).unwrap())
+                .unwrap();
+        for id in ["FLT", "PAFT"] {
+            assert_eq!(index.airport_records(id).len(), 1, "{id}");
+        }
+        for mutation in [
+            NotamMutation::Upsert {
+                record: record("PAAB", &["4A2"]),
+            },
+            NotamMutation::Remove {
+                notam_id: "NOTICE".into(),
+            },
+        ] {
+            let mut next =
+                NotamState::from_checkpoint(source.checkpoint(), &mut Default::default()).unwrap();
+            next.apply_mutation(mutation.clone(), &mut Default::default())
+                .unwrap();
+            let delta = NotamDelta::new(
+                source.state_id().into(),
+                next.state_id().into(),
+                next.counters(),
+                vec![mutation],
+            );
+            let prepared =
+                postcard::to_allocvec(&notam_display_delta(&source, &delta).unwrap()).unwrap();
+            index
+                .apply_projection_delta(postcard::from_bytes(&prepared).unwrap())
+                .unwrap();
+            assert!(index.airport_records("FLT").is_empty());
+            assert!(index.airport_records("PAFT").is_empty());
+            for id in ["PAAB", "4A2"] {
+                assert_eq!(
+                    index.airport_records(id).len(),
+                    usize::from(next.record("NOTICE").is_some())
+                );
+            }
+            assert_eq!(
+                index,
+                NotamDisplayIndex::from_projection_checkpoint(notam_display_checkpoint(&next))
+                    .unwrap()
+            );
+            source = next;
+        }
+    }
+
+    #[test]
     fn subject_notams_survive_preparation_and_remove_old_badges_on_update_and_cancel() {
         use product_contracts::NotamSubjectKey::{Airway, Navaid};
         let record = |subject, text: &str| NotamRecord {
+            airport_aliases: Default::default(),
             id: "NOTICE".into(),
             subjects: BTreeSet::from([subject]),
             airport_id: None,

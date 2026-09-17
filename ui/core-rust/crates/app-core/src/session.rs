@@ -21059,6 +21059,7 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let record = |id: &str, text: &str| notam_state::NotamRecord {
+            airport_aliases: Default::default(),
             subjects: Default::default(),
             id: id.to_string(),
             airport_id: Some("KSEA".to_string()),
@@ -21130,6 +21131,7 @@ mod tests {
             to_state_id: "f".repeat(64),
             mutations: vec![crate::NotamDisplayMutation::Upsert(
                 crate::NotamDisplayRecord {
+                    airport_aliases: Default::default(),
                     subjects: Default::default(),
                     id: "B".to_string(),
                     airport_id: Some("ksea".to_string()),
@@ -21171,6 +21173,7 @@ mod tests {
                 .apply_mutation(
                     notam_state::NotamMutation::Upsert {
                         record: crate::NotamRecord {
+                            airport_aliases: Default::default(),
                             id: id.into(),
                             subjects: BTreeSet::from([subject]),
                             airport_id: None,
@@ -21280,6 +21283,7 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let record = |id: &str, text: &str| notam_state::NotamRecord {
+            airport_aliases: Default::default(),
             subjects: Default::default(),
             id: id.to_string(),
             airport_id: Some("KSEA".to_string()),
@@ -21698,6 +21702,7 @@ mod tests {
                     notams_by_id: HashMap::from([(
                         "D:AAA:2026:N:1".to_string(),
                         crate::NotamRecord {
+                            airport_aliases: Default::default(),
                             subjects: Default::default(),
                             id: "D:AAA:2026:N:1".to_string(),
                             airport_id: Some("KAAA".to_string()),

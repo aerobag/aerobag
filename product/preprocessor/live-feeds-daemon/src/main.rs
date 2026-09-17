@@ -199,6 +199,8 @@ struct DaemonStatusState {
 
 #[derive(Default)]
 struct ProductStatusHistory {
+    initialization_failed: bool,
+    metadata_errors: Vec<String>,
     last_update_at_utc: Option<chrono::DateTime<Utc>>,
     nominal_interval_seconds: Option<u64>,
     last_attempt_at_utc: Option<chrono::DateTime<Utc>>,
@@ -246,6 +248,8 @@ struct CdfSummary {
 
 #[derive(Debug, Clone, Serialize)]
 struct ProductStatusSnapshot {
+    metadata_error_count: usize,
+    metadata_errors: Vec<String>,
     nominal_interval_seconds: Option<u64>,
     last_attempt_at_utc: Option<chrono::DateTime<Utc>>,
     last_success_at_utc: Option<chrono::DateTime<Utc>>,
@@ -377,6 +381,70 @@ impl Default for DaemonStatus {
 }
 
 impl DaemonStatus {
+    fn record_metadata_errors(&self, product: &str, errors: Vec<String>) {
+        for error in &errors {
+            eprintln!("live-feed {product} metadata error: {error}");
+        }
+        self.inner
+            .lock()
+            .expect("live-feed status lock")
+            .products
+            .entry(product.into())
+            .or_default()
+            .metadata_errors = errors;
+    }
+
+    fn initialize_product<T>(
+        &self,
+        product: &str,
+        initialize: impl FnOnce() -> anyhow::Result<T>,
+    ) -> Option<T> {
+        match initialize() {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.record_initialization_failure(product, &error);
+                None
+            }
+        }
+    }
+
+    fn record_initialization_failure(&self, product: &str, error: &anyhow::Error) {
+        let error = format!(
+            "{product} initialization failed; restart after repairing the cause: {error:#}"
+        );
+        eprintln!("live-feed {error}");
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(product.into()).or_default();
+        history.initialization_failed = true;
+        history.metadata_errors.push(error.clone());
+        drop(state);
+        self.record_failure(
+            "publication",
+            &preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                product: product.into(),
+                phase: LiveFeedTaskPhase::Build,
+                error,
+            },
+        );
+    }
+
+    fn product_available(&self, product: &str) -> bool {
+        !self
+            .inner
+            .lock()
+            .expect("live-feed status lock")
+            .products
+            .get(product)
+            .is_some_and(|history| history.initialization_failed)
+    }
+
+    fn available_catalog(&self, mut catalog: LiveFeedsCurrentManifest) -> LiveFeedsCurrentManifest {
+        catalog
+            .products
+            .retain(|product, _| self.product_available(product));
+        catalog
+    }
+
     fn connect_client(&self) -> ClientConnectionGuard {
         let mut state = self.inner.lock().expect("live-feed status lock");
         let client_id = state.next_client_id;
@@ -630,6 +698,8 @@ impl DaemonStatus {
                 (
                     product.clone(),
                     ProductStatusSnapshot {
+                        metadata_error_count: history.metadata_errors.len(),
+                        metadata_errors: history.metadata_errors.clone(),
                         nominal_interval_seconds: history.nominal_interval_seconds,
                         last_attempt_at_utc: history.last_attempt_at_utc,
                         last_success_at_utc: history.last_success_at_utc,
@@ -661,7 +731,7 @@ impl DaemonStatus {
             })
             .collect();
         DaemonStatusSnapshot {
-            schema_version: 4,
+            schema_version: 5,
             generated_at_utc: now,
             started_at_utc: state.started_at_utc,
             active_sse_clients: state.active_clients.len(),
@@ -1059,11 +1129,8 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
                 nms_notams.config_path.display()
             );
         }
-        if !nms_notams.product_artifacts_path.is_file() {
-            bail!(
-                "--product-artifacts does not exist: {}",
-                nms_notams.product_artifacts_path.display()
-            );
+        if config.check_config {
+            LoadedPublication::load(&nms_notams.product_artifacts_path)?;
         }
         NmsConfig::from_path(&nms_notams.config_path)?;
         ensure_parent(&nms_notams.state_root, "--nms-notams-state-root")?;
@@ -1084,15 +1151,7 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
         config.service_bulletin_file.clone();
     let status = DaemonStatus::default();
     let connection_gate = ConnectionGate::new(MAX_REQUEST_CONNECTION_THREADS);
-    let publication = if config.simulation.is_none() {
-        config
-            .nms_notams
-            .as_ref()
-            .map(|nms| LoadedPublication::load(&nms.product_artifacts_path))
-            .transpose()?
-    } else {
-        None
-    };
+    let publication = load_startup_publication(&config, &status);
     let compatibility = DaemonCompatibility::new(publication.as_ref())?;
     start_live_feed_driver(
         &config,
@@ -1133,6 +1192,22 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn load_startup_publication(
+    config: &DaemonConfig,
+    status: &DaemonStatus,
+) -> Option<LoadedPublication> {
+    if config.simulation.is_some() {
+        return None;
+    }
+    let nms = config.nms_notams.as_ref()?;
+    status.register_product("notams", Duration::from_secs(nms.poll_interval_seconds));
+    let loaded = status.initialize_product("notams", || {
+        LoadedPublication::load_available(&nms.product_artifacts_path)
+    })?;
+    status.record_metadata_errors("notams", loaded.metadata_errors.clone());
+    Some(loaded)
+}
+
 fn start_live_feed_driver(
     config: &DaemonConfig,
     broker: BroadcastSseBroker,
@@ -1150,14 +1225,13 @@ fn start_live_feed_driver(
     let nms_notams = config.nms_notams.clone();
     let notam_store = nms_notams
         .as_ref()
-        .map(|nms| {
-            let publication = publication.context("NMS config has no loaded publication")?;
-            Ok::<_, anyhow::Error>(NotamPersistentStore::with_airport_catalog(
+        .zip(publication)
+        .map(|(nms, publication)| {
+            NotamPersistentStore::with_airport_catalog(
                 nms.state_root.join("publication"),
                 Arc::clone(&publication.catalog),
-            ))
-        })
-        .transpose()?;
+            )
+        });
     let tfr_detail_backfill_state_root = config.tfr_detail_backfill_state_root.clone();
     if let Err(error) =
         prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
@@ -1183,40 +1257,47 @@ fn start_live_feed_driver(
         scratch_root.join("tfr-detail-backfill"),
         status.clone(),
     );
-    if let Some(nms_notams) = nms_notams {
+    if let (Some(nms_notams), Some(publication), Some(publication_store)) =
+        (nms_notams, publication, notam_store.as_ref())
+    {
         let source = QueuedLiveFeedSource::new("notams");
         let publication_state_root = nms_notams.state_root.join("publication");
-        let publication = publication.context("NMS config has no loaded publication")?;
         let canonical_store = NmsApiCollectorStore::new(&nms_notams.state_root);
-        let publication_store = notam_store
-            .as_ref()
-            .context("NMS config has no projection store")?;
-        prepare_notam_startup(
-            &canonical_store,
-            publication_store,
-            &live_root,
-            &CompatibilityRequirements::from_loaded(publication)?.notam_catalog,
-            &source.sender(),
-        )?;
-        start_nms_notams_supervisor(
-            nms_notams,
-            publication_state_root.clone(),
-            Arc::clone(&publication.catalog),
-            source.sender(),
-            status.clone(),
-        );
-        tasks.push(Box::new(ImmediateQueuedDaemonLiveFeedTask::new(
-            LiveFeedSourceAndBuilder::new(
-                source,
-                NotamLiveFeedBuilder::new(publication_state_root),
-            ),
-            Duration::from_secs(60),
-        )));
+        let prepared = status.initialize_product("notams", || {
+            prepare_notam_startup(
+                &canonical_store,
+                publication_store,
+                &live_root,
+                &CompatibilityRequirements::from_loaded(publication)?.notam_catalog,
+                &source.sender(),
+            )
+        });
+        if prepared.is_some() {
+            start_nms_notams_supervisor(
+                nms_notams,
+                publication_state_root.clone(),
+                Arc::clone(&publication.catalog),
+                source.sender(),
+                status.clone(),
+            );
+            tasks.push(Box::new(ImmediateQueuedDaemonLiveFeedTask::new(
+                LiveFeedSourceAndBuilder::new(
+                    source,
+                    NotamLiveFeedBuilder::new(publication_state_root),
+                ),
+                Duration::from_secs(60),
+            )));
+        }
     }
     for task in &tasks {
         status.register_product(task.product_id(), task.nominal_interval());
     }
-    compatibility.configure_products(tasks.iter().map(|task| task.product_id()))?;
+    compatibility.configure_products(
+        tasks
+            .iter()
+            .map(|task| task.product_id())
+            .chain(config.nms_notams.iter().map(|_| "notams")),
+    )?;
     for mut task in tasks {
         let publisher = Arc::clone(&publisher);
         let broker = broker.clone();
@@ -1803,13 +1884,15 @@ fn load_notam_airport_catalog(
             product_artifacts_path.display()
         )
     })?;
-    load_notam_airport_catalog_bytes(product_artifacts_path, &bytes)
+    let (catalog, errors) = load_notam_airport_catalog_bytes(product_artifacts_path, &bytes)?;
+    anyhow::ensure!(errors.is_empty(), "{}", errors.join("; "));
+    Ok(catalog)
 }
 
 fn load_notam_airport_catalog_bytes(
     product_artifacts_path: &Path,
     bytes: &[u8],
-) -> anyhow::Result<NotamAirportCatalog> {
+) -> anyhow::Result<(NotamAirportCatalog, Vec<String>)> {
     let value: serde_json::Value = serde_json::from_slice(bytes).with_context(|| {
         format!(
             "failed to parse product artifacts {}",
@@ -1824,6 +1907,7 @@ fn load_notam_airport_catalog_bytes(
         value => vec![serde_json::from_value::<CurrentArtifactsManifest>(value)?],
     };
     let mut catalogs = Vec::new();
+    let mut errors = BTreeSet::new();
     let mut nav_db_count = 0_usize;
     for manifest in manifests {
         if manifest.schema_version != product_contracts::publication::current::v1::SCHEMA_VERSION {
@@ -1837,40 +1921,77 @@ fn load_notam_airport_catalog_bytes(
             &manifest.artifact_roots.unpacked,
         )?;
         for bundle_entry in manifest.bundles {
-            let bundle_path = unpacked_root.join(safe_relative_path(&bundle_entry.relative_path)?);
-            let bundle: BundleManifest = versioned_json::decode_exact(
-                "startup publication bundle",
-                &fs::read(&bundle_path)
-                    .with_context(|| format!("failed to read {}", bundle_path.display()))?,
-                product_contracts::publication::bundle::v2::SCHEMA_VERSION,
-            )
-            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            let bundle = (|| -> anyhow::Result<BundleManifest> {
+                let bundle_path =
+                    unpacked_root.join(safe_relative_path(&bundle_entry.relative_path)?);
+                versioned_json::decode_exact(
+                    "startup publication bundle",
+                    &fs::read(&bundle_path)
+                        .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+                    product_contracts::publication::bundle::v2::SCHEMA_VERSION,
+                )
+                .with_context(|| format!("failed to parse {}", bundle_path.display()))
+            })();
+            let bundle = match bundle {
+                Ok(bundle) => bundle,
+                Err(error) => {
+                    errors.insert(format!("bundle {}: {error:#}", bundle_entry.relative_path));
+                    continue;
+                }
+            };
             for package in bundle
                 .packages
                 .into_iter()
                 .filter(|package| package.family_id == "nav-db")
             {
-                let relative_zip = safe_relative_path(&package.relative_path)?;
+                let relative_zip = match safe_relative_path(&package.relative_path) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        errors.insert(format!(
+                            "nav-db package {}: {error:#}",
+                            package.relative_path
+                        ));
+                        continue;
+                    }
+                };
                 let nav_db_root = unpacked_root.join(relative_zip.with_extension(""));
-                let catalog = read_notam_airport_catalog_from_nav_db(&nav_db_root)?;
-                catalog
-                    .identity()
-                    .map_err(anyhow::Error::msg)
-                    .with_context(|| {
-                        format!("invalid NOTAM airport catalog in {}", nav_db_root.display())
-                    })?;
-                catalogs.push(catalog);
+                match read_notam_airport_catalog_from_nav_db(&nav_db_root) {
+                    Ok(catalog)
+                        if catalog.schema_version == NotamAirportCatalog::SCHEMA_VERSION =>
+                    {
+                        catalogs.push(catalog);
+                    }
+                    Ok(catalog) => {
+                        errors.insert(format!(
+                            "unsupported NOTAM airport catalog schema {} in {}",
+                            catalog.schema_version,
+                            nav_db_root.display()
+                        ));
+                    }
+                    Err(error) => {
+                        errors.insert(format!("{}: {error:#}", nav_db_root.display()));
+                    }
+                }
                 nav_db_count += 1;
             }
         }
     }
     if nav_db_count == 0 {
         bail!(
-            "product artifacts {} contain no nav-db packages",
-            product_artifacts_path.display()
+            "product artifacts {} contain no readable nav-db package references: {}",
+            product_artifacts_path.display(),
+            errors.iter().cloned().collect::<Vec<_>>().join("; ")
         );
     }
-    NotamAirportCatalog::union(catalogs.iter()).map_err(anyhow::Error::msg)
+    let (catalog, association_errors) = NotamAirportCatalog::union_for_delivery(catalogs.iter())
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{error}; {}",
+                errors.iter().cloned().collect::<Vec<_>>().join("; ")
+            )
+        })?;
+    errors.extend(association_errors);
+    Ok((catalog, errors.into_iter().collect()))
 }
 
 fn resolve_product_artifact_root(
@@ -2390,6 +2511,37 @@ fn handle_connection(
     }
     let contract_prefix = live_feeds_contract_request_prefix();
     if let Some(relative) = request_path.strip_prefix(&contract_prefix) {
+        let path = safe_relative_path(relative)?;
+        let mut components = path.components();
+        if let (Some(Component::Normal(directory)), Some(Component::Normal(product))) =
+            (components.next(), components.next())
+        {
+            if SIMULATION_PUBLICATION_DIRS
+                .iter()
+                .any(|name| directory == *name)
+                && !status.product_available(&product.to_string_lossy())
+            {
+                return write_status(
+                    &mut stream,
+                    503,
+                    "product initialization failed; see /live-feeds/status.json",
+                );
+            }
+        }
+        if path == Path::new("current.json") {
+            let Some(catalog) =
+                read_live_feed_catalog(&live_feeds_contract_root(&config.live_root))?
+            else {
+                return write_status(&mut stream, 404, "not found");
+            };
+            return write_response(
+                &mut stream,
+                method,
+                "application/json",
+                "no-cache, no-store",
+                &serde_json::to_vec(&status.available_catalog(catalog))?,
+            );
+        }
         return serve_live_feed_file(
             &mut stream,
             method,
@@ -2429,7 +2581,7 @@ fn write_sse_stream(
     write_bulletin_hint(writer, broker, &mut last_bulletin)?;
     let mut sent_events = 0_usize;
     if let Some(catalog) = read_live_feed_catalog(live_root)? {
-        write_sse_catalog_event(writer, &catalog)?;
+        write_sse_catalog_event(writer, &status.available_catalog(catalog))?;
         sent_events += 1;
         writer.flush().context("failed to flush SSE catalog")?;
         if event_limit.is_some_and(|limit| sent_events >= limit) {
@@ -2449,6 +2601,9 @@ fn write_sse_stream(
             AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms as u64,
         )) {
             Ok(queued) => {
+                if !status.product_available(&queued.invalidation.product) {
+                    continue;
+                }
                 let latency_ms =
                     checked_duration_ms(Utc::now().signed_duration_since(queued.announced_at_utc))
                         .unwrap_or(0);
@@ -3311,6 +3466,7 @@ fn write_status(stream: &mut TcpStream, status: u16, body: &str) -> anyhow::Resu
     let reason = match status {
         404 => "Not Found",
         405 => "Method Not Allowed",
+        503 => "Service Unavailable",
         _ => "Error",
     };
     write!(
@@ -3916,7 +4072,7 @@ mod tests {
         status.register_product("metars", Duration::from_secs(60));
         status.register_product("nexrad", Duration::from_secs(300));
         let payload = serde_json::to_value(status.snapshot())?;
-        assert_eq!(payload["schema_version"], 4);
+        assert_eq!(payload["schema_version"], 5);
         assert_eq!(payload["active_sse_clients"], 2);
         drop(first);
         assert_eq!(status.snapshot().active_sse_clients, 1);
@@ -4468,7 +4624,7 @@ mod tests {
 
         let snapshot = status.snapshot();
         let metars = snapshot.products.get("metars").expect("METAR status");
-        assert_eq!(snapshot.schema_version, 4);
+        assert_eq!(snapshot.schema_version, 5);
         let wire = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(
             wire["products"]["metars"]["failure_episodes"]["publication"]["failure_count"],
@@ -4530,15 +4686,22 @@ mod tests {
     }
 
     pub(super) fn write_test_publication(root: &Path, ids: &[&str]) -> anyhow::Result<PathBuf> {
-        let publication = root.join("published/build/instant");
-        let unpacked = publication.join("unpacked");
-        let nav_db = unpacked.join("nav_db_fixture");
-        fs::create_dir_all(&nav_db)?;
         let source_catalog = NotamAirportCatalog {
             aliases: Default::default(),
             schema_version: NotamAirportCatalog::SCHEMA_VERSION,
             airport_ids: ids.iter().map(|id| id.to_string()).collect(),
         };
+        write_test_publication_catalog(root, &source_catalog)
+    }
+
+    fn write_test_publication_catalog(
+        root: &Path,
+        source_catalog: &NotamAirportCatalog,
+    ) -> anyhow::Result<PathBuf> {
+        let publication = root.join("published/build/instant");
+        let unpacked = publication.join("unpacked");
+        let nav_db = unpacked.join("nav_db_fixture");
+        fs::create_dir_all(&nav_db)?;
         let built = had_nav_kv::build_nav_kv_sorted(
             vec![had_nav_kv::NavKvPair {
                 key: NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
@@ -4608,6 +4771,227 @@ mod tests {
         )?;
 
         Ok(product_artifacts)
+    }
+
+    #[test]
+    fn bad_alias_keeps_notams_available_and_reports_metadata_error() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let mut catalog = NotamAirportCatalog {
+            schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+            airport_ids: ["KSEA".into(), "PAFT".into()].into(),
+            aliases: [
+                ("FLT".into(), "PAFT".into()),
+                ("BAD".into(), "MISSING".into()),
+            ]
+            .into(),
+        };
+        let path = write_test_publication_catalog(temp.path(), &catalog)?;
+        let mut config = DaemonConfig::parse(
+            [
+                "live-feedsd",
+                "--live-root",
+                temp.path().to_str().unwrap(),
+                "--listen",
+                "127.0.0.1:0",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )?;
+        config.nms_notams = Some(NmsNotamsConfig {
+            config_path: temp.path().join("credentials.json"),
+            state_root: temp.path().join("source"),
+            product_artifacts_path: path,
+            retry_interval_ms: 1000,
+            poll_interval_seconds: 180,
+            overlap_seconds: 60,
+        });
+        let status = DaemonStatus::default();
+        let loaded = load_startup_publication(&config, &status)
+            .expect("one bad alias must not disable the NOTAM feed");
+        assert!(status.product_available("notams"));
+        assert_eq!(loaded.catalog.airport_ids, catalog.airport_ids);
+        assert_eq!(
+            loaded.catalog.aliases,
+            [("FLT".into(), "PAFT".into())].into()
+        );
+        loaded.catalog.identity().map_err(anyhow::Error::msg)?;
+        let snapshot = serde_json::to_value(status.snapshot())?;
+        assert_eq!(snapshot["products"]["notams"]["metadata_error_count"], 1);
+        assert!(snapshot["products"]["notams"]["metadata_errors"]
+            .to_string()
+            .contains("BAD"));
+        assert!(
+            LoadedPublication::load(&config.nms_notams.as_ref().unwrap().product_artifacts_path)
+                .is_err(),
+            "qualification must not certify a degraded catalog as clean"
+        );
+        let reloaded = LoadedPublication::load_available(
+            &config.nms_notams.as_ref().unwrap().product_artifacts_path,
+        )?;
+        assert_eq!(reloaded.metadata_errors, loaded.metadata_errors);
+        assert_eq!(reloaded.catalog.identity(), loaded.catalog.identity());
+        publish_json_version(&live_feeds_contract_root(temp.path()), "notams", "usable")?;
+        let compatibility = DaemonCompatibility::new(Some(&loaded))?;
+        for url in [
+            "/live-feeds/v3/current.json",
+            "/live-feeds/v3/versions/notams/usable.json",
+        ] {
+            let response = request_with_status(
+                temp.path(),
+                &format!("GET {url} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                compatibility.clone(),
+                status.clone(),
+            )?;
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+            assert!(response.contains("notams"), "{response}");
+        }
+        catalog.aliases.remove("BAD");
+        write_test_publication_catalog(temp.path(), &catalog)?;
+        let restarted = DaemonStatus::default();
+        let repaired =
+            load_startup_publication(&config, &restarted).expect("repaired catalog loads");
+        assert!(repaired.metadata_errors.is_empty());
+        assert_eq!(
+            restarted.snapshot().products["notams"].metadata_error_count,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_notam_projection_is_unavailable_even_with_a_valid_catalog() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let path = write_test_publication(temp.path(), &["PAFT"])?;
+        let publication = LoadedPublication::load(&path)?;
+        let store = NotamPersistentStore::with_airport_catalog(
+            temp.path().join("projection"),
+            Arc::clone(&publication.catalog),
+        );
+        fs::create_dir_all(store.sqlite_path().parent().unwrap())?;
+        fs::write(store.sqlite_path(), b"corrupt SQLite database")?;
+        let source = QueuedLiveFeedSource::new("notams");
+        let status = DaemonStatus::default();
+        let result = status.initialize_product("notams", || {
+            prepare_notam_startup(
+                &NmsApiCollectorStore::new(temp.path().join("canonical")),
+                &store,
+                &live_feeds_contract_root(temp.path()),
+                &CompatibilityRequirements::from_loaded(&publication)?.notam_catalog,
+                &source.sender(),
+            )
+        });
+        assert!(result.is_none());
+        assert!(!status.product_available("notams"));
+        assert!(status.product_available("metars"));
+        let compatibility = DaemonCompatibility::new(Some(&publication))?;
+        assert!(!compatibility.snapshot()?.projection_ready);
+        assert!(!compatibility.snapshot()?.ready);
+        assert!(status.snapshot().products["notams"]
+            .last_error
+            .as_ref()
+            .unwrap()
+            .contains("database"));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_notam_catalog_does_not_take_other_feeds_offline() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let path = write_test_publication(temp.path(), &["AAA"])?;
+        fs::write(&path, b"broken publication")?;
+        let mut config = DaemonConfig::parse(
+            [
+                "live-feedsd",
+                "--live-root",
+                temp.path().to_str().unwrap(),
+                "--listen",
+                "127.0.0.1:0",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )?;
+        config.nms_notams = Some(NmsNotamsConfig {
+            config_path: temp.path().join("credentials.json"),
+            state_root: temp.path().join("source"),
+            product_artifacts_path: path.clone(),
+            retry_interval_ms: 1000,
+            poll_interval_seconds: 180,
+            overlap_seconds: 60,
+        });
+        let root = live_feeds_contract_root(temp.path());
+        publish_json_version(&root, "metars", "m1")?;
+        publish_json_version(&root, "notams", "stale")?;
+        let status = DaemonStatus::default();
+        let loaded = load_startup_publication(&config, &status);
+        assert!(loaded.is_none());
+        assert!(
+            LoadedPublication::load(&path).is_err(),
+            "offline qualification remains strict"
+        );
+        let compatibility = DaemonCompatibility::new(loaded.as_ref())?;
+        assert!(!compatibility.snapshot()?.ready);
+        for (url, expected) in [
+            ("/live-feeds/v3/versions/metars/m1.json", "200 OK"),
+            ("/live-feeds/status.json", "200 OK"),
+            (
+                "/live-feeds/v3/states/notams/stale.json.xz",
+                "503 Service Unavailable",
+            ),
+            (
+                "/live-feeds/v3/versions/notams/stale.json",
+                "503 Service Unavailable",
+            ),
+            (
+                "/live-feeds/v3/deltas/notams/stale.json",
+                "503 Service Unavailable",
+            ),
+        ] {
+            let response = request_with_status(
+                temp.path(),
+                &format!("GET {url} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                compatibility.clone(),
+                status.clone(),
+            )?;
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {expected}")),
+                "{url}: {response}"
+            );
+        }
+        for url in ["/live-feeds/v3/current.json", "/live-feeds/v3/events"] {
+            let response = request_with_status(
+                temp.path(),
+                &format!("GET {url} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                compatibility.clone(),
+                status.clone(),
+            )?;
+            assert!(response.contains("\"metars\""), "{response}");
+            assert!(
+                !response.contains("\"notams\""),
+                "must not advertise stale NOTAMs: {response}"
+            );
+        }
+        let snapshot = status.snapshot();
+        let notams = &snapshot.products["notams"];
+        assert!(notams.consecutive_failure_count > 0);
+        assert_eq!(
+            notams
+                .failure_episodes
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["publication"]
+        );
+        assert!(notams
+            .last_error
+            .as_ref()
+            .unwrap()
+            .contains("initialization"));
+        assert!(notams.last_success_at_utc.is_none());
+        assert!(
+            root.join("states/notams/stale.json.xz").exists(),
+            "containment must not destroy cached data"
+        );
+        Ok(())
     }
 
     #[test]
@@ -4747,6 +5131,7 @@ mod tests {
             nav_kv_package::xz_frame_uncompressed_bytes(&bytes).map_err(anyhow::Error::msg)?,
         )?;
         let status = DaemonStatus::default();
+        status.record_metadata_errors("notams", vec!["invalid alias BAD -> MISSING".into()]);
         let mut update = PublishedLiveFeedUpdate {
             product: "notams".into(),
             version: "notam-state".into(),
@@ -4771,6 +5156,11 @@ mod tests {
             notam_compaction: None,
         };
         status.record_product_success(&update, false);
+        assert_eq!(
+            status.snapshot().products["notams"].metadata_error_count,
+            1,
+            "publishing remaining data must not clear metadata errors"
+        );
         let audit = || {
             status.snapshot().products["notams"]
                 .quality
@@ -4818,8 +5208,13 @@ mod tests {
         assert!(audit()["without_delivery_count"].is_null());
         assert!(audit()["error"].as_str().unwrap().contains("decode"));
         let payload = serde_json::to_value(status.snapshot())?;
-        assert_eq!(payload["schema_version"], 4);
+        assert_eq!(payload["schema_version"], 5);
         assert!(!payload.to_string().contains("record_ids"));
+        assert_eq!(payload["products"]["notams"]["metadata_error_count"], 1);
+        assert_eq!(
+            payload["products"]["notams"]["metadata_errors"],
+            serde_json::json!(["invalid alias BAD -> MISSING"])
+        );
         Ok(())
     }
 
@@ -5220,6 +5615,15 @@ mod tests {
         request: &str,
         compatibility: DaemonCompatibility,
     ) -> anyhow::Result<String> {
+        request_with_status(root, request, compatibility, DaemonStatus::default())
+    }
+
+    fn request_with_status(
+        root: &Path,
+        request: &str,
+        compatibility: DaemonCompatibility,
+        status: DaemonStatus,
+    ) -> anyhow::Result<String> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let config = DaemonConfig {
@@ -5239,7 +5643,6 @@ mod tests {
             sse_event_limit: Some(1),
         };
         let broker = BroadcastSseBroker::default();
-        let status = DaemonStatus::default();
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept request");
             handle_connection(stream, &config, &broker, &status, &compatibility)

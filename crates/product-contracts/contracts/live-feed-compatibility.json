@@ -104,7 +104,7 @@
           "encoding": "notam_ordered_delta_xz"
         },
         "records": {
-          "schema_version": 8,
+          "schema_version": 9,
           "encoding": "tagged-json"
         },
         "snapshot": {

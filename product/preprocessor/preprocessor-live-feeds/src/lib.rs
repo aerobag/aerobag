@@ -242,8 +242,9 @@ pub fn published_notam_record(record: &StructuredNotamRecord) -> Option<NotamRec
 
 pub fn published_notam_record_for_airport_catalog(
     record: &StructuredNotamRecord,
-    catalog: &NotamAirportCatalog,
+    index: &NotamAirportIndex,
 ) -> Option<NotamRecord> {
+    let catalog = &index.catalog;
     let airport_id = record.airport_id.as_ref().and_then(|_| {
         [
             record.airport_id.as_deref(),
@@ -256,7 +257,40 @@ pub fn published_notam_record_for_airport_catalog(
         .flatten()
         .find_map(|candidate| resolve_catalog_airport_id(catalog, candidate))
     });
-    published_notam_record_with_airport_id(record, airport_id)
+    let mut published = published_notam_record_with_airport_id(record, airport_id)?;
+    if let Some(airport_id) = &published.airport_id {
+        published.airport_aliases = index
+            .aliases_by_airport
+            .get(airport_id)
+            .cloned()
+            .unwrap_or_default();
+    }
+    Some(published)
+}
+
+/// Prepare once per publication, rather than scan every alias for every NOTAM.
+#[derive(Debug, Clone)]
+pub struct NotamAirportIndex {
+    pub(crate) catalog: std::sync::Arc<NotamAirportCatalog>,
+    aliases_by_airport: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl NotamAirportIndex {
+    pub fn new(catalog: std::sync::Arc<NotamAirportCatalog>) -> Self {
+        let mut aliases_by_airport = BTreeMap::<String, BTreeSet<String>>::new();
+        for (alias, airport) in &catalog.aliases {
+            if alias != airport {
+                aliases_by_airport
+                    .entry(airport.clone())
+                    .or_default()
+                    .insert(alias.clone());
+            }
+        }
+        Self {
+            catalog,
+            aliases_by_airport,
+        }
+    }
 }
 
 fn published_notam_record_with_airport_id(
@@ -264,6 +298,7 @@ fn published_notam_record_with_airport_id(
     airport_id: Option<String>,
 ) -> Option<NotamRecord> {
     let published = NotamRecord {
+        airport_aliases: Default::default(),
         id: record.id.clone(),
         subjects: notam_subjects::subjects(record),
         airport_id,
@@ -4054,6 +4089,7 @@ mod tests {
             ]),
         };
 
+        let catalog = NotamAirportIndex::new(std::sync::Arc::new(catalog));
         let tower = parse("GTF", "KGTF", "GREAT FALLS INTL", "SVC TWR CLSD")?.record;
         assert_eq!(
             published_notam_record_for_airport_catalog(&tower, &catalog)
@@ -4132,6 +4168,7 @@ mod tests {
             nms_initial_load::NmsNotamClassification::Domestic,
         )?;
         assert_eq!(update.record.airport_id.as_deref(), Some("4A2"));
+        let catalog = NotamAirportIndex::new(std::sync::Arc::new(catalog));
         let published = published_notam_record_for_airport_catalog(&update.record, &catalog)
             .expect("FAA local airport identity must not lose the runway outage");
         assert_eq!(published.airport_id.as_deref(), Some("PAAB"));

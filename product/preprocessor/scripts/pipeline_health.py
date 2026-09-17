@@ -1360,7 +1360,7 @@ def live_feed_failure_episodes(
     # New daemons retain episode starts independently of their bounded history.
     # Existing releases expose the same source/publication outcomes as attempts;
     # reconstruct their episodes without letting a source poll clear publication.
-    if schema_version in (3, 4):
+    if schema_version in (3, 4, 5):
         # Missing v3 instrumentation is a coverage error, not legacy support.
         return status.get("failure_episodes")
     episodes: dict[str, Any] = {}
@@ -1404,7 +1404,7 @@ def live_feed_client_count(source: Any) -> int | None:
     if not isinstance(payload, dict):
         return None
     schema = payload.get("schema_version")
-    if type(schema) is not int or schema not in (2, 3, 4):
+    if type(schema) is not int or schema not in (2, 3, 4, 5):
         return None
     count = payload.get("active_sse_clients")
     return count if type(count) is int and count >= 0 else None
@@ -1465,7 +1465,7 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
              and isinstance(counts, dict)
              and all(isinstance(k, str) and k and valid_count(v) for k, v in counts.items())
              and sum(counts.values()) == source - client)
-    unavailable = "warning" if version == 4 else "unknown"
+    unavailable = "warning" if version in (4, 5) else "unknown"
     for name, label, value in [
         ("source_record_count", "NOTAM source records", source),
         ("client_record_count", "NOTAM client records", client),
@@ -1492,7 +1492,7 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
                    and audit["tfr_overlap_count"] + audit["without_delivery_count"] == source - client)
     for name, label in [("tfr_overlap_count", "Excluded NOTAMs delivered through TFRs"),
                         ("without_delivery_count", "NOTAMs without a client delivery path")]:
-        supported = version == 4
+        supported = version in (4, 5)
         available = supported and audit_valid
         value = audit[name] if available else None
         add_metric(metrics, metric_id=f"live_feed.notams.{name}", label=label,
@@ -1502,6 +1502,26 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
                             if available else "Delivery cross-check is not instrumented in this status version"
                             if not supported else f"NOTAM delivery audit unavailable: {audit.get('error') if isinstance(audit, dict) else 'missing audit'}"),
                    details={"tfr_version": audit.get("tfr_version") if isinstance(audit, dict) else None})
+
+
+def add_notam_metadata_metric(metrics: list[dict[str, Any]], status: dict, version: int) -> None:
+    supported = version == 5
+    count = status.get("metadata_error_count")
+    errors = status.get("metadata_errors")
+    valid = (supported and type(count) is int and count >= 0
+             and isinstance(errors, list) and len(errors) == count
+             and all(isinstance(error, str) and error.strip() for error in errors))
+    add_metric(
+        metrics, metric_id="live_feed.notams.metadata_error_count",
+        label="NOTAM metadata errors", value=count if valid else None, unit="errors",
+        severity=("critical" if count else "ok") if valid else "warning" if supported else "not_instrumented",
+        critical_threshold=1,
+        message=(f"{count} NOTAM metadata errors; valid associations are retained where possible. See publication health separately."
+                 if valid and count else "No NOTAM metadata errors detected." if valid
+                 else "Missing or invalid NOTAM metadata error accounting." if supported
+                 else "NOTAM metadata error accounting is not instrumented in this status version."),
+        details={"errors": errors} if valid else None,
+    )
 
 
 def add_live_feed_metrics(
@@ -1515,7 +1535,7 @@ def add_live_feed_metrics(
     if not isinstance(products, dict):
         return
     status_schema_version = payload.get("schema_version")
-    if status_schema_version not in (2, 3, 4):
+    if status_schema_version not in (2, 3, 4, 5):
         add_metric(
             metrics,
             metric_id="live_feed.status_schema_version",
@@ -1764,6 +1784,7 @@ def add_live_feed_metrics(
                 },
             )
         if product == "notams":
+            add_notam_metadata_metric(metrics, status, status_schema_version)
             add_notam_delivery_metrics(metrics, status.get("quality"), status_schema_version)
             source_samples = status.get("source_samples")
             recent_source_rejections: list[dict[str, Any]] = []

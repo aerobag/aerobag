@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::NotamAirportCatalog;
 
@@ -61,28 +62,122 @@ impl NotamAirportCatalog {
 
     /// Union every supported cycle's validated catalog before fingerprinting.
     pub fn union<'a>(catalogs: impl IntoIterator<Item = &'a Self>) -> Result<Self, String> {
+        let catalogs: Vec<_> = catalogs.into_iter().collect();
+        for catalog in &catalogs {
+            catalog.identity()?;
+        }
+        let (catalog, errors) = Self::union_for_delivery(catalogs)?;
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        Ok(catalog)
+    }
+
+    /// Keep unambiguous associations for live delivery, with explicit diagnostics
+    /// for every omission. The resulting identity describes only retained data.
+    /// Producers and qualification should continue to use the strict `union`.
+    pub fn union_for_delivery<'a>(
+        catalogs: impl IntoIterator<Item = &'a Self>,
+    ) -> Result<(Self, Vec<String>), String> {
         let mut union = Self {
             schema_version: Self::SCHEMA_VERSION,
             airport_ids: Default::default(),
             aliases: Default::default(),
         };
+        let valid_id = |id: &str| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        };
+        let mut errors = BTreeSet::new();
+        let mut rejected = BTreeSet::new();
+        let mut targets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for catalog in catalogs {
-            catalog.identity()?;
-            union
-                .airport_ids
-                .extend(catalog.airport_ids.iter().cloned());
+            if catalog.schema_version != Self::SCHEMA_VERSION {
+                return Err(format!(
+                    "unsupported NOTAM airport catalog schema {}",
+                    catalog.schema_version
+                ));
+            }
+            if catalog.airport_ids.is_empty() {
+                errors.insert("NOTAM airport catalog is empty".into());
+            }
+            for id in &catalog.airport_ids {
+                if valid_id(id) {
+                    union.airport_ids.insert(id.clone());
+                } else {
+                    errors.insert(format!("NOTAM airport catalog contains invalid ID {id:?}"));
+                }
+            }
             for (alias, target) in &catalog.aliases {
-                if union
-                    .aliases
-                    .insert(alias.clone(), target.clone())
-                    .is_some_and(|previous| previous != *target)
+                if !valid_id(alias)
+                    || !valid_id(target)
+                    || !catalog.airport_ids.contains(target)
+                    || (catalog.airport_ids.contains(alias) && alias != target)
                 {
-                    return Err(format!("conflicting NOTAM airport alias {alias}"));
+                    errors.insert(format!(
+                        "invalid NOTAM airport alias {alias:?} -> {target:?}"
+                    ));
+                    rejected.insert(alias.clone());
+                }
+                targets
+                    .entry(alias.clone())
+                    .or_default()
+                    .insert(target.clone());
+            }
+        }
+        for (alias, choices) in &targets {
+            if choices.len() != 1 {
+                errors.insert(format!(
+                    "conflicting NOTAM airport alias {alias}: {choices:?}"
+                ));
+                rejected.insert(alias.clone());
+            }
+        }
+        // An ID can be canonical in an older cycle and an alias in a newer
+        // one. Follow only explicit FAA alias edges, never name heuristics.
+        for alias in targets.keys() {
+            if rejected.contains(alias) {
+                continue;
+            }
+            let mut visited = BTreeSet::new();
+            let mut target = alias;
+            let result = loop {
+                if rejected.contains(target) {
+                    break Err(format!(
+                        "NOTAM airport alias {alias} depends on rejected alias {target}"
+                    ));
+                }
+                if !visited.insert(target) {
+                    break Err(format!("cyclic NOTAM airport alias {alias}: {visited:?}"));
+                }
+                let Some(next) = targets.get(target).and_then(|choices| choices.first()) else {
+                    break Ok(target);
+                };
+                if next == target {
+                    break Ok(target);
+                }
+                target = next;
+            };
+            match result {
+                Ok(target) => {
+                    union.aliases.insert(alias.clone(), target.clone());
+                }
+                Err(error) => {
+                    errors.insert(error);
                 }
             }
         }
+        // Do not resurrect a rejected alias as a canonical airport from another
+        // cycle. That would attach notices to an ambiguous identity anyway.
+        for alias in targets.keys() {
+            if union.aliases.get(alias) != Some(alias) {
+                union.airport_ids.remove(alias);
+            }
+        }
         union.identity()?;
-        Ok(union)
+        Ok((union, errors.into_iter().collect()))
     }
 }
 
@@ -139,6 +234,89 @@ mod tests {
             expected.identity(),
             catalog(&["1S5", "KSFO", "KJFK", "KSFO"]).identity()
         );
+    }
+
+    #[test]
+    fn cross_cycle_canonical_id_becomes_alias() {
+        let old = catalog(&["FLT"]);
+        let mut new = catalog(&["PAFT"]);
+        new.aliases.insert("FLT".into(), "PAFT".into());
+        for cycles in [[&old, &new], [&new, &old]] {
+            assert_eq!(NotamAirportCatalog::union(cycles).unwrap(), new);
+        }
+    }
+
+    #[test]
+    fn cross_cycle_alias_chains_are_flattened_and_cycles_rejected() {
+        let mut first = catalog(&["BBB"]);
+        first.aliases.insert("AAA".into(), "BBB".into());
+        let mut second = catalog(&["CCC"]);
+        second.aliases.insert("BBB".into(), "CCC".into());
+        let mut expected = catalog(&["CCC"]);
+        expected.aliases = [("AAA".into(), "CCC".into()), ("BBB".into(), "CCC".into())].into();
+        for cycles in [[&first, &second], [&second, &first]] {
+            assert_eq!(NotamAirportCatalog::union(cycles).unwrap(), expected);
+        }
+        let mut reversed = catalog(&["AAA"]);
+        reversed.aliases.insert("BBB".into(), "AAA".into());
+        for cycles in [[&first, &reversed], [&reversed, &first]] {
+            assert!(NotamAirportCatalog::union(cycles).is_err());
+        }
+    }
+
+    #[test]
+    fn delivery_union_omits_only_invalid_associations() {
+        let mut source = catalog(&["KSEA", "PAFT", "bad id"]);
+        source.aliases = [
+            ("FLT".into(), "PAFT".into()),
+            ("BAD".into(), "MISSING".into()),
+            ("not upper".into(), "PAFT".into()),
+        ]
+        .into();
+        let (usable, errors) = NotamAirportCatalog::union_for_delivery([&source]).unwrap();
+        assert_eq!(usable.airport_ids, catalog(&["KSEA", "PAFT"]).airport_ids);
+        assert_eq!(usable.aliases, [("FLT".into(), "PAFT".into())].into());
+        assert_eq!(errors.len(), 3);
+        usable.identity().unwrap();
+        assert!(NotamAirportCatalog::union([&source]).is_err());
+    }
+
+    #[test]
+    fn delivery_union_conflicts_and_dependents_are_not_order_dependent() {
+        let mut first = catalog(&["PAFT", "PXYZ"]);
+        first.aliases.insert("FLT".into(), "PAFT".into());
+        let mut second = first.clone();
+        second.aliases.insert("FLT".into(), "PXYZ".into());
+        let mut old = catalog(&["FLT"]);
+        old.aliases.insert("OLD".into(), "FLT".into());
+        let expected = NotamAirportCatalog::union_for_delivery([&first, &second, &old]).unwrap();
+        for cycles in [[&second, &first, &old], [&old, &second, &first]] {
+            assert_eq!(
+                NotamAirportCatalog::union_for_delivery(cycles).unwrap(),
+                expected
+            );
+        }
+        let (usable, errors) = expected;
+        assert_eq!(usable, catalog(&["PAFT", "PXYZ"]));
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().any(|e| e.contains("OLD")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("conflicting") && e.contains("FLT")));
+    }
+
+    #[test]
+    fn delivery_union_quarantines_cycles_but_keeps_independent_airports() {
+        let mut first = catalog(&["BBB", "KSEA"]);
+        first.aliases.insert("AAA".into(), "BBB".into());
+        let mut second = catalog(&["AAA"]);
+        second.aliases.insert("BBB".into(), "AAA".into());
+        for cycles in [[&first, &second], [&second, &first]] {
+            let (usable, errors) = NotamAirportCatalog::union_for_delivery(cycles).unwrap();
+            assert_eq!(usable, catalog(&["KSEA"]));
+            assert_eq!(errors.len(), 2);
+            assert!(errors.iter().all(|error| error.contains("cyclic")));
+        }
     }
 
     #[test]

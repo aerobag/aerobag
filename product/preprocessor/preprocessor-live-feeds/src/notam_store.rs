@@ -31,7 +31,7 @@ use crate::{
     validate_canonical_structured_notam_record, NotamProjectionAction, StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 14;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 15;
 const LEGACY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const STATE_ID_METADATA_KEY: &str = "notam_state_id";
@@ -159,7 +159,7 @@ impl NotamStateReader {
 #[derive(Debug, Clone)]
 pub struct NotamPersistentStore {
     root: PathBuf,
-    airport_catalog: Option<Arc<NotamAirportCatalog>>,
+    airport_catalog: Option<Arc<crate::NotamAirportIndex>>,
 }
 
 #[derive(Debug)]
@@ -288,7 +288,7 @@ impl NotamPersistentStore {
     ) -> Self {
         Self {
             root: root.into(),
-            airport_catalog: Some(airport_catalog),
+            airport_catalog: Some(Arc::new(crate::NotamAirportIndex::new(airport_catalog))),
         }
     }
 
@@ -1464,7 +1464,7 @@ impl NotamPersistentStore {
             // Publication readers and acknowledgements do not reproject records.
             return Ok(());
         };
-        let expected = catalog.identity().map_err(anyhow::Error::msg)?;
+        let expected = catalog.catalog.identity().map_err(anyhow::Error::msg)?;
         let stored: Option<String> = connection
             .query_row(
                 "SELECT value FROM metadata WHERE key = ?1",
@@ -1520,7 +1520,7 @@ impl NotamPersistentStore {
                 }
                 self.migrate_incremental_schema(connection)?;
                 if let Some(catalog) = &self.airport_catalog {
-                    let identity = catalog.identity().map_err(anyhow::Error::msg)?;
+                    let identity = catalog.catalog.identity().map_err(anyhow::Error::msg)?;
                     connection.execute(
                         "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
                         params![
@@ -2018,7 +2018,7 @@ fn apply_record_to_projection(
     table: ProjectionTable,
     record: &StructuredNotamRecord,
     updated_at_utc: &str,
-    airport_catalog: Option<&NotamAirportCatalog>,
+    airport_catalog: Option<&crate::NotamAirportIndex>,
 ) -> anyhow::Result<(usize, usize)> {
     let table = table.name();
     match notam_projection_action(record)? {
@@ -3722,7 +3722,7 @@ mod tests {
         store.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
         let connection = Connection::open(store.sqlite_path())?;
         connection.execute(
-            "UPDATE metadata SET value = '8' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '14' WHERE key = 'schema_version'",
             [],
         )?;
         drop(connection);
@@ -3773,6 +3773,95 @@ mod tests {
             "RWY 01 CLSD.",
         ))?
         .context("missing canonical NOTAM")
+    }
+
+    #[test]
+    fn degraded_catalog_keeps_valid_notams_and_retains_unbound_source_records() -> anyhow::Result<()>
+    {
+        let temp = tempdir()?;
+        let mut catalog = (*provenance_catalog("PAFT")).clone();
+        catalog.aliases = [
+            ("FLT".into(), "PAFT".into()),
+            ("BAD".into(), "MISSING".into()),
+        ]
+        .into();
+        let (catalog, errors) =
+            NotamAirportCatalog::union_for_delivery([&catalog]).map_err(anyhow::Error::msg)?;
+        assert_eq!(errors.len(), 1);
+        let catalog = Arc::new(catalog);
+        let mut records = Vec::new();
+        for id in ["FLT", "BAD"] {
+            let mut record = provenance_record()?;
+            record.id = format!("notice-{id}");
+            record.airport_id = Some(id.into());
+            record.source_airport_id = Some(id.into());
+            record.icao_id = None;
+            record.location = Some(id.into());
+            record.location_designator = Some(id.into());
+            records.push(canonicalize_structured_notam_record(record)?);
+        }
+        let store = NotamPersistentStore::with_airport_catalog(temp.path(), Arc::clone(&catalog));
+        store.synchronize_current_records(&records, "2026-09-17T12:00:00Z")?;
+        for store in [
+            store,
+            NotamPersistentStore::with_airport_catalog(temp.path(), catalog),
+        ] {
+            let snapshot = store.publication_snapshot()?;
+            assert_eq!(snapshot.source_record_count, 2);
+            assert_eq!(snapshot.counters.notam_count, 1);
+            assert_eq!(
+                snapshot.server_only_record_ids,
+                BTreeSet::from([records[1].id.clone()])
+            );
+            let state =
+                NotamState::from_checkpoint(store.current_checkpoint()?, &mut Default::default())?;
+            assert_eq!(state.airport_records("PAFT")[0].id, records[0].id);
+            assert_eq!(state.airport_records("FLT")[0].id, records[0].id);
+            assert!(state.airport_records("BAD").is_empty());
+            assert_eq!(store.current_records()?.len(), 2);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_cycle_airport_rename_keeps_notams_visible_to_both_cycles() -> anyhow::Result<()> {
+        let old = provenance_catalog("FLT");
+        let mut new = (*provenance_catalog("PAFT")).clone();
+        new.aliases.insert("FLT".into(), "PAFT".into());
+        for catalogs in [[old.as_ref(), &new], [&new, old.as_ref()]] {
+            let merged = NotamAirportCatalog::union(catalogs).map_err(anyhow::Error::msg)?;
+            for source_id in ["FLT", "PAFT"] {
+                let temp = tempdir()?;
+                let mut record = provenance_record()?;
+                record.airport_id = Some(source_id.into());
+                record.source_airport_id = Some(source_id.into());
+                record.icao_id = None;
+                record.location = Some(source_id.into());
+                record.location_designator = Some(source_id.into());
+                record.airport_name = Some("FLAT".into());
+                record = canonicalize_structured_notam_record(record)?;
+                let store = NotamPersistentStore::with_airport_catalog(
+                    temp.path(),
+                    Arc::new(merged.clone()),
+                );
+                store.synchronize_current_records(
+                    std::slice::from_ref(&record),
+                    "2026-09-17T12:00:00Z",
+                )?;
+                let state = NotamState::from_checkpoint(
+                    store.current_checkpoint()?,
+                    &mut Default::default(),
+                )?;
+                assert_eq!(state.counters().notam_count, 1);
+                for id in ["FLT", "PAFT"] {
+                    let found = state.airport_records(id);
+                    assert_eq!(found.len(), 1, "source {source_id}, lookup {id}");
+                    assert_eq!(found[0].id, record.id);
+                    assert_eq!(found[0].airport_id.as_deref(), Some("PAFT"));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]

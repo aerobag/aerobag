@@ -1223,6 +1223,7 @@ mod tests {
                 state_id: "notam-state".to_string(),
                 records: vec![
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "A".to_string(),
                         airport_id: Some("KSEA".to_string()),
@@ -1235,6 +1236,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "B".to_string(),
                         airport_id: Some("KSEA".to_string()),
@@ -1246,6 +1248,7 @@ mod tests {
                         priority: 7,
                     },
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "C".to_string(),
                         airport_id: Some("KSEA".to_string()),
@@ -1330,6 +1333,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "khio-notam-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    airport_aliases: Default::default(),
                     subjects: Default::default(),
                     id: "NMS:1772308003914016".to_string(),
                     airport_id: Some("KHIO".to_string()),
@@ -1402,6 +1406,7 @@ mod tests {
                 state_id: "kbil-notam-state".to_string(),
                 records: vec![
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "A-SID".to_string(),
                         airport_id: Some("KBIL".to_string()),
@@ -1413,6 +1418,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "B-UNKEYED-ODP".to_string(),
                         airport_id: Some("KBIL".to_string()),
@@ -1422,6 +1428,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "C-NO-PLATE".to_string(),
                         airport_id: Some("KBIL".to_string()),
@@ -1433,6 +1440,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        airport_aliases: Default::default(),
                         subjects: Default::default(),
                         id: "D-RUNWAY".to_string(),
                         airport_id: Some("KBIL".to_string()),
@@ -1508,6 +1516,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "phnl-notam-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    airport_aliases: Default::default(),
                     subjects: Default::default(),
                     id: "NMS:1787002690486600".to_string(),
                     airport_id: Some("PHNL".to_string()),
@@ -1577,6 +1586,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "taytr-notam-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    airport_aliases: Default::default(),
                     subjects: Default::default(),
                     id: "STALE-TAYTR3".to_string(),
                     airport_id: None,
@@ -1604,6 +1614,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "takeoff-minimums-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    airport_aliases: Default::default(),
                     subjects: Default::default(),
                     id: "KRNT-ODP".to_string(),
                     airport_id: Some("KRNT".to_string()),

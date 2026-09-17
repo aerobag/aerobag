@@ -20,7 +20,7 @@
   "live_feeds": {
     "manifest_schema": 3,
     "product_contracts": {
-      "notams": 8
+      "notams": 9
     }
   },
   "nav_db": {

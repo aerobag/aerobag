@@ -42,21 +42,34 @@ pub(super) struct StartupPublication {
 pub(super) struct LoadedPublication {
     pub identity: StartupPublication,
     pub catalog: Arc<NotamAirportCatalog>,
+    pub metadata_errors: Vec<String>,
 }
 
 impl LoadedPublication {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let loaded = Self::load_available(path)?;
+        if !loaded.metadata_errors.is_empty() {
+            bail!(
+                "NOTAM publication metadata errors: {}",
+                loaded.metadata_errors.join("; ")
+            );
+        }
+        Ok(loaded)
+    }
+
+    pub fn load_available(path: &Path) -> anyhow::Result<Self> {
         let path = fs::canonicalize(path)
             .with_context(|| format!("failed to resolve startup publication {}", path.display()))?;
         let bytes = fs::read(&path)
             .with_context(|| format!("failed to read startup publication {}", path.display()))?;
-        let catalog = Arc::new(load_notam_airport_catalog_bytes(&path, &bytes)?);
+        let (catalog, metadata_errors) = load_notam_airport_catalog_bytes(&path, &bytes)?;
         Ok(Self {
             identity: StartupPublication {
                 path,
                 sha256: sha256_hex(&bytes),
             },
-            catalog,
+            catalog: Arc::new(catalog),
+            metadata_errors,
         })
     }
 }
@@ -783,6 +796,22 @@ mod tests {
             loaded.catalog.airport_ids,
             BTreeSet::from(["AAA".into(), "BBB".into(), "CCC".into()])
         );
+        fs::rename(
+            extra_root.join("nav_db_second/root"),
+            extra_root.join("saved-root"),
+        )?;
+        assert!(LoadedPublication::load(&path_a).is_err());
+        let available = LoadedPublication::load_available(&path_a)?;
+        assert_eq!(
+            available.catalog.airport_ids,
+            BTreeSet::from(["AAA".into(), "BBB".into()])
+        );
+        assert_eq!(available.metadata_errors.len(), 1);
+        assert!(available.metadata_errors[0].contains("nav_db_second"));
+        fs::rename(
+            extra_root.join("saved-root"),
+            extra_root.join("nav_db_second/root"),
+        )?;
         a["schema_version"] = 99.into();
         fs::write(&path_a, serde_json::to_vec(&a)?)?;
         assert!(LoadedPublication::load(&path_a).is_err());
@@ -794,6 +823,13 @@ mod tests {
             serde_json::to_vec(&bundle_b)?,
         )?;
         assert!(LoadedPublication::load(&path_a).is_err());
+        let available = LoadedPublication::load_available(&path_a)?;
+        assert_eq!(
+            available.catalog.airport_ids,
+            BTreeSet::from(["AAA".into(), "BBB".into()])
+        );
+        assert_eq!(available.metadata_errors.len(), 1);
+        assert!(available.metadata_errors[0].contains("bundle_second"));
         Ok(())
     }
 }

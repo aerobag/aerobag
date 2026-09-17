@@ -120,6 +120,42 @@ class NotamDeliveryMetricTests(unittest.TestCase):
         self.assertIsNone(row["value"])
         self.assertEqual(row["severity"], "not_instrumented")
 
+    def test_metadata_errors_alarm_immediately_despite_successful_publication(self):
+        facts = self.facts(version=5)
+        status = facts["inputs"]["live_feeds_status"]["payload"]["products"]["notams"]
+        status.update(last_success_at_utc=datetime.now(timezone.utc).isoformat(),
+                      metadata_error_count=1, metadata_errors=['invalid alias BAD -> MISSING'])
+        row = self.metrics(facts)["live_feed.notams.metadata_error_count"]
+        self.assertEqual(row["value"], 1)
+        self.assertEqual(row["severity"], "critical")
+        self.assertIn('BAD', str(row['details']))
+        status.update(metadata_error_count=0, metadata_errors=[])
+        row = self.metrics(facts)["live_feed.notams.metadata_error_count"]
+        self.assertEqual(row["value"], 0)
+        self.assertEqual(row["severity"], "ok")
+
+    def test_missing_or_invalid_metadata_accounting_is_not_zero(self):
+        for fields in [{}, {'metadata_error_count': 0},
+                       {'metadata_error_count': True, 'metadata_errors': ['bad']},
+                       {'metadata_error_count': 1, 'metadata_errors': []},
+                       {'metadata_error_count': -1, 'metadata_errors': []},
+                       {'metadata_error_count': 1, 'metadata_errors': ['']}]:
+            facts = self.facts(version=5)
+            facts['inputs']['live_feeds_status']['payload']['products']['notams'].update(fields)
+            row = self.metrics(facts)['live_feed.notams.metadata_error_count']
+            self.assertIsNone(row['value'])
+            self.assertEqual(row['severity'], 'warning')
+        for version in [2, 3, 4]:
+            row = self.metrics(self.facts(version))['live_feed.notams.metadata_error_count']
+            self.assertIsNone(row['value'])
+            self.assertEqual(row['severity'], 'not_instrumented')
+
+    def test_v5_keeps_all_existing_delivery_coverage(self):
+        facts = self.facts(version=5)
+        self.assertEqual(self.metrics(facts)['live_feed.notams.without_delivery_count']['value'], 25)
+        facts['inputs']['live_feeds_status']['payload']['products']['notams']['quality'] = {}
+        self.assertEqual(self.metrics(facts)['live_feed.notams.source_record_count']['severity'], 'warning')
+
 
 class ChartQualityMetricTests(unittest.TestCase):
     now = datetime(2026, 9, 13, 15, 0, tzinfo=timezone.utc)
@@ -2012,6 +2048,20 @@ class LiveFeedRecoveryTests(unittest.TestCase):
         self.assertTrue(all(m["severity"] == "ok" for m in metrics.values()))
         self.assertEqual(metrics["failure_rate_2h"]["value"], 0.5)
 
+    def test_notam_initialization_failure_is_visible_without_any_successful_publication(self) -> None:
+        error = 'notams initialization failed: invalid NOTAM airport alias'
+        status = {"last_source_timestamp_utc": None, "last_success_at_utc": None,
+                  "failure_episodes": {"publication": {
+                      "first_failure_at_utc": self.at(0), "last_failure_at_utc": self.at(0),
+                      "failure_count": 1, "phase": "build", "error": error,
+                  }}}
+        immediate = self.metrics(status, 0, "notams")
+        self.assertEqual(immediate["stale_seconds"]["severity"], "critical")
+        self.assertEqual(immediate["consecutive_failures"]["value"], 1)
+        ongoing = self.metrics(status, 601, "notams")["failure_duration_seconds"]
+        self.assertEqual(ongoing["severity"], "critical")
+        self.assertEqual(ongoing["details"]["failures"][0]["error"], error)
+
     def test_legacy_source_and_publication_recover_independently(self) -> None:
         status = {"last_source_timestamp_utc": self.at(30), "consecutive_failure_count": 0,
                   "attempts": [self.attempt(-60, "success"), self.attempt(0, "failure", "publish"),
@@ -2363,7 +2413,7 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
         self.assertFalse(any(alert["metric_id"].endswith(self.name) for alert in result["alerts"]))
 
     def test_zero_and_large_counts_are_informational_in_all_supported_schemas(self) -> None:
-        for schema in [2, 3, 4]:
+        for schema in [2, 3, 4, 5]:
             for count in [0, 100_000]:
                 with self.subTest(schema=schema, count=count):
                     facts = self.facts({"production": self.channel(count, schema=schema)})
@@ -2380,7 +2430,7 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
         missing = self.channel(0)["inputs"]["live_feeds_status"]
         del missing["payload"]["active_sse_clients"]
         sources.append(missing)
-        for schema in [1, 5, None, "3", 3.0, "4", 4.0]:
+        for schema in [1, 6, None, "3", 3.0, "4", 4.0, "5", 5.0]:
             sources.append(self.channel(2, schema=schema)["inputs"]["live_feeds_status"])
         sources.extend([None, {}, {"payload": []}, {"payload": None, "error": "offline"}])
         stale = self.channel(5)["inputs"]["live_feeds_status"]

@@ -32,6 +32,8 @@ pub struct NotamRecord {
     #[serde(default)]
     pub airport_id: Option<String>,
     #[serde(default)]
+    pub airport_aliases: BTreeSet<String>,
+    #[serde(default)]
     pub airport_effects: BTreeSet<AirportNotamEffect>,
     #[serde(default)]
     pub procedure_rendezvous_keys: BTreeSet<ProcedureRendezvousKey>,
@@ -50,6 +52,13 @@ pub struct NotamRecord {
 }
 
 impl NotamRecord {
+    pub fn airport_ids(&self) -> impl Iterator<Item = &str> {
+        self.airport_id
+            .as_deref()
+            .into_iter()
+            .chain(self.airport_aliases.iter().map(String::as_str))
+    }
+
     pub fn has_display_anchor(&self) -> bool {
         self.airport_id
             .as_deref()
@@ -370,7 +379,7 @@ impl NotamState {
                 .insert(notam_id.clone(), leaf_hash(&notam_id, &canonical));
             work.leaf_hashes_computed += 1;
             add_record_counters(&mut counters, &record);
-            if let Some(airport_id) = record.airport_id.as_deref() {
+            for airport_id in record.airport_ids() {
                 let airport_id = normalize_airport_id(airport_id);
                 if !airport_id.is_empty() {
                     by_airport
@@ -539,25 +548,26 @@ impl NotamState {
         record: &NotamRecord,
         work: &mut NotamApplyWork,
     ) -> Result<(), NotamStateError> {
-        let Some(airport_id) = record.airport_id.as_deref() else {
-            return Ok(());
-        };
-        let airport_id = normalize_airport_id(airport_id);
-        if airport_id.is_empty() {
-            return Ok(());
-        }
-        let ids = self.by_airport.entry(airport_id).or_default();
-        match ids.binary_search(&record.id) {
-            Ok(_) => Err(NotamStateError::Invariant(format!(
-                "NOTAM {} is already present in its airport index",
-                record.id
-            ))),
-            Err(index) => {
-                ids.insert(index, record.id.clone());
-                work.secondary_index_insertions += 1;
-                Ok(())
+        for airport_id in record.airport_ids() {
+            let airport_id = normalize_airport_id(airport_id);
+            if airport_id.is_empty() {
+                continue;
+            }
+            let ids = self.by_airport.entry(airport_id).or_default();
+            match ids.binary_search(&record.id) {
+                Ok(_) => {
+                    return Err(NotamStateError::Invariant(format!(
+                        "NOTAM {} is already present in its airport index",
+                        record.id
+                    )))
+                }
+                Err(index) => {
+                    ids.insert(index, record.id.clone());
+                    work.secondary_index_insertions += 1;
+                }
             }
         }
+        Ok(())
     }
 
     fn remove_from_airport_index(
@@ -565,32 +575,31 @@ impl NotamState {
         record: &NotamRecord,
         work: &mut NotamApplyWork,
     ) -> Result<(), NotamStateError> {
-        let Some(airport_id) = record.airport_id.as_deref() else {
-            return Ok(());
-        };
-        let airport_id = normalize_airport_id(airport_id);
-        if airport_id.is_empty() {
-            return Ok(());
-        }
-        let remove_airport = {
-            let ids = self.by_airport.get_mut(&airport_id).ok_or_else(|| {
-                NotamStateError::Invariant(format!(
-                    "NOTAM {} is missing airport index {airport_id}",
-                    record.id
-                ))
-            })?;
-            let index = ids.binary_search(&record.id).map_err(|_| {
-                NotamStateError::Invariant(format!(
-                    "NOTAM {} is missing from airport index {airport_id}",
-                    record.id
-                ))
-            })?;
-            ids.remove(index);
-            work.secondary_index_removals += 1;
-            ids.is_empty()
-        };
-        if remove_airport {
-            self.by_airport.remove(&airport_id);
+        for airport_id in record.airport_ids() {
+            let airport_id = normalize_airport_id(airport_id);
+            if airport_id.is_empty() {
+                continue;
+            }
+            let remove_airport = {
+                let ids = self.by_airport.get_mut(&airport_id).ok_or_else(|| {
+                    NotamStateError::Invariant(format!(
+                        "NOTAM {} is missing airport index {airport_id}",
+                        record.id
+                    ))
+                })?;
+                let index = ids.binary_search(&record.id).map_err(|_| {
+                    NotamStateError::Invariant(format!(
+                        "NOTAM {} is missing from airport index {airport_id}",
+                        record.id
+                    ))
+                })?;
+                ids.remove(index);
+                work.secondary_index_removals += 1;
+                ids.is_empty()
+            };
+            if remove_airport {
+                self.by_airport.remove(&airport_id);
+            }
         }
         Ok(())
     }
@@ -674,6 +683,7 @@ impl NotamMerkleIndex {
 
 pub fn canonical_record_bytes(record: &NotamRecord) -> Result<Vec<u8>, NotamStateError> {
     validate_notam_id(&record.id)?;
+    validate_airport_aliases(record.airport_id.as_deref(), &record.airport_aliases)?;
     for subject in &record.subjects {
         subject.validate().map_err(NotamStateError::InvalidRecord)?;
     }
@@ -683,6 +693,26 @@ pub fn canonical_record_bytes(record: &NotamRecord) -> Result<Vec<u8>, NotamStat
             record.id
         ))
     })
+}
+
+pub fn validate_airport_aliases(
+    airport_id: Option<&str>,
+    aliases: &BTreeSet<String>,
+) -> Result<(), NotamStateError> {
+    for alias in aliases {
+        if airport_id.is_none()
+            || Some(alias.as_str()) == airport_id
+            || alias.is_empty()
+            || !alias
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        {
+            return Err(NotamStateError::InvalidRecord(format!(
+                "invalid NOTAM airport alias {alias:?} for {airport_id:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_mutation_order(mutations: &[NotamMutation]) -> Result<(), NotamStateError> {
@@ -904,6 +934,7 @@ mod tests {
 
     fn record(id: &str, airport_id: Option<&str>, text: &str) -> NotamRecord {
         NotamRecord {
+            airport_aliases: Default::default(),
             subjects: Default::default(),
             id: id.to_string(),
             airport_id: airport_id.map(str::to_string),
@@ -1063,11 +1094,71 @@ mod tests {
     }
 
     #[test]
+    fn aliases_are_indexed_once_and_removed_on_retarget_and_cancel() {
+        let mut notice = record("NOTICE", Some("PAFT"), "RWY CLSD");
+        notice.airport_aliases.insert("FLT".into());
+        let mut state = NotamState::empty();
+        state
+            .apply_mutation(
+                NotamMutation::Upsert {
+                    record: notice.clone(),
+                },
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert_eq!(state.airport_records("FLT"), state.airport_records("PAFT"));
+        assert_eq!(state.airport_records("FLT").len(), 1);
+        assert_eq!(state.counters().airport_notam_count, 1);
+        assert_eq!(
+            state.airport_index(),
+            NotamState::from_checkpoint(state.checkpoint(), &mut Default::default())
+                .unwrap()
+                .airport_index()
+        );
+        notice.airport_id = Some("PAAB".into());
+        notice.airport_aliases = BTreeSet::from(["4A2".into()]);
+        state
+            .apply_mutation(
+                NotamMutation::Upsert { record: notice },
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert!(state.airport_records("FLT").is_empty());
+        assert!(state.airport_records("PAFT").is_empty());
+        assert_eq!(state.airport_records("4A2").len(), 1);
+        state
+            .apply_mutation(
+                NotamMutation::Remove {
+                    notam_id: "NOTICE".into(),
+                },
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert!(state.airport_index().is_empty());
+        assert_eq!(state.counters(), NotamCounters::default());
+    }
+
+    #[test]
+    fn invalid_airport_aliases_cannot_enter_canonical_state() {
+        for (airport, alias) in [
+            (None, "FLT"),
+            (Some("PAFT"), "PAFT"),
+            (Some("PAFT"), "flt"),
+            (Some("PAFT"), ""),
+            (Some("PAFT"), " FLT"),
+        ] {
+            let mut record = record("NOTICE", airport, "RWY CLSD");
+            record.airport_aliases.insert(alias.into());
+            assert!(canonical_record_bytes(&record).is_err());
+        }
+    }
+
+    #[test]
     fn canonical_record_encoding_is_stable() {
         let record = record("A", Some("KSEA"), "RWY 16L CLSD");
         assert_eq!(
             String::from_utf8(canonical_record_bytes(&record).unwrap()).unwrap(),
-            r#"{"id":"A","subjects":[],"airport_id":"KSEA","airport_effects":["routine_advisory"],"procedure_rendezvous_keys":[],"notam_keyword":"AD","effective_start_utc":"2026-07-22T00:00:00Z","effective_end_utc":null,"text":"RWY 16L CLSD","local_text":null,"icao_text":null}"#
+            r#"{"id":"A","subjects":[],"airport_id":"KSEA","airport_aliases":[],"airport_effects":["routine_advisory"],"procedure_rendezvous_keys":[],"notam_keyword":"AD","effective_start_utc":"2026-07-22T00:00:00Z","effective_end_utc":null,"text":"RWY 16L CLSD","local_text":null,"icao_text":null}"#
         );
     }
 
@@ -1087,7 +1178,7 @@ mod tests {
         assert_eq!(bucket_for_id(&record.id), 342);
         assert_eq!(
             hash_hex(&record_leaf_hash(&record).unwrap()),
-            "f2ecd8d88b2bf1bfc1ca4bb0a63106ffbc512ded24ab15ae1fe3520a82fbde8f"
+            "f81fbd746aaca552e07c75331fc2b8a3b563b675fbfba1222c2e736ade19bc9b"
         );
         assert_eq!(
             hash_hex(&empty_buckets[0]),
@@ -1099,11 +1190,11 @@ mod tests {
         );
         assert_eq!(
             NotamState::empty().state_id(),
-            "782f4c1da6bc9c1a94a9a6d30c3fd3d72ee64f1e15c622d30ca496e176e6940f"
+            "5e731b0e6fffb67a1acb16f8fb5edf23e7cef450260c8d9e410283a3a48384a6"
         );
         assert_eq!(
             state.state_id(),
-            "67955dd200a1b5c3b4a2289eaf5b4d30ef256fbab7cc4201fd6dd482b6747c93"
+            "b2a8d24fc2078ef2e28a4ffd317c4089811db73d4c37d57aa05847f4ceabb660"
         );
     }
 

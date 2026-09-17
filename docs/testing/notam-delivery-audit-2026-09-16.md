@@ -182,3 +182,93 @@ and Android physical-tap tests passed. A new red/green production FP-row test
 ensures the NOTAM badge does not shrink the waypoint button: it overlays the
 existing icon area with a separate tap target instead. Full app browser/emulator
 release journeys remain unrun pending the new publication and fixture handoff.
+
+## September 17: Cross-Cycle Airport Alias Repair
+
+The first NAV27 publication failed daemon startup because `FLT` was canonical
+in cycle 2609 but an alias for `PAFT` in cycle 2610. Both individual catalogs
+were valid. Strictly validating their unnormalized union invented a conflict.
+This was the only such collision in that publication.
+
+The fix follows explicit alias chains and carries airport aliases in each
+client notice, preserving lookup under either cycle's identity. Merely deleting
+the alias or choosing a cycle would have started the server while losing notice
+visibility on the other cycle. See [NOTAM records v9](../contracts/notam-records-v9.md).
+New regressions were observed failing for the catalog union, the prepared client
+lookup, and propagation of a malformed publication error before the fixes.
+
+The rebuilt daemon successfully described publication
+`main-e71021b4ba9c/20260917T044230Z`, with 19,451 canonical airports and catalog
+identity `b1f8beff52c75ec58fbeb890f337821f6e9f19a28b011897b662a9a918fc3be6`.
+Neither production nor the shared dev-stack was restarted during validation.
+
+The raw trace has no publication catalog, so its records gain empty alias sets;
+the admission, updates, expiry, and removal decisions must not change. An
+independent hash calculation first reproduced the reviewed v8 final hash above,
+then calculated the v9 expected final hash below from those same records:
+
+```json
+{
+  "schema_version": 1,
+  "baseline_record_count": 32630,
+  "poll_count": 498,
+  "update_count": 580,
+  "transition_count": 118,
+  "mutation_count": 1443,
+  "removal_count": 1209,
+  "repeated_mutation_id_count": 89,
+  "final_state_id": "cebde5724a38fa74986965525002cef0a55bdaf80a3ee9968bc9414063a8cc6d"
+}
+```
+
+The external fixture handoff is still pending: publish genuinely rebuilt
+NAV27/NOTAM9 compact fixtures and the reviewed raw-trace expectation, then update
+the artifact pin. Do not relabel the older NAV26/NOTAM7 fixture bytes.
+
+Validation completed against a separate local copy of the raw fixture with that
+reviewed expectation: all 114 recovery paths, 10 checkpoints, and 269 delta spans
+converged in 1,630 seconds. Comparing both exported traces confirmed that all
+29,587 initial records, 28,611 final records, and every timestamped mutation were
+identical after removing the new empty `airport_aliases` field. Counts and
+admission/removal decisions were unchanged.
+
+All 12 non-Python cheap-preflight suites passed. The Python lane stopped at the
+known NAV26-versus-NAV27 fixture metadata gate; its ordinary tests were run
+separately with 795 passing and one skipped. Telemetry contract validation also
+passed. This is not a green external-fixture gate or a browser/emulator release
+journey run. The shared dev stack and production remain untouched.
+
+### Partial Delivery Instead Of Metadata-Driven Outages
+
+Follow-up policy: an isolated catalog defect must not disable the NOTAM feed.
+The loader now returns a usable catalog plus explicit diagnostics. Invalid IDs,
+alias conflicts/cycles, and dependent ambiguous aliases are omitted; surviving
+associations are fingerprinted and used normally. An unreadable catalog/bundle
+can be omitted when other catalogs remain usable. Canonical source records are
+retained, so omissions can be repaired through the normal catalog re-projection.
+
+[Operational status v5](../contracts/live-feed-status-v5.md) adds a persistent
+`metadata_error_count` gauge and detailed errors. Pipeline Health immediately
+alarms critical above zero. Successful or unchanged publications do not clear
+the gauge; a restart with repaired inputs does. Offline qualification still
+rejects a damaged candidate. Only genuinely unrecoverable inputs (no usable
+catalog, unreadable entire publication, corrupt storage) stop NOTAM publication.
+
+The bad-alias availability test was observed failing on the old startup path,
+and the critical-metric test failed because that measurement did not exist.
+Both pass with the new behavior. Additional tests exercise partial publication
+and database reopening, retained unbound notices, HTTP availability, diagnostic
+persistence, repaired restart, conflict ordering, dependent aliases, cycles,
+and missing/invalid/older telemetry without inventing zero values.
+
+Follow-up verification: all 12 non-Python cheap-preflight suites passed; the
+Python gate still reports the existing NAV26-versus-NAV27 smoke-fixture pin.
+Running that lane's Python tests separately passed 798 tests with one skipped.
+Telemetry validation passed. Strict inspection of the actual two-cycle
+publication still yields 19,451 airports and the same catalog identity above,
+with no metadata omissions. Shared services were not restarted.
+
+Integration note: upstream subsequently advanced the client to NAV28 for glide
+performance data. After rebasing, the pending compact-fixture handoff must target
+NAV28/NOTAM9, not NAV27/NOTAM9. The earlier NAV27 publication/replay evidence
+above remains the actual tested input, not relabeled fixture metadata.

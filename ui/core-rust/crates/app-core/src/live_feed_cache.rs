@@ -3664,6 +3664,7 @@ mod tests {
 
     fn notam_record(id: &str, text: &str) -> notam_state::NotamRecord {
         notam_state::NotamRecord {
+            airport_aliases: Default::default(),
             subjects: Default::default(),
             id: id.to_string(),
             airport_id: Some("KSEA".to_string()),

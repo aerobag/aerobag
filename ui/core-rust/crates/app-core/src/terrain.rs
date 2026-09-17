@@ -250,7 +250,7 @@ pub(crate) fn sample_terrain_elevation_ft(
     Ok(highest_elevation_ft)
 }
 
-fn terrain_tile_position(position: crate::LatLon, z: u32) -> (u32, u32, f64, f64) {
+pub(crate) fn terrain_tile_position(position: crate::LatLon, z: u32) -> (u32, u32, f64, f64) {
     let tiles_at_zoom = 2_u32.pow(z);
     let (world_x, world_y) = lat_lon_to_world(position.lat, position.lon);
     let max_tile_coordinate = tiles_at_zoom as f64 - 1e-9;

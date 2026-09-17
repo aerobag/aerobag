@@ -57,7 +57,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
   journey("shared.map-modes-and-overlays", "p1", shared, [
     "raster.none", "raster.sec", "raster.tac", "raster.flyway", "raster.enr-l",
     "raster.enr-h", "raster.shaded-relief", "layer.world-basemap", "layer.vectors",
-    "layer.metars", "layer.nexrad", "layer.traffic", "layer.terrain-warning",
+    "layer.metars", "layer.nexrad", "layer.traffic", "layer.terrain-warning", "layer.glide-ring",
     "layer.offline-regions", "map.n-up", "map.trk-up", "map.track-gap",
     "map.warning", "map.chart-reference",
   ], { live_feed_profile: "mixed" }),

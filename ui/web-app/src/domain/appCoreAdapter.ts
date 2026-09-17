@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { BarometerCommand, UiAirwayRouteDragPhase } from "../generated/sessionPageWire";
+import type { BarometerCommand, UiAirwayRouteDragPhase, UiGlideRing } from "../generated/sessionPageWire";
 import type {
   AltitudeComparisonPanelUiView,
   AppUiState,
@@ -915,6 +915,7 @@ export interface UiSession {
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon): Promise<MapSelectionQueryResult>;
   queryMapSelectionDistance(target: LatLon): Promise<string | null>;
   queryMapSelectionForNavRef(viewport: MapViewportState, widthPx: number, heightPx: number, navRef: NavRef): Promise<MapSelectionForNavRefResult>;
+  queryGlideRing(): Promise<UiGlideRing>;
   queryTerrainOverlay(
     viewport: MapViewportState,
     widthPx: number,
@@ -1101,6 +1102,7 @@ type WasmModule = {
   get_map_selection_for_nav_ref_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, navRefJson: string, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
   get_scheduled_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, decodedCacheKeysJson: string, inFlightCacheKeysJson: string, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  query_glide_ring_in_session(handle: number, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
@@ -2182,6 +2184,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             ),
           ),
         ),
+      queryGlideRing: () => uiSessionWorkRunner.run("glide_ring", "glide_ring", () =>
+        runSessionResult<UiGlideRing>(() => this.module.query_glide_ring_in_session(handle, this.clockEpochMs()),
+          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes)),
+      ),
       queryTerrainOverlay: (viewport, widthPx, heightPx, decodedCacheKeys, inFlightCacheKeys) =>
         uiSessionWorkRunner.run("terrain_overlay", "terrain_overlay", () =>
           runSessionResult<TerrainOverlayQueryResult>(
@@ -2488,6 +2494,7 @@ async function loadBestAvailableAdapterUncached(
     "get_map_selection_for_nav_ref_in_session",
     "get_terrain_overlay_in_session",
     "get_scheduled_terrain_overlay_in_session",
+    "query_glide_ring_in_session",
     "get_nexrad_overlay_in_session",
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",

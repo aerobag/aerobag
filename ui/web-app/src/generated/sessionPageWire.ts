@@ -5,7 +5,7 @@
 
 import type { NavSymbolFeature } from "./navQueryWire";
 
-export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 16 as const;
+export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 17 as const;
 
 export const UI_INVALIDATION_VALUES = ["nav_data", "session_snapshot", "raster_tiles", "map_overlay", "nexrad_overlay", "terrain_overlay", "flight_plan_route", "debug_panel"] as const;
 
@@ -318,6 +318,7 @@ export type UiMapLayerOption = {
 };
 
 export type UiMapLayerState = {
+  glide_ring: UiMapLayerToggleState;
   metars: UiMapLayerToggleState;
   nexrad: UiMapLayerToggleState;
   offline_regions: UiMapLayerToggleState;
@@ -328,7 +329,22 @@ export type UiMapLayerState = {
   world_basemap: UiMapLayerToggleState;
 };
 
-export type MapLayerId = "world_basemap" | "vectors" | "metars" | "nexrad" | "traffic" | "terrain_warning" | "offline_regions";
+export type UiGlidePoint = {
+  lat: number;
+  lon: number;
+};
+
+export type UiGlideRing = {
+  label_position?: UiGlidePoint | null;
+  message?: string | null;
+  paths: UiGlidePoint[][];
+  recheck_after_ms: number;
+  speed_label: string;
+  wind_direction_deg_true?: number | null;
+  wind_label: string;
+};
+
+export type MapLayerId = "world_basemap" | "vectors" | "metars" | "nexrad" | "traffic" | "terrain_warning" | "glide_ring" | "offline_regions";
 
 export type UiMapInteractionMode = "explore" | "find_route";
 

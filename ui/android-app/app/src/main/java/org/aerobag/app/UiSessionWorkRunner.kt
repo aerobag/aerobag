@@ -344,6 +344,12 @@ class UiSessionWorkRunner(
         )
     }
 
+    suspend fun queryGlideRing(
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): org.aerobag.app.generated.UiGlideRing = awaitPayload { onResult, onError, onDropped ->
+        GlideRingPayload(fetchResource, onResult, onError, onDropped)
+    }
+
     suspend fun queryTerrainOverlay(
         viewport: MapViewportState,
         widthPx: Double,
@@ -835,6 +841,19 @@ private class MapSelectionForNavRefPayload(
     }
 }
 
+private class GlideRingPayload(
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
+    private val onResult: (org.aerobag.app.generated.UiGlideRing) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onDropped: (String) -> Unit,
+) : WorkPayload(UiSessionWorkKind.GlideRing, "glide_ring") {
+    override fun run(uiSession: NativeUiSession, metrics: PagedSessionOperationMetrics?): WorkResult =
+        WorkResult.GlideRing(uiSession.queryGlideRing(fetchResource, metrics))
+    override fun land(result: WorkResult) { onResult((result as WorkResult.GlideRing).result) }
+    override fun failed(error: Throwable) { onError(error) }
+    override fun dropped(reason: String) { super.dropped(reason); onDropped(reason) }
+}
+
 private class TerrainOverlayPayload(
     private val viewport: MapViewportState,
     private val widthPx: Double,
@@ -998,6 +1017,7 @@ private class ChartAssetPayload(
 }
 
 private sealed class WorkResult {
+    data class GlideRing(val result: org.aerobag.app.generated.UiGlideRing) : WorkResult()
     data class ChartAsset(val bytes: ByteArray) : WorkResult()
     data class Overlay(val outcome: MapOverlayQueryOutcome) : WorkResult()
     data class MapSelection(val result: MapSelectionQueryResult) : WorkResult()

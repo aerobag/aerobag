@@ -256,6 +256,7 @@ data class UiMapLayerState(
     val nexrad: UiMapLayerToggleState,
     val traffic: UiMapLayerToggleState,
     val terrainWarning: UiMapLayerToggleState,
+    val glideRing: UiMapLayerToggleState = UiMapLayerToggleState(visible = false, enabled = true, disabledReason = null),
     val offlineRegions: UiMapLayerToggleState,
 ) {
     fun toggleState(layerId: MapLayerId): UiMapLayerToggleState = when (layerId) {
@@ -265,6 +266,7 @@ data class UiMapLayerState(
         MapLayerId.Nexrad -> nexrad
         MapLayerId.Traffic -> traffic
         MapLayerId.TerrainWarning -> terrainWarning
+        MapLayerId.GlideRing -> glideRing
         MapLayerId.OfflineRegions -> offlineRegions
     }
 }
@@ -2079,6 +2081,19 @@ class NativeUiSession internal constructor(
     }
 
     @RawUiSessionWorkApi
+    fun queryGlideRing(
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
+    ): org.aerobag.app.generated.UiGlideRing {
+        val result = executePagedOperation(
+            operation = { bridge.queryGlideRingInSessionJson(handle) },
+            resourceIo = sessionResourceIo.withFetcher(fetchResource), metrics = metrics,
+        )
+        publishPagedInvalidations("queryGlideRing", result)
+        return json.decodeFromJsonElement<org.aerobag.app.generated.UiGlideRing>(result.result)
+    }
+
+    @RawUiSessionWorkApi
     fun queryNexradOverlay(
         viewport: MapViewportState,
         widthPx: Double,
@@ -3248,6 +3263,7 @@ private fun WireUiMapLayerState.toUi() = UiMapLayerState(
     nexrad = nexrad.toUi(),
     traffic = traffic.toUi(),
     terrainWarning = terrainWarning.toUi(),
+    glideRing = glideRing.toUi(),
     offlineRegions = offlineRegions.toUi(),
 )
 

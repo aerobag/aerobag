@@ -1,11 +1,17 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "lineage_id": "pipistrel-virus-rotax-912-ul-80",
   "manufacturer": "Pipistrel",
   "model": "Virus",
   "label": "PIPISTREL VIRUS",
   "plan_view_path": "M -0.18 30.58 L -1.245 31.935 L -11.414 30.629 L -11.437 29.167 L -0.977 26.988 C -0.977 26.988 -0.763 17.905 -1.517 14.362 C -2.271 10.819 -3.993 5.129 -3.993 5.129 L -29.852 5.153 C -29.852 5.153 -47.87 5.241 -48.445 5.32 C -48.925 5.529 -49.604 6.658 -49.604 6.658 C -49.978 4.442 -50 2.291 -49.584 0.225 C -49.392 -0.578 -47.435 -0.843 -46.622 -1.021 C -45.809 -1.2 -30 -2.536 -30 -2.536 L -4.174 -2.563 L -3.163 -8.33 C -2.694 -9.785 -2.205 -11.226 -1.674 -12.715 L -6.087 -12.656 C -6.411 -12.735 -6.42 -12.862 -6.311 -13.006 C -5.008 -13.241 -3.145 -13.257 -1.423 -13.329 C -1.423 -13.329 -0.832 -15.337 -0.001 -16.11 C 0.83 -15.337 1.42 -13.329 1.42 -13.329 C 3.142 -13.257 5.006 -13.241 6.309 -13.006 C 6.418 -12.862 6.408 -12.735 6.085 -12.656 L 1.671 -12.715 C 2.203 -11.226 2.691 -9.785 3.16 -8.33 L 4.172 -2.563 L 29.997 -2.536 C 29.997 -2.536 45.807 -1.2 46.62 -1.021 C 47.432 -0.843 49.389 -0.578 49.581 0.225 C 49.998 2.291 49.976 4.442 49.601 6.658 C 49.601 6.658 48.923 5.529 48.443 5.32 C 47.867 5.241 29.85 5.153 29.85 5.153 L 3.991 5.129 C 3.991 5.129 2.269 10.819 1.515 14.362 C 0.761 17.905 0.975 26.988 0.975 26.988 L 11.434 29.167 L 11.412 30.629 L 1.243 31.935 L 0.177 30.58 L -0.001 32.297 Z",
   "default_profile_id": "normal-5000",
+  "glide": {
+    "best_glide_ias_kt": 62,
+    "glide_ratio": 20,
+    "reference_weight_lb": 1320,
+    "source": "Pipistrel SINUS 912 MAX Aircraft Operating Instructions AOI-119-00-40-001, revision B01 (17 April 2024), FLEX short-tip supplement, sections 3.4.2 and 5.9.2, printed pages 9-S1-5 and 9-S1-14 (PDF pages 205 and 214): 62 KIAS, 20:1, 600 kg / 1,320 lb, propeller feathered, flaps 0, airbrakes retracted. The manual covers tailwheel and optional nosewheel configurations and gives no separate glide correction for nosewheel. Aerobag uses the MAX FLEX short-tip configuration as its Virus model; no weight scaling. https://www.dropbox.com/scl/fi/ukn0actsvxg6yfmdukc2b/AOI-119-00-40-001_B01-Sinus-912-MAX-Aircraft-Operating-Instructions.pdf?rlkey=ud87gqm0ol10v18pszmc9qbdf&dl=0"
+  },
   "profiles": [
     {
       "id": "fast-5500",
@@ -262,5 +268,6 @@
         ]
       }
     }
-  ]
+  ],
+  "supersedes": ["d845f0ff06dfb5fe0796cccec03a27632e92d9474baf536177a28058f6ce4b89", "62d65a94737af8ebad38b692fd9062c7ea3cdb9cb9e41ab755635227ece8cb16"]
 }

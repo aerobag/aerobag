@@ -1,0 +1,8 @@
+{
+  "contract_id": "NAV28",
+  "page_encoding": "xz",
+  "required_exact_keys": {
+    "airport/notam-catalog": 2,
+    "airway/routing/graph": 2
+  }
+}

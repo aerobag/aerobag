@@ -67,6 +67,7 @@ const snapshotJson = JSON.stringify({
     nexrad: { visible: false, enabled: true },
     traffic: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
+    glide_ring: { visible: false, enabled: true },
     offline_regions: { visible: false, enabled: true },
   },
   data_status_state: {
@@ -225,6 +226,7 @@ describe("loadBestAvailableAdapter", () => {
       perform_barometer_command_in_session: async () => mutationOutcomeJson(),
       perform_flight_plan_column_action_in_session: async () => mutationOutcomeJson(),
       query_flight_plan_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
+      query_glide_ring_in_session: async () => JSON.stringify({ state: "complete", result: {} }),
       status_action_decision_in_session: async () => JSON.stringify({
         perform_session_mutation: true,
         platform_effect: null,

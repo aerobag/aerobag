@@ -255,6 +255,7 @@ fn prepare_step(s: &mut UiSession, step: &Step) -> Result<(), SessionModelTransa
         MapLayerId::Vectors,
         MapLayerId::Nexrad,
         MapLayerId::TerrainWarning,
+        MapLayerId::GlideRing,
         MapLayerId::Metars,
         MapLayerId::Traffic,
         MapLayerId::OfflineRegions,

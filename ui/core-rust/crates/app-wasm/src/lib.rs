@@ -1749,6 +1749,13 @@ pub fn get_terrain_overlay_in_session(
 }
 
 #[wasm_bindgen]
+pub fn query_glide_ring_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
+    let result = app_core::session::query_glide_ring_in_session(handle, now_epoch_ms as i64)
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    serde_json::to_string(&result).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn get_scheduled_terrain_overlay_in_session(
     handle: u32,
     viewport_json: &str,

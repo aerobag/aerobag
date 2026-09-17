@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { androidMapLayerName } from "./core-map-layer-ids.mjs";
+
 import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import {
   E2E_TIMING, TransientObservationError,
@@ -2096,21 +2098,14 @@ const LAYER_ASSERTIONS = Object.freeze({
   nexrad: "layer.nexrad",
   traffic: "layer.traffic",
   terrain_warning: "layer.terrain-warning",
+  glide_ring: "layer.glide-ring",
   offline_regions: "layer.offline-regions",
 });
 
-const ANDROID_LAYER_NAMES = Object.freeze({
-  world_basemap: "WorldBasemap",
-  vectors: "Vectors",
-  metars: "Metars",
-  nexrad: "Nexrad",
-  traffic: "Traffic",
-  terrain_warning: "TerrainWarning",
-  offline_regions: "OfflineRegions",
-});
+
 
 function layerProbeId(runtime, layerId) {
-  return runtime.platform === "android" ? ANDROID_LAYER_NAMES[layerId] : layerId;
+  return runtime.platform === "android" ? androidMapLayerName(layerId) : layerId;
 }
 
 async function selectedMapFamily(runtime, familyId) {

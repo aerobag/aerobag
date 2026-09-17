@@ -361,6 +361,7 @@ pub struct UiMapLayerState {
     pub nexrad: UiMapLayerToggleState,
     pub traffic: UiMapLayerToggleState,
     pub terrain_warning: UiMapLayerToggleState,
+    pub glide_ring: UiMapLayerToggleState,
     pub offline_regions: UiMapLayerToggleState,
 }
 
@@ -374,7 +375,31 @@ pub enum MapLayerId {
     Nexrad,
     Traffic,
     TerrainWarning,
+    GlideRing,
     OfflineRegions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiGlidePoint {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiGlideRing {
+    pub recheck_after_ms: u32,
+    pub paths: Vec<Vec<UiGlidePoint>>,
+    pub label_position: Option<UiGlidePoint>,
+    pub wind_label: String,
+    /// Wind flow toward this true bearing. Render relative to the live map bearing;
+    /// keep the accompanying component and IAS text upright.
+    pub wind_direction_deg_true: Option<f64>,
+    pub speed_label: String,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

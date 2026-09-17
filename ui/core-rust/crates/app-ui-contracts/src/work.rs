@@ -16,6 +16,7 @@ pub enum UiSessionWorkKind {
     NexradTile,
     TerrainOverlay,
     TerrainTile,
+    GlideRing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

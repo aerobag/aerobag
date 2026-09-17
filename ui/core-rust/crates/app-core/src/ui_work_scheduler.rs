@@ -161,6 +161,7 @@ fn is_background(kind: UiSessionWorkKind) -> bool {
             | UiSessionWorkKind::NexradTile
             | UiSessionWorkKind::TerrainOverlay
             | UiSessionWorkKind::TerrainTile
+            | UiSessionWorkKind::GlideRing
     )
 }
 

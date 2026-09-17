@@ -1145,6 +1145,12 @@ pub fn get_terrain_overlay_in_session_json(
     serde_json::to_string(&overlay).map_err(|err| err.to_string())
 }
 
+pub fn query_glide_ring_in_session_json(handle: u64) -> Result<String, String> {
+    let result = app_core::session::query_glide_ring_in_session(handle as u32, now_epoch_ms())
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&result).map_err(|error| error.to_string())
+}
+
 pub fn get_scheduled_terrain_overlay_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -4900,6 +4906,15 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getScheduledTe
         )
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_queryGlideRingInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(&mut env, query_glide_ring_in_session_json(handle as u64))
 }
 
 #[unsafe(no_mangle)]

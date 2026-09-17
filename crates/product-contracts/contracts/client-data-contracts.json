@@ -9,7 +9,7 @@
     "enr-h": "ENH1",
     "enr-l": "ENL1",
     "geo": "GEO1",
-    "nav-db": "NAV27",
+    "nav-db": "NAV28",
     "sec": "SEC1",
     "shaded-relief": "SHD1",
     "tac": "TAC1",
@@ -24,7 +24,7 @@
     }
   },
   "nav_db": {
-    "contract_id": "NAV27",
+    "contract_id": "NAV28",
     "page_encoding": "xz",
     "required_exact_keys": {
       "airport/notam-catalog": 2,

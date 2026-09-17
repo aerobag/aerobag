@@ -444,7 +444,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV27";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV28";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -651,8 +651,8 @@ mod tests {
     #[test]
     fn nav_db_contract_descriptor_matches_immutable_revision() {
         let expected: NavDbContractDescriptor =
-            serde_json::from_str(include_str!("../contracts/nav-db/NAV27.json"))
-                .expect("decode NAV27 contract descriptor");
+            serde_json::from_str(include_str!("../contracts/nav-db/NAV28.json"))
+                .expect("decode NAV28 contract descriptor");
         assert_eq!(nav_db_contract_descriptor(), expected);
     }
 

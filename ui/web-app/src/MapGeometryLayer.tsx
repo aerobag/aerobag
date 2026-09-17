@@ -3,7 +3,7 @@
 
 import { useCallback, useState, type RefObject, type MutableRefObject, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { latLonToWorld, screenToWorld, worldToLatLon, worldToScreen, transformScreenPointBetweenFrames, type MapDisplayFrame, type MapViewportState } from "./domain/mapViewport";
+import { latLonToWorld, mapContentFrame, screenToWorld, worldToLatLon, worldToScreen, transformScreenPointBetweenFrames, type MapDisplayFrame, type MapViewportState } from "./domain/mapViewport";
 
 type Point = {lat: number; lon: number};
 /** Geometry is drawn in the committed, north-up content frame. The map's existing
@@ -30,7 +30,7 @@ export function useMapGeometryBinding(viewport: MapViewportState, width: number,
     setHost(element);
   }, [contentTransform]);
   const displayViewport = () => ({...liveViewport.current, rotationDeg: mapUp.current});
-  const contentFrame = {viewport: {...viewport, rotationDeg: 0}, width, height};
+  const contentFrame = mapContentFrame(viewport, width, height);
   const labelFrame = {viewport: {...viewport, rotationDeg: mapUp.current}, width, height};
   const binding: MapGeometryBinding = {
     host, frame: contentFrame, displayViewport,

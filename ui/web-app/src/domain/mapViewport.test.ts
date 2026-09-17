@@ -14,6 +14,8 @@ import {
   dragViewport,
   isStaleMapFollowTargetViewport,
   latLonToWorld,
+  mapContentFrame,
+  displayFrameCssTransform,
   preserveViewportForMap,
   resolveMapUpDegrees,
   rotatedViewportEnvelopeSize,
@@ -26,6 +28,33 @@ import {
 } from "./mapViewport";
 
 describe("mapViewport", () => {
+  it("keeps asynchronous raster and vector query frames aligned while TRK turns", () => {
+    const viewport = createInitialViewport(mapView);
+    const width = 1200, height = 800;
+    const landmark = latLonToWorld(mapView.initial_viewport.lat + 0.1, mapView.initial_viewport.lon + 0.1);
+    // Tiles and vectors can finish at different centers, sizes, zooms and bearings.
+    const rasterQuery = { ...viewport, rotationDeg: 95 };
+    const vectorQuery = { ...viewport, centerWorldX: viewport.centerWorldX + 0.05, zoom: viewport.zoom + 0.2, rotationDeg: 112 };
+    const frames = [mapContentFrame(rasterQuery, width, height), mapContentFrame(vectorQuery, 1450, 1300)];
+    for (const bearing of [119, 165, -179, -90, 0]) {
+      const current = { ...viewport, centerWorldY: viewport.centerWorldY + 0.1, rotationDeg: bearing };
+      const target = mapContentFrame(current, width, height);
+      const expected = worldToScreen(current, landmark, width, height);
+      for (const from of frames) {
+        // Core's query outputs are unrotated pixel coordinates.
+        const point = worldToScreen(from.viewport, landmark, from.width, from.height, 0);
+        const transform = displayFrameCssTransform(from, target);
+        const [a, b, c, d, e, f] = transform!.slice(7, -1).split(",").map(Number);
+        const x = a * point.x + c * point.y + e - width / 2;
+        const y = b * point.x + d * point.y + f - height / 2;
+        // The one common map parent applies the live bearing to every layer.
+        const angle = -bearing * Math.PI / 180;
+        expect(x * Math.cos(angle) - y * Math.sin(angle) + width / 2).toBeCloseTo(expected.x, 5);
+        expect(x * Math.sin(angle) + y * Math.cos(angle) + height / 2).toBeCloseTo(expected.y, 5);
+      }
+    }
+  });
+
   it("zoomAroundPoint keeps the anchored chart point under the cursor", () => {
     const viewport = createInitialViewport(mapView);
     const width = 1200;

@@ -39,6 +39,7 @@
       "nexrad": "layer.nexrad",
       "traffic": "layer.traffic",
       "terrain_warning": "layer.terrain-warning",
+      "glide_ring": "layer.glide-ring",
       "offline_regions": "layer.offline-regions"
     },
     "flight_plan_controls": {

@@ -9,7 +9,8 @@
         "nexrad_overlay",
         "nexrad_tile",
         "terrain_overlay",
-        "terrain_tile"
+        "terrain_tile",
+        "glide_ring"
       ],
       "type": "string"
     },
@@ -147,7 +148,7 @@
   ],
   "title": "UiSessionWorkCompletionDecision",
   "type": "object",
-  "x-contract-version": 16,
+  "x-contract-version": 17,
   "x-export-order": [
     "UiSessionWorkKind",
     "UiSessionWorkRequest",

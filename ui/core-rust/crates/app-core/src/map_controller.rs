@@ -46,6 +46,8 @@ pub(crate) struct MapRuntime {
     pub airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     pub terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pub agl_terrain_resource_ids_in_flight: HashSet<String>,
+    pub glide_ring: Option<crate::session::GlideRingCache>,
+    pub glide_job: Option<crate::session::GlideRingJob>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +111,7 @@ impl MapController {
             MapLayerId::Vectors,
             MapLayerId::Nexrad,
             MapLayerId::TerrainWarning,
+            MapLayerId::GlideRing,
             MapLayerId::Metars,
             MapLayerId::Traffic,
             MapLayerId::OfflineRegions,
@@ -229,6 +232,8 @@ impl MapController {
         self.runtime.vector_tile_cache.clear();
         self.runtime.airspace_feature_cache.clear();
         self.runtime.terrain_source_tile_cache.clear();
+        self.runtime.glide_ring = None;
+        self.runtime.glide_job = None;
         self.runtime.agl_terrain_resource_ids_in_flight.clear();
         self.note_change();
     }
@@ -290,6 +295,10 @@ fn default_map_layer_state() -> UiMapLayerState {
                 label: "Terrain Warning".to_string(),
             },
             UiMapLayerOption {
+                layer_id: MapLayerId::GlideRing,
+                label: "Glide Reach".to_string(),
+            },
+            UiMapLayerOption {
                 layer_id: MapLayerId::WorldBasemap,
                 label: "World Map".to_string(),
             },
@@ -304,6 +313,7 @@ fn default_map_layer_state() -> UiMapLayerState {
         nexrad: enabled_layer(false),
         traffic: enabled_layer(false),
         terrain_warning: enabled_layer(true),
+        glide_ring: enabled_layer(false),
         offline_regions: enabled_layer(false),
     }
 }
@@ -344,6 +354,7 @@ fn map_layer_toggle(state: &UiMapLayerState, layer: MapLayerId) -> &UiMapLayerTo
         MapLayerId::Nexrad => &state.nexrad,
         MapLayerId::Traffic => &state.traffic,
         MapLayerId::TerrainWarning => &state.terrain_warning,
+        MapLayerId::GlideRing => &state.glide_ring,
         MapLayerId::OfflineRegions => &state.offline_regions,
     }
 }
@@ -359,6 +370,7 @@ fn map_layer_toggle_mut(
         MapLayerId::Nexrad => &mut state.nexrad,
         MapLayerId::Traffic => &mut state.traffic,
         MapLayerId::TerrainWarning => &mut state.terrain_warning,
+        MapLayerId::GlideRing => &mut state.glide_ring,
         MapLayerId::OfflineRegions => &mut state.offline_regions,
     }
 }
@@ -371,6 +383,7 @@ fn map_layer_disabled_reason(layer: MapLayerId) -> &'static str {
         MapLayerId::Nexrad => "NEXRAD is unavailable.",
         MapLayerId::Traffic => "ADS-B traffic is unavailable.",
         MapLayerId::TerrainWarning => "Terrain warning is unavailable.",
+        MapLayerId::GlideRing => "Glide reach is unavailable.",
         MapLayerId::OfflineRegions => "Offline package regions are unavailable.",
     }
 }

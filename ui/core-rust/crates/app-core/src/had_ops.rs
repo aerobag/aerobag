@@ -1321,12 +1321,12 @@ impl<'a> PlannerAtmosphereSelection<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct PlannerAircraft {
-    selection: product_contracts::AircraftSelection,
-    definition: product_contracts::AircraftDefinition,
+pub(crate) struct PlannerAircraft {
+    pub(crate) selection: product_contracts::AircraftSelection,
+    pub(crate) definition: product_contracts::AircraftDefinition,
     profile: crate::AircraftPerformanceProfile,
     definitions: BTreeMap<String, product_contracts::AircraftDefinition>,
-    advisory: Option<String>,
+    pub(crate) advisory: Option<String>,
 }
 
 pub(crate) fn planner_aircraft_action_uid(
@@ -1452,7 +1452,7 @@ fn aircraft_control_options(
     (aircraft_options, profile_options)
 }
 
-fn planner_aircraft(
+pub(crate) fn planner_aircraft(
     store: &NavKvStore,
     requested: Option<&product_contracts::AircraftSelection>,
     private_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,

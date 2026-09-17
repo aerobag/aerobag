@@ -489,6 +489,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     queryMapSelectionDistance: (...args) => call("queryMapSelectionDistance", args),
     queryMapSelectionForNavRef: (...args) => call("queryMapSelectionForNavRef", args),
     queryTerrainOverlay: (...args) => call("queryTerrainOverlay", args),
+    queryGlideRing: (...args) => call("queryGlideRing", args),
     queryNexradOverlay: (...args) => call("queryNexradOverlay", args),
     queryRasterTilePlan: (...args) => call("queryRasterTilePlan", args),
     renderTerrainOverlayTileByKey: (...args) => call("renderTerrainOverlayTileByKey", args),

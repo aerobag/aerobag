@@ -9,6 +9,7 @@ import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, GuidedTourPag
 import type { UiTourAction } from "./generated/sessionPageWire";
 import { useMapGeometryBinding } from "./MapGeometryLayer";
 import { AirwayRoutingOverlay } from "./AirwayRoutingOverlay";
+import { GlideRingOverlay } from "./GlideRingOverlay";
 import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -139,6 +140,7 @@ import {
   resolveMapUpDegrees,
   rotatedViewportEnvelopeSize,
   sameMapViewport,
+  mapContentFrame,
   scaleForZoom,
   screenToWorld,
   viewportCenterLatLon,
@@ -1123,6 +1125,8 @@ function layerIconSrc(layerId: MapLayerId): string {
       return LAYER_ADSB_ICON_SRC;
     case "terrain_warning":
       return LAYER_TERRAIN_WARNING_ICON_SRC;
+    case "glide_ring":
+      return "/icons/icons/home-altitude-planner-icon.png";
     case "offline_regions":
       return LAYER_OFFLINE_REGIONS_ICON_SRC;
   }
@@ -1398,7 +1402,7 @@ const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
-const defaultPlaybackTracePath = "/gps-captures/black-tablet-20260727-drive.jsonl";
+const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-06-13.json";
 const startupHighLatencyWarningGraceMs = 10_000;
 const browserGeolocationSourceId = "browser-geolocation";
 const metersPerSecondToKnots = 1.9438444924406;
@@ -2115,6 +2119,7 @@ function defaultUiMapLayerState(): UiMapLayerState {
     nexrad: { visible: false, enabled: true },
     traffic: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
+    glide_ring: { visible: false, enabled: true },
     offline_regions: { visible: false, enabled: true },
   };
 }
@@ -2127,6 +2132,7 @@ function mapLayerToggleState(state: UiMapLayerState, layerId: MapLayerId): UiMap
     case "nexrad": return state.nexrad;
     case "traffic": return state.traffic;
     case "terrain_warning": return state.terrain_warning;
+    case "glide_ring": return state.glide_ring;
     case "offline_regions": return state.offline_regions;
   }
 }
@@ -5212,7 +5218,7 @@ function MapPage(props: {
             setNexradOverlay(query);
             setNexradOverlayFrame(query.status.state === "hidden"
               ? null
-              : { viewport: request.viewport, width: request.width, height: request.height });
+              : mapContentFrame(request.viewport, request.width, request.height));
             const commitQueuedAt = performance.now();
             const previousPaint = nexradLastPaintTimingRef.current;
             window.requestAnimationFrame(() => {
@@ -5423,7 +5429,7 @@ function MapPage(props: {
     landedMapOverlayQueryRequestIdRef.current = request.id;
     setMapOverlay(overlay);
     const overlayStateQueuedAt = performance.now();
-    setMapOverlayFrame({ viewport: request.viewport, width: request.width, height: request.height });
+    setMapOverlayFrame(mapContentFrame(request.viewport, request.width, request.height));
     const landEndedAt = performance.now();
     const overlayCounts = {
       visible_features: overlay.visible_features.length,
@@ -5761,7 +5767,7 @@ function MapPage(props: {
     setChartReferenceAction(nextChartReferenceAction ?? null);
     const tilesStateQueuedAt = performance.now();
     setRasterTileViewport(request.viewport);
-    setRasterTileFrame({ viewport: request.viewport, width: request.width, height: request.height });
+    setRasterTileFrame(mapContentFrame(request.viewport, request.width, request.height));
     const landEndedAt = performance.now();
     rasterTilePlanLandingTimingRef.current = {
       id: request.id,
@@ -6412,11 +6418,7 @@ function MapPage(props: {
     if (!mapOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
     }
-    return displayFrameCssTransform(mapOverlayFrame, {
-      viewport,
-      width: surfaceSize.width,
-      height: surfaceSize.height,
-    });
+    return displayFrameCssTransform(mapOverlayFrame, mapContentFrame(viewport, surfaceSize.width, surfaceSize.height));
   }, [mapOverlayFrame, surfaceSize.height, surfaceSize.width, viewport]);
   const selectedMapHighlight = useMemo(() => {
     const highlight = mapSelection?.selectedItem?.highlight;
@@ -6502,21 +6504,13 @@ function MapPage(props: {
     if (!rasterTileFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
     }
-    return displayFrameCssTransform(rasterTileFrame, {
-      viewport,
-      width: surfaceSize.width,
-      height: surfaceSize.height,
-    });
+    return displayFrameCssTransform(rasterTileFrame, mapContentFrame(viewport, surfaceSize.width, surfaceSize.height));
   }, [rasterTileFrame, surfaceSize.height, surfaceSize.width, viewport]);
   const nexradOverlayTransform = useMemo(() => {
     if (!nexradOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
     }
-    return displayFrameCssTransform(nexradOverlayFrame, {
-      viewport,
-      width: surfaceSize.width,
-      height: surfaceSize.height,
-    });
+    return displayFrameCssTransform(nexradOverlayFrame, mapContentFrame(viewport, surfaceSize.width, surfaceSize.height));
   }, [nexradOverlayFrame, surfaceSize.height, surfaceSize.width, viewport]);
 
   function transientViewportTransform(renderedViewport: MapViewportState, nextViewport: MapViewportState) {
@@ -7587,6 +7581,7 @@ function MapPage(props: {
           onWheel={handleWheel}
           onDoubleClick={handleDoubleClick}
         >
+        {mapIsVisible && mapLayerState.glide_ring.visible && uiSession ? <GlideRingOverlay session={uiSession} geometry={mapGeometry} /> : null}
         {mapInteraction.edit_route && props.planUiState?.airway_routing?.map_open && uiSession ? (
           <AirwayRoutingOverlay
             view={props.planUiState.airway_routing} session={uiSession}

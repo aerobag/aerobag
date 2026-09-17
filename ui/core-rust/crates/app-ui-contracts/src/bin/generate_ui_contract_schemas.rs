@@ -37,6 +37,7 @@ fn cloud_schema() -> Value {
 
 fn session_schema() -> Value {
     let mut root = schema::<session::UiSessionPageContracts>();
+    add_definition::<session::UiGlideRing>(&mut root, "UiGlideRing");
     add_definition::<session::UiAirwayRouteDragPhase>(&mut root, "UiAirwayRouteDragPhase");
     add_definition::<session::UiInvalidation>(&mut root, "UiInvalidation");
     definition_mut(
@@ -226,6 +227,8 @@ fn main() {
                 "UiMapLayerToggleState",
                 "UiMapLayerOption",
                 "UiMapLayerState",
+                "UiGlidePoint",
+                "UiGlideRing",
                 "MapLayerId",
                 "UiMapInteractionMode",
                 "UiMapInteraction",

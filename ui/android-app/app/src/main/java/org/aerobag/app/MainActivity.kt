@@ -1281,6 +1281,7 @@ internal fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
     MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
     MapLayerId.Traffic -> R.drawable.layer_adsb_icon
     MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
+    MapLayerId.GlideRing -> R.drawable.home_altitude_planner_icon
     MapLayerId.OfflineRegions -> R.drawable.layer_offline_regions_icon
 }
 

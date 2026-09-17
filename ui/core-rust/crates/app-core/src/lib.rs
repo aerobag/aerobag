@@ -31,6 +31,7 @@ mod forecast_atmosphere;
 pub mod freshness;
 pub mod geodesy;
 pub mod geometry;
+pub mod glide;
 mod guided_tour;
 pub mod had_ops;
 pub mod ids;

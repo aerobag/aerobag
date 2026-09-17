@@ -902,29 +902,37 @@ pub struct TrajectoryPrediction {
 }
 
 pub fn format_trajectory_wind(prediction: &TrajectoryPrediction) -> String {
-    let speed_kt = prediction
-        .average_wind_east_kt
-        .hypot(prediction.average_wind_north_kt);
+    format_wind_component(
+        prediction.average_wind_east_kt,
+        prediction.average_wind_north_kt,
+        prediction.average_along_course_wind_kt,
+    )
+}
+
+pub(crate) fn format_wind_component(east_kt: f64, north_kt: f64, along_kt: f64) -> String {
+    let speed_kt = east_kt.hypot(north_kt);
     let arrow = if speed_kt < 0.5 {
         "·"
     } else {
         const ARROWS: [&str; 8] = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
-        let toward_deg = prediction
-            .average_wind_east_kt
-            .atan2(prediction.average_wind_north_kt)
-            .to_degrees()
-            .rem_euclid(360.0);
+        let toward_deg = east_kt.atan2(north_kt).to_degrees().rem_euclid(360.0);
         ARROWS[((toward_deg + 22.5) / 45.0).floor() as usize % ARROWS.len()]
     };
-    let component_kt = prediction.average_along_course_wind_kt.round() as i32;
     if speed_kt < 0.5 {
         arrow.to_string()
-    } else if component_kt == 0 {
-        format!("{arrow} 0")
-    } else if component_kt > 0 {
-        format!("{arrow} +{component_kt}")
     } else {
-        format!("{arrow} −{}", component_kt.abs())
+        format!("{arrow} {}", format_signed_wind_component(along_kt))
+    }
+}
+
+pub(crate) fn format_signed_wind_component(along_kt: f64) -> String {
+    let component_kt = along_kt.round() as i32;
+    if component_kt == 0 {
+        "0".to_string()
+    } else if component_kt > 0 {
+        format!("+{component_kt}")
+    } else {
+        format!("−{}", component_kt.abs())
     }
 }
 
@@ -1275,7 +1283,7 @@ fn interpolate_vertical(
     })
 }
 
-fn indicated_to_true_airspeed(
+pub(crate) fn indicated_to_true_airspeed(
     indicated_airspeed_kt: f64,
     pressure_altitude_ft: f64,
     temperature_c: f64,

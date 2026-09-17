@@ -3603,6 +3603,11 @@ internal fun MapExplorerPage(
                         .size(1.dp),
                 )
             }
+            if (page == AppPage.Map && mapLayerState.glideRing.visible) {
+                GlideRingOverlay(sessionWorkRunner, mapGeometryFrame,
+                    fetchResource = { fetchMapOverlayCoreResource(context, it, devServerBaseUrl) },
+                    onError = actions.onSessionCommandFailure)
+            }
             planUiState?.airwayRouting?.takeIf { it.mapOpen && mapInteraction?.editRoute == true }?.let { routing ->
                 AirwayRoutingOverlay(routing, mapGeometryFrame, uiSession, sessionWorkRunner,
                     onViewport = { updateViewport(it, MapViewportUpdateSource.UserInput, syncFollow = false) },

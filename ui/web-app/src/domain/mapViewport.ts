@@ -224,6 +224,12 @@ export function transformScreenPointBetweenFrames(
   );
 }
 
+/** Core raster/vector query coordinates are north-up, even when the query bearing
+ * expands coverage for TRK. The shared map parent owns the displayed rotation. */
+export function mapContentFrame(viewport: MapViewportState, width: number, height: number): MapDisplayFrame {
+  return { viewport: { ...viewport, rotationDeg: 0 }, width, height };
+}
+
 export function displayFrameCssTransform(from: MapDisplayFrame, to: MapDisplayFrame): string | undefined {
   if (
     sameMapViewport(from.viewport, to.viewport)

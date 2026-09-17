@@ -21,6 +21,11 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[path = "session_glide.rs"]
+mod glide;
+pub use glide::query_glide_ring_in_session;
+pub(crate) use glide::{GlideRingCache, GlideRingJob};
+
 pub use crate::airway_routing::AirwayNavigationMode;
 
 pub use crate::settings_controller::{
@@ -2336,9 +2341,15 @@ pub fn set_map_layer_visibility_in_session(
         MapLayerId::TerrainWarning if !visible => {
             clear_data_status_record(session, TERRAIN_STATUS_ID);
         }
+        MapLayerId::GlideRing if !visible => {
+            session.map.runtime_mut().glide_ring = None;
+            session.map.runtime_mut().glide_job = None;
+            clear_data_status_record(session, "glide:unavailable");
+        }
         MapLayerId::Nexrad
         | MapLayerId::Traffic
         | MapLayerId::TerrainWarning
+        | MapLayerId::GlideRing
         | MapLayerId::WorldBasemap
         | MapLayerId::OfflineRegions => {}
     }
@@ -27216,6 +27227,110 @@ mod tests {
         assert_eq!(terrain.value.as_deref(), Some("UNAVAIL"));
         assert!(terrain.drives_caution);
         assert!(terrain.detail.contains("ownship position is unavailable"));
+    }
+
+    #[test]
+    fn glide_ring_batches_cache_and_clear_with_layer_and_wind_choices() {
+        let init = create_current_test_session();
+        let model = include_bytes!("../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/cessna-172-generic.json");
+        let key = product_contracts::aircraft_definition_key(
+            product_contracts::DEFAULT_AIRCRAFT_DEFINITION_HASH,
+        )
+        .unwrap();
+        let store = crate::navkv::nav_kv_store_for_test(&[(&key, model)], 16384);
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+        let epoch = utc("2026-05-20T12:00:00Z").timestamp_millis();
+        push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            epoch,
+        );
+        let mut raw = b"ABT2".to_vec();
+        for value in [2_u16, 2_u16, (-32768_i16) as u16, 0] {
+            raw.extend_from_slice(&value.to_le_bytes());
+        }
+        raw.extend_from_slice(
+            &(product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT as f32).to_le_bytes(),
+        );
+        raw.extend_from_slice(&0.0_f32.to_le_bytes());
+        raw.extend_from_slice(&[0_u8; 8]);
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session
+                .packages
+                .set_resource_policy(CoreResourcePolicy::PublicUnpacked);
+            session
+                .map
+                .set_layer_visibility(MapLayerId::GlideRing, true);
+            for lat in 460..480 {
+                for lon in -1230..-1210 {
+                    let request = crate::terrain::terrain_elevation_request(LatLon {
+                        lat: lat as f64 / 10.0,
+                        lon: lon as f64 / 10.0,
+                    })
+                    .unwrap();
+                    for source in request.source_tiles {
+                        session.map.runtime_mut().terrain_source_tile_cache.insert(
+                            terrain_source_tile_cache_key(&source.product_id, &source.path),
+                            raw.clone(),
+                        );
+                    }
+                }
+            }
+        }
+        let query = |time| {
+            let result = query_glide_ring_in_session(init.handle, time).unwrap();
+            let HadOperationOutcome::Complete { result, .. } = result else {
+                panic!("unexpected fetch: {result:?}")
+            };
+            serde_json::from_value::<app_ui_contracts::session::UiGlideRing>(result).unwrap()
+        };
+        let first = query(epoch);
+        assert_eq!(first.recheck_after_ms, 20, "{first:?}");
+        assert!(first.paths.is_empty());
+        let mut ring = first;
+        for _ in 0..30 {
+            ring = query(epoch);
+            if ring.recheck_after_ms == 1000 {
+                break;
+            }
+        }
+        assert_eq!(ring.paths.len(), 1);
+        assert_eq!(ring.paths[0].len(), 181);
+        assert_eq!(ring.wind_label, "NO WIND");
+        assert_eq!(ring.speed_label, "68 kt IAS");
+        assert_eq!(query(epoch + 1_000), ring);
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.coordinator.altitude_planner_wind_selection = AltitudePlannerWindSelection::Gfs;
+        }
+        assert!(
+            query(epoch + 1000).paths.is_empty(),
+            "a mode change must not display the previous assumptions"
+        );
+        for _ in 0..30 {
+            ring = query(epoch + 1000);
+            if ring.recheck_after_ms == 1000 {
+                break;
+            }
+        }
+        assert!(ring
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("forecast unavailable"));
+        super::set_map_layer_visibility_in_session(init.handle, MapLayerId::GlideRing, false)
+            .unwrap();
+        assert!(query(epoch + 1000).paths.is_empty());
+        let slot = session_slot(init.handle).unwrap();
+        let session = slot.lock_running().unwrap();
+        assert!(session.map.runtime().glide_job.is_none());
+        assert!(session.map.runtime().glide_ring.is_none());
     }
 
     #[test]

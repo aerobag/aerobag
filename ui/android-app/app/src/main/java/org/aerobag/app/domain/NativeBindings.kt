@@ -583,6 +583,8 @@ interface NativeBridge {
         heightPx: Double,
     ): String
 
+    fun queryGlideRingInSessionJson(handle: Long): String
+
     fun getScheduledTerrainOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -1263,6 +1265,8 @@ object NativeBindings : NativeBridge {
         widthPx: Double,
         heightPx: Double,
     ): String
+
+    external override fun queryGlideRingInSessionJson(handle: Long): String
 
     external override fun getScheduledTerrainOverlayInSessionJson(
         handle: Long,

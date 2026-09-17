@@ -7,10 +7,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const AIRCRAFT_DEFINITION_SCHEMA_VERSION: u32 = 2;
+pub const AIRCRAFT_DEFINITION_SCHEMA_VERSION: u32 = 3;
 pub const AIRCRAFT_DEFINITION_KEY_PREFIX: &str = "aircraft/definition/";
 pub const DEFAULT_AIRCRAFT_DEFINITION_HASH: &str =
-    "d3bb0ffe0b906f2adc10f0e1aecb97ac449f65a8b081f0502cd547a25cc9fc9b";
+    "34429b8eaf8ba0b83ff0f3e9526d6059712fbd71ffdf62fa0bce6644cc8016b7";
 pub const DEFAULT_AIRCRAFT_PROFILE_ID: &str = "normal-cruise";
 pub const MAX_AIRCRAFT_DEFINITION_JSON_BYTES: usize = 64 * 1024;
 const MAX_AIRCRAFT_TEXT_BYTES: usize = 160;
@@ -29,8 +29,36 @@ pub struct AircraftDefinition {
     pub plan_view_path: String,
     pub default_profile_id: String,
     pub profiles: Vec<AircraftPerformanceProfileDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide: Option<AircraftGlideDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supersedes: Vec<String>,
+}
+
+/// Power-off performance is independent of the selected cruise-power profile.
+/// The source records configuration assumptions (gear, flaps and propeller).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AircraftGlideDefinition {
+    pub best_glide_ias_kt: f64,
+    pub glide_ratio: f64,
+    pub reference_weight_lb: f64,
+    pub source: String,
+}
+
+impl AircraftGlideDefinition {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.best_glide_ias_kt.is_finite()
+            || !(10.0..=300.0).contains(&self.best_glide_ias_kt)
+            || !self.glide_ratio.is_finite()
+            || !(1.0..=100.0).contains(&self.glide_ratio)
+            || !self.reference_weight_lb.is_finite()
+            || self.reference_weight_lb <= 0.0
+        {
+            return Err("aircraft has invalid glide performance".to_string());
+        }
+        require_bounded_text("glide.source", &self.source, MAX_AIRCRAFT_SOURCE_BYTES)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,11 +176,21 @@ pub fn default_aircraft_selection() -> AircraftSelection {
 
 impl AircraftDefinition {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != AIRCRAFT_DEFINITION_SCHEMA_VERSION {
+        // Version 2 remains a frozen readable format for users' content-addressed
+        // library entries and cloud history. It cannot acquire version 3 fields.
+        if self.schema_version != AIRCRAFT_DEFINITION_SCHEMA_VERSION && self.schema_version != 2 {
             return Err(format!(
                 "unsupported aircraft definition schema {}",
                 self.schema_version
             ));
+        }
+        if self.schema_version == 2 && self.glide.is_some() {
+            return Err(
+                "aircraft definition schema 2 does not support glide performance".to_string(),
+            );
+        }
+        if let Some(glide) = &self.glide {
+            glide.validate()?;
         }
         require_text("lineage_id", &self.lineage_id)?;
         require_text("manufacturer", &self.manufacturer)?;
@@ -510,6 +548,7 @@ mod tests {
     fn definition() -> AircraftDefinition {
         AircraftDefinition {
             schema_version: AIRCRAFT_DEFINITION_SCHEMA_VERSION,
+            glide: None,
             lineage_id: "test-aircraft".to_string(),
             manufacturer: "Test".to_string(),
             model: "T1".to_string(),
@@ -614,5 +653,30 @@ mod tests {
             serde_json::to_string(&membership).unwrap(),
             r#"{"included":false}"#,
         );
+    }
+
+    #[test]
+    fn glide_schema_preserves_frozen_v2_hashes_and_rejects_invalid_models() {
+        let mut model: AircraftDefinition = serde_json::from_str(include_str!(
+            "../../../product/preprocessor/preprocessor-cli/resources/aircraft/cessna-172-generic.json"
+        )).unwrap();
+        assert_eq!(model.schema_version, 3);
+        assert_eq!(
+            model.content_hash().unwrap(),
+            DEFAULT_AIRCRAFT_DEFINITION_HASH
+        );
+        let predecessor = model.supersedes.remove(0);
+        let glide = model.glide.take().unwrap();
+        model.schema_version = 2;
+        assert_eq!(model.content_hash().unwrap(), predecessor);
+        let bytes = serde_json::to_vec(&model).unwrap();
+        let decoded: AircraftDefinition = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.content_hash().unwrap(), predecessor);
+        assert!(!String::from_utf8(bytes).unwrap().contains("glide"));
+        model.glide = Some(glide);
+        assert!(model.validate().unwrap_err().contains("schema 2"));
+        model.schema_version = 3;
+        model.glide.as_mut().unwrap().glide_ratio = f64::NAN;
+        assert!(model.validate().is_err());
     }
 }

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { androidMapLayerName } from "./core-map-layer-ids.mjs";
+
 import { readFileSync, writeFileSync } from "node:fs";
 import {
   adb, androidImeShown, androidNodeLabel, androidTag, androidResumedActivityFromDumpsys, clickAndroidSemanticNode,
@@ -682,22 +684,14 @@ const ANDROID_PERSISTED_PAGE_IDS = Object.freeze({
   OfflinePackages: "offline_packages",
 });
 
-const ANDROID_LAYER_OPTION_IDS = Object.freeze({
-  world_basemap: "WorldBasemap",
-  vectors: "Vectors",
-  metars: "Metars",
-  nexrad: "Nexrad",
-  traffic: "Traffic",
-  terrain_warning: "TerrainWarning",
-  offline_regions: "OfflineRegions",
-});
+
 
 function androidOptionTag(launcherId, optionId) {
   if (launcherId === "ownship-source-button") return `parity:ownship-source:${optionId}`;
   const androidOptionId = launcherId === "plate-airport-button"
     ? optionId.replace(/^airport:/, "")
     : launcherId === "layers-button"
-      ? ANDROID_LAYER_OPTION_IDS[optionId] ?? optionId
+      ? androidMapLayerName(optionId) ?? optionId
       : optionId;
   return `parity:tray-option:${androidOptionId}`;
 }

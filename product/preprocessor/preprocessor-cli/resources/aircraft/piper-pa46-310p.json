@@ -1,11 +1,17 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "lineage_id": "piper-pa46-310p-tsio-520-be",
   "manufacturer": "Piper",
   "model": "PA-46-310P",
   "label": "PA46-310P MALIBU",
   "plan_view_path": "M -0.835 -24.854 L -1.395 -22.923 L -4.31 -22.024 L -5.968 -8.751 L -5.772 -4.087 L -49.733 -2.593 L -50 0.193 L -49.717 4.454 L -5.759 8.365 L -5.614 14.289 L -5.335 18.056 L -2.09 33.111 L -17.427 35.64 L -17.206 39.913 L -0.16 41.194 L 0 43.985 L 0.16 41.194 L 17.206 39.913 L 17.427 35.64 L 2.09 33.111 L 5.335 18.056 L 5.614 14.289 L 5.759 8.365 L 49.717 4.454 L 50 0.193 L 49.733 -2.593 L 5.772 -4.087 L 5.968 -8.751 L 4.31 -22.024 L 1.395 -22.923 L 0.835 -24.854 L 0 -26.159 Z",
   "default_profile_id": "economy-65",
+  "glide": {
+    "best_glide_ias_kt": 90,
+    "glide_ratio": 14,
+    "reference_weight_lb": 3740,
+    "source": "Approximation of Piper PA-46-310P POH VB-1300 Figure 5-29 (page 5-27), 90 KIAS, gear up, flaps zero, power off, propeller control full decrease. Chart example: 46 NM from 20,000 ft at -15 C, approximately 14:1. This fixed ratio approximates the chart, not its full temperature/altitude dependence. https://www.aeroelectric.com/Reference_Docs/Piper/PiperMalibu_PA46-310_SN4608008-140.pdf"
+  },
   "profiles": [
     {
       "id": "high-speed-75",
@@ -89,5 +95,6 @@
       }
     }
   ],
-  "supersedes": ["ae3c6196f6788db55b4cd633fe233767d34ba3bc75fc5109587da957d065d1b3"]
+  "supersedes": [
+    "db54bc3b2868c171a1a26d97b433dc2946c4de7e46cbd2e4cdfce5cd712676b0","ae3c6196f6788db55b4cd633fe233767d34ba3bc75fc5109587da957d065d1b3"]
 }

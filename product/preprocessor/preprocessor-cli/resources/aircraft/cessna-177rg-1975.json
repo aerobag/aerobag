@@ -1,11 +1,17 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "lineage_id": "cessna-177rg-1975",
   "manufacturer": "Cessna",
   "model": "177RG",
   "label": "CESSNA 177RG CARDINAL RG (1975)",
   "plan_view_path": "M 1.573 -22.349 C 1.573 -22.349 3.31 -22.21 3.943 -21.973 C 5.332 -17.577 5.448 -11.954 5.562 -5.118 L 48.512 -5.237 C 49.231 -5.247 49.519 -4.652 49.925 -1.564 L 50 5.904 L 5.296 10.223 C 4.463 18.824 2.839 27.44 1.411 36.052 L 15.842 36.167 C 16.084 36.168 16.477 36.432 16.476 36.723 L 16.451 44.418 L 0.432 44.409 L 0.395 47.843 C 0.401 48.071 0.238 48.229 -0.01 48.25 C -0.258 48.227 -0.42 48.069 -0.412 47.841 L -0.432 44.407 L -16.451 44.335 L -16.437 36.639 C -16.437 36.348 -16.042 36.087 -15.8 36.087 L -1.37 36.045 C -2.753 27.426 -4.334 18.802 -5.123 10.197 L -49.805 5.651 L -49.692 -1.816 C -49.27 -4.903 -48.979 -5.496 -48.26 -5.483 L -5.312 -5.146 C -5.163 -11.981 -5.018 -17.604 -3.607 -21.992 C -2.972 -22.226 -1.235 -22.356 -1.235 -22.356 C -1.141 -24.822 -0.526 -25.27 0.18 -26.492 C 0.791 -25.3 1.492 -24.815 1.573 -22.349 Z",
   "default_profile_id": "economy-65",
+  "glide": {
+    "best_glide_ias_kt": 73.9,
+    "glide_ratio": 9.7,
+    "reference_weight_lb": 2800,
+    "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-6 (printed page 6-10): 85 MPH IAS at 2,800 lb, propeller windmilling, flaps and gear up. Approximately 22 statute miles from 12,000 ft gives 9.7:1; IAS converted to knots. https://cardinalflyers.com/mdata/poh/1975-177rg-poh.pdf"
+  },
   "profiles": [
     {
       "id": "fast-cruise",
@@ -101,5 +107,6 @@
       }
     }
   ],
-  "supersedes": ["77575faf251d6b70aaa1179084d84155d5fa5c5b8407997f49e469ad828b9927"]
+  "supersedes": [
+    "01365bb33c878798e937786ceb10df9e8b845ea0a4b51f961c5ccd1cf800fe5e","77575faf251d6b70aaa1179084d84155d5fa5c5b8407997f49e469ad828b9927"]
 }

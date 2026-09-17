@@ -384,6 +384,7 @@
         "nexrad",
         "traffic",
         "terrain_warning",
+        "glide_ring",
         "offline_regions"
       ],
       "type": "string"
@@ -1438,6 +1439,81 @@
       ],
       "type": "object"
     },
+    "UiGlidePoint": {
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "UiGlideRing": {
+      "additionalProperties": false,
+      "properties": {
+        "label_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiGlidePoint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paths": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/UiGlidePoint"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "recheck_after_ms": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "speed_label": {
+          "type": "string"
+        },
+        "wind_direction_deg_true": {
+          "description": "Wind flow toward this true bearing. Render relative to the live map bearing;\nkeep the accompanying component and IAS text upright.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wind_label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recheck_after_ms",
+        "paths",
+        "wind_label",
+        "speed_label"
+      ],
+      "title": "UiGlideRing",
+      "type": "object"
+    },
     "UiGuidedTour": {
       "additionalProperties": false,
       "properties": {
@@ -1630,6 +1706,9 @@
     "UiMapLayerState": {
       "additionalProperties": false,
       "properties": {
+        "glide_ring": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
         "metars": {
           "$ref": "#/$defs/UiMapLayerToggleState"
         },
@@ -1666,6 +1745,7 @@
         "nexrad",
         "traffic",
         "terrain_warning",
+        "glide_ring",
         "offline_regions"
       ],
       "type": "object"
@@ -2526,7 +2606,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 16,
+  "x-contract-version": 17,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -2581,6 +2661,8 @@
     "UiMapLayerToggleState",
     "UiMapLayerOption",
     "UiMapLayerState",
+    "UiGlidePoint",
+    "UiGlideRing",
     "MapLayerId",
     "UiMapInteractionMode",
     "UiMapInteraction",

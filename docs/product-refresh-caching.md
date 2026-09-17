@@ -125,6 +125,38 @@ The final `artifact-verification-summary` covers the whole build; the older
 `publication-integrity` counters cover only that last phase. The timestamps on
 the left of task logs are build-relative completion times, not task durations.
 
+## Implemented: reuse NAV_DB's already-compressed pages
+
+NAV_DB's immutable, cached ZIP already stores XZ-encoded pages. Unpacked
+publication now copies those exact ZIP members instead of launching a new XZ
+compressor for each raw page. Root and manifest bytes also come from that ZIP.
+There is no second cache, new GC root, shared directory, or contract change.
+Each publication still owns its ordinary files and survives removal of the source
+ZIP; normal publication GC removes them.
+
+Publication checks the declared ZIP digest, canonical member inventory and ZIP
+CRCs, and requires XZ-framed pages. It constructs the complete tree in temporary
+storage before replacing the destination, then writes a versioned completion
+marker. A marker hit also checks every member's presence and size. Missing or
+partial output is repaired; failed extraction leaves previous output untouched.
+Concurrent retries of the same destination use the existing publication-lock
+mechanism. This retains the immutable-storage trust model described above.
+
+On copies of the actual NAV28 packages for cycles 2609/2610, debug-build extraction
+into fresh temporary publications took 87–89 ms each (3,572/3,576 pages), versus
+approximately five seconds combined for the former unpack/recompression phases.
+Expected whole-build saving is about 4–5 seconds; a full build has not yet been
+remeasured. Chart hardlink materialization and GC are unchanged.
+
+The opt-in real-package benchmark writes only temporary publications:
+
+```sh
+# From product/preprocessor; supply an existing NAV_DB ZIP.
+AEROBAG_NAV_DB_UNPACK_BENCHMARK_ZIP=/path/to/nav_db.zip \
+  cargo test -p preprocessor-cli --bin preprocessor-cli \
+  nav_db_unpack_benchmark_existing_package -- --ignored --nocapture
+```
+
 ## Validation and rollout
 
 Regression coverage includes a generated one-plate TPP PDF through the real
@@ -141,6 +173,9 @@ actual small-fixture bundle publication (two hashes cold, zero warm). They also
 cover hardlinks, mutation, replacement with copied attributes, malformed receipts,
 full audits, mismatched declarations, concurrent publication, verification outside
 the mutation lock, and deterministic lock-wait/work timing.
+NAV_DB unpack tests cover exact encoded-byte reuse and shared-reader decoding,
+new publications and warm retries, missing output repair, interrupted work,
+changed inputs, checksum/CRC failures, invalid members, and concurrent writers.
 The explicit native relocation check snapshots the working tree into a disposable
 repository, builds a real tool, removes its compilation checkout, verifies an
 actual warm hit, relocates it again, compares node fingerprints, executes bundled

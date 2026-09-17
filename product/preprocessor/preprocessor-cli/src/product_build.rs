@@ -35,10 +35,7 @@ use preprocessor_core::nav_kv::{
     build_nav_kv_sorted_with_extra_prefetch_keys, NavKvPair, NavKvPrefetch, NavKvRoot,
     NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
 };
-use preprocessor_core::{
-    xz_compress_bytes_with_system_xz, xz_compress_file_with_system_xz, ChartFamily, Region,
-    RegionBounds,
-};
+use preprocessor_core::{xz_compress_bytes_with_system_xz, ChartFamily, Region, RegionBounds};
 use preprocessor_csup::{
     package_csup_region_versioned_to, prepare_csup_inputs, render_csup_region,
     stage_work_dir_for_product,
@@ -105,7 +102,6 @@ mod weather_cameras;
 const PACKAGE_CYCLE_VERSION: &str = "01";
 const CYCLE_PUBLICATION_LEAD_DAYS: i64 = 20;
 const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
-const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-xz-v1";
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
 // mismatches, then simplify hard. This does not affect runtime chart coverage.
@@ -1199,7 +1195,9 @@ pub use cycle::build_cycle;
 mod airway_routing;
 mod nav_db;
 use nav_db::*;
+mod nav_db_unpack;
 pub use nav_db::{audit_procedure_geometry_from_sqlite, ProcedureGeometryAuditFilter};
+use nav_db_unpack::sync_nav_db_unpacked_zip;
 
 fn resolve_resource_package_artifact_path(
     config: &ProductBuildConfig,
@@ -1306,27 +1304,6 @@ fn sync_unpacked_zip_from_source(
     )
 }
 
-fn sync_nav_db_unpacked_zip_from_source(
-    zip_path: &Path,
-    source_root: &Path,
-    unpacked_root: &Path,
-    published_filename: &str,
-    known_sha256: Option<&str>,
-    xz_jobs: usize,
-) -> anyhow::Result<(bool, PathBuf)> {
-    sync_unpacked_zip_from_source_with_marker(
-        zip_path,
-        source_root,
-        unpacked_root,
-        published_filename,
-        known_sha256,
-        Some(NAV_DB_UNPACKED_PAGE_ENCODING_MARKER),
-        |zip_path, source_root, output_dir| {
-            hardlink_nav_db_zip_members_from_source_root(zip_path, source_root, output_dir, xz_jobs)
-        },
-    )
-}
-
 fn sync_unpacked_zip_from_source_with_marker(
     zip_path: &Path,
     source_root: &Path,
@@ -1404,37 +1381,6 @@ fn hardlink_zip_members_from_source_root(
     })
 }
 
-fn hardlink_nav_db_zip_members_from_source_root(
-    zip_path: &Path,
-    source_root: &Path,
-    output_dir: &Path,
-    xz_jobs: usize,
-) -> anyhow::Result<()> {
-    let mut page_jobs = Vec::new();
-    sync_zip_members_from_source_root(zip_path, source_root, output_dir, |source, target| {
-        if source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("page_"))
-        {
-            page_jobs.push(XzFileJob {
-                source: source.to_path_buf(),
-                target: target.to_path_buf(),
-            });
-            Ok(())
-        } else {
-            fs::hard_link(source, target).with_context(|| {
-                format!(
-                    "failed to hardlink {} to {}",
-                    source.display(),
-                    target.display()
-                )
-            })
-        }
-    })?;
-    write_xz_files_parallel(page_jobs, xz_jobs)
-}
-
 fn sync_zip_members_from_source_root(
     zip_path: &Path,
     source_root: &Path,
@@ -1475,58 +1421,6 @@ fn sync_zip_members_from_source_root(
         sync_file(&source, &outpath)?;
     }
     Ok(())
-}
-
-#[derive(Debug)]
-struct XzFileJob {
-    source: PathBuf,
-    target: PathBuf,
-}
-
-fn write_xz_files_parallel(jobs: Vec<XzFileJob>, xz_jobs: usize) -> anyhow::Result<()> {
-    let worker_count = xz_jobs.max(1).min(jobs.len().max(1));
-    if worker_count == 1 {
-        for job in jobs {
-            write_xz_file_deterministic(&job.source, &job.target)?;
-        }
-        return Ok(());
-    }
-    let (sender, receiver) = crossbeam_channel::unbounded::<XzFileJob>();
-    for job in jobs {
-        sender
-            .send(job)
-            .context("failed to enqueue nav-db xz job")?;
-    }
-    drop(sender);
-    let worker_results = thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for _ in 0..worker_count {
-            let receiver = receiver.clone();
-            handles.push(scope.spawn(move || -> anyhow::Result<()> {
-                for job in receiver {
-                    write_xz_file_deterministic(&job.source, &job.target)?;
-                }
-                Ok(())
-            }));
-        }
-        handles
-            .into_iter()
-            .map(|handle| handle.join())
-            .collect::<Vec<_>>()
-    });
-    for result in worker_results {
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
-            Err(_) => bail!("nav-db xz worker thread panicked"),
-        }
-    }
-    Ok(())
-}
-
-fn write_xz_file_deterministic(source: &Path, target: &Path) -> anyhow::Result<()> {
-    let encoded = xz_compress_file_with_system_xz(source)?;
-    fs::write(target, encoded).with_context(|| format!("failed to write {}", target.display()))
 }
 
 pub(super) fn producer_xz_compress_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -1700,34 +1594,11 @@ fn sync_cycle_bundle_unpacked_zips(
     };
     for package in &bundle_manifest.packages {
         if package.family_id == "nav-db" {
-            let source_dir = if let Some(task_values) = task_values {
-                resolve_cycle_bundle_package_unpack_source_root(
-                    task_values,
-                    &bundle_manifest.cycle,
-                    package,
-                )?
-            } else {
-                resolve_cycle_bundle_package_unpack_source_root_from_build_manifest(
-                    config,
-                    build_manifest
-                        .as_ref()
-                        .expect("build manifest should exist for standalone cycle unpack"),
-                    package,
-                )?
-            }
-            .with_context(|| {
-                format!(
-                    "failed to resolve unpack source root for package {}",
-                    package.id
-                )
-            })?;
-            sync_nav_db_unpacked_zip_from_source(
+            sync_nav_db_unpacked_zip(
                 &config.packaged_dir.join(&package.filename),
-                &source_dir,
                 unpacked_root,
                 &package.filename,
                 Some(&package.checksum_sha256),
-                config.cpu_jobs,
             )
             .with_context(|| format!("failed to unpack package {}", package.id))?;
             continue;
@@ -5725,58 +5596,6 @@ mod tests {
             manifests[1].artifact_roots.packaged,
             "master/20260514T000100Z/packaged/"
         );
-    }
-
-    #[test]
-    fn nav_db_unpacked_sync_xzs_pages_but_leaves_root_raw() {
-        let temp = tempdir().unwrap();
-        let source_root = temp.path().join("source");
-        let unpacked_root = temp
-            .path()
-            .join("published")
-            .join("master")
-            .join("20260504T000000Z")
-            .join("unpacked");
-        fs::create_dir_all(&source_root).unwrap();
-        fs::create_dir_all(&unpacked_root).unwrap();
-        fs::write(source_root.join("root"), b"raw-root").unwrap();
-        fs::write(source_root.join("page_0001"), b"raw-page-one").unwrap();
-        fs::write(source_root.join("page_0002"), b"raw-page-two").unwrap();
-        let zip_path = temp.path().join("nav_db_test.zip");
-        zip_directory_deterministic(&zip_path, &source_root, &["root", "page_0001", "page_0002"])
-            .unwrap();
-
-        let (_, unpack_dir) = sync_nav_db_unpacked_zip_from_source(
-            &zip_path,
-            &source_root,
-            &unpacked_root,
-            "nav_db_test.zip",
-            None,
-            2,
-        )
-        .unwrap();
-
-        assert_eq!(fs::read(unpack_dir.join("root")).unwrap(), b"raw-root");
-        for (page_name, expected) in [
-            ("page_0001", b"raw-page-one".as_slice()),
-            ("page_0002", b"raw-page-two".as_slice()),
-        ] {
-            let page_path = unpack_dir.join(page_name);
-            let page = fs::read(&page_path).unwrap();
-            assert_eq!(&page[..6], &[0xfd, b'7', b'z', b'X', b'Z', 0x00]);
-            let output = Command::new("xz")
-                .arg("--decompress")
-                .arg("--stdout")
-                .arg(&page_path)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(output.stdout, expected);
-        }
     }
 
     #[test]

@@ -790,6 +790,7 @@ struct BuildLockGuard {
 #[derive(Debug)]
 struct PublicationLockGuard {
     path: PathBuf,
+    acquired_at: Instant,
 }
 
 impl Drop for BuildLockGuard {
@@ -805,6 +806,7 @@ impl Drop for BuildLockGuard {
 impl Drop for PublicationLockGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        record_publication_lock_hold(self.acquired_at.elapsed());
     }
 }
 
@@ -2859,6 +2861,193 @@ mod tests {
                 output_details: BTreeMap::new(),
                 fetch_cache_refs: Vec::new(),
             }],
+        }
+    }
+
+    #[test]
+    fn publication_verifies_sources_before_waiting_for_mutation_lock() {
+        for mode in ["static", "bundle", "nav"] {
+            let temp = tempdir().unwrap();
+            let config = package_publication_test_config(temp.path());
+            fs::create_dir_all(&config.packaged_dir).unwrap();
+            let mut package = chart_resource_package(
+                &config,
+                "NW_TAC_TAC1_2607",
+                "cache/packages/NW_TAC_TAC1_2607.zip",
+                b"payload",
+                ChartPackageTier::Regional,
+            );
+            let source = config.build_root.join(&package.artifact_path);
+            package.checksum_sha256 = "0".repeat(64);
+            let mut index = minimal_resource_index();
+            index.temporal_summary.uniform_effective_date = Some("2026-07-09".into());
+            index.temporal_summary.uniform_expiration_date = Some("2026-08-06".into());
+            index.packages = vec![package];
+            let manifest = build_manifest_for_resource_index(&config, &index);
+            let held = acquire_publication_lock(&config.publish_dir, |_| {}).unwrap();
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let worker = thread::spawn(move || {
+                let result = match mode {
+                    "static" => publish_content_addressed_zip(
+                        &config,
+                        &source,
+                        "test",
+                        Some(&"0".repeat(64)),
+                        None,
+                    )
+                    .map(|_| ()),
+                    "bundle" => build_bundle_manifest(
+                        &config,
+                        &manifest,
+                        &[],
+                        &bundle_package("nav-db", None),
+                    )
+                    .map(|_| ()),
+                    _ => publish_bundle_artifact(
+                        &config,
+                        &source.with_extension("missing"),
+                        "nav.zip",
+                    )
+                    .map(|_| ()),
+                };
+                tx.send(result.map_err(|e| format!("{e:#}"))).unwrap();
+            });
+            let received = rx.recv_timeout(Duration::from_secs(5));
+            drop(held); // Also release before reporting a failed regression.
+            worker.join().unwrap();
+            let error = received
+                .expect("verification blocked on the publication mutation lock")
+                .unwrap_err();
+            assert!(
+                error.contains(if mode == "nav" {
+                    "failed to open"
+                } else {
+                    "checksum mismatch"
+                }),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn publication_concurrently_links_the_same_verified_artifact() {
+        let temp = tempdir().unwrap();
+        let config = package_publication_test_config(temp.path());
+        fs::create_dir_all(&config.packaged_dir).unwrap();
+        let source = temp.path().join("source.zip");
+        fs::write(&source, b"publication fixture").unwrap();
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let workers = (0..8)
+            .map(|_| {
+                let config = config.clone();
+                let source = source.clone();
+                let start = start.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    publish_bundle_artifact(&config, &source, "same.zip").unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            assert_eq!(
+                worker.join().unwrap().checksum_sha256,
+                hash_text("publication fixture")
+            );
+        }
+        let published = config.packaged_dir.join("same.zip");
+        let before = fs::metadata(&published).unwrap();
+        publish_bundle_artifact(&config, &source, "same.zip").unwrap();
+        let after = fs::metadata(&published).unwrap();
+        assert_eq!(
+            (before.ino(), before.ctime(), before.ctime_nsec()),
+            (after.ino(), after.ctime(), after.ctime_nsec())
+        );
+        assert_eq!(after.nlink(), 2);
+        assert_eq!(
+            fs::read_dir(config.build_root.join("locks/publication"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn bundle_receipt_child_process() {
+        let Some(root) = env::var_os("AEROBAG_BUNDLE_RECEIPT_TEST_ROOT") else {
+            return;
+        };
+        let root = Path::new(&root);
+        let config = package_publication_test_config(root);
+        let manifest: BuildManifest =
+            serde_json::from_slice(&fs::read(root.join("build.json")).unwrap()).unwrap();
+        let nav: BundlePackageArtifact =
+            serde_json::from_slice(&fs::read(root.join("nav.json")).unwrap()).unwrap();
+        let bundle = build_bundle_manifest(&config, &manifest, &[], &nav).unwrap();
+        let path = write_hashed_bundle_manifest(&config.packaged_dir, &bundle).unwrap();
+        validate_bundle_manifest(&config.packaged_dir, &path).unwrap();
+        let expected: u64 = env::var("AEROBAG_BUNDLE_RECEIPT_TEST_HASHES")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let stats = artifact_verification_stats().unwrap();
+        assert_eq!(stats.hashed_files, expected);
+        assert_eq!(stats.persisted_checks, 2 - expected);
+        assert_eq!(stats.receipt_write_failures, 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn bundle_publication_verifies_once_across_processes() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let config = package_publication_test_config(root);
+        fs::create_dir_all(&config.packaged_dir).unwrap();
+        let package = chart_resource_package(
+            &config,
+            "NW_TAC_TAC1_2607",
+            "cache/packages/NW_TAC_TAC1_2607.zip",
+            b"chart fixture",
+            ChartPackageTier::Regional,
+        );
+        let mut index = minimal_resource_index();
+        index.temporal_summary.uniform_effective_date = Some("2026-07-09".into());
+        index.temporal_summary.uniform_expiration_date = Some("2026-08-06".into());
+        index.packages = vec![package];
+        let manifest = build_manifest_for_resource_index(&config, &index);
+        let mut nav = bundle_package("nav-db", None);
+        nav.checksum_sha256 = hash_text("nav fixture");
+        nav.size_bytes = 11;
+        nav.filename = format!(
+            "nav_db_{NAV_DB_CONTRACT_ID}_2607_01_{}.zip",
+            nav.checksum_sha256
+        );
+        nav.relative_path = nav.filename.clone();
+        fs::write(config.packaged_dir.join(&nav.filename), b"nav fixture").unwrap();
+        fs::write(
+            root.join("build.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(root.join("nav.json"), serde_json::to_vec(&nav).unwrap()).unwrap();
+        for hashes in [2, 0] {
+            let result = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "product_build::tests::bundle_receipt_child_process",
+                    "--nocapture",
+                ])
+                .env("AEROBAG_BUNDLE_RECEIPT_TEST_ROOT", root)
+                .env("AEROBAG_BUNDLE_RECEIPT_TEST_HASHES", hashes.to_string())
+                .env_remove("AEROBAG_REHASH_ARTIFACTS")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
         }
     }
 

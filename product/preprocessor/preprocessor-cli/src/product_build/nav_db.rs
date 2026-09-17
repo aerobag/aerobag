@@ -257,6 +257,7 @@ pub(super) fn build_bundle_manifest(
         .context("resource-index missing end-valid date")?;
     let cycle = build_manifest.cycle.clone();
 
+    let mut links = Vec::new();
     let mut package_artifacts = index
         .packages
         .iter()
@@ -273,7 +274,7 @@ pub(super) fn build_bundle_manifest(
                 &package.checksum_sha256,
                 resource_package_chart_tier(package)?,
             )?;
-            publish_flat_artifact(&package_path, &config.packaged_dir.join(&filename))?;
+            links.push((package_path.clone(), config.packaged_dir.join(&filename)));
             Ok(BundlePackageArtifact {
                 id: package.id.clone(),
                 family_id: package.family_id.clone(),
@@ -304,6 +305,16 @@ pub(super) fn build_bundle_manifest(
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+
+    // Verify every source before acquiring the publication lock. Only the
+    // hardlink mutations serialize across cycles, not scanning package bytes.
+    {
+        let _lock =
+            acquire_publication_lock(&config.publish_dir, |message| eprintln!("{message}"))?;
+        for (source, published) in links {
+            publish_flat_artifact(&source, &published)?;
+        }
+    }
 
     package_artifacts.extend(stable_packages.iter().cloned());
     package_artifacts.push(nav_db_package.clone());

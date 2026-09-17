@@ -88,6 +88,43 @@ artifacts include their preprocessor's resources as well.
 Periodic refreshes no longer reinstall SDKs or run toolchain setup; deployment
 reconciliation still installs those prerequisites. There is no new daemon/timer.
 
+## Implemented: warm publication verification
+
+Package checksum evidence now survives producer process restarts. On Linux the
+verifier attaches a small `user.aerobag.verified-sha256-v1` extended attribute to
+the artifact inode after actually hashing it. The receipt pins schema, device,
+inode, size, nanosecond mtime and SHA-256. Every caller still checks the resulting
+digest and size against its own declaration. Replacement, ordinary content
+modification, missing/malformed receipts and schema changes cause rehashing.
+An open file is restatted before verification succeeds.
+
+Receipts follow hardlinks and disappear with the last link during existing GC;
+there is no separate receipt database or retention policy. They deliberately
+exclude ctime, which changes on harmless hardlink creation/removal and chmod.
+Like the existing node cache and chart-quality identity, this assumes trusted,
+immutable artifact storage. It does not detect storage bit rot or deliberate
+content mutation with restored metadata on a receipt hit. Run a full content
+audit by setting `AEROBAG_REHASH_ARTIFACTS=1` on a build: it ignores persisted
+receipts, hashes each distinct identity once in the process, and refreshes the
+evidence. If extended attributes are unavailable or permissions prevent writing
+them, verification still hashes normally; `receipt_write_failures` exposes the
+lost optimization. No source file permissions are relaxed to save a receipt.
+
+NAV_DB construction, package hashing, manifest serialization and validation no
+longer hold the publication lock. Only the short file-link mutations do. Relinking
+an already-correct source inode is a no-op. Concurrent publishers still serialize
+mutations; an owner releasing its lock during a waiter's inspection is normal,
+not a publication failure.
+
+Task completion details now include `task_elapsed_ms`, `work_ms`,
+`publication_lock_wait_ms`, `publication_lock_held_ms`, `verified_hashed_files`,
+`verified_hashed_bytes`, `verified_persisted_checks`, `verified_memory_checks`,
+and `receipt_write_failures`. NAV_DB explicitly reports `cache_hit=true/false`.
+Work time excludes publication-lock waiting, but includes other task work/waits.
+The final `artifact-verification-summary` covers the whole build; the older
+`publication-integrity` counters cover only that last phase. The timestamps on
+the left of task logs are build-relative completion times, not task durations.
+
 ## Validation and rollout
 
 Regression coverage includes a generated one-plate TPP PDF through the real
@@ -99,6 +136,11 @@ atomic evidence copying and bounded retention.
 
 Tool-cache unit tests cover warm reuse, corrupt binaries/resources, changed legacy
 checkouts, profile/flag identities, failed creation, concurrent leases, and GC.
+Verification tests launch separate processes for cold and warm receipts and
+actual small-fixture bundle publication (two hashes cold, zero warm). They also
+cover hardlinks, mutation, replacement with copied attributes, malformed receipts,
+full audits, mismatched declarations, concurrent publication, verification outside
+the mutation lock, and deterministic lock-wait/work timing.
 The explicit native relocation check snapshots the working tree into a disposable
 repository, builds a real tool, removes its compilation checkout, verifies an
 actual warm hit, relocates it again, compares node fingerprints, executes bundled
@@ -117,4 +159,9 @@ new parent and quality nodes (and quality-keyed render nodes); subsequent refres
 get the savings. Observed production `.15.6` warm runs scheduled 156 tasks and took
 47–61 seconds (excluding compilation), while retained older producers still
 expanded 91,334 tasks. These measurements predate the per-build tool cache; its
-production wall time still needs measurement after deployment.
+production wall time still needs measurement after deployment. Persistent
+verification receipts and narrow publication locks also require the new producer
+code; existing sunsets keep their original implementation. The first run creates
+receipts and may invalidate conservative source-keyed graph/NAV_DB entries after
+the code update. The following unchanged run is the warm comparison; no cache
+deletion or manual migration is needed.

@@ -6,6 +6,28 @@ use super::*;
 
 const MALFORMED_LOCK_GRACE: Duration = Duration::from_secs(30);
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct PublicationLockStats {
+    pub(super) waited: Duration,
+    pub(super) held: Duration,
+}
+
+thread_local! {
+    static PUBLICATION_LOCK_STATS: std::cell::Cell<PublicationLockStats> = std::cell::Cell::new(PublicationLockStats::default());
+}
+
+pub(super) fn publication_lock_stats() -> PublicationLockStats {
+    PUBLICATION_LOCK_STATS.get()
+}
+
+pub(super) fn record_publication_lock_hold(elapsed: Duration) {
+    PUBLICATION_LOCK_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.held += elapsed;
+        stats.set(value);
+    });
+}
+
 pub(super) fn try_load_node_record(
     prepared: &PreparedNode,
     expected_outputs: &[PathBuf],
@@ -185,9 +207,14 @@ pub(super) fn remove_stale_lock_if_needed(lock_path: &Path) -> anyhow::Result<()
         Some(pid) if process_is_alive(pid) => return Ok(()),
         Some(_) => {}
         None => {
-            let modified = fs::metadata(lock_path)
-                .and_then(|metadata| metadata.modified())
-                .with_context(|| format!("failed to inspect {}", lock_path.display()))?;
+            let modified = match fs::metadata(lock_path).and_then(|metadata| metadata.modified()) {
+                Ok(modified) => modified,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to inspect {}", lock_path.display()))
+                }
+            };
             let age = SystemTime::now()
                 .duration_since(modified)
                 .unwrap_or_default();
@@ -206,8 +233,15 @@ pub(super) fn remove_stale_lock_if_needed(lock_path: &Path) -> anyhow::Result<()
 }
 
 pub(super) fn read_lock_pid(lock_path: &Path) -> anyhow::Result<Option<u32>> {
-    let text = fs::read_to_string(lock_path)
-        .with_context(|| format!("failed to read {}", lock_path.display()))?;
+    // The owner may release the lock between AlreadyExists/is_file and this
+    // read. That is normal contention, not a failed publication.
+    let text = match fs::read_to_string(lock_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", lock_path.display()))
+        }
+    };
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("pid=") {
             return Ok(value.trim().parse::<u32>().ok());
@@ -246,6 +280,7 @@ where
         .with_context(|| format!("failed to create {}", lock_dir.display()))?;
     let lock_path = lock_dir.join(format!("{lock_name}.lock"));
     let mut logged_wait = false;
+    let started = Instant::now();
     loop {
         match OpenOptions::new()
             .write(true)
@@ -257,7 +292,15 @@ where
                 let now = utc_now_string();
                 writeln!(file, "pid={pid}").ok();
                 writeln!(file, "started_at_utc={now}").ok();
-                return Ok(PublicationLockGuard { path: lock_path });
+                PUBLICATION_LOCK_STATS.with(|stats| {
+                    let mut value = stats.get();
+                    value.waited += started.elapsed();
+                    stats.set(value);
+                });
+                return Ok(PublicationLockGuard {
+                    path: lock_path,
+                    acquired_at: Instant::now(),
+                });
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 remove_stale_lock_if_needed(&lock_path)?;
@@ -268,7 +311,9 @@ where
                     ));
                     logged_wait = true;
                 }
-                thread::sleep(Duration::from_secs(2));
+                // Only short metadata mutations hold this lock. A two-second
+                // poll would otherwise dominate warm publication latency.
+                thread::sleep(Duration::from_millis(10));
             }
             Err(err) => {
                 return Err(err)
@@ -512,6 +557,16 @@ mod tests {
     use super::*;
     use std::fs::FileTimes;
     use tempfile::tempdir;
+
+    #[test]
+    fn released_lock_is_not_an_inspection_error() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("released.lock");
+        fs::write(&path, format!("pid={}\n", std::process::id())).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(read_lock_pid(&path).unwrap(), None);
+        remove_stale_lock_if_needed(&path).unwrap();
+    }
 
     #[test]
     fn abandoned_malformed_lock_does_not_wedge_future_builds() {

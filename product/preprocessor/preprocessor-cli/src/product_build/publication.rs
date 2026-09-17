@@ -58,7 +58,7 @@ pub fn publish_discovery_manifest(
 }
 
 pub(super) fn publish_content_addressed_zip(
-    build_root: &Path,
+    config: &ProductBuildConfig,
     zip_path: &Path,
     file_prefix: &str,
     known_sha256: Option<&str>,
@@ -68,7 +68,11 @@ pub(super) fn publish_content_addressed_zip(
     let sha256 = known_sha256.unwrap_or(&verified.sha256).to_string();
     let size_bytes = known_size_bytes.unwrap_or(verified.size_bytes);
     verify_expected_artifact(&verified, zip_path, &sha256, size_bytes, "source package")?;
-    let published_path = build_root.join(format!("{file_prefix}_{sha256}.zip"));
+    let published_path = config
+        .packaged_dir
+        .join(format!("{file_prefix}_{sha256}.zip"));
+    // Expensive verification above is deliberately outside the mutation lock.
+    let _lock = acquire_publication_lock(&config.publish_dir, |message| eprintln!("{message}"))?;
     if !published_path.is_file() {
         fs::hard_link(zip_path, &published_path).with_context(|| {
             format!(
@@ -2173,15 +2177,26 @@ pub(super) fn publish_bundle_artifact(
     absolute_path: &Path,
     published_filename: &str,
 ) -> anyhow::Result<BundleArtifact> {
+    let artifact = bundle_artifact(absolute_path, published_filename)?;
     let published_path = config.packaged_dir.join(published_filename);
+    let _lock = acquire_publication_lock(&config.publish_dir, |message| eprintln!("{message}"))?;
     publish_flat_artifact(absolute_path, &published_path)?;
-    bundle_artifact(absolute_path, published_filename)
+    Ok(artifact)
 }
 
 pub(super) fn publish_flat_artifact(
     source_path: &Path,
     published_path: &Path,
 ) -> anyhow::Result<()> {
+    if let (Ok(source), Ok(published)) = (
+        fs::metadata(source_path),
+        fs::symlink_metadata(published_path),
+    ) {
+        if published.is_file() && source.dev() == published.dev() && source.ino() == published.ino()
+        {
+            return Ok(());
+        }
+    }
     if published_path.exists() {
         fs::remove_file(published_path)
             .with_context(|| format!("failed to remove {}", published_path.display()))?;

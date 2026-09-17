@@ -4,6 +4,92 @@
 
 use super::*;
 
+struct ProductTaskMeasurement {
+    started: Instant,
+    locks_before: PublicationLockStats,
+    verification_before: ArtifactVerificationStats,
+}
+
+impl ProductTaskMeasurement {
+    fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            locks_before: publication_lock_stats(),
+            verification_before: thread_artifact_verification_stats(),
+        }
+    }
+
+    fn finish<V>(
+        self,
+        result: anyhow::Result<GraphTaskCompletion<V>>,
+    ) -> anyhow::Result<GraphTaskCompletion<V>> {
+        let mut completed = result?;
+        let elapsed = self.started.elapsed();
+        let locks = publication_lock_stats();
+        let waited = locks.waited.saturating_sub(self.locks_before.waited);
+        let held = locks.held.saturating_sub(self.locks_before.held);
+        let verification = thread_artifact_verification_stats().since(self.verification_before);
+        completed.completion_detail.push_str(&format!(
+            " task_elapsed_ms={} work_ms={} publication_lock_wait_ms={} publication_lock_held_ms={} verified_hashed_files={} verified_hashed_bytes={} verified_persisted_checks={} verified_memory_checks={} receipt_write_failures={}",
+            elapsed.as_millis(), elapsed.saturating_sub(waited).as_millis(), waited.as_millis(), held.as_millis(),
+            verification.hashed_files, verification.hashed_bytes, verification.persisted_checks, verification.reused_checks,
+            verification.receipt_write_failures,
+        ));
+        Ok(completed)
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn task_reports_verification_and_separates_lock_wait_from_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let artifact = root.join("test.zip");
+        fs::write(&artifact, b"timing fixture").unwrap();
+        let held = acquire_named_publication_lock(&root, "test", |_| {}).unwrap();
+        let (waiting_tx, waiting_rx) = crossbeam_channel::bounded(1);
+        let worker = thread::spawn(move || {
+            let measurement = ProductTaskMeasurement::start();
+            verified_artifact_file(&artifact).unwrap();
+            let lock = acquire_named_publication_lock(&root, "test", |_| {
+                waiting_tx.send(()).unwrap();
+            })
+            .unwrap();
+            drop(lock);
+            let completed = measurement
+                .finish(Ok(GraphTaskCompletion {
+                    node_records: vec![],
+                    value: (),
+                    completion_detail: "cache_hit=true".into(),
+                }))
+                .unwrap();
+            let locks = publication_lock_stats();
+            assert!(!locks.waited.is_zero());
+            assert!(!locks.held.is_zero());
+            completed.completion_detail
+        });
+        let waiting = waiting_rx.recv_timeout(Duration::from_secs(5));
+        drop(held);
+        let detail = worker.join().unwrap();
+        waiting.expect("worker did not reach the contended publication lock");
+        assert!(detail.contains("cache_hit=true"));
+        assert!(detail.contains("verified_hashed_files=1"));
+        let values = detail
+            .split_whitespace()
+            .filter_map(|v| v.split_once('='))
+            .collect::<BTreeMap<_, _>>();
+        let elapsed: u128 = values["task_elapsed_ms"].parse().unwrap();
+        let work: u128 = values["work_ms"].parse().unwrap();
+        let wait: u128 = values["publication_lock_wait_ms"].parse().unwrap();
+        assert!(work + wait <= elapsed && elapsed - work - wait <= 1);
+        assert!(values.contains_key("publication_lock_held_ms"));
+        assert!(values.contains_key("verified_persisted_checks"));
+    }
+}
+
 pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuildResult> {
     fs::create_dir_all(&config.packaged_dir)
         .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
@@ -236,19 +322,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     .map(|unscoped| (unscoped.to_string(), records.clone()))
             })
             .collect()
-    }
-
-    fn product_task_requires_publication_lock(kind: &ProductScheduledTaskKind) -> bool {
-        matches!(
-            kind,
-            ProductScheduledTaskKind::NavDb { .. }
-                | ProductScheduledTaskKind::BundleManifest { .. }
-                | ProductScheduledTaskKind::WorldBasemapPublish
-                | ProductScheduledTaskKind::TerrainPublish { .. }
-                | ProductScheduledTaskKind::TerrainWidePublish
-                | ProductScheduledTaskKind::ShadedReliefPublish { .. }
-                | ProductScheduledTaskKind::ShadedReliefWidePublish
-        )
     }
 
     fn product_task_failure_scope(task_id: &str) -> Option<String> {
@@ -643,15 +716,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             product_task_failure_scope,
             |message| master_log.log(message),
             move |kind, task_values_snapshot, task_node_records_snapshot| {
+                let measurement = ProductTaskMeasurement::start();
                 let config = config_for_tasks.clone();
-                let _publication_lock = if product_task_requires_publication_lock(&kind) {
-                    Some(acquire_publication_lock(&config.publish_dir, |message| {
-                        eprintln!("{message}");
-                    })?)
-                } else {
-                    None
-                };
-                match kind {
+                let result = match kind {
                     ProductScheduledTaskKind::SourceUrls { cycle } => {
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle.clone());
@@ -690,23 +757,23 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let data_version = data_version_label(&source_urls_dir)?;
                         let bundle_cycle = data_manifest_cycle(&source_urls_dir)?;
                         let completion_detail = format!(
-                                "cycle bundle={} charts=sec:{} tac:{} enr-l:{} enr-h:{} csup:{} tpp={} data:{}",
-                                bundle_cycle,
-                                chart_versions["sec"],
-                                chart_versions["tac"],
-                                chart_versions["enr-l"],
-                                chart_versions["enr-h"],
-                                csup_version,
-                                Region::ALL
-                                    .iter()
-                                    .map(|region| {
-                                        let key = region.code().to_ascii_lowercase();
-                                        format!("{}:{}", key, tpp_versions[&key])
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(","),
-                                data_version,
-                            );
+                            "cycle bundle={} charts=sec:{} tac:{} enr-l:{} enr-h:{} csup:{} tpp={} data:{}",
+                            bundle_cycle,
+                            chart_versions["sec"],
+                            chart_versions["tac"],
+                            chart_versions["enr-l"],
+                            chart_versions["enr-h"],
+                            csup_version,
+                            Region::ALL
+                                .iter()
+                                .map(|region| {
+                                    let key = region.code().to_ascii_lowercase();
+                                    format!("{}:{}", key, tpp_versions[&key])
+                                })
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            data_version,
+                        );
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 source_urls_record,
@@ -920,12 +987,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         if let Some(cached) =
                             lookup_tpp_subgraph(&cycle_config, region, &subgraph_inputs)?
                         {
-                            return Ok(ProductTaskCompletion {
+                            return measurement.finish(Ok(ProductTaskCompletion {
                                 node_records: vec![],
                                 value: ProductTaskValue::TppSubgraphHit(cached),
                                 completion_detail: "subgraph_cache_hit=true children_not_expanded"
                                     .into(),
-                            });
+                            }));
                         }
                         let (record, source_root, plan, source_content_fingerprint) =
                             build_tpp_plan_node(
@@ -1680,6 +1747,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         .with_context(|| {
                             format!("nav-db node for cycle {cycle} missing unpack source root")
                         })?;
+                        let cache_hit = built.node_record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 built.node_record,
@@ -1689,7 +1757,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 package: built.package,
                                 unpack_source_root,
                             },
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::BundleManifest { cycle } => {
@@ -1939,7 +2007,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                         source_fetched_at_utc.clone(),
                                     ));
                                 }
-                                _ => bail!("missing terrain build output for {}", region.code()),
+                                _ => {
+                                    bail!("missing terrain build output for {}", region.code())
+                                }
                             }
                         }
                         let (zip_path, source_version, source_fetched_at_utc, record) =
@@ -2131,7 +2201,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         };
                         let product_id = stable_product_id_with_contract("world-basemap")?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.packaged_dir,
+                            &config,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -2176,7 +2246,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let product_id =
                             stable_product_id_with_contract(&format!("terrain-{region_id}"))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.packaged_dir,
+                            &config,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -2221,7 +2291,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             "terrain-{WIDE_ANGLE_REGION_ID}"
                         ))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.packaged_dir,
+                            &config,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -2266,7 +2336,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let product_id =
                             stable_product_id_with_contract(&format!("shaded-relief-{region_id}"))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.packaged_dir,
+                            &config,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -2311,7 +2381,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             "shaded-relief-{WIDE_ANGLE_REGION_ID}"
                         ))?;
                         let (published_zip, sha256, size_bytes) = publish_content_addressed_zip(
-                            &config.packaged_dir,
+                            &config,
                             &built.0,
                             &product_id,
                             built.2.as_deref(),
@@ -2331,7 +2401,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             completion_detail: "published".to_string(),
                         })
                     }
-                }
+                };
+                measurement.finish(result)
             },
             |task_id, kind, completion, _task_values, _task_node_records| match kind {
                 ProductScheduledTaskKind::TppPlan { cycle, region } => {
@@ -2478,6 +2549,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
 
     match result {
         Ok(result) => {
+            let verification = artifact_verification_stats()?;
+            master_log.log(format!(
+                "artifact-verification-summary hashed_files={} hashed_bytes={} persisted_checks={} memory_checks={} receipt_write_failures={}",
+                verification.hashed_files, verification.hashed_bytes, verification.persisted_checks,
+                verification.reused_checks, verification.receipt_write_failures,
+            ))?;
             write_build_status_html(config, &result.product_artifacts_path)?;
             master_log.log(format!(
                 "complete PASS product_artifacts={}",

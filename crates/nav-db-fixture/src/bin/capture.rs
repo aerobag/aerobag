@@ -121,6 +121,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     records
         .get_mut("airport/notam-catalog")
         .ok_or("missing NOTAM catalog")?["airport_ids"] = json!(AIRPORTS);
+    records.get_mut("airport/notam-catalog").unwrap()["aliases"]
+        .as_object_mut()
+        .ok_or("missing airport aliases")?
+        .retain(|_, target| target.as_str().is_some_and(|id| AIRPORTS.contains(&id)));
     records.insert(
         product_contracts::AIRWAY_ROUTING_GRAPH_KEY.into(),
         serde_json::to_value(product_contracts::AirwayRoutingGraph {

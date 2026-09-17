@@ -1360,7 +1360,7 @@ def live_feed_failure_episodes(
     # New daemons retain episode starts independently of their bounded history.
     # Existing releases expose the same source/publication outcomes as attempts;
     # reconstruct their episodes without letting a source poll clear publication.
-    if schema_version == 3:
+    if schema_version in (3, 4):
         # Missing v3 instrumentation is a coverage error, not legacy support.
         return status.get("failure_episodes")
     episodes: dict[str, Any] = {}
@@ -1397,14 +1397,14 @@ def live_feed_failure_episodes(
 
 
 def live_feed_client_count(source: Any) -> int | None:
-    """Read the existing v2/v3 connection gauge, never substitute zero for a gap."""
+    """Read the existing connection gauge, never substitute zero for a gap."""
     if not isinstance(source, dict) or source.get("error") is not None:
         return None
     payload = source.get("payload")
     if not isinstance(payload, dict):
         return None
     schema = payload.get("schema_version")
-    if type(schema) is not int or schema not in (2, 3):
+    if type(schema) is not int or schema not in (2, 3, 4):
         return None
     count = payload.get("active_sse_clients")
     return count if type(count) is int and count >= 0 else None
@@ -1453,6 +1453,57 @@ def add_total_live_feed_client_metric(metrics: list[dict[str, Any]], facts: dict
     add_live_feed_client_metric(metrics, sum(counts.values()) if complete else None, total=True)
 
 
+NOTAM_EXCLUSION_CATEGORIES = ("AIRSPACE", "No keyword", "NAV", "OBST", "COM", "SVC", "Other")
+
+
+def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, version: int) -> None:
+    quality = quality if isinstance(quality, dict) else {}
+    source, client = quality.get("source_record_count"), quality.get("client_record_count")
+    counts = quality.get("server_only_records_by_keyword")
+    valid_count = lambda value: type(value) is int and value >= 0
+    valid = (valid_count(source) and valid_count(client) and client <= source
+             and isinstance(counts, dict)
+             and all(isinstance(k, str) and k and valid_count(v) for k, v in counts.items())
+             and sum(counts.values()) == source - client)
+    unavailable = "warning" if version == 4 else "unknown"
+    for name, label, value in [
+        ("source_record_count", "NOTAM source records", source),
+        ("client_record_count", "NOTAM client records", client),
+        ("server_only_record_count", "NOTAMs excluded from NOTAM feed, by category", source - client if valid else None),
+    ]:
+        add_metric(metrics, metric_id=f"live_feed.notams.{name}", label=label,
+                   value=value if valid else None, unit="records",
+                   severity="ok" if valid else unavailable,
+                   message=("Current retained state, including future-effective notices. Exclusions may still reach the TFR feed."
+                            if valid else "Missing or inconsistent NOTAM source/client/category accounting"))
+        if valid and name == "server_only_record_count":
+            breakdown = dict.fromkeys(NOTAM_EXCLUSION_CATEGORIES, 0)
+            for keyword, count in counts.items():
+                category = "No keyword" if keyword == "(none)" else keyword
+                breakdown[category if category in breakdown else "Other"] += count
+            metrics[-1]["breakdown"] = breakdown
+            metrics[-1]["details"] = {"excluded_by_keyword": counts}
+
+    audit = quality.get("delivery_audit")
+    audit_valid = (valid and isinstance(audit, dict) and audit.get("error") is None
+                   and isinstance(audit.get("tfr_version"), str) and bool(audit["tfr_version"])
+                   and valid_count(audit.get("tfr_overlap_count"))
+                   and valid_count(audit.get("without_delivery_count"))
+                   and audit["tfr_overlap_count"] + audit["without_delivery_count"] == source - client)
+    for name, label in [("tfr_overlap_count", "Excluded NOTAMs delivered through TFRs"),
+                        ("without_delivery_count", "NOTAMs without a client delivery path")]:
+        supported = version == 4
+        available = supported and audit_valid
+        value = audit[name] if available else None
+        add_metric(metrics, metric_id=f"live_feed.notams.{name}", label=label,
+                   value=value, unit="records",
+                   severity=("ok" if available else "warning" if supported else "not_instrumented"),
+                   message=("Measured against the latest published NOTAM and TFR states; not a proof of UI reachability."
+                            if available else "Delivery cross-check is not instrumented in this status version"
+                            if not supported else f"NOTAM delivery audit unavailable: {audit.get('error') if isinstance(audit, dict) else 'missing audit'}"),
+                   details={"tfr_version": audit.get("tfr_version") if isinstance(audit, dict) else None})
+
+
 def add_live_feed_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime
 ) -> None:
@@ -1464,7 +1515,7 @@ def add_live_feed_metrics(
     if not isinstance(products, dict):
         return
     status_schema_version = payload.get("schema_version")
-    if status_schema_version not in (2, 3):
+    if status_schema_version not in (2, 3, 4):
         add_metric(
             metrics,
             metric_id="live_feed.status_schema_version",
@@ -1713,6 +1764,7 @@ def add_live_feed_metrics(
                 },
             )
         if product == "notams":
+            add_notam_delivery_metrics(metrics, status.get("quality"), status_schema_version)
             source_samples = status.get("source_samples")
             recent_source_rejections: list[dict[str, Any]] = []
             if isinstance(source_samples, list):
@@ -2237,6 +2289,9 @@ def compact_evaluation_metrics(evaluation: dict[str, Any]) -> dict[str, Any]:
                 "severity": severity,
             }
         )
+        for category, count in metric.get("breakdown", {}).items():
+            if graphable_scalar(count) is not None:
+                compact[f"{metric['id']}::{category}"] = count
     return compact
 
 
@@ -2870,6 +2925,7 @@ def dashboard_html() -> str:
     .metric-details table { margin-top:8px; font-size:12px; }
     .metric-details td:last-child { overflow-wrap:anywhere; }
     .plot { min-height:150px; height:150px; user-select:none; }
+    .metric-row.has-breakdown .plot { min-height:260px; height:260px; }
     .plot * { user-select:none; }
     @media (max-width: 820px) {
       main { padding:12px; }
@@ -2970,6 +3026,9 @@ function formatAge(seconds) {
   return `${hours}h ${minutes}m`;
 }
 function renderMetricDetails(metric) {
+  if (metric.breakdown) {
+    return `<table class="metric-details"><thead><tr><th>Category</th><th>Excluded</th></tr></thead><tbody>${Object.entries(metric.breakdown).map(([category, count]) => `<tr><td>${esc(category)}</td><td>${esc(count)}</td></tr>`).join("")}</tbody></table>`;
+  }
   const details = metric?.details;
   if (typeof details?.review_url === "string" && details.review_url.startsWith("/pipeline-health/chart-quality/")) {
     return `<a href="${esc(details.review_url)}">Review chart reference / current / differences</a>`;
@@ -3031,6 +3090,7 @@ function renderCurrent(record) {
 }
 function updateMetricRow(row, metric) {
   row.metric = metric;
+  row.element.classList.toggle("has-breakdown", Boolean(metric.breakdown));
   row.title.textContent = metric.label || metric.id;
   row.pill.textContent = (metric.severity || "ok").replaceAll("_", " ");
   row.pill.className = `pill ${cls(metric.severity)}`;
@@ -3147,6 +3207,22 @@ function renderPlot(metricId) {
   const row = dashboard.rows.get(metricId);
   if (!row) return;
   const metric = row.metric;
+  if (metric.breakdown) {
+    const colors = ["#e6b95d", "#c89fe8", "#70b9ed", "#ed8a8a", "#63caae", "#d3db83", "#d5d5d5"];
+    const traces = Object.keys(metric.breakdown).map((category, index) => ({
+      type:"scatter", mode:"lines+markers", name:category, marker:{size:3},
+      x:dashboard.series?.times || [],
+      y:dashboard.series?.series?.[`${metricId}::${category}`]?.last || [],
+      connectgaps:false, line:{color:colors[index % colors.length], width:2},
+    }));
+    Plotly.react(row.plot, traces, {
+      paper_bgcolor:"#171b19", plot_bgcolor:"#171b19", font:{color:"#edf3ee", size:11},
+      margin:{l:48,r:12,t:8,b:72}, xaxis:{type:"date", gridcolor:"#303833"},
+      yaxis:{title:"records", gridcolor:"#303833", rangemode:"tozero"},
+      legend:{orientation:"h", x:0, y:-0.35}, uirevision:metricId,
+    }, {responsive:true, displaylogo:false});
+    return;
+  }
   const { points, envelopeX, minimums, maximums } = metricPlotData(metricId);
   const traces = [];
   if (envelopeX.length) {
@@ -3228,7 +3304,9 @@ function mergeCurrentSample(current) {
     appendSeriesBucket(bucketTime);
     index = dashboard.series.times.length - 1;
   }
-  for (const metric of current.evaluation?.metrics || []) {
+  const samples = (current.evaluation?.metrics || []).flatMap(metric => [metric,
+    ...Object.entries(metric.breakdown || {}).map(([category, value]) => ({id:`${metric.id}::${category}`, value}))]);
+  for (const metric of samples) {
     const value = graphValue(metric.value);
     if (value === null) continue;
     const columns = ensureSeriesColumns(metric.id);

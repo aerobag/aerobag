@@ -14,6 +14,7 @@ mod live_feed_compatibility;
 mod live_feed_policy;
 pub mod live_feeds;
 mod notam_catalog_identity;
+mod notam_subject;
 pub mod publication;
 pub mod versioned_json;
 
@@ -24,6 +25,7 @@ pub use atmosphere::*;
 pub use live_feed_compatibility::*;
 pub use live_feed_policy::*;
 pub use notam_catalog_identity::*;
+pub use notam_subject::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductContract {
@@ -40,10 +42,11 @@ pub const NOTAM_AIRPORT_CATALOG_NAV_DB_KEY: &str = "airport/notam-catalog";
 pub struct NotamAirportCatalog {
     pub schema_version: u32,
     pub airport_ids: BTreeSet<String>,
+    pub aliases: BTreeMap<String, String>,
 }
 
 impl NotamAirportCatalog {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != Self::SCHEMA_VERSION {
@@ -61,6 +64,19 @@ impl NotamAirportCatalog {
             {
                 return Err(format!(
                     "NOTAM airport catalog contains non-canonical ID {airport_id:?}"
+                ));
+            }
+        }
+        for (alias, target) in &self.aliases {
+            if alias.is_empty()
+                || !alias
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                || !self.airport_ids.contains(target)
+                || (self.airport_ids.contains(alias) && alias != target)
+            {
+                return Err(format!(
+                    "invalid NOTAM airport alias {alias:?} -> {target:?}"
                 ));
             }
         }
@@ -428,7 +444,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV26";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV27";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -442,7 +458,7 @@ pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
-pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 7;
+pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -635,8 +651,8 @@ mod tests {
     #[test]
     fn nav_db_contract_descriptor_matches_immutable_revision() {
         let expected: NavDbContractDescriptor =
-            serde_json::from_str(include_str!("../contracts/nav-db/NAV26.json"))
-                .expect("decode NAV26 contract descriptor");
+            serde_json::from_str(include_str!("../contracts/nav-db/NAV27.json"))
+                .expect("decode NAV27 contract descriptor");
         assert_eq!(nav_db_contract_descriptor(), expected);
     }
 

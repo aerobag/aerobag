@@ -649,6 +649,7 @@ mod tests {
     fn equal_count_catalog_substitution_denies_sharing() {
         let identity = |id: &str| {
             NotamAirportCatalog {
+                aliases: Default::default(),
                 schema_version: NotamAirportCatalog::SCHEMA_VERSION,
                 airport_ids: [id.to_string()].into(),
             }

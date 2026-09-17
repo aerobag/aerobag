@@ -356,6 +356,7 @@ export type FlightPlanDisplayRowUiView = {
   nav_ref: NavRef | null;
   symbol_feature: NavSymbolFeature | null;
   weather_badge?: FlightPlanWeatherBadgeUiView | null;
+  notam_badge?: NotamBadgeUiView | null;
   depth: number;
   active: boolean;
   enabled?: boolean;
@@ -814,24 +815,26 @@ export type DevBootstrapJson = {
   selected_chart_id: string | null;
 };
 
-export type PlateProcedureNotamBadge = {
+export type NotamBadgeUiView = {
   label: string;
   count: number;
   action_id: string;
   accessibility_label: string;
-  detail: {
-    title: string;
-    advisory_text: string;
-    empty_text: string;
-    notams: AirportNotamUiView[];
-  };
+  detail: NotamDetailUiView;
+};
+
+export type NotamDetailUiView = {
+  title: string;
+  advisory_text: string;
+  empty_text: string;
+  notams: AirportNotamUiView[];
 };
 
 export type ChartPageData = {
   airports: Array<{
     id: string;
     label: string;
-    unmatched_procedure_notam_badge?: PlateProcedureNotamBadge | null;
+    unmatched_procedure_notam_badge?: NotamBadgeUiView | null;
     charts: Array<{
       id: string;
       airport_id?: string | null;
@@ -841,7 +844,7 @@ export type ChartPageData = {
       folder_category: string;
       has_thumbnail: boolean;
       procedure_geometry_warning_count: number;
-      procedure_notam_badge?: PlateProcedureNotamBadge | null;
+      procedure_notam_badge?: NotamBadgeUiView | null;
       georef: PlateGeoref | null;
     }>;
   }>;

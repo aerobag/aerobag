@@ -300,6 +300,8 @@ pub struct PublishedLiveFeedUpdate {
     pub changed_count: usize,
     pub removed_count: usize,
     pub status_quality: Option<serde_json::Value>,
+    /// Audit-only identities, never serialized into client payloads or status JSON.
+    pub notam_server_only_record_ids: Option<std::sync::Arc<std::collections::BTreeSet<String>>>,
     #[doc(hidden)]
     pub publication_ack: Option<NotamPublicationAck>,
     #[doc(hidden)]
@@ -1262,6 +1264,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     delta_path: None,
                     changed_count: 0,
                     removed_count: 0,
+                    notam_server_only_record_ids: None,
                     status_quality: None,
                     publication_ack: None,
                     notam_compaction: None,
@@ -1570,6 +1573,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             delta_path,
             changed_count,
             removed_count,
+            notam_server_only_record_ids: None,
             status_quality: None,
             publication_ack: None,
             notam_compaction: None,
@@ -1710,6 +1714,9 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     "server_only_records_by_keyword": snapshot
                         .server_only_records_by_keyword,
                 })),
+                notam_server_only_record_ids: Some(std::sync::Arc::new(
+                    snapshot.server_only_record_ids,
+                )),
                 publication_ack,
                 notam_compaction,
             });
@@ -1896,6 +1903,9 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 "server_only_records_by_keyword": snapshot
                     .server_only_records_by_keyword,
             })),
+            notam_server_only_record_ids: Some(std::sync::Arc::new(
+                snapshot.server_only_record_ids,
+            )),
             publication_ack: Some(NotamPublicationAck {
                 state_root: store.root().to_path_buf(),
                 journal_seq: final_journal_seq,
@@ -5448,6 +5458,7 @@ mod tests {
                 delta_path: None,
                 changed_count: 1,
                 removed_count: 0,
+                notam_server_only_record_ids: None,
                 status_quality: None,
                 publication_ack: Some(NotamPublicationAck {
                     state_root: PathBuf::from("not-used-by-mock"),

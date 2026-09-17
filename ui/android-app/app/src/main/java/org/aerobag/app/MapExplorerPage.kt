@@ -285,8 +285,6 @@ import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.WeatherDetailSectionKind
-import org.aerobag.app.domain.AirportNotamUiView
-import org.aerobag.app.domain.PlateProcedureNotamDetail
 import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.AirportRunwayUiView
 import org.aerobag.app.domain.applyPinchGesture
@@ -2979,6 +2977,37 @@ internal fun MapExplorerPage(
             mapSelectionTrayBounds = null
         }
     }
+    LaunchedEffect(uiSession, sessionSnapshot.notamDisplayStateId) {
+        val previous = mapSelection ?: return@LaunchedEffect
+        val generation = inspectionGeneration
+        try {
+            val result = sessionWorkRunner.queryMapSelection(
+                viewport = viewportState.value.copy(rotationDeg = plannedMapUpDeg),
+                widthPx = surfaceWidthPx.toDouble(), heightPx = surfaceHeightPx.toDouble(),
+                click = LatLonPoint(previous.result.clickLat, previous.result.clickLon),
+                pointDisplayScale = density.density.toDouble(),
+                fetchResource = { fetchMapOverlayCoreResource(context, it, devServerBaseUrl) },
+            )
+            val current = mapSelection
+            if (current != null && generation == inspectionGeneration && current.point == previous.point) {
+                mapSelection = current.copy(result = result,
+                    selectedItem = mapSelectionItemById(result, current.selectedItem?.id))
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.w("AerobagSelection", "NOTAM selection refresh failed", error)
+            val current = mapSelection
+            if (current != null && generation == inspectionGeneration && current.point == previous.point) {
+                mapSelection = current.copy(
+                    selectedItem = current.selectedItem?.copy(notamBadge = null),
+                    result = current.result.copy(categories = current.result.categories.map { category ->
+                        category.copy(items = category.items.map { it.copy(notamBadge = null) })
+                    }),
+                )
+            }
+        }
+    }
     fun requestMapSelection(point: Offset) {
         if (currentMapInteraction.value?.inspect != true) return
         val generation = ++inspectionGeneration
@@ -3823,6 +3852,7 @@ internal fun MapExplorerPage(
                             )
                         } else {
                             MapSelectionTray(
+                                onNotamOpenChange = { inspectionCommand(if (it) MapInspectionCommand.DetailOpened else MapInspectionCommand.Open) },
                                 state = selection,
                                 centerProbeTag = mapSelectionCenterProbeTag,
                                 onBoundsChange = { mapSelectionTrayBounds = it },
@@ -5058,6 +5088,7 @@ internal fun MapSelectionTray(
     modifier: Modifier,
     centerProbeTag: String? = null,
     onBoundsChange: (Rect?) -> Unit = {},
+    onNotamOpenChange: (Boolean) -> Unit = {},
     onSelectItem: (MapSelectionItem) -> Unit,
     onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
 ) {
@@ -5101,12 +5132,14 @@ internal fun MapSelectionTray(
                         )
                     } else {
                         category.items.forEach { item ->
-                            MapSelectionItemButton(
-                                item = item,
-                                selected = item.id == selectedItem?.id,
-                                testTag = "parity:map-selection-item:${category.id}-${item.label}",
-                                onClick = { onSelectItem(item) },
-                            )
+                            NotamBadgedControl(badge = item.notamBadge, onOpenChange = onNotamOpenChange) {
+                                MapSelectionItemButton(
+                                    item = item,
+                                    selected = item.id == selectedItem?.id,
+                                    testTag = "parity:map-selection-item:${category.id}-${item.label}",
+                                    onClick = { onSelectItem(item) },
+                                )
+                            }
                         }
                     }
                 }
@@ -5685,159 +5718,6 @@ private fun AirportRunwayDiagram(
                     cap = StrokeCap.Square,
                     join = StrokeJoin.Miter,
                 ),
-            )
-        }
-    }
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-internal fun AirportNotamSection(
-    notams: List<AirportNotamUiView>,
-    label: String = "NOTAM",
-    trailingLabel: String = notams.size.toString(),
-    emptyText: String,
-) {
-    val tour = LocalGuidedTour.current
-    val bringIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
-    LaunchedEffect(tour?.generation) {
-        if (tour?.surface == org.aerobag.app.generated.UiTourSurface.Notams) bringIntoView.bringIntoView()
-    }
-    val uiTheme = LocalAerobagUiTheme.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth().guidedTourAnchor("tour:notams").bringIntoViewRequester(bringIntoView)
-            .background(
-                uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f),
-                RoundedCornerShape(ThumbRadius),
-            )
-            .border(
-                1.dp,
-                uiTheme.controls.panelBorder.copy(alpha = 0.4f),
-                RoundedCornerShape(ThumbRadius),
-            )
-            .padding(ThumbSize * 0.13f),
-        verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.6.sp,
-                ),
-                color = uiTheme.controls.panelFg,
-            )
-            Text(
-                text = trailingLabel,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
-                color = uiTheme.controls.panelFg,
-            )
-        }
-        if (notams.isEmpty()) {
-            Text(
-                text = emptyText,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                color = uiTheme.controls.panelFg.copy(alpha = 0.65f),
-            )
-        } else {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
-            ) {
-                notams.forEach { notam ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                uiTheme.controls.mapSelectionDisplayBg,
-                                RoundedCornerShape(ThumbRadius * 0.75f),
-                            )
-                            .border(
-                                1.dp,
-                                uiTheme.controls.panelBorder.copy(alpha = 0.5f),
-                                RoundedCornerShape(ThumbRadius * 0.75f),
-                            )
-                            .padding(ThumbSize * 0.11f),
-                        verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
-                    ) {
-                        Text(
-                            text = notam.label,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 0.6.sp,
-                            ),
-                            color = uiTheme.controls.panelFg,
-                        )
-                        Text(
-                            text = notam.text,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 15.sp,
-                                lineHeight = 19.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                            ),
-                            color = uiTheme.controls.panelFg,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-@OptIn(ExperimentalComposeUiApi::class)
-internal fun ProcedureNotamModal(
-    detail: PlateProcedureNotamDetail,
-    modifier: Modifier = Modifier,
-) {
-    val uiTheme = LocalAerobagUiTheme.current
-    Surface(
-        modifier = modifier
-            .testTag("parity:procedure-notam-modal")
-            .semantics { testTagsAsResourceId = true }
-            .widthIn(max = ThumbSize * 10.5f)
-            .heightIn(max = ThumbSize * 11.5f),
-        shape = RoundedCornerShape(ThumbRadius + 4.dp),
-        color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
-        contentColor = uiTheme.controls.panelFg,
-        shadowElevation = 8.dp,
-        border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
-    ) {
-        Column(
-            modifier = Modifier
-                .verticalScroll(rememberScrollState())
-                .padding(ThumbSize * 0.18f),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
-        ) {
-            Text(
-                text = detail.title.uppercase(),
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.4.sp,
-                ),
-                color = uiTheme.controls.panelFg,
-            )
-            Text(
-                text = detail.advisoryText,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(uiTheme.controls.dataStatusWarningBg, RoundedCornerShape(ThumbRadius))
-                    .border(1.dp, uiTheme.controls.dataStatusWarningStroke, RoundedCornerShape(ThumbRadius))
-                    .padding(ThumbSize * 0.13f),
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = 18.sp,
-                ),
-                color = lerp(Color.Black, uiTheme.controls.dataStatusWarningStroke, 0.3f),
-            )
-            AirportNotamSection(
-                notams = detail.notams,
-                emptyText = detail.emptyText,
             )
         }
     }

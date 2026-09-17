@@ -2444,6 +2444,7 @@ fn flight_plan_summary_row(
     destination_estimate: crate::FlightTimeFuelEstimate,
 ) -> crate::planning::FlightPlanDisplayRowUiView {
     crate::planning::FlightPlanDisplayRowUiView {
+        notam_badge: None,
         uid: "flight-plan:summary".to_string(),
         label: "TOTAL".to_string(),
         row_kind: crate::FlightPlanDisplayRowKind::Summary,

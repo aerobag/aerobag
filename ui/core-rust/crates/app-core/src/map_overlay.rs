@@ -514,7 +514,7 @@ pub struct AirportNotamUiView {
     priority: u8,
 }
 
-pub const NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION: u32 = 3;
+pub const NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION: u32 = 4;
 
 /// Binary-safe form of the shared rendezvous key used across the worker boundary.
 ///
@@ -550,6 +550,7 @@ impl NotamDisplayProcedureKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotamDisplayRecord {
     pub id: String,
+    pub subjects: BTreeSet<product_contracts::NotamSubjectKey>,
     pub airport_id: Option<String>,
     pub procedure_rendezvous_keys: BTreeSet<NotamDisplayProcedureKey>,
     pub label: String,
@@ -583,6 +584,7 @@ pub struct NotamDisplayIndex {
     pub version_label: String,
     records: BTreeMap<String, NotamDisplayRecord>,
     by_airport: BTreeMap<String, Vec<String>>,
+    by_subject: BTreeMap<product_contracts::NotamSubjectKey, Vec<String>>,
     by_procedure: BTreeMap<NotamDisplayProcedureKey, Vec<String>>,
 }
 
@@ -624,6 +626,7 @@ impl NotamDisplayIndex {
             version_label: checkpoint.state_id,
             records: BTreeMap::new(),
             by_airport: BTreeMap::new(),
+            by_subject: BTreeMap::new(),
             by_procedure: BTreeMap::new(),
         };
         for record in checkpoint.records {
@@ -669,6 +672,9 @@ impl NotamDisplayIndex {
         for key in &record.procedure_rendezvous_keys {
             insert_projected_notam_id(&mut self.by_procedure, key.clone(), &record.id)?;
         }
+        for subject in &record.subjects {
+            insert_projected_notam_id(&mut self.by_subject, subject.clone(), &record.id)?;
+        }
         self.records.insert(record.id.clone(), record);
         Ok(())
     }
@@ -682,6 +688,9 @@ impl NotamDisplayIndex {
         }
         for key in &record.procedure_rendezvous_keys {
             remove_projected_notam_id(&mut self.by_procedure, key, notam_id)?;
+        }
+        for subject in &record.subjects {
+            remove_projected_notam_id(&mut self.by_subject, subject, notam_id)?;
         }
         Ok(())
     }
@@ -821,6 +830,7 @@ fn project_notam_display_record(record: &NotamRecord) -> Option<NotamDisplayReco
         .expect("displayable NOTAM has display text");
     Some(NotamDisplayRecord {
         id: record.id.clone(),
+        subjects: record.subjects.clone(),
         airport_id,
         procedure_rendezvous_keys: record
             .procedure_rendezvous_keys
@@ -865,7 +875,10 @@ fn validate_projection_record(record: &NotamDisplayRecord) -> Result<(), NotamSt
             )));
         }
     }
-    if record.airport_id.is_none() && record.procedure_rendezvous_keys.is_empty() {
+    if record.airport_id.is_none()
+        && record.procedure_rendezvous_keys.is_empty()
+        && record.subjects.is_empty()
+    {
         return Err(NotamStateError::InvalidRecord(format!(
             "projected NOTAM {} has no lookup identity",
             record.id
@@ -875,6 +888,9 @@ fn validate_projection_record(record: &NotamDisplayRecord) -> Result<(), NotamSt
         key.publication_key()
             .validate()
             .map_err(NotamStateError::InvalidRecord)?;
+    }
+    for subject in &record.subjects {
+        subject.validate().map_err(NotamStateError::InvalidRecord)?;
     }
     if record.text.trim().is_empty() {
         return Err(NotamStateError::InvalidRecord(format!(
@@ -1455,6 +1471,8 @@ pub struct MapSelectionCategory {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapSelectionItem {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notam_badge: Option<crate::NotamBadgeUiView>,
     pub label: String,
     pub sublabel: String,
     #[serde(default)]
@@ -4026,6 +4044,7 @@ fn selection_item_for_point(
         ]
     };
     MapSelectionItem {
+        notam_badge: None,
         id: record.id.clone(),
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
@@ -4071,6 +4090,7 @@ fn selection_item_for_weather_camera(
         .map(|operator| format!("Weather camera · {operator}"))
         .or_else(|| Some("Weather camera".to_string()));
     Some(MapSelectionItem {
+        notam_badge: None,
         id: record.id.clone(),
         label: camera.site_name.clone(),
         sublabel: camera
@@ -4237,6 +4257,7 @@ fn selection_item_for_nav_ref_point(
         ]
     };
     MapSelectionItem {
+        notam_badge: None,
         id: point.feature_id.clone(),
         label,
         sublabel: point.symbol.kind.trim().to_ascii_uppercase(),
@@ -4307,6 +4328,7 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
     let nav_ref = NavRef::Spot(click);
     let coordinates = format!("{:.4}, {:.4}", click.lat, click.lon);
     MapSelectionItem {
+        notam_badge: None,
         id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
         label: "SPOT".to_string(),
         sublabel: coordinates.clone(),
@@ -4360,6 +4382,7 @@ fn selection_item_for_metar(
         weather_age_reference_utc,
     );
     MapSelectionItem {
+        notam_badge: None,
         id: format!("metar:{}", record.station_id.trim()),
         label: display_id.to_string(),
         sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
@@ -4392,6 +4415,7 @@ fn selection_item_for_pirep(
 ) -> MapSelectionItem {
     let hazard_label = pirep_hazard_label(record);
     MapSelectionItem {
+        notam_badge: None,
         id: record.id.clone(),
         label: hazard_label,
         sublabel: record
@@ -4646,6 +4670,54 @@ fn airport_notam_views(
     notams
 }
 
+pub(crate) fn navaid_notam_badge(
+    nav_ref: Option<&NavRef>,
+    index: Option<&NotamDisplayIndex>,
+) -> Option<crate::NotamBadgeUiView> {
+    let id = match nav_ref? {
+        NavRef::Navaid(id)
+        | NavRef::ArincNavaid { identifier: id, .. }
+        | NavRef::TerminalNavaid { identifier: id, .. } => id,
+        _ => return None,
+    };
+    subject_notam_badge(
+        &product_contracts::NotamSubjectKey::Navaid(id.clone()),
+        index,
+    )
+}
+
+pub(crate) fn subject_notam_badge(
+    subject: &product_contracts::NotamSubjectKey,
+    index: Option<&NotamDisplayIndex>,
+) -> Option<crate::NotamBadgeUiView> {
+    let index = index?;
+    let mut notams = index
+        .by_subject
+        .get(subject)?
+        .iter()
+        .filter_map(|id| index.records.get(id))
+        .map(airport_notam_ui_view)
+        .collect::<Vec<_>>();
+    if notams.is_empty() {
+        return None;
+    }
+    sort_airport_notam_views(&mut notams);
+    let count = notams.len();
+    Some(crate::NotamBadgeUiView {
+        label: "N".into(), count,
+        action_id: format!("subject_notams:{}:{}", subject.kind(), subject.ident()),
+        accessibility_label: format!("{count} NOTAM{} for {} {}", if count == 1 { "" } else { "s" }, subject.kind(), subject.ident()),
+        detail: crate::NotamDetailUiView {
+            title: format!("{} {} NOTAMs", subject.kind(), subject.ident()),
+            advisory_text: match subject {
+                product_contracts::NotamSubjectKey::Airway(_) => "Notices may concern other segments of this airway. Review the affected fixes and limits. NOTAMs may be incomplete; check official sources.",
+                _ => "NOTAMs may be incomplete; check official sources.",
+            }.into(),
+            empty_text: "No NOTAMs available.".into(), notams,
+        },
+    })
+}
+
 pub(crate) fn airport_unmatched_procedure_notam_views(
     airport_id: &str,
     attached_keys: &BTreeSet<ProcedureRendezvousKey>,
@@ -4818,6 +4890,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
     let label = airspace_selection_label(feature);
     let published_name = feature.name.trim();
     MapSelectionItem {
+        notam_badge: None,
         id: feature.id.clone(),
         description: (!published_name.is_empty() && published_name != label)
             .then(|| published_name.to_string()),
@@ -4905,6 +4978,7 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
     let region_detail = offline_region_group_detail_text(regions);
     let mode_label = offline_region_mode_action_label(first);
     MapSelectionItem {
+        notam_badge: None,
         id: format!("offline-region:{}", first.region_id.to_ascii_lowercase()),
         label: first.region_id.to_ascii_uppercase(),
         sublabel: description.clone(),
@@ -5172,6 +5246,7 @@ fn selection_item_for_tfr(
         tfr_timing_detail_status(area, reference_utc, local_time_zone, time_display_mode);
     actions.push(text_action);
     MapSelectionItem {
+        notam_badge: None,
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
@@ -7842,6 +7917,7 @@ mod tests {
 
     fn test_selection_item(id: &str, nav_ref: Option<NavRef>) -> MapSelectionItem {
         MapSelectionItem {
+            notam_badge: None,
             id: id.to_string(),
             label: id.to_string(),
             sublabel: String::new(),
@@ -10162,6 +10238,7 @@ mod tests {
                 (
                     "airport".to_string(),
                     NotamRecord {
+                        subjects: Default::default(),
                         id: "airport".to_string(),
                         airport_id: Some("AAA".to_string()),
                         airport_effects: BTreeSet::from([AirportNotamEffect::RunwayClosed]),
@@ -10177,6 +10254,7 @@ mod tests {
                 (
                     "other-airport".to_string(),
                     NotamRecord {
+                        subjects: Default::default(),
                         id: "other-airport".to_string(),
                         airport_id: Some("KBBB".to_string()),
                         airport_effects: BTreeSet::from([AirportNotamEffect::TaxiwayClosed]),
@@ -10192,6 +10270,7 @@ mod tests {
                 (
                     "not-airport".to_string(),
                     NotamRecord {
+                        subjects: Default::default(),
                         id: "not-airport".to_string(),
                         airport_id: None,
                         airport_effects: BTreeSet::new(),
@@ -10232,6 +10311,7 @@ mod tests {
             (
                 id.to_string(),
                 NotamRecord {
+                    subjects: Default::default(),
                     id: id.to_string(),
                     airport_id: Some("KAAA".to_string()),
                     airport_effects: effects.iter().copied().collect(),
@@ -10343,6 +10423,7 @@ mod tests {
     #[test]
     fn notam_display_delta_matches_reprojected_canonical_state() {
         let record = |id: &str, airport_id: Option<&str>, text: &str| NotamRecord {
+            subjects: Default::default(),
             id: id.to_string(),
             airport_id: airport_id.map(str::to_string),
             airport_effects: BTreeSet::from([AirportNotamEffect::RoutineAdvisory]),
@@ -10451,6 +10532,7 @@ mod tests {
         let first = ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap();
         let second = ProcedureRendezvousKey::shared_arrival("GLASR3").unwrap();
         let record = |key: Option<ProcedureRendezvousKey>| NotamRecord {
+            subjects: Default::default(),
             id: "STAR-NOTAM".to_string(),
             airport_id: None,
             airport_effects: BTreeSet::new(),
@@ -10508,6 +10590,83 @@ mod tests {
 
         assert!(index.procedure_records(&BTreeSet::from([first])).is_empty());
         assert_eq!(index.procedure_records(&BTreeSet::from([second])).len(), 1);
+    }
+
+    #[test]
+    fn subject_notams_survive_preparation_and_remove_old_badges_on_update_and_cancel() {
+        use product_contracts::NotamSubjectKey::{Airway, Navaid};
+        let record = |subject, text: &str| NotamRecord {
+            id: "NOTICE".into(),
+            subjects: BTreeSet::from([subject]),
+            airport_id: None,
+            airport_effects: BTreeSet::new(),
+            procedure_rendezvous_keys: BTreeSet::new(),
+            notam_keyword: None,
+            effective_start_utc: None,
+            effective_end_utc: None,
+            text: Some(text.into()),
+            local_text: None,
+            icao_text: None,
+        };
+        let mut source = NotamState::empty();
+        source
+            .apply_mutation(
+                NotamMutation::Upsert {
+                    record: record(Navaid("HPB".into()), "NAV VOR/DME U/S"),
+                },
+                &mut Default::default(),
+            )
+            .unwrap();
+        let prepared = postcard::to_allocvec(&notam_display_checkpoint(&source)).unwrap();
+        let mut index =
+            NotamDisplayIndex::from_projection_checkpoint(postcard::from_bytes(&prepared).unwrap())
+                .unwrap();
+        let badge = navaid_notam_badge(Some(&NavRef::Navaid("HPB".into())), Some(&index)).unwrap();
+        assert_eq!(badge.count, 1);
+        assert_eq!(badge.detail.notams[0].text, "NAV VOR/DME U/S");
+        assert!(index.airport_records("KHPB").is_empty());
+        assert!(navaid_notam_badge(Some(&NavRef::Airport("HPB".into())), Some(&index)).is_none());
+        assert!(subject_notam_badge(&Airway("HPB".into()), Some(&index)).is_none());
+        for mutation in [
+            NotamMutation::Upsert {
+                record: record(Airway("V23".into()), "ZSE V23 MEA 5400 NORTHBOUND"),
+            },
+            NotamMutation::Remove {
+                notam_id: "NOTICE".into(),
+            },
+        ] {
+            let mut next =
+                NotamState::from_checkpoint(source.checkpoint(), &mut Default::default()).unwrap();
+            next.apply_mutation(mutation.clone(), &mut Default::default())
+                .unwrap();
+            let delta = NotamDelta::new(
+                source.state_id().into(),
+                next.state_id().into(),
+                next.counters(),
+                vec![mutation],
+            );
+            let prepared =
+                postcard::to_allocvec(&notam_display_delta(&source, &delta).unwrap()).unwrap();
+            index
+                .apply_projection_delta(postcard::from_bytes(&prepared).unwrap())
+                .unwrap();
+            assert!(
+                navaid_notam_badge(Some(&NavRef::Navaid("HPB".into())), Some(&index)).is_none()
+            );
+            assert!(subject_notam_badge(&Airway("V2".into()), Some(&index)).is_none());
+            assert!(subject_notam_badge(&Navaid("ZSE".into()), Some(&index)).is_none());
+            assert_eq!(
+                subject_notam_badge(&Airway("V23".into()), Some(&index)).is_some(),
+                next.record("NOTICE").is_some()
+            );
+            assert_eq!(
+                index,
+                NotamDisplayIndex::from_projection_checkpoint(notam_display_checkpoint(&next))
+                    .unwrap()
+            );
+            source = next;
+        }
+        assert!(index.by_subject.is_empty());
     }
 
     #[test]

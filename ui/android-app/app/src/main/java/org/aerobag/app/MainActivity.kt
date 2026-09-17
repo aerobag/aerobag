@@ -603,6 +603,7 @@ internal data class FlightPlanDisplayRow(
     val navRef: NavRef? = null,
     val symbolFeature: org.aerobag.app.domain.NavSymbolFeature? = null,
     val weatherBadge: org.aerobag.app.domain.FlightPlanWeatherBadgeUiView? = null,
+    val notamBadge: org.aerobag.app.domain.NotamBadgeUiView? = null,
     val depth: Int = 0,
     val active: Boolean = false,
     val enabled: Boolean = true,

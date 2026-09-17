@@ -1750,15 +1750,17 @@ fn flight_plan_picker_presentation_is_core_owned() {
 fn weather_and_airport_detail_presentation_is_core_owned() {
     let weather = read_repo_file("ui/core-rust/crates/app-core/src/map_overlay.rs");
     let airport = read_repo_file("ui/core-rust/crates/app-core/src/airport_info.rs");
-    let charts = read_repo_file("ui/core-rust/crates/app-core/src/chart_page.rs");
-    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let notams = read_repo_file("ui/core-rust/crates/app-core/src/notam_ui.rs");
+    let web =
+        read_repo_file("ui/web-app/src/App.tsx") + &read_repo_file("ui/web-app/src/NotamUi.tsx");
     let android =
-        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt")
+            + &read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/NotamWidgets.kt");
 
     assert!(
         weather.contains("pub sections: Vec<WeatherDetailSectionUiView>")
             && airport.contains("pub fact_sections: Vec<AirportInfoFactSectionUiView>")
-            && charts.contains("pub empty_text: String"),
+            && notams.contains("pub empty_text: String"),
         "core detail models must carry semantic sections, ordered facts, and empty states"
     );
     for (platform, source) in [("web", web.as_str()), ("Android", android.as_str())] {

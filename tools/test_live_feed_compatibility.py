@@ -204,6 +204,17 @@ class LiveFeedCompatibilityTests(unittest.TestCase):
         actual["notam_catalog"]["airport_count"] += 1
         self.assertFalse(compatibility.compare_live_feed_compatibility(requirement(), actual).compatible)
 
+    def test_catalog_schema_rollover_preserves_exact_sunset_comparison(self) -> None:
+        for schema in (1, 2):
+            with self.subTest(schema=schema):
+                client, actual = requirement(), provider()
+                client["notam_catalog"]["schema_version"] = schema
+                actual["notam_catalog"]["schema_version"] = schema
+                result = compatibility.compare_live_feed_compatibility(client, actual)
+                self.assertTrue(result.compatible, result.reason)
+                actual["notam_catalog"]["schema_version"] = 3 - schema
+                self.assertFalse(compatibility.compare_live_feed_compatibility(client, actual).compatible)
+
     def test_catalog_identity_requires_complete_known_and_well_typed_fields(self) -> None:
         for field, values in {
             "schema_version": [None, True, 1.0, "1", 99],

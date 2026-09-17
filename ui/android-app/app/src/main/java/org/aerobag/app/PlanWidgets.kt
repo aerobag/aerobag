@@ -537,77 +537,80 @@ internal fun FlightPlanDataRow(
         dataScrollState = dataScrollState,
         modifier = modifier.then(rowBoundsModifier),
         waypointContent = {
-            Box(
-                modifier =
-                    Modifier
-                        .width(PlanWaypointColumnWidth)
-                        .height(cellHeight)
-                        .then(
-                            if (row.rowKind == "group" && row.procedureId != null) {
-                                Modifier.testTag("parity:plan-procedure-row:${row.procedureId}:uid:${row.id}")
-                            } else {
-                                Modifier
-                            },
-                        ),
-            ) {
-                if (row.rowKind == "summary") {
-                    PlanCell(
-                        row.label,
-                        modifier = Modifier
-                            .height(cellHeight)
+            NotamBadgedControl(badge = row.notamBadge, modifier = Modifier.width(PlanWaypointColumnWidth), overlayBadge = true) {
+                Box(
+                    modifier =
+                        Modifier
                             .width(PlanWaypointColumnWidth)
-                            .align(Alignment.CenterEnd),
-                        cellHeight = cellHeight,
-                        muted = true,
-                    )
-                } else {
-                    CompactSquareButton(
-                        label = row.label,
-                        modifier =
-                            Modifier
-                                .height(cellHeight)
-                                .width(PlanWaypointColumnWidth - indent)
-                                .align(Alignment.CenterEnd)
-                                .alpha(1f),
-                        testTag = "parity:plan-row:${row.id}",
-                        centered = false,
-                        textStartPadding = 10.dp,
-                        backgroundColor = defaultButtonColor,
-                        selected = selected,
-                        selectedColor = selectedButtonColor,
-                        enabled = row.enabled || row.syntheticDirectTo,
-                        onDisabledClick = row.disabledReason?.let { reason ->
-                            { showDisabledActionToast(context, reason) }
-                        },
-                        maxLines = if (procedureGroupCell) 3 else 2,
-                        textModifier =
-                            if (fullWidthLabel) {
-                                Modifier.fillMaxWidth()
-                            } else {
-                                Modifier.padding(
-                                    end = if (row.depth > 0) {
-                                        PlanChildWaypointSymbolTextReserve
-                                    } else {
-                                        PlanWaypointSymbolTextReserve
-                                    },
-                                )
-                            },
-                        onClick = onWaypointClick,
-                    )
-                    if (!procedureGroupCell && hasWaypointSymbol) {
-                        PlanWaypointSymbol(
-                            feature = row.symbolFeature,
-                            weatherBadge = row.weatherBadge,
+                            .height(cellHeight)
+                            .then(
+                                if (row.rowKind == "group" && row.procedureId != null) {
+                                    Modifier.testTag("parity:plan-procedure-row:${row.procedureId}:uid:${row.id}")
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                ) {
+                    if (row.rowKind == "summary") {
+                        PlanCell(
+                            row.label,
                             modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .padding(end = ThumbSize * 0.12f)
-                                .then(
-                                    row.weatherBadge?.let {
-                                        Modifier.testTag("parity:plan-weather-badge:${it.flightCategory}")
-                                    } ?: Modifier,
-                                )
-                                .alpha(1f),
+                                .height(cellHeight)
+                                .width(PlanWaypointColumnWidth)
+                                .align(Alignment.CenterEnd),
+                            cellHeight = cellHeight,
+                            muted = true,
                         )
+                    } else {
+                        CompactSquareButton(
+                            label = row.label,
+                            modifier =
+                                Modifier
+                                    .height(cellHeight)
+                                    .fillMaxWidth()
+                                    .padding(start = indent)
+                                    .align(Alignment.CenterEnd)
+                                    .alpha(1f),
+                            testTag = "parity:plan-row:${row.id}",
+                            centered = false,
+                            textStartPadding = 10.dp,
+                            backgroundColor = defaultButtonColor,
+                            selected = selected,
+                            selectedColor = selectedButtonColor,
+                            enabled = row.enabled || row.syntheticDirectTo,
+                            onDisabledClick = row.disabledReason?.let { reason ->
+                                { showDisabledActionToast(context, reason) }
+                            },
+                            maxLines = if (procedureGroupCell) 3 else 2,
+                            textModifier =
+                                if (fullWidthLabel) {
+                                    Modifier.fillMaxWidth().padding(end = if (row.notamBadge != null) ThumbSize * 0.6f else 0.dp)
+                                } else {
+                                    Modifier.padding(
+                                        end = if (row.depth > 0) {
+                                            PlanChildWaypointSymbolTextReserve
+                                        } else {
+                                            PlanWaypointSymbolTextReserve
+                                        },
+                                    )
+                                },
+                            onClick = onWaypointClick,
+                        )
+                        if (!procedureGroupCell && hasWaypointSymbol) {
+                            PlanWaypointSymbol(
+                                feature = row.symbolFeature,
+                                weatherBadge = row.weatherBadge,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .padding(end = ThumbSize * 0.12f)
+                                    .then(
+                                        row.weatherBadge?.let {
+                                            Modifier.testTag("parity:plan-weather-badge:${it.flightCategory}")
+                                        } ?: Modifier,
+                                    )
+                                    .alpha(1f),
+                            )
+                        }
                     }
                 }
             }

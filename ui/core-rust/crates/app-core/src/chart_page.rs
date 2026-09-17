@@ -12,6 +12,7 @@ use crate::data_status::{
     UiDataStatusState, UiStatusSeverity,
 };
 use crate::planning::{FlightPlan, RouteComponent};
+use crate::{NotamBadgeUiView, NotamDetailUiView};
 
 pub const FAA_CHART_USERS_GUIDE_LABEL: &str = "🔗 Chart User's Guide";
 pub const FAA_CHART_USERS_GUIDE_URL: &str =
@@ -59,7 +60,7 @@ pub struct DerivedChartAirport {
     pub label: String,
     pub charts: Vec<DerivedChartAsset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unmatched_procedure_notam_badge: Option<PlateProcedureNotamBadge>,
+    pub unmatched_procedure_notam_badge: Option<NotamBadgeUiView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,26 +139,9 @@ pub struct DerivedChartAsset {
     #[serde(default, skip_serializing)]
     pub procedure_rendezvous_keys: BTreeSet<ProcedureRendezvousKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure_notam_badge: Option<PlateProcedureNotamBadge>,
+    pub procedure_notam_badge: Option<NotamBadgeUiView>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlateProcedureNotamBadge {
-    pub label: String,
-    pub count: usize,
-    pub action_id: String,
-    pub accessibility_label: String,
-    pub detail: PlateProcedureNotamDetail,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlateProcedureNotamDetail {
-    pub title: String,
-    pub advisory_text: String,
-    pub empty_text: String,
-    pub notams: Vec<crate::AirportNotamUiView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,7 +405,7 @@ fn enrich_procedure_notams(
         );
         airport.unmatched_procedure_notam_badge = (!unmatched_notams.is_empty()).then(|| {
             let count = unmatched_notams.len();
-            PlateProcedureNotamBadge {
+            NotamBadgeUiView {
                 label: "N".to_string(),
                 count,
                 action_id: format!("plate_folder_notams:{}", airport.id),
@@ -430,7 +414,7 @@ fn enrich_procedure_notams(
                     if count == 1 { "" } else { "s" },
                     airport.id,
                 ),
-                detail: PlateProcedureNotamDetail {
+                detail: NotamDetailUiView {
                     title: format!("Unmatched procedure references — {}", airport.id),
                     advisory_text: "These procedure NOTAMs contain one or more references that could not be matched to a published plate. Some may also appear on plates that did match. Review them before selecting a procedure; check official sources for a complete briefing."
                         .to_string(),
@@ -451,7 +435,7 @@ fn enrich_chart_notams(
             crate::procedure_notam_views(&chart.procedure_rendezvous_keys, notam_display_index);
         chart.procedure_notam_badge = (!notams.is_empty()).then(|| {
             let count = notams.len();
-            PlateProcedureNotamBadge {
+            NotamBadgeUiView {
                 label: "N".to_string(),
                 count,
                 action_id: format!("plate_notams:{}", chart.id),
@@ -460,7 +444,7 @@ fn enrich_chart_notams(
                     if count == 1 { "" } else { "s" },
                     chart.label,
                 ),
-                detail: PlateProcedureNotamDetail {
+                detail: NotamDetailUiView {
                     title: format!("NOTAM — {}", chart.label),
                     advisory_text: "Procedure NOTAMs may be incomplete; check official sources."
                         .to_string(),
@@ -1239,6 +1223,7 @@ mod tests {
                 state_id: "notam-state".to_string(),
                 records: vec![
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "A".to_string(),
                         airport_id: Some("KSEA".to_string()),
                         procedure_rendezvous_keys: BTreeSet::from([
@@ -1250,6 +1235,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "B".to_string(),
                         airport_id: Some("KSEA".to_string()),
                         procedure_rendezvous_keys: BTreeSet::from([
@@ -1260,6 +1246,7 @@ mod tests {
                         priority: 7,
                     },
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "C".to_string(),
                         airport_id: Some("KSEA".to_string()),
                         procedure_rendezvous_keys: BTreeSet::from([
@@ -1343,6 +1330,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "khio-notam-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    subjects: Default::default(),
                     id: "NMS:1772308003914016".to_string(),
                     airport_id: Some("KHIO".to_string()),
                     procedure_rendezvous_keys: BTreeSet::from([
@@ -1414,6 +1402,7 @@ mod tests {
                 state_id: "kbil-notam-state".to_string(),
                 records: vec![
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "A-SID".to_string(),
                         airport_id: Some("KBIL".to_string()),
                         procedure_rendezvous_keys: BTreeSet::from([
@@ -1424,6 +1413,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "B-UNKEYED-ODP".to_string(),
                         airport_id: Some("KBIL".to_string()),
                         procedure_rendezvous_keys: BTreeSet::new(),
@@ -1432,6 +1422,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "C-NO-PLATE".to_string(),
                         airport_id: Some("KBIL".to_string()),
                         procedure_rendezvous_keys: BTreeSet::from([
@@ -1442,6 +1433,7 @@ mod tests {
                         priority: 2,
                     },
                     crate::NotamDisplayRecord {
+                        subjects: Default::default(),
                         id: "D-RUNWAY".to_string(),
                         airport_id: Some("KBIL".to_string()),
                         procedure_rendezvous_keys: BTreeSet::new(),
@@ -1516,6 +1508,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "phnl-notam-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    subjects: Default::default(),
                     id: "NMS:1787002690486600".to_string(),
                     airport_id: Some("PHNL".to_string()),
                     procedure_rendezvous_keys: BTreeSet::from([
@@ -1584,6 +1577,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "taytr-notam-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    subjects: Default::default(),
                     id: "STALE-TAYTR3".to_string(),
                     airport_id: None,
                     procedure_rendezvous_keys: BTreeSet::from([
@@ -1610,6 +1604,7 @@ mod tests {
                 schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
                 state_id: "takeoff-minimums-state".to_string(),
                 records: vec![crate::NotamDisplayRecord {
+                    subjects: Default::default(),
                     id: "KRNT-ODP".to_string(),
                     airport_id: Some("KRNT".to_string()),
                     procedure_rendezvous_keys: BTreeSet::from([

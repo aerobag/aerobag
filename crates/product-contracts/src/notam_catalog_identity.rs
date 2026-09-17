@@ -7,11 +7,12 @@ use sha2::{Digest, Sha256};
 
 use crate::NotamAirportCatalog;
 
-/// Canonical representation v1: domain bytes (including NUL), catalog schema
+/// Canonical representation v2: domain bytes (including NUL), catalog schema
 /// as big-endian u32, unique airport count as big-endian u64, then each sorted
 /// UTF-8 ID prefixed by its byte length as big-endian u64. No JSON or NAVDB
-/// package bytes participate. Changing this algorithm requires descriptor v2.
-const IDENTITY_DOMAIN: &[u8] = b"aerobag/notam-airport-catalog/v1\0";
+/// package bytes participate. The sorted alias count and length-prefixed alias /
+/// target pairs follow the IDs. Changing this algorithm requires a new version.
+const IDENTITY_DOMAIN: &[u8] = b"aerobag/notam-airport-catalog/v2\0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,12 +64,22 @@ impl NotamAirportCatalog {
         let mut union = Self {
             schema_version: Self::SCHEMA_VERSION,
             airport_ids: Default::default(),
+            aliases: Default::default(),
         };
         for catalog in catalogs {
             catalog.identity()?;
             union
                 .airport_ids
                 .extend(catalog.airport_ids.iter().cloned());
+            for (alias, target) in &catalog.aliases {
+                if union
+                    .aliases
+                    .insert(alias.clone(), target.clone())
+                    .is_some_and(|previous| previous != *target)
+                {
+                    return Err(format!("conflicting NOTAM airport alias {alias}"));
+                }
+            }
         }
         union.identity()?;
         Ok(union)
@@ -85,6 +96,13 @@ fn canonical_identity(catalog: &NotamAirportCatalog) -> NotamCatalogIdentity {
         hash.update((id.len() as u64).to_be_bytes());
         hash.update(id.as_bytes());
     }
+    hash.update((catalog.aliases.len() as u64).to_be_bytes());
+    for (alias, target) in &catalog.aliases {
+        for id in [alias, target] {
+            hash.update((id.len() as u64).to_be_bytes());
+            hash.update(id.as_bytes());
+        }
+    }
     NotamCatalogIdentity {
         schema_version: catalog.schema_version,
         airport_count,
@@ -98,6 +116,7 @@ mod tests {
 
     fn catalog(ids: &[&str]) -> NotamAirportCatalog {
         NotamAirportCatalog {
+            aliases: Default::default(),
             schema_version: NotamAirportCatalog::SCHEMA_VERSION,
             airport_ids: ids.iter().map(|id| id.to_string()).collect(),
         }
@@ -114,12 +133,31 @@ mod tests {
         assert_eq!(expected.identity().unwrap().airport_count, 3);
         assert_eq!(
             expected.identity().unwrap().sha256,
-            "5dce8d7e0cf97d5de13dacc38f0d7c0ff3d66b54c01a881ad41d3dc31b934b08"
+            "4c98f3bf197d671459fe5327fa89338a0f50ede43d42f9bf4fbf3dfa8edb8a43"
         );
         assert_eq!(
             expected.identity(),
             catalog(&["1S5", "KSFO", "KJFK", "KSFO"]).identity()
         );
+    }
+
+    #[test]
+    fn aliases_affect_identity_and_conflicts_are_rejected() {
+        let original = catalog(&["PAAB", "PXYZ"]);
+        let mut first = original.clone();
+        first.aliases.insert("4A2".into(), "PAAB".into());
+        let mut second = first.clone();
+        second.aliases.insert("4A2".into(), "PXYZ".into());
+        assert_ne!(original.identity(), first.identity());
+        assert_ne!(first.identity(), second.identity());
+        assert_eq!(NotamAirportCatalog::union([&first, &first]).unwrap(), first);
+        for pair in [[&first, &second], [&second, &first]] {
+            assert!(NotamAirportCatalog::union(pair).is_err());
+        }
+        second.aliases.insert("4A2".into(), "MISSING".into());
+        assert!(second.identity().is_err());
+        second.aliases = std::collections::BTreeMap::from([("PAAB".into(), "PXYZ".into())]);
+        assert!(second.identity().is_err());
     }
 
     #[test]

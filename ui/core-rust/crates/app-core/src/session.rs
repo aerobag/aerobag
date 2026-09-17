@@ -10548,6 +10548,10 @@ fn finalize_map_selection_actions(
     for category in &mut selection.categories {
         let category_id = category.id.clone();
         for item in &mut category.items {
+            item.notam_badge = crate::map_overlay::navaid_notam_badge(
+                item.nav_ref.as_ref(),
+                session.weather.runtime().notam_display_index.as_ref(),
+            );
             let item_id = item.id.clone();
             let action_slot_count = if item.detail_text.is_some() { 3 } else { 6 };
             item.actions.truncate(action_slot_count);
@@ -13552,7 +13556,7 @@ fn project_session_app_ui_state(
             .flight_plan
             .airway_picker()
             .view(session.nav_data.epoch());
-        enrich_flight_plan_weather(session, active_plan);
+        enrich_flight_plan_live_feeds(session, active_plan);
         enrich_altitude_planner_winds_acquisition(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
     }
@@ -13723,7 +13727,7 @@ fn format_winds_download_size(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / MIB)
 }
 
-fn enrich_flight_plan_weather(session: &UiSession, active_plan: &mut FlightPlanUiState) {
+fn enrich_flight_plan_live_feeds(session: &UiSession, active_plan: &mut FlightPlanUiState) {
     let empty_aliases = WeatherStationAirportAliases::default();
     let aliases = session
         .weather
@@ -13732,6 +13736,19 @@ fn enrich_flight_plan_weather(session: &UiSession, active_plan: &mut FlightPlanU
         .as_ref()
         .unwrap_or(&empty_aliases);
     for row in &mut active_plan.display_rows {
+        let notam_index = session.weather.runtime().notam_display_index.as_ref();
+        row.notam_badge = crate::map_overlay::navaid_notam_badge(row.nav_ref.as_ref(), notam_index);
+        if row.row_kind == crate::planning::FlightPlanDisplayRowKind::Group {
+            if let Some(crate::RouteComponent::Airway { airway }) = row
+                .component_index
+                .and_then(|i| session.flight_plan.active_plan()?.route_components.get(i))
+            {
+                row.notam_badge = crate::map_overlay::subject_notam_badge(
+                    &product_contracts::NotamSubjectKey::Airway(airway.name.clone()),
+                    notam_index,
+                );
+            }
+        }
         let airport_id = row
             .chart_airport_id
             .as_deref()
@@ -21031,6 +21048,7 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let record = |id: &str, text: &str| notam_state::NotamRecord {
+            subjects: Default::default(),
             id: id.to_string(),
             airport_id: Some("KSEA".to_string()),
             airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
@@ -21101,6 +21119,7 @@ mod tests {
             to_state_id: "f".repeat(64),
             mutations: vec![crate::NotamDisplayMutation::Upsert(
                 crate::NotamDisplayRecord {
+                    subjects: Default::default(),
                     id: "B".to_string(),
                     airport_id: Some("ksea".to_string()),
                     procedure_rendezvous_keys: BTreeSet::new(),
@@ -21121,10 +21140,136 @@ mod tests {
     }
 
     #[test]
+    fn subject_notam_badges_reach_flight_plan_and_inspector_and_disappear_after_cancel() {
+        use product_contracts::NotamSubjectKey::{Airway, Navaid};
+        let init = create_ui_session(
+            twf_v4_ykm_chins_kpae_plan(NavRef::Navaid("PDT".into())),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let slot = session_slot(init.handle).unwrap();
+        let mut session = slot.lock_running().unwrap();
+        let mut state = notam_state::NotamState::empty();
+        for (id, subject, text) in [
+            ("NAV", Navaid("TWF".into()), "NAV VOR/DME U/S"),
+            ("ROUTE", Airway("V4".into()), "ZSE. V4 NOT AUTHORIZED"),
+        ] {
+            state
+                .apply_mutation(
+                    notam_state::NotamMutation::Upsert {
+                        record: crate::NotamRecord {
+                            id: id.into(),
+                            subjects: BTreeSet::from([subject]),
+                            airport_id: None,
+                            airport_effects: BTreeSet::new(),
+                            procedure_rendezvous_keys: BTreeSet::new(),
+                            notam_keyword: None,
+                            effective_start_utc: None,
+                            effective_end_utc: None,
+                            text: Some(text.into()),
+                            local_text: None,
+                            icao_text: None,
+                        },
+                    },
+                    &mut Default::default(),
+                )
+                .unwrap();
+        }
+        install_prepared_live_feed_for_test(
+            &mut session,
+            crate::PreparedLiveFeedPayload::Notams(
+                crate::PreparedNotamPayload::InstallDisplayCheckpoint(
+                    crate::map_overlay::notam_display_checkpoint(&state),
+                ),
+            ),
+        )
+        .unwrap();
+        drop(session);
+        let check_plan = |present| {
+            let snapshot = get_session_snapshot(init.handle).unwrap();
+            let plan = snapshot.app_ui_state.active_plan.unwrap();
+            let navaid = plan
+                .display_rows
+                .iter()
+                .find(|row| row.nav_ref == Some(NavRef::Navaid("TWF".into())))
+                .unwrap();
+            assert_eq!(navaid.notam_badge.is_some(), present);
+            let airway = plan
+                .display_rows
+                .iter()
+                .find(|row| {
+                    row.row_kind == crate::planning::FlightPlanDisplayRowKind::Group
+                        && row.component_kind
+                            == Some(crate::planning::RouteComponentViewKind::Airway)
+                })
+                .unwrap();
+            assert_eq!(airway.notam_badge.is_some(), present);
+            if present {
+                assert_eq!(
+                    airway.notam_badge.as_ref().unwrap().detail.notams[0].text,
+                    "ZSE. V4 NOT AUTHORIZED"
+                );
+            }
+        };
+        check_plan(true);
+        let mut session = slot.lock_running().unwrap();
+        let mut selection: MapSelectionQueryResult = serde_json::from_value(serde_json::json!({
+            "click_lat": 42.48, "click_lon": -114.49, "categories": [{ "id": "navaid", "label": "Navaid", "items": [{
+                "id": "navaid:TWF", "label": "TWF", "sublabel": "VOR/DME", "nav_ref": {"Navaid":"TWF"},
+                "highlight": {"kind":"feature_ref","id":"navaid:TWF"}, "actions": []
+            }] }]
+        })).unwrap();
+        finalize_map_selection_actions(&mut session, &mut selection).unwrap();
+        assert_eq!(
+            selection.categories[0].items[0]
+                .notam_badge
+                .as_ref()
+                .unwrap()
+                .count,
+            1
+        );
+        let mut next =
+            notam_state::NotamState::from_checkpoint(state.checkpoint(), &mut Default::default())
+                .unwrap();
+        let mutations = vec![
+            notam_state::NotamMutation::Remove {
+                notam_id: "NAV".into(),
+            },
+            notam_state::NotamMutation::Remove {
+                notam_id: "ROUTE".into(),
+            },
+        ];
+        for mutation in &mutations {
+            next.apply_mutation(mutation.clone(), &mut Default::default())
+                .unwrap();
+        }
+        let delta = notam_state::NotamDelta::new(
+            state.state_id().into(),
+            next.state_id().into(),
+            next.counters(),
+            mutations,
+        );
+        install_prepared_live_feed_for_test(
+            &mut session,
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDisplayDelta(
+                crate::map_overlay::notam_display_delta(&state, &delta).unwrap(),
+            )),
+        )
+        .unwrap();
+        finalize_map_selection_actions(&mut session, &mut selection).unwrap();
+        assert!(selection.categories[0].items[0].notam_badge.is_none());
+        drop(session);
+        check_plan(false);
+    }
+
+    #[test]
     fn prepared_notam_checkpoint_behind_head_installs_before_delta_replay() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let record = |id: &str, text: &str| notam_state::NotamRecord {
+            subjects: Default::default(),
             id: id.to_string(),
             airport_id: Some("KSEA".to_string()),
             airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
@@ -21542,6 +21687,7 @@ mod tests {
                     notams_by_id: HashMap::from([(
                         "D:AAA:2026:N:1".to_string(),
                         crate::NotamRecord {
+                            subjects: Default::default(),
                             id: "D:AAA:2026:N:1".to_string(),
                             airport_id: Some("KAAA".to_string()),
                             airport_effects: BTreeSet::from([
@@ -29247,6 +29393,7 @@ mod tests {
                 id: "points".to_string(),
                 label: "Points".to_string(),
                 items: vec![MapSelectionItem {
+                    notam_badge: None,
                     id: "airport:KPWT".to_string(),
                     label: "KPWT".to_string(),
                     sublabel: "Airport".to_string(),
@@ -29387,6 +29534,7 @@ mod tests {
         position: Option<LatLon>,
     ) -> MapSelectionItem {
         MapSelectionItem {
+            notam_badge: None,
             id: id.to_string(),
             label: id.to_string(),
             sublabel: String::new(),

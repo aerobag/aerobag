@@ -28,6 +28,8 @@ pub type NotamHash = [u8; 32];
 pub struct NotamRecord {
     pub id: String,
     #[serde(default)]
+    pub subjects: BTreeSet<product_contracts::NotamSubjectKey>,
+    #[serde(default)]
     pub airport_id: Option<String>,
     #[serde(default)]
     pub airport_effects: BTreeSet<AirportNotamEffect>,
@@ -53,6 +55,7 @@ impl NotamRecord {
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
             || !self.procedure_rendezvous_keys.is_empty()
+            || !self.subjects.is_empty()
     }
 
     pub fn display_text(&self) -> Option<&str> {
@@ -671,6 +674,9 @@ impl NotamMerkleIndex {
 
 pub fn canonical_record_bytes(record: &NotamRecord) -> Result<Vec<u8>, NotamStateError> {
     validate_notam_id(&record.id)?;
+    for subject in &record.subjects {
+        subject.validate().map_err(NotamStateError::InvalidRecord)?;
+    }
     serde_json::to_vec(record).map_err(|error| {
         NotamStateError::Encoding(format!(
             "failed to encode canonical NOTAM {}: {error}",
@@ -898,6 +904,7 @@ mod tests {
 
     fn record(id: &str, airport_id: Option<&str>, text: &str) -> NotamRecord {
         NotamRecord {
+            subjects: Default::default(),
             id: id.to_string(),
             airport_id: airport_id.map(str::to_string),
             airport_effects: BTreeSet::from([AirportNotamEffect::RoutineAdvisory]),
@@ -1060,7 +1067,7 @@ mod tests {
         let record = record("A", Some("KSEA"), "RWY 16L CLSD");
         assert_eq!(
             String::from_utf8(canonical_record_bytes(&record).unwrap()).unwrap(),
-            r#"{"id":"A","airport_id":"KSEA","airport_effects":["routine_advisory"],"procedure_rendezvous_keys":[],"notam_keyword":"AD","effective_start_utc":"2026-07-22T00:00:00Z","effective_end_utc":null,"text":"RWY 16L CLSD","local_text":null,"icao_text":null}"#
+            r#"{"id":"A","subjects":[],"airport_id":"KSEA","airport_effects":["routine_advisory"],"procedure_rendezvous_keys":[],"notam_keyword":"AD","effective_start_utc":"2026-07-22T00:00:00Z","effective_end_utc":null,"text":"RWY 16L CLSD","local_text":null,"icao_text":null}"#
         );
     }
 
@@ -1080,7 +1087,7 @@ mod tests {
         assert_eq!(bucket_for_id(&record.id), 342);
         assert_eq!(
             hash_hex(&record_leaf_hash(&record).unwrap()),
-            "86325bf3578a7e4d5c4d657c54a0ae0bbb1dc88bcaca6863ee5f356963fb0172"
+            "f2ecd8d88b2bf1bfc1ca4bb0a63106ffbc512ded24ab15ae1fe3520a82fbde8f"
         );
         assert_eq!(
             hash_hex(&empty_buckets[0]),
@@ -1092,11 +1099,11 @@ mod tests {
         );
         assert_eq!(
             NotamState::empty().state_id(),
-            "c8c84cfdf5d65d130bf0d7b5c3ceb7812d4bb345639bd6ceb09c489438dbe933"
+            "782f4c1da6bc9c1a94a9a6d30c3fd3d72ee64f1e15c622d30ca496e176e6940f"
         );
         assert_eq!(
             state.state_id(),
-            "93e558c312d78feab7a9074d7b689a3f6bf9a4e84f313228ef0a28091179afbf"
+            "67955dd200a1b5c3b4a2289eaf5b4d30ef256fbab7cc4201fd6dd482b6747c93"
         );
     }
 

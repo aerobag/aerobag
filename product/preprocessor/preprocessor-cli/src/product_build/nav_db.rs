@@ -1200,7 +1200,8 @@ pub(super) fn build_nav_kv_artifact(
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
                     .context("failed to encode nav_kv chart/catalog value")?;
                 let (aircraft_pairs, aircraft_prefetch_keys) = build_nav_kv_aircraft_pairs()?;
-                let notam_airport_catalog = build_notam_airport_catalog(&resource_index)?;
+                let notam_airport_catalog =
+                    build_notam_airport_catalog(&resource_index, intermediate_sqlite_db_path)?;
                 let mut pairs = vec![
                     NavKvPair {
                         key: "contract/nav-db".to_string(),
@@ -2900,14 +2901,21 @@ pub(super) fn build_nav_kv_resource_summary_pairs(
 
 pub(super) fn build_notam_airport_catalog(
     resource_index: &ResourceIndex,
+    database: &Path,
 ) -> anyhow::Result<NotamAirportCatalog> {
+    let airport_ids: BTreeSet<String> = resource_index
+        .airports
+        .iter()
+        .map(|airport| airport.id.trim().to_ascii_uppercase())
+        .collect();
+    let aliases = preprocessor_data::load_airport_aliases(database)?
+        .into_iter()
+        .filter(|(alias, target)| alias != target && airport_ids.contains(target))
+        .collect();
     let catalog = NotamAirportCatalog {
         schema_version: NotamAirportCatalog::SCHEMA_VERSION,
-        airport_ids: resource_index
-            .airports
-            .iter()
-            .map(|airport| airport.id.trim().to_ascii_uppercase())
-            .collect(),
+        airport_ids,
+        aliases,
     };
     catalog
         .validate()

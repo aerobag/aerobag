@@ -4939,6 +4939,53 @@ button {
   font-size: calc(var(--thumb) * 0.15);
 }
 
+.notamBadgedControl {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.notamBadgedControl.isOverlayBadge {
+  position: relative;
+}
+
+.notamBadgedControl.isOverlayBadge > .plateProcedureNotamBadge {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 3;
+}
+
+.notamBadgedControl.isOverlayBadge:has(> .plateProcedureNotamBadge) .planStructuredLabel.isFullWidth {
+  max-width: calc(100% - var(--thumb) * 0.6);
+}
+
+.notamBadgedControl > .planWaypointButton {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+}
+
+.planTable > .notamBadgedControl {
+  position: sticky;
+  left: var(--plan-structured-left-gutter, 0px);
+  z-index: 2;
+  background: var(--theme-panel-bg);
+}
+
+.plateProcedureNotamBadge-inline {
+  flex: none;
+  width: calc(var(--thumb) * 0.6);
+  height: calc(var(--thumb) * 0.6);
+  font-size: calc(var(--thumb) * 0.192);
+}
+
+.notamReaderOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
 .plateProcedureNotamBadge-folder span:first-child {
   font-size: calc(var(--thumb) * 0.2);
 }

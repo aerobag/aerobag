@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { NotamSection, NotamModal, NotamBadgeButton, NotamBadgedControl } from "./NotamUi";
+import { TrayScrim } from "./TrayScrim";
 import { BrowserGeolocationWatch } from "./domain/browserGeolocationWatch";
 import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, GuidedTourPageBoundary, useGuidedTour } from "./GuidedTour";
 import type { UiTourAction } from "./generated/sessionPageWire";
@@ -2238,6 +2240,10 @@ function requireMapViewport(viewport: MapViewportState | null): MapViewportState
   return viewport;
 }
 
+function SubjectNotamControl(props: { badge?: import("./domain/types").NotamBadgeUiView | null; overlayBadge?: boolean; children: React.ReactNode; onOpenChange?: (open: boolean) => void }) {
+  return <NotamBadgedControl {...props} active={useContext(PageVisibilityContext)} />;
+}
+
 const PageVisibilityContext = createContext(true);
 
 export const PageLayer = memo(
@@ -4037,6 +4043,7 @@ function OperationalApp() {
           key={sessionSnapshot.nav_data_epoch}
           appCoreAdapter={appCoreAdapter}
           navDataEpoch={sessionSnapshot.nav_data_epoch}
+          notamDisplayStateId={sessionSnapshot.notam_display_state_id ?? null}
           flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
           page={page}
           debugState={sessionSnapshot.debug_state}
@@ -4553,6 +4560,7 @@ function MapPage(props: {
   uiInvalidationStore: RenderValueStore<UiInvalidationRevisions>;
   appCoreAdapter: AppCoreAdapter;
   navDataEpoch: number;
+  notamDisplayStateId: string | null;
   flightPlanRouteRevision: number;
   page: AppPage;
   debugState: UiDebugState;
@@ -7210,6 +7218,32 @@ function MapPage(props: {
     });
   }
 
+  useEffect(() => {
+    if (!uiSession || !mapSelection) return;
+    const previous = mapSelection;
+    let cancelled = false;
+    void uiSession.queryMapSelection(
+      viewportRef.current, surfaceSize.width, surfaceSize.height,
+      { lat: previous.result.click_lat, lon: previous.result.click_lon },
+    ).then((result) => {
+      if (cancelled) return;
+      setMapSelection((current) => current?.point === previous.point ? {
+        ...current, result, selectedItem: mapSelectionItemById(result, current.selectedItem?.id ?? null),
+      } : current);
+    }).catch((error) => {
+      if (cancelled) return;
+      debugLog("map.selection.notam_refresh_failed", { error: errorMessage(error) });
+      setMapSelection((current) => current?.point === previous.point ? {
+        ...current,
+        selectedItem: current.selectedItem ? { ...current.selectedItem, notam_badge: null } : null,
+        result: { ...current.result, categories: current.result.categories.map((category) => ({
+          ...category, items: category.items.map((item) => ({ ...item, notam_badge: null })),
+        })) },
+      } : current);
+    });
+    return () => { cancelled = true; };
+  }, [uiSession, props.notamDisplayStateId]);
+
   const handleMetarHoverEnter = useCallback((event: React.PointerEvent<SVGGElement>, feature: VisibleMetarFeature) => {
     if (
       !mapInteraction.hover_weather ||
@@ -7651,6 +7685,7 @@ function MapPage(props: {
               />
             ) : (
               <MapSelectionTray
+                onNotamOpenChange={(open) => inspectionCommand(open ? "detail_opened" : "open")}
                 point={mapSelection.point}
                 result={mapSelection.result}
                 selectedItem={mapSelection.selectedItem}
@@ -9867,6 +9902,7 @@ function FlightPlanPage(props: {
         navRef: row.nav_ref,
         symbolFeature: row.symbol_feature,
         weatherBadge: row.weather_badge ?? null,
+        notamBadge: row.notam_badge ?? null,
         groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_uid!}` : null,
         componentKind: row.component_kind,
         procedureId: row.procedure_id,
@@ -10301,71 +10337,72 @@ function FlightPlanPage(props: {
                           {row.label}
                         </div>
                       ) : (
-                        <button
-                          key={`${row.id}:waypoint`}
-                          type="button"
-                          data-testid={`plan-row-${row.rowUid}`}
-                          ref={(node) => {
-                            if (row.refKey === null) {
-                              return;
-                            }
-                            if (node) {
-                              structuredRowRefs.current.set(row.refKey, node);
-                            } else {
-                              structuredRowRefs.current.delete(row.refKey);
-                            }
-                          }}
-                          className={[
-                            "planWaypointCell",
-                            "planWaypointButton",
-                            selectedWaypointUid === row.rowUid ? "isSelected" : "",
-                            row.active ? "isActiveLeg" : "",
-                            !row.enabled ? "isDisabled" : "",
-                            row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
-                            "planStructuredWaypointCell",
-                            row.rowKind === "group" ? "isGroupHeader" : "",
-                            procedureGroupCell ? "isProcedureCell" : "",
-                            row.depth > 0 ? "isChildRow" : "",
-                            row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
-                          ].filter(Boolean).join(" ")}
-                          title={disabledReasonText(row.disabledReason) ?? undefined}
-                          aria-disabled={!row.enabled && !row.syntheticDirectTo ? "true" : undefined}
-                          onClick={(event) => {
-                            if (!row.enabled && !row.syntheticDirectTo) {
-                              const reason = disabledReasonText(row.disabledReason);
-                              if (reason) {
-                                showDisabledAction(reason);
+                        <SubjectNotamControl key={`${row.id}:waypoint`} badge={row.notamBadge} overlayBadge>
+                          <button
+                            type="button"
+                            data-testid={`plan-row-${row.rowUid}`}
+                            ref={(node) => {
+                              if (row.refKey === null) {
+                                return;
                               }
-                              return;
-                            }
-                            const page = pageRef.current;
-                            if (page) {
-                              const pageRect = page.getBoundingClientRect();
-                              const rowRect = event.currentTarget.getBoundingClientRect();
-                              setSelectedWaypointAnchor({
-                                top: rowRect.top - pageRect.top,
-                                height: rowRect.height,
-                              });
-                            }
-                            setSelectedWaypointUid(row.rowUid);
-                            dismissAirwayPicker();
-                            setProcedurePicker(null);
-                          }}
-                        >
-                          {row.rowKind === "group" && row.procedureId ? (
-                            <span
-                              data-testid={`parity:plan-procedure-row:${row.procedureId}:uid:${row.rowUid}`}
-                              aria-hidden="true"
+                              if (node) {
+                                structuredRowRefs.current.set(row.refKey, node);
+                              } else {
+                                structuredRowRefs.current.delete(row.refKey);
+                              }
+                            }}
+                            className={[
+                              "planWaypointCell",
+                              "planWaypointButton",
+                              selectedWaypointUid === row.rowUid ? "isSelected" : "",
+                              row.active ? "isActiveLeg" : "",
+                              !row.enabled ? "isDisabled" : "",
+                              row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
+                              "planStructuredWaypointCell",
+                              row.rowKind === "group" ? "isGroupHeader" : "",
+                              procedureGroupCell ? "isProcedureCell" : "",
+                              row.depth > 0 ? "isChildRow" : "",
+                              row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
+                            ].filter(Boolean).join(" ")}
+                            title={disabledReasonText(row.disabledReason) ?? undefined}
+                            aria-disabled={!row.enabled && !row.syntheticDirectTo ? "true" : undefined}
+                            onClick={(event) => {
+                              if (!row.enabled && !row.syntheticDirectTo) {
+                                const reason = disabledReasonText(row.disabledReason);
+                                if (reason) {
+                                  showDisabledAction(reason);
+                                }
+                                return;
+                              }
+                              const page = pageRef.current;
+                              if (page) {
+                                const pageRect = page.getBoundingClientRect();
+                                const rowRect = event.currentTarget.getBoundingClientRect();
+                                setSelectedWaypointAnchor({
+                                  top: rowRect.top - pageRect.top,
+                                  height: rowRect.height,
+                                });
+                              }
+                              setSelectedWaypointUid(row.rowUid);
+                              dismissAirwayPicker();
+                              setProcedurePicker(null);
+                            }}
+                          >
+                            {row.rowKind === "group" && row.procedureId ? (
+                              <span
+                                data-testid={`parity:plan-procedure-row:${row.procedureId}:uid:${row.rowUid}`}
+                                aria-hidden="true"
+                              />
+                            ) : null}
+                            <WaypointButtonContent
+                              label={row.label}
+                              symbolFeature={row.symbolFeature}
+                              weatherBadge={row.weatherBadge}
+                              indented={row.depth > 0}
+                              fullWidthLabel={procedureGroupCell}
                             />
-                          ) : null}
-                          <WaypointButtonContent
-                            label={row.label}
-                            symbolFeature={row.symbolFeature}
-                            weatherBadge={row.weatherBadge}
-                            indented={row.depth > 0}
-                            fullWidthLabel={procedureGroupCell}
-                          />
-                        </button>
+                          </button>
+                        </SubjectNotamControl>
                       )}
                       {row.dataCells.map((cell, cellIndex) => (
                         <div
@@ -11355,6 +11392,7 @@ function ChartSearchBox(props: {
 }
 
 function MapSelectionTray(props: {
+  onNotamOpenChange: (open: boolean) => void;
   point: ScreenPoint;
   result: MapSelectionQueryResult;
   selectedItem: MapSelectionItem | null;
@@ -11403,21 +11441,22 @@ function MapSelectionTray(props: {
                 no {category.label.toLowerCase()}s
               </div>
             ) : category.items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}`}
-                data-testid={`map-selection-item-${category.id}-${item.label}`}
-                data-tour-anchor={item.highlight.kind === "spot" ? "inspector-spot" : undefined}
-                onPointerDown={stopPointer}
-                onPointerUp={stopPointer}
-                onDoubleClick={stopDoubleClick}
-                onClick={() => onSelectItem(item)}
-                title={item.sublabel}
-              >
-                <MapSelectionItemIcon item={item} />
-                <span className="mapSelectionItemLabel">{item.label}</span>
-              </button>
+              <SubjectNotamControl key={item.id} badge={item.notam_badge} onOpenChange={props.onNotamOpenChange}>
+                <button
+                  type="button"
+                  className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}`}
+                  data-testid={`map-selection-item-${category.id}-${item.label}`}
+                  data-tour-anchor={item.highlight.kind === "spot" ? "inspector-spot" : undefined}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
+                  onClick={() => onSelectItem(item)}
+                  title={item.sublabel}
+                >
+                  <MapSelectionItemIcon item={item} />
+                  <span className="mapSelectionItemLabel">{item.label}</span>
+                </button>
+              </SubjectNotamControl>
             ))}
           </div>
         </div>
@@ -11811,89 +11850,6 @@ function RunwayDiagram(props: {
           />
         ) : null)}
     </svg>
-  );
-}
-
-function NotamSection(props: {
-  notams: NonNullable<WeatherDetailUiView["notams"]>;
-  label: string;
-  trailingLabel: string;
-  emptyText: string;
-}) {
-  return (
-    <section className="weatherDetailSection airportNotamSection">
-      <div className="weatherDetailSectionTitle">
-        <span>{props.label}</span>
-        <span>{props.trailingLabel}</span>
-      </div>
-      <div className="airportNotamList">
-        {props.notams.length > 0 ? props.notams.map((notam) => (
-          <article className="airportNotamCell" key={notam.id}>
-            <div className="airportNotamLabel">{notam.label}</div>
-            <div className="airportNotamText">{notam.text}</div>
-          </article>
-        )) : (
-          <div className="airportNotamEmpty">{props.emptyText}</div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function ProcedureNotamModal(props: {
-  detail: NonNullable<ChartAsset["procedure_notam_badge"]>["detail"];
-}) {
-  return (
-    <section
-      className="mapSelectionDetailModal weatherDetailModal procedureNotamDetailModal"
-      data-testid="procedure-notam-modal"
-      aria-label={props.detail.title}
-      onPointerDown={stopPointer}
-      onPointerMove={stopPointer}
-      onPointerUp={stopPointer}
-      onPointerCancel={stopPointer}
-      onWheel={stopWheel}
-      onClick={stopClick}
-      onDoubleClick={stopDoubleClick}
-    >
-      <div className="mapSelectionDetailTitle">{props.detail.title}</div>
-      <div className="weatherDetailAdvisory">{props.detail.advisory_text}</div>
-      <div className="weatherDetailSections">
-        <NotamSection
-          notams={props.detail.notams}
-          label="NOTAM"
-          trailingLabel={String(props.detail.notams.length)}
-          emptyText={props.detail.empty_text}
-        />
-      </div>
-    </section>
-  );
-}
-
-function PlateProcedureNotamBadgeButton(props: {
-  badge: NonNullable<ChartAsset["procedure_notam_badge"]>;
-  placement: "folder" | "dock";
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={`plateProcedureNotamBadge plateProcedureNotamBadge-${props.placement}`}
-      data-testid={`plate-notam:${props.badge.action_id}`}
-      aria-label={props.badge.accessibility_label}
-      title={props.badge.accessibility_label}
-      data-action-id={props.badge.action_id}
-      onPointerDown={stopPointer}
-      onPointerUp={stopPointer}
-      onDoubleClick={stopDoubleClick}
-      onClick={(event) => {
-        event.stopPropagation();
-        props.onOpen();
-      }}
-    >
-      <span>{props.badge.label}</span>
-      <span>{props.badge.count}</span>
-    </button>
   );
 }
 
@@ -12652,7 +12608,7 @@ function ChartsPage(props: {
           })}
           lowered={statusControlDockLowered}
           leadingControl={!folderOpen && selectedChart?.procedure_notam_badge ? (
-            <PlateProcedureNotamBadgeButton
+            <NotamBadgeButton
               badge={selectedChart.procedure_notam_badge}
               placement="dock"
               onOpen={() => {
@@ -12714,7 +12670,7 @@ function ChartsPage(props: {
                   {chart.procedure_notam_badge || chart.procedure_geometry_warning_count > 0 ? (
                     <div className="plateThumbStickerRow">
                       {chart.procedure_notam_badge ? (
-                        <PlateProcedureNotamBadgeButton
+                        <NotamBadgeButton
                           badge={chart.procedure_notam_badge}
                           placement="folder"
                           onOpen={() => setProcedureNotamDetail(chart.procedure_notam_badge!.detail)}
@@ -12736,7 +12692,7 @@ function ChartsPage(props: {
             </div>
             {selectedCollection?.unmatched_procedure_notam_badge ? (
               <div className="plateFolderUnmatchedNotamBadge">
-                <PlateProcedureNotamBadgeButton
+                <NotamBadgeButton
                   badge={selectedCollection.unmatched_procedure_notam_badge}
                   placement="dock"
                   onOpen={() => setProcedureNotamDetail(selectedCollection.unmatched_procedure_notam_badge!.detail)}
@@ -12801,7 +12757,7 @@ function ChartsPage(props: {
         {procedureNotamDetail ? (
           <>
             <TrayScrim ariaLabel="Close procedure NOTAMs" onClose={() => setProcedureNotamDetail(null)} />
-            <ProcedureNotamModal detail={procedureNotamDetail} />
+            <NotamModal detail={procedureNotamDetail} />
           </>
         ) : null}
 
@@ -14454,34 +14410,6 @@ function stopWheel(event: React.WheelEvent<HTMLElement>) {
 function stopDoubleClick(event: React.MouseEvent<HTMLElement>) {
   event.preventDefault();
   event.stopPropagation();
-}
-
-function TrayScrim(props: { ariaLabel: string; onClose: () => void }) {
-  function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    event.stopPropagation();
-    props.onClose();
-  }
-
-  function handleClick(event: React.MouseEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.detail === 0) {
-      props.onClose();
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      className="trayScrim"
-      aria-label={props.ariaLabel}
-      onPointerDown={handlePointerDown}
-      onPointerUp={stopPointer}
-      onDoubleClick={stopDoubleClick}
-      onClick={handleClick}
-    />
-  );
 }
 
 export function useModalTrayGroup<const T extends string>(ids: readonly T[]) {

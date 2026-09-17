@@ -34,6 +34,12 @@ def _load_contract(name: str) -> Any:
 
 WIRE_INVENTORY = _load_contract("live-feed-compatibility.json")
 CLIENT_INVENTORY = _load_contract("client-data-contracts.json")
+CATALOG_SCHEMAS = frozenset(
+    descriptor["required_exact_keys"]["airport/notam-catalog"]
+    for path in (CONTRACTS_ROOT / "nav-db").glob("NAV*.json")
+    if isinstance(descriptor := _load_contract(f"nav-db/{path.name}"), dict)
+    and "airport/notam-catalog" in descriptor.get("required_exact_keys", {})
+)
 
 
 class CompatibilityEvidenceError(ValueError):
@@ -88,11 +94,9 @@ def validate_wire_inventory(value: Any) -> None:
 
 def validate_catalog_identity(value: Any) -> None:
     document = _object(value, {"schema_version", "sha256", "airport_count"}, "NOTAM catalog identity")
-    try:
-        schema = CLIENT_INVENTORY["nav_db"]["required_exact_keys"]["airport/notam-catalog"]
-    except (KeyError, TypeError) as error:
-        raise CompatibilityEvidenceError("Rust-owned catalog schema is unavailable") from error
-    if type(document["schema_version"]) is not int or document["schema_version"] != schema:
+    # The controller also routes already-published sunset releases. Recognize
+    # their immutable descriptors, but still require exact identity equality.
+    if type(document["schema_version"]) is not int or document["schema_version"] not in CATALOG_SCHEMAS:
         raise CompatibilityEvidenceError("unknown NOTAM catalog schema")
     _sha256(document["sha256"], "NOTAM catalog fingerprint")
     count = document["airport_count"]

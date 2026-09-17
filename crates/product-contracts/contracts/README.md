@@ -65,7 +65,8 @@ deployment controller, not this contract inventory.
   manifest/contract revision 9. Record keys and array/object shape come from
   the shared product policies used by producer and core.
 - NOTAM checkpoint/delta envelope schema is 3; records and ordered mutation
-  semantics are contract 7, consumed by the shared `notam-state` crate.
+  semantics are contract 8, consumed by the shared `notam-state` crate. Contract 8
+  adds typed navaid/airway subjects independently of airport/procedure anchors.
 - Obstacles have separate manifest, tile and logical-layout versions. The
   obstacle builder uses the shared constants without changing existing bytes.
 - NEXRAD manifest/tile metadata is passed to the Python encoder by its Rust
@@ -93,21 +94,24 @@ every input and deduplicates all cycles before hashing. File loading stays with
 the publication/daemon owner and must use `NavKvDirectoryReader`.
 
 The serialized identity is `{ schema_version, sha256, airport_count }`.
-`schema_version` is the logical airport-catalog schema, currently 1; descriptor
-v1 fixes the hashing algorithm. `sha256` is lowercase hex. Zero airports,
+`schema_version` is the logical airport-catalog schema, currently 2 (NAV27);
+v2 includes the authoritative FAA alias map. `sha256` is lowercase hex. Zero airports,
 unsupported schemas and IDs other than nonempty uppercase ASCII letters and
 digits are rejected, never normalized. Count is diagnostic, not proof.
 
 Canonical bytes, in order:
 
-1. ASCII `aerobag/notam-airport-catalog/v1` followed by a NUL byte.
+1. ASCII `aerobag/notam-airport-catalog/v2` followed by a NUL byte.
 2. Catalog schema as big-endian u32.
 3. Sorted unique airport count as big-endian u64.
 4. For each sorted ID: UTF-8 byte length as big-endian u64, then its bytes.
+5. Alias count as big-endian u64, then each alias/target pair in sorted alias
+   order, each string prefixed by its UTF-8 byte length as big-endian u64.
 
-Changing this representation requires a new compatibility descriptor schema.
-For schema 1 and IDs `1S5`, `KJFK`, `KSFO`, the SHA-256 is
-`5dce8d7e0cf97d5de13dacc38f0d7c0ff3d66b54c01a881ad41d3dc31b934b08`.
+Changing this representation requires a new catalog identity schema. Alias
+targets must exist in the airport set. Alias changes affect compatibility even
+when the airport roster stays identical. Conflicting aliases across cycle
+catalogs are rejected, not resolved by iteration order.
 
 Fixture-free tests verify the export, roster, independent schema/encoding/
 parameter mutations, malformed evidence, catalog canonicalization and changes,

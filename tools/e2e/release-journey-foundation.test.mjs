@@ -3860,7 +3860,11 @@ test("Android airport-info popups export their semantic identity", () => {
     driver,
     /\["parity:airport-info-scroll:", "org\.aerobag\.app:id\/e2e_airport_info_scroll_projection"\]/,
   );
-  const notamModal = mapPage.slice(mapPage.indexOf("internal fun ProcedureNotamModal"));
+  const notamWidgets = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/NotamWidgets.kt", import.meta.url), "utf8",
+  );
+  assert.ok(notamWidgets.includes("internal fun NotamModal("));
+  const notamModal = notamWidgets.slice(notamWidgets.indexOf("internal fun NotamModal("));
   assert.match(
     notamModal,
     /\.testTag\("parity:procedure-notam-modal"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
@@ -5409,7 +5413,7 @@ test("Android map orientation and plate-folder actions publish indexed geometry"
   );
   const folder = charts.slice(
     charts.indexOf("internal fun PlateFolderGrid"),
-    charts.indexOf("private fun PlateProcedureNotamBadgeButton"),
+    charts.indexOf("internal fun MenuDock("),
   );
   assert.match(
     orientation,
@@ -5468,9 +5472,9 @@ test("Android flight-plan column and plate NOTAM actions publish indexed geometr
     plan.indexOf("internal fun PlanHeaderRow("),
     plan.indexOf("internal fun buildFlightPlanDisplayRows("),
   );
-  const notam = charts.slice(
-    charts.indexOf("private fun PlateProcedureNotamBadgeButton("),
-    charts.indexOf("internal fun MenuDock("),
+  assert.ok(charts.includes("NotamBadgeButton("));
+  const notam = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/NotamWidgets.kt", import.meta.url), "utf8",
   );
   assert.match(
     header,

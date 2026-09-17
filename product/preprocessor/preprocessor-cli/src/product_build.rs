@@ -4319,6 +4319,14 @@ mod tests {
 
     #[test]
     fn notam_airport_catalog_comes_from_the_client_nav_airport_set() {
+        let database = tempfile::NamedTempFile::new().unwrap();
+        rusqlite::Connection::open(database.path())
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE airport_aliases(alias_id TEXT, airport_id TEXT);
+             INSERT INTO airport_aliases VALUES ('GTF','KGTF'), ('0I8','0I8'), ('OUT','KOUT');",
+            )
+            .unwrap();
         let mut resource_index = minimal_resource_index();
         resource_index.airports = vec![
             AirportRecord {
@@ -4338,8 +4346,9 @@ mod tests {
         ];
 
         assert_eq!(
-            build_notam_airport_catalog(&resource_index).unwrap(),
+            build_notam_airport_catalog(&resource_index, database.path()).unwrap(),
             NotamAirportCatalog {
+                aliases: BTreeMap::from([("GTF".into(), "KGTF".into())]),
                 schema_version: NotamAirportCatalog::SCHEMA_VERSION,
                 airport_ids: BTreeSet::from(["0I8".to_string(), "KGTF".to_string()]),
             }

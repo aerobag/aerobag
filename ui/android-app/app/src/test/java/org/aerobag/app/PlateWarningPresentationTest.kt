@@ -10,6 +10,7 @@ import org.junit.Test
 
 class PlateWarningPresentationTest {
     private val chartsSource = sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
+    private val notamSource = sourceFile("src/main/java/org/aerobag/app/NotamWidgets.kt").readText()
 
     @Test
     fun viewerUsesStandardStatusTrayAndFolderUsesItsCompactFace() {
@@ -44,16 +45,17 @@ class PlateWarningPresentationTest {
 
         assertTrue(folder.contains("chart.procedureNotamBadge?.let"))
         assertTrue(folder.contains("onOpenProcedureNotams(badge.detail)"))
-        assertTrue(folder.contains("badge.accessibilityLabel"))
-        assertTrue(folder.contains("parity:plate-notam:${'$'}{badge.actionId}"))
-        assertTrue(folder.contains("shape = RectangleShape"))
+        assertTrue(folder.contains("NotamBadgeButton("))
+        assertTrue(notamSource.contains("badge.accessibilityLabel"))
+        assertTrue(notamSource.contains("parity:plate-notam:${'$'}{badge.actionId}"))
+        assertTrue(notamSource.contains("shape = RectangleShape"))
         assertTrue(folder.contains("badgeSize = 22.dp"))
         assertTrue(chartsPage.contains("badgeSize = ThumbSize * 0.5f"))
         assertTrue(chartsPage.contains("procedureNotamBadge?.takeUnless { folderOpen }"))
         assertTrue(chartsPage.contains("selectedCollection?.unmatchedProcedureNotamBadge?.let"))
         assertTrue(chartsPage.contains("procedureNotamDetail = badge.detail"))
         assertTrue(chartsPage.contains("Popup("))
-        assertTrue(chartsPage.contains("ProcedureNotamModal("))
+        assertTrue(chartsPage.contains("NotamModal("))
     }
 
     private fun sourceBetween(start: String, end: String): String {

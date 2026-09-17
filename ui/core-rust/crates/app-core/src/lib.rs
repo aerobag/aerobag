@@ -45,6 +45,7 @@ mod nav_data_controller;
 pub mod navdb_types;
 mod navigation_start;
 pub mod navkv;
+mod notam_ui;
 pub mod ownship;
 mod package_controller;
 pub mod package_management;
@@ -99,7 +100,7 @@ pub use chart_page::{
     ChartPageCollectionsInput, ChartReferenceFamilyRecord, ChartReferenceFamilySummary,
     ChartSelectorControlUiView, DerivedChartAirport, DerivedChartAirportMenuEntry,
     DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
-    DerivedChartReferenceFamily, PlateProcedureNotamBadge, PlateProcedureNotamDetail,
+    DerivedChartReferenceFamily,
 };
 pub use cloud::{
     CloudEventStreamEvent, CloudEventStreamEventKind, CloudEventStreamPlan, CloudHttpHeader,
@@ -209,6 +210,7 @@ pub use navkv::{
     NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 pub use notam_state::NotamApplyWork;
+pub use notam_ui::{NotamBadgeUiView, NotamDetailUiView};
 pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
     OwnshipBannerSeverity, OwnshipControlModel, OwnshipLauncherTextTone, OwnshipMode,

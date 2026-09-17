@@ -2863,6 +2863,7 @@ mod tests {
 
     fn test_notam_record(id: &str, airport_id: &str, text: &str) -> notam_state::NotamRecord {
         notam_state::NotamRecord {
+            subjects: Default::default(),
             id: id.to_string(),
             airport_id: Some(airport_id.to_string()),
             airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]

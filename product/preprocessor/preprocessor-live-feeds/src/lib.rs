@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 pub mod engine;
 pub mod nms_initial_load;
 pub mod notam_store;
+mod notam_subjects;
 pub mod products;
 pub mod simulation;
 pub mod tfr_detail_backfill;
@@ -264,6 +265,7 @@ fn published_notam_record_with_airport_id(
 ) -> Option<NotamRecord> {
     let published = NotamRecord {
         id: record.id.clone(),
+        subjects: notam_subjects::subjects(record),
         airport_id,
         airport_effects: record.airport_effects.clone(),
         procedure_rendezvous_keys: record.procedure_rendezvous_keys.clone(),
@@ -282,10 +284,16 @@ fn resolve_catalog_airport_id(catalog: &NotamAirportCatalog, candidate: &str) ->
     if catalog.airport_ids.contains(&candidate) {
         return Some(candidate);
     }
+    if let Some(airport_id) = catalog.aliases.get(&candidate) {
+        return Some(airport_id.clone());
+    }
     if candidate.len() == 4 && candidate.starts_with('K') {
         let domestic = candidate[1..].to_string();
         if catalog.airport_ids.contains(&domestic) {
             return Some(domestic);
+        }
+        if let Some(airport_id) = catalog.aliases.get(&domestic) {
+            return Some(airport_id.clone());
         }
     } else if candidate.len() == 3 && candidate.chars().all(|ch| ch.is_ascii_alphabetic()) {
         let icao = format!("K{candidate}");
@@ -4036,6 +4044,7 @@ mod tests {
             )
         };
         let catalog = NotamAirportCatalog {
+            aliases: Default::default(),
             schema_version: NotamAirportCatalog::SCHEMA_VERSION,
             airport_ids: BTreeSet::from([
                 "0I8".to_string(),
@@ -4069,7 +4078,64 @@ mod tests {
         );
         let colliding_navaid = parse("FUZ", "KFUZ", "FUZ-VORTAC", "NAV VORTAC U/S")?.record;
         assert_eq!(colliding_navaid.airport_id, None);
-        assert!(published_notam_record_for_airport_catalog(&colliding_navaid, &catalog).is_none());
+        let navaid =
+            published_notam_record_for_airport_catalog(&colliding_navaid, &catalog).unwrap();
+        assert_eq!(navaid.airport_id, None);
+        assert_eq!(
+            navaid.subjects,
+            BTreeSet::from([product_contracts::NotamSubjectKey::Navaid("FUZ".into())])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn navaid_and_center_filed_airway_notams_reach_the_client() -> anyhow::Result<()> {
+        for (location, facility, text) in [
+            ("HPB", "HPB-VOR/DME", "NAV VOR/DME U/S"),
+            (
+                "ZSE",
+                "ZSE ARTCC",
+                "WA..ROUTE ZSE. V23 MALAY, WA TO MCKEN, WA MEA 5400 NORTHBOUND.",
+            ),
+        ] {
+            let xml = format!(
+                r#"<root><classification>DOM</classification><NOTAM>
+                <location>{location}</location><number>09/123</number><year>2026</year>
+                <type>N</type><text>{text}</text></NOTAM><airportname>{facility}</airportname></root>"#
+            );
+            let update = nms_initial_load::parse_nms_api_update(
+                &xml,
+                nms_initial_load::NmsNotamClassification::Domestic,
+            )?;
+            assert!(update.record.airport_id.is_none());
+            let published = published_notam_record(&update.record)
+                .unwrap_or_else(|| panic!("lost displayable {location} subject: {text}"));
+            assert!(published.airport_id.is_none());
+            assert_eq!(published.text.as_deref(), Some(text));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn client_projection_keeps_atmautluak_notams_with_faa_local_identifiers() -> anyhow::Result<()>
+    {
+        let catalog: NotamAirportCatalog = serde_json::from_value(serde_json::json!({
+            "schema_version": 2,
+            "airport_ids": ["PAAB"],
+            "aliases": {"4A2": "PAAB"}
+        }))?;
+        let update = nms_initial_load::parse_nms_api_update(
+            r#"<root><classification>DOM</classification><NOTAM>
+                <location>4A2</location><number>09/137</number><year>2026</year>
+                <type>N</type><text>RWY 33 PAPI U/S</text></NOTAM>
+                <airportname>ATMAUTLUAK</airportname></root>"#,
+            nms_initial_load::NmsNotamClassification::Domestic,
+        )?;
+        assert_eq!(update.record.airport_id.as_deref(), Some("4A2"));
+        let published = published_notam_record_for_airport_catalog(&update.record, &catalog)
+            .expect("FAA local airport identity must not lose the runway outage");
+        assert_eq!(published.airport_id.as_deref(), Some("PAAB"));
+        assert_eq!(published.text.as_deref(), Some("RWY 33 PAPI U/S"));
         Ok(())
     }
 
@@ -4095,13 +4161,17 @@ mod tests {
             )
         };
 
-        for record in [
-            parse("ZAB", "KZAB", "ZAB ARTCC", "AIRSPACE R5107H ACT SFC-9000FT")?.record,
-            parse("FUZ", "KFUZ", "FUZ-VORTAC", "NAV VORTAC U/S")?.record,
-        ] {
-            assert_eq!(record.airport_id, None);
-            assert!(published_notam_record(&record).is_none());
-        }
+        let center = parse("ZAB", "KZAB", "ZAB ARTCC", "AIRSPACE R5107H ACT SFC-9000FT")?.record;
+        assert_eq!(center.airport_id, None);
+        assert!(published_notam_record(&center).is_none());
+        let navaid = parse("FUZ", "KFUZ", "FUZ-VORTAC", "NAV VORTAC U/S")?.record;
+        assert_eq!(navaid.airport_id, None);
+        let published = published_notam_record(&navaid).unwrap();
+        assert_eq!(published.airport_id, None);
+        assert_eq!(
+            published.subjects,
+            BTreeSet::from([product_contracts::NotamSubjectKey::Navaid("FUZ".into())])
+        );
         assert_eq!(
             airport_id_for_notam(
                 Some("KZAB"),

@@ -1184,6 +1184,8 @@ pub struct FlightPlanWeatherBadgeUiView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanDisplayRowUiView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notam_badge: Option<crate::NotamBadgeUiView>,
     #[serde(default)]
     pub uid: String,
     pub label: String,
@@ -2500,6 +2502,7 @@ fn project_display_rows(
                 ),
             );
             rows.push(FlightPlanDisplayRowUiView {
+                notam_badge: None,
                 uid,
                 label: nav_ref
                     .as_ref()
@@ -2548,6 +2551,7 @@ fn project_display_rows(
                 ),
             );
             rows.push(FlightPlanDisplayRowUiView {
+                notam_badge: None,
                 uid: uid.clone(),
                 label: structured_component_label(component),
                 row_kind: FlightPlanDisplayRowKind::Group,
@@ -2616,6 +2620,7 @@ fn project_display_rows(
                         );
                         airway_child_waypoint_index += 1;
                         rows.push(FlightPlanDisplayRowUiView {
+                            notam_badge: None,
                             uid,
                             label: nav_ref_label(nav_ref),
                             row_kind: FlightPlanDisplayRowKind::Waypoint,
@@ -2680,6 +2685,7 @@ fn project_display_rows(
                             ProcedureDiscontinuity::Other(_) => None,
                         };
                         rows.push(FlightPlanDisplayRowUiView {
+                            notam_badge: None,
                             uid: uid.clone(),
                             label: label.clone(),
                             row_kind: FlightPlanDisplayRowKind::Discontinuity,
@@ -2728,6 +2734,7 @@ fn project_display_rows(
         let chart_airport_id = airport_id_from_nav_ref(&direct_to.target);
         let uid = direct_to.target_row.row_id().0.clone();
         rows.push(FlightPlanDisplayRowUiView {
+            notam_badge: None,
             uid: uid.clone(),
             label: nav_ref_label(&direct_to.target),
             row_kind: FlightPlanDisplayRowKind::Waypoint,
@@ -8854,6 +8861,7 @@ mod tests {
     #[test]
     fn show_plate_navigation_uses_enriched_plate_target() {
         let mut row = FlightPlanDisplayRowUiView {
+            notam_badge: None,
             uid: "procedure-row".to_string(),
             label: "VOR-A".to_string(),
             row_kind: FlightPlanDisplayRowKind::Group,

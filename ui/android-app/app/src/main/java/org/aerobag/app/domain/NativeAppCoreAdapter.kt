@@ -334,6 +334,7 @@ data class MapSelectionCategory(
 )
 
 data class MapSelectionItem(
+    val notamBadge: NotamBadgeUiView? = null,
     val id: String,
     val label: String,
     val sublabel: String,
@@ -2772,7 +2773,7 @@ internal data class WireDerivedChartAirport(
     val id: String,
     val label: String,
     val charts: List<WireDerivedChartAsset>,
-    val unmatched_procedure_notam_badge: WirePlateProcedureNotamBadge? = null,
+    val unmatched_procedure_notam_badge: WireNotamBadgeUiView? = null,
 )
 
 @kotlinx.serialization.Serializable(with = WireDerivedChartAirportMenuEntrySerializer::class)
@@ -2831,21 +2832,21 @@ internal data class WireDerivedChartAsset(
     val folder_category: String,
     val has_thumbnail: Boolean,
     val procedure_geometry_warning_count: Int = 0,
-    val procedure_notam_badge: WirePlateProcedureNotamBadge? = null,
+    val procedure_notam_badge: WireNotamBadgeUiView? = null,
     val georef: WirePlateGeoref? = null,
 )
 
 @kotlinx.serialization.Serializable
-internal data class WirePlateProcedureNotamBadge(
+data class WireNotamBadgeUiView(
     val label: String,
     val count: Int,
     val action_id: String,
     val accessibility_label: String,
-    val detail: WirePlateProcedureNotamDetail,
+    val detail: WireNotamDetailUiView,
 )
 
 @kotlinx.serialization.Serializable
-internal data class WirePlateProcedureNotamDetail(
+data class WireNotamDetailUiView(
     val title: String,
     val advisory_text: String,
     val empty_text: String,
@@ -3511,16 +3512,29 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     georef = georef?.toUi(),
 )
 
-private fun WirePlateProcedureNotamBadge.toUi() = PlateProcedureNotamBadge(
+private fun WireNotamBadgeUiView.toUi() = NotamBadgeUiView(
     label = label,
     count = count,
     actionId = action_id,
     accessibilityLabel = accessibility_label,
-    detail = PlateProcedureNotamDetail(
+    detail = NotamDetailUiView(
         title = detail.title,
         advisoryText = detail.advisory_text,
         emptyText = detail.empty_text,
         notams = detail.notams.map { it.toUi() },
+    ),
+)
+
+private fun NotamBadgeUiView.toWire() = WireNotamBadgeUiView(
+    label = label,
+    count = count,
+    action_id = actionId,
+    accessibility_label = accessibilityLabel,
+    detail = WireNotamDetailUiView(
+        title = detail.title,
+        advisory_text = detail.advisoryText,
+        empty_text = detail.emptyText,
+        notams = detail.notams.map { WireAirportNotamUiView(it.id, it.label, it.text) },
     ),
 )
 
@@ -3823,6 +3837,7 @@ private fun WireMapSelectionCategory.toUi() = MapSelectionCategory(
 )
 
 private fun WireMapSelectionItem.toUi() = MapSelectionItem(
+    notamBadge = notam_badge?.toUi(),
     id = id,
     label = label,
     sublabel = sublabel,
@@ -4392,6 +4407,7 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     navRef = nav_ref?.toUi(),
     symbolFeature = symbol_feature?.toUi(),
     weatherBadge = weather_badge?.toUi(),
+    notamBadge = notam_badge?.toUi(),
     depth = depth,
     active = active,
     enabled = enabled,
@@ -4424,6 +4440,7 @@ private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView
     nav_ref = navRef?.toWire(),
     symbol_feature = symbolFeature?.toWire(),
     weather_badge = weatherBadge?.toWire(),
+    notam_badge = notamBadge?.toWire(),
     depth = depth,
     active = active,
     enabled = enabled,

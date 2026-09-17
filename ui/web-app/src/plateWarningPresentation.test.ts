@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const notamUi = readFileSync(new URL("./NotamUi.tsx", import.meta.url), "utf8");
 
 function sourceBetween(start: string, end: string): string {
   const startIndex = appSource.indexOf(start);
@@ -52,9 +53,10 @@ describe("plate procedure geometry warnings", () => {
     expect(chartsPage).toContain("setProcedureNotamDetail(chart.procedure_notam_badge!.detail)");
     expect(chartsPage).toContain("selectedCollection?.unmatched_procedure_notam_badge");
     expect(chartsPage).toContain('className="plateFolderUnmatchedNotamBadge"');
-    expect(chartsPage).toContain("<ProcedureNotamModal detail={procedureNotamDetail} />");
-    expect(appSource).toContain("props.badge.accessibility_label");
-    expect(appSource).toContain("data-action-id={props.badge.action_id}");
+    expect(chartsPage).toContain("<NotamModal detail={procedureNotamDetail} />");
+    expect(chartsPage).toContain("<NotamBadgeButton");
+    expect(notamUi).toContain("props.badge.accessibility_label");
+    expect(notamUi).toContain("data-action-id={props.badge.action_id}");
     expect(styles).toContain(".plateThumbStickerRow");
     expect(styles).toContain(".plateFolderUnmatchedNotamBadge");
     expect(styles).toContain(".plateProcedureNotamBadge-dock");

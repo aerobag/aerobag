@@ -9,7 +9,7 @@
     "enr-h": "ENH1",
     "enr-l": "ENL1",
     "geo": "GEO1",
-    "nav-db": "NAV26",
+    "nav-db": "NAV27",
     "sec": "SEC1",
     "shaded-relief": "SHD1",
     "tac": "TAC1",
@@ -20,14 +20,14 @@
   "live_feeds": {
     "manifest_schema": 3,
     "product_contracts": {
-      "notams": 7
+      "notams": 8
     }
   },
   "nav_db": {
-    "contract_id": "NAV26",
+    "contract_id": "NAV27",
     "page_encoding": "xz",
     "required_exact_keys": {
-      "airport/notam-catalog": 1,
+      "airport/notam-catalog": 2,
       "airway/routing/graph": 2
     }
   }

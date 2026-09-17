@@ -17,10 +17,12 @@ import pipeline_health
 FIXTURES = """<script>
 window.plotCalls = [];
 window.Plotly = {
-  react: (element) => { if (!element) throw new Error("missing plot"); plotCalls.push(element); },
+  react: (element, traces) => { if (!element) throw new Error("missing plot"); plotCalls.push({element, traces}); },
   purge: () => {},
 };
 const fixtureMetrics = [
+  {id:"channel.production.live_feed.notams.server_only_record_count", scope:"production", label:"Excluded NOTAMs", value:2594, severity:"ok",
+   breakdown:{"AIRSPACE":1246,"No keyword":538,"NAV":367,"OBST":326,"COM":82,"SVC":28,"Other":7}},
   {id:"channel.production.release.qualification_status", scope:"production", value:"pending", severity:"critical"},
   {id:"channel.release-old.release.qualification_status", scope:"release-old", value:"bypassed", severity:"warning"},
   {id:"channel.production.cycle_product.warning_count", scope:"production", value:154, severity:"warning"},
@@ -71,8 +73,15 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
     check(Boolean(row.querySelector(".plot")) === (graphValue(metric.value) !== null), "plot eligibility");
     activatePlot(metric.id);
   }
-  check(dashboard.plots.size === 3, "only numeric and boolean metrics get plots");
+  check(dashboard.plots.size === 4, "only numeric and boolean metrics get plots");
   check(plotCalls.length > 0, "numeric plots are exercised");
+  const excluded = fixtureMetrics[0];
+  const categoryRow = rowFor(excluded.id);
+  const categoryPlot = plotCalls.find(call => call.element === categoryRow.querySelector(".plot"));
+  check(categoryPlot.traces.length === 7, "all exclusion categories have traces");
+  check(categoryPlot.traces.find(trace => trace.name === "AIRSPACE").y[0] === 1246, "live sample reaches category graph");
+  check(categoryRow.querySelectorAll("tbody tr").length === 7, "category table is visible");
+  check(dashboard.series.series[`${excluded.id}::Other`].last.at(-1) === 7, "other categories survive history merging");
   const unsupported = rowFor("channel.release-old.cycle_product.weather_camera_site_count");
   check(unsupported.querySelector(".pill.not_instrumented").textContent === "not instrumented", "unsupported coverage is neutral, not green");
   check(!unsupported.querySelector(".plot"), "unsupported measurement does not invent a graph value");
@@ -103,7 +112,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
 
   location.hash = "";
   await pause();
-  const changing = fixtureMetrics[0];
+  const changing = fixtureMetrics[1];
   changing.value = 1;
   ensureMetricRows(fixtureRecord);
   check(rowFor(changing.id).querySelector(".plot"), "numeric transition adds plot");

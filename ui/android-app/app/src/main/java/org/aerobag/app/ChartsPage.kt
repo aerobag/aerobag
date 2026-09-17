@@ -199,8 +199,8 @@ import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.PlateProcedureNotamBadge
-import org.aerobag.app.domain.PlateProcedureNotamDetail
+import org.aerobag.app.domain.NotamBadgeUiView
+import org.aerobag.app.domain.NotamDetailUiView
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.DerivedChartPageState
@@ -408,7 +408,7 @@ internal fun ChartsPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var loadTrayOpen by remember { mutableStateOf(false) }
     var openStatusControlId by remember { mutableStateOf<UiSurfaceStatusControlId?>(null) }
-    var procedureNotamDetail by remember { mutableStateOf<PlateProcedureNotamDetail?>(null) }
+    var procedureNotamDetail by remember { mutableStateOf<NotamDetailUiView?>(null) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     val tour = LocalGuidedTour.current
     val tourFeedback = LocalGuidedTourFeedback.current
@@ -711,7 +711,7 @@ internal fun ChartsPage(
                     onOpenProcedureNotams = { procedureNotamDetail = it },
                 )
                 selectedCollection?.unmatchedProcedureNotamBadge?.let { badge ->
-                    PlateProcedureNotamBadgeButton(
+                    NotamBadgeButton(
                         badge = badge,
                         badgeSize = ThumbSize * 0.5f,
                         modifier = Modifier
@@ -845,7 +845,7 @@ internal fun ChartsPage(
             verticalAlignment = Alignment.Top,
         ) {
             selectedChart?.procedureNotamBadge?.takeUnless { folderOpen }?.let { badge ->
-                PlateProcedureNotamBadgeButton(
+                NotamBadgeButton(
                     badge = badge,
                     badgeSize = ThumbSize * 0.5f,
                     onClick = {
@@ -999,7 +999,7 @@ internal fun ChartsPage(
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scrim { procedureNotamDetail = null }
-                    ProcedureNotamModal(
+                    NotamModal(
                         detail = detail,
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -1826,7 +1826,7 @@ internal fun PlateFolderGrid(
     uiTheme: UiTheme,
     devServerBaseUrl: String,
     onSelectChart: (String) -> Unit,
-    onOpenProcedureNotams: (PlateProcedureNotamDetail) -> Unit,
+    onOpenProcedureNotams: (NotamDetailUiView) -> Unit,
 ) {
     val context = LocalContext.current
     LazyVerticalGrid(
@@ -1930,7 +1930,7 @@ internal fun PlateFolderGrid(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         chart.procedureNotamBadge?.let { badge ->
-                            PlateProcedureNotamBadgeButton(
+                            NotamBadgeButton(
                                 badge = badge,
                                 badgeSize = 22.dp,
                                 onClick = { onOpenProcedureNotams(badge.detail) },
@@ -1953,44 +1953,6 @@ internal fun PlateFolderGrid(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun PlateProcedureNotamBadgeButton(
-    badge: PlateProcedureNotamBadge,
-    badgeSize: Dp,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val uiTheme = LocalAerobagUiTheme.current
-    Surface(
-        modifier = modifier
-            .size(badgeSize)
-            .e2eIndexedControl(
-                semanticTag = "parity:plate-notam:${badge.actionId}",
-                enabled = true,
-                text = badge.accessibilityLabel,
-            )
-            .semantics { contentDescription = badge.accessibilityLabel }
-            .clickable(onClick = onClick),
-        shape = RectangleShape,
-        color = uiTheme.plateFolder.notamBadgeBg,
-        contentColor = uiTheme.plateFolder.notamBadgeFg,
-        border = BorderStroke(2.dp, uiTheme.plateFolder.notamBadgeStroke),
-        shadowElevation = 2.dp,
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = "${badge.label}${badge.count}",
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = (badgeSize.value * 0.32f).sp,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.sp,
-                ),
-                maxLines = 1,
-            )
         }
     }
 }

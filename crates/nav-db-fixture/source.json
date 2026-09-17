@@ -1,9 +1,9 @@
 {
   "nav_db_contract": {
-    "contract_id": "NAV26",
+    "contract_id": "NAV27",
     "page_encoding": "xz",
     "required_exact_keys": {
-      "airport/notam-catalog": 1,
+      "airport/notam-catalog": 2,
       "airway/routing/graph": 2
     }
   },
@@ -1177,11 +1177,12 @@
       "traffic_pattern_altitude_msl_ft": 1250.0
     },
     "airport/notam-catalog": {
+      "aliases": {"RNT": "KRNT", "PAE": "KPAE"},
       "airport_ids": [
         "KRNT",
         "KPAE"
       ],
-      "schema_version": 1
+      "schema_version": 2
     },
     "airway/routing/graph": {
       "schema_version": 2,

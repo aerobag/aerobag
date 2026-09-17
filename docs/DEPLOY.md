@@ -499,6 +499,9 @@ ingestion cannot change the build's promised state, and acknowledging that
 snapshot does not consume newer journal entries. See the
 [v3 operational status contract](contracts/live-feed-status-v3.md) for independent
 source/publication recovery and legacy monitoring behavior.
+The [v4 contract](contracts/live-feed-status-v4.md) adds NOTAM exclusion categories
+and a cross-check against TFR delivery. Its counters require a new daemon; the
+NAV27 alias catalog also requires a fresh cycle publication.
 
 The monitoring rule update can be installed with `tools/prod_manage.py --reconcile`.
 The Rust worker, snapshot, and deadline changes require a newly built release;

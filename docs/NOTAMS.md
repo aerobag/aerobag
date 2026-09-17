@@ -24,7 +24,10 @@ periodic checkpoints.
 The product manifest locates the nav-db airport catalogs for every published
 cycle. The daemon unions those catalogs and admits an airport-linked NOTAM to
 the client projection only when at least one structured NMS location candidate
-resolves to a catalog airport. This also canonicalizes pseudo-ICAO identifiers
+resolves to a catalog airport. NAV27 carries the existing authoritative NASR
+airport alias table in catalog schema 2, so FAA-local identifiers such as
+`4A2` resolve to `PAAB`. The catalog identity hashes aliases as well as airport
+IDs; conflicting aliases across cycles fail explicitly. This also canonicalizes pseudo-ICAO identifiers
 such as `K0I8` back to the client airport ID `0I8`.
 
 The credential file has this operator-owned shape:
@@ -78,20 +81,31 @@ The canonical source store retains every valid NMS record, including records
 that have no client display destination. This preserves source completeness,
 same-ID cancellation, diagnostics, and TFR enrichment. Client NOTAM checkpoints
 are a selective projection: they contain only records with display text and an
-airport or procedure lookup anchor. Airport association starts from structured
+airport, procedure, navaid, or airway lookup anchor. Airport association starts from structured
 NMS facility evidence (`AirportHeliport`, ICAO location, airport name, or an
 airport location paired with a facility name or position), rather than deciding
 displayability from the NOTAM keyword, and must resolve against the nav-db
 airport catalog before publication. ARTCC, FIR, FDC, GPS, navaid, and remote
 communications facilities therefore stay out of the airport projection.
 
+NOTAM record contract 8 separately carries typed navaid/airway subjects. Explicit
+NAV facility notices and route-heading airway lists populate these indexes;
+the filing center is not the subject. FP navaid rows, FP airway group headers,
+and inspector navaid buttons expose core-projected N/count badges opening the
+shared reader. Airway notices are not filtered by guessed segment applicability.
+General center and regional-airspace notices remain in the server-only audit.
+See [the subject delivery audit](testing/notam-delivery-audit-2026-09-16.md#subject-delivery-september-17).
+
 Live-feed status reports source and client record totals, the existing
 `source_records_without_location` count, and `server_only_records_by_keyword`.
-That makes every omitted category visible to Pipeline Health without shipping
-records that neither client can render. A change to these association semantics
-bumps both persistent NOTAM schemas so the collector performs a fresh
-authoritative Initial Load and the publication store rebuilds its derived client
-projection.
+Pipeline Health graphs these categories and separately cross-checks omitted
+record IDs against the latest TFR publication, without shipping omitted records
+to app clients. See [operational status v4](contracts/live-feed-status-v4.md).
+Catalog/alias changes alter catalog identity and force the existing projection
+rebuild from canonical source records, without a new Initial Load. Changes to
+canonical source parsing still require a persistent source-schema bump; changes
+to projection semantics not represented in catalog identity require a persistent
+publication-schema bump.
 
 Airport NOTAM order is owned by app core and shared by Android and web. Safety
 and operational effects (airport/runway closure, unavailable ATC, procedures,

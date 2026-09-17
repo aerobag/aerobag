@@ -502,6 +502,7 @@ data class FlightPlanDisplayRowUiView(
     val navRef: NavRef?,
     val symbolFeature: NavSymbolFeature?,
     val weatherBadge: FlightPlanWeatherBadgeUiView? = null,
+    val notamBadge: NotamBadgeUiView? = null,
     val depth: Int,
     val active: Boolean,
     val enabled: Boolean,
@@ -577,19 +578,19 @@ data class ChartAsset(
     val folderCategory: String,
     val hasThumbnail: Boolean,
     val procedureGeometryWarningCount: Int = 0,
-    val procedureNotamBadge: PlateProcedureNotamBadge? = null,
+    val procedureNotamBadge: NotamBadgeUiView? = null,
     val georef: PlateGeoref? = null,
 )
 
-data class PlateProcedureNotamBadge(
+data class NotamBadgeUiView(
     val label: String,
     val count: Int,
     val actionId: String,
     val accessibilityLabel: String,
-    val detail: PlateProcedureNotamDetail,
+    val detail: NotamDetailUiView,
 )
 
-data class PlateProcedureNotamDetail(
+data class NotamDetailUiView(
     val title: String,
     val advisoryText: String,
     val emptyText: String,
@@ -600,7 +601,7 @@ data class ChartAirport(
     val id: String,
     val label: String,
     val charts: List<ChartAsset>,
-    val unmatchedProcedureNotamBadge: PlateProcedureNotamBadge? = null,
+    val unmatchedProcedureNotamBadge: NotamBadgeUiView? = null,
 )
 
 sealed interface ChartAirportMenuEntry {

@@ -229,6 +229,28 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
         final_checkpoint.state_id
     );
     let expected = load_trace_expectations(&fixture.root)?;
+    if let Some(path) = std::env::var_os("AEROBAG_NMS_TRACE_AUDIT_PATH") {
+        serde_json::to_writer(
+            File::create(path)?,
+            &serde_json::json!({
+                "initial": initial_checkpoint,
+                "final": final_checkpoint,
+                "transitions": transitions.iter().map(|transition| serde_json::json!({
+                    "observed_at_utc": transition.observed_at_utc,
+                    "mutations": transition.mutations,
+                })).collect::<Vec<_>>(),
+                "measurements": {
+                    "schema_version": 1,
+                    "baseline_record_count": baseline_records.len(),
+                    "poll_count": fixture.polls.len(),
+                    "update_count": fixture.polls.iter().map(|poll| poll.updates.len()).sum::<usize>(),
+                    "transition_count": transitions.len(), "mutation_count": mutation_count,
+                    "removal_count": removal_count, "repeated_mutation_id_count": repeated_id_count,
+                    "final_state_id": final_checkpoint.state_id,
+                }
+            }),
+        )?;
+    }
     assert_eq!(baseline_records.len(), expected.baseline_record_count);
     assert_eq!(fixture.polls.len(), expected.poll_count);
     assert_eq!(
@@ -667,6 +689,7 @@ fn apply_transition_range(input: TransitionRangeInput<'_>) -> anyhow::Result<()>
                 source_records_without_location: 0,
                 source_record_count: boundaries[next].counters.notam_count,
                 server_only_records_by_keyword: BTreeMap::new(),
+                server_only_record_ids: Default::default(),
                 cursor: NotamPublicationCursor {
                     published_through_journal_seq: transitions[cursor].journal_seq - 1,
                     published_head_state_id: Some(boundaries[cursor].state_id.clone()),

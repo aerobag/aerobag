@@ -725,6 +725,7 @@ data class WireMapSelectionCategory(
 
 @Serializable
 data class WireMapSelectionItem(
+    val notam_badge: WireNotamBadgeUiView? = null,
     val id: String,
     val label: String,
     val sublabel: String,
@@ -1471,6 +1472,7 @@ data class WireFlightPlanDisplayRowUiView(
     val nav_ref: WireNavRef? = null,
     val symbol_feature: WireNavSymbolFeature? = null,
     val weather_badge: WireFlightPlanWeatherBadgeUiView? = null,
+    val notam_badge: WireNotamBadgeUiView? = null,
     val depth: Int,
     val active: Boolean,
     val enabled: Boolean = true,

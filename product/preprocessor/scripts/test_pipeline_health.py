@@ -56,6 +56,71 @@ def evaluate_health(
     return pipeline_health.evaluate_health(facts, history, now)
 
 
+class NotamDeliveryMetricTests(unittest.TestCase):
+    def facts(self, version=4):
+        return {"inputs": {"live_feeds_status": {"payload": {
+            "schema_version": version,
+            "products": {"notams": {"failure_episodes": {}, "quality": {
+                "source_record_count": 100,
+                "client_record_count": 70,
+                "server_only_records_by_keyword": {"AIRSPACE": 20, "(none)": 7, "NEW": 3},
+                "delivery_audit": {
+                    "tfr_overlap_count": 5,
+                    "without_delivery_count": 25,
+                    "tfr_version": "tfr-a",
+                    "error": None,
+                },
+            }}},
+        }}}}
+
+    def metrics(self, facts):
+        payload = facts["inputs"]["live_feeds_status"]["payload"]
+        payload["product_policies"] = [{
+            "product_id": "notams", "display_name": "NOTAMs",
+            "operator_health": {"warning_after_seconds": 300, "critical_after_seconds": 900},
+        }]
+        metrics = []
+        pipeline_health.add_live_feed_metrics(metrics, facts, datetime.now(timezone.utc))
+        return {m["id"]: m for m in metrics}
+
+    def test_coverage_and_category_breakdown_include_unknown_keywords(self):
+        metrics = self.metrics(self.facts())
+        self.assertEqual(metrics["live_feed.notams.without_delivery_count"]["value"], 25)
+        excluded = metrics["live_feed.notams.server_only_record_count"]
+        self.assertEqual(excluded["value"], 30)
+        self.assertEqual(excluded["breakdown"], {"AIRSPACE": 20, "No keyword": 7,
+            "NAV": 0, "OBST": 0, "COM": 0, "SVC": 0, "Other": 3})
+        compact = pipeline_health.compact_evaluation_metrics({"metrics": list(metrics.values())})
+        self.assertEqual(compact["live_feed.notams.server_only_record_count::Other"], 3)
+        series = pipeline_health.compact_metric_series([{
+            "sampled_at_utc": "2026-09-16T12:00:00Z", "metrics": compact,
+        }], now=datetime(2026, 9, 16, 12, 1, tzinfo=timezone.utc))
+        self.assertEqual(series["series"]["live_feed.notams.server_only_record_count::AIRSPACE"]["last"], [20])
+
+    def test_bad_category_totals_and_missing_measurements_cannot_imply_coverage(self):
+        for counts in [None, {"NAV": -1}, {"NAV": True}, {"NAV": 31}]:
+            facts = self.facts()
+            facts["inputs"]["live_feeds_status"]["payload"]["products"]["notams"]["quality"]["server_only_records_by_keyword"] = counts
+            row = self.metrics(facts)["live_feed.notams.server_only_record_count"]
+            self.assertIsNone(row["value"])
+            self.assertNotIn("breakdown", row)
+            self.assertEqual(row["severity"], "warning")
+
+    def test_missing_or_inconsistent_promised_audit_is_not_zero(self):
+        for bad in [None, {}, {"tfr_overlap_count": 40, "without_delivery_count": 0,
+                              "tfr_version": "tfr-a", "error": None}]:
+            facts = self.facts()
+            facts["inputs"]["live_feeds_status"]["payload"]["products"]["notams"]["quality"]["delivery_audit"] = bad
+            row = self.metrics(facts)["live_feed.notams.without_delivery_count"]
+            self.assertIsNone(row["value"])
+            self.assertEqual(row["severity"], "warning")
+
+    def test_older_status_cannot_claim_delivery_coverage(self):
+        row = self.metrics(self.facts(version=3))["live_feed.notams.without_delivery_count"]
+        self.assertIsNone(row["value"])
+        self.assertEqual(row["severity"], "not_instrumented")
+
+
 class ChartQualityMetricTests(unittest.TestCase):
     now = datetime(2026, 9, 13, 15, 0, tzinfo=timezone.utc)
 
@@ -2297,8 +2362,8 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
                 self.assertNotIn("critical_threshold", item)
         self.assertFalse(any(alert["metric_id"].endswith(self.name) for alert in result["alerts"]))
 
-    def test_zero_and_large_counts_are_informational_in_both_supported_schemas(self) -> None:
-        for schema in [2, 3]:
+    def test_zero_and_large_counts_are_informational_in_all_supported_schemas(self) -> None:
+        for schema in [2, 3, 4]:
             for count in [0, 100_000]:
                 with self.subTest(schema=schema, count=count):
                     facts = self.facts({"production": self.channel(count, schema=schema)})
@@ -2315,7 +2380,7 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
         missing = self.channel(0)["inputs"]["live_feeds_status"]
         del missing["payload"]["active_sse_clients"]
         sources.append(missing)
-        for schema in [1, 4, None, "3", 3.0]:
+        for schema in [1, 5, None, "3", 3.0, "4", 4.0]:
             sources.append(self.channel(2, schema=schema)["inputs"]["live_feeds_status"])
         sources.extend([None, {}, {"payload": []}, {"payload": None, "error": "offline"}])
         stale = self.channel(5)["inputs"]["live_feeds_status"]

@@ -624,6 +624,7 @@ impl AdsbSessionState {
                 Some((
                     distance_px,
                     MapSelectionItem {
+                        notam_badge: None,
                         id: format!("adsb:{}", aircraft.id),
                         label: registration
                             .clone()

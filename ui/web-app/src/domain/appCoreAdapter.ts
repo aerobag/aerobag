@@ -14,6 +14,7 @@ import type {
   LatLon,
   MapFollowUiState,
   NavRef,
+  NotamBadgeUiView,
   NavSymbolFeature,
   OwnshipSelectionCommand,
   OwnshipSourceRegistration,
@@ -543,6 +544,7 @@ export type MapSelectionCategory = {
 };
 
 export type MapSelectionItem = {
+  notam_badge?: NotamBadgeUiView | null;
   id: string;
   label: string;
   sublabel: string;

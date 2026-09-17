@@ -63,6 +63,7 @@ use product_contracts::{
 use serde::Serialize;
 
 mod compatibility;
+mod notam_delivery;
 use compatibility::{
     describe_compatibility, prepare_notam_startup, serve_compatibility_json,
     CompatibilityRequirements, DaemonCompatibility, LoadedPublication, ProvenancePublisher,
@@ -193,6 +194,7 @@ struct DaemonStatusState {
     active_clients: BTreeMap<u64, chrono::DateTime<Utc>>,
     client_update_latency_ms: VecDeque<u64>,
     products: BTreeMap<String, ProductStatusHistory>,
+    notam_delivery: notam_delivery::DeliveryAudit,
 }
 
 #[derive(Default)]
@@ -363,6 +365,7 @@ impl Default for DaemonStatus {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(DaemonStatusState {
+                notam_delivery: Default::default(),
                 started_at_utc: Utc::now(),
                 next_client_id: 1,
                 active_clients: BTreeMap::new(),
@@ -488,6 +491,16 @@ impl DaemonStatus {
     }
 
     fn record_product_success(&self, update: &PublishedLiveFeedUpdate, recovered: bool) {
+        // Decode only a changed TFR publication, outside the status lock. Keep
+        // identity evidence private; status clients receive counts, not records.
+        let needs_tfr_read = update.product == "tfrs"
+            && self
+                .inner
+                .lock()
+                .expect("live-feed status lock")
+                .notam_delivery
+                .needs_tfr_read(&update.version);
+        let tfr_ids = needs_tfr_read.then(|| notam_delivery::read_tfr_ids(&update.state_path));
         let observed_at_utc = Utc::now();
         let delta_bytes = delta_bytes_for_status(update);
         let state_bytes = state_bytes_for_status(&update.state_path).ok();
@@ -496,6 +509,12 @@ impl DaemonStatus {
             .clone()
             .or_else(|| quality_facts_for_status(update).ok().flatten());
         let mut state = self.inner.lock().expect("live-feed status lock");
+        if let Some(ids) = &update.notam_server_only_record_ids {
+            state.notam_delivery.set_notams(Arc::clone(ids));
+        }
+        if let Some(ids) = tfr_ids {
+            state.notam_delivery.set_tfr(update.version.clone(), ids);
+        }
         let history = state.products.entry(update.product.clone()).or_default();
         let content_version_changed =
             history.current_version.as_deref() != Some(update.version.as_str());
@@ -624,7 +643,14 @@ impl DaemonStatus {
                         current_warning_count: history.current_warning_count,
                         consecutive_failure_count: history.consecutive_failure_count,
                         failure_episodes: history.failure_episodes.clone(),
-                        quality: history.quality.clone(),
+                        quality: history.quality.clone().map(|mut quality| {
+                            if product == "notams" {
+                                quality["delivery_audit"] =
+                                    serde_json::to_value(state.notam_delivery.summary())
+                                        .expect("serialize NOTAM delivery summary");
+                            }
+                            quality
+                        }),
                         attempts: history.attempts.iter().cloned().collect(),
                         samples: history.samples.iter().cloned().collect(),
                         source_samples: history.source_samples.iter().cloned().collect(),
@@ -635,7 +661,7 @@ impl DaemonStatus {
             })
             .collect();
         DaemonStatusSnapshot {
-            schema_version: 3,
+            schema_version: 4,
             generated_at_utc: now,
             started_at_utc: state.started_at_utc,
             active_sse_clients: state.active_clients.len(),
@@ -1797,7 +1823,7 @@ fn load_notam_airport_catalog_bytes(
             .collect::<Result<Vec<_>, _>>()?,
         value => vec![serde_json::from_value::<CurrentArtifactsManifest>(value)?],
     };
-    let mut airport_ids = BTreeSet::new();
+    let mut catalogs = Vec::new();
     let mut nav_db_count = 0_usize;
     for manifest in manifests {
         if manifest.schema_version != product_contracts::publication::current::v1::SCHEMA_VERSION {
@@ -1833,7 +1859,7 @@ fn load_notam_airport_catalog_bytes(
                     .with_context(|| {
                         format!("invalid NOTAM airport catalog in {}", nav_db_root.display())
                     })?;
-                airport_ids.extend(catalog.airport_ids);
+                catalogs.push(catalog);
                 nav_db_count += 1;
             }
         }
@@ -1844,12 +1870,7 @@ fn load_notam_airport_catalog_bytes(
             product_artifacts_path.display()
         );
     }
-    let catalog = NotamAirportCatalog {
-        schema_version: NotamAirportCatalog::SCHEMA_VERSION,
-        airport_ids,
-    };
-    catalog.identity().map_err(anyhow::Error::msg)?;
-    Ok(catalog)
+    NotamAirportCatalog::union(catalogs.iter()).map_err(anyhow::Error::msg)
 }
 
 fn resolve_product_artifact_root(
@@ -3895,7 +3916,7 @@ mod tests {
         status.register_product("metars", Duration::from_secs(60));
         status.register_product("nexrad", Duration::from_secs(300));
         let payload = serde_json::to_value(status.snapshot())?;
-        assert_eq!(payload["schema_version"], 3);
+        assert_eq!(payload["schema_version"], 4);
         assert_eq!(payload["active_sse_clients"], 2);
         drop(first);
         assert_eq!(status.snapshot().active_sse_clients, 1);
@@ -4019,6 +4040,7 @@ mod tests {
             delta_path: None,
             changed_count: 0,
             removed_count: 0,
+            notam_server_only_record_ids: None,
             status_quality: None,
             publication_ack: None,
             notam_compaction: None,
@@ -4446,7 +4468,7 @@ mod tests {
 
         let snapshot = status.snapshot();
         let metars = snapshot.products.get("metars").expect("METAR status");
-        assert_eq!(snapshot.schema_version, 3);
+        assert_eq!(snapshot.schema_version, 4);
         let wire = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(
             wire["products"]["metars"]["failure_episodes"]["publication"]["failure_count"],
@@ -4513,6 +4535,7 @@ mod tests {
         let nav_db = unpacked.join("nav_db_fixture");
         fs::create_dir_all(&nav_db)?;
         let source_catalog = NotamAirportCatalog {
+            aliases: Default::default(),
             schema_version: NotamAirportCatalog::SCHEMA_VERSION,
             airport_ids: ids.iter().map(|id| id.to_string()).collect(),
         };
@@ -4655,6 +4678,7 @@ mod tests {
                 delta_path: None,
                 changed_count: 0,
                 removed_count: 0,
+                notam_server_only_record_ids: None,
                 status_quality: None,
                 publication_ack: None,
                 notam_compaction: None,
@@ -4686,6 +4710,7 @@ mod tests {
                 delta_path: None,
                 changed_count: 1,
                 removed_count: 0,
+                notam_server_only_record_ids: None,
                 status_quality: Some(serde_json::json!({
                     "procedure_notams_without_ui_anchor": 1,
                     "source_records_without_location": 1,
@@ -4706,6 +4731,95 @@ mod tests {
                 ["source_records_without_location"],
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn status_audits_exclusions_even_when_client_version_is_unchanged() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let tfr_path = temp.path().join("tfr.json.xz");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema_version": product_contracts::TFR_PRODUCT_CONTRACT_VERSION,
+            "areas": [{"notam": {"record_id": "A", "text": "Restriction"}}]
+        }))?;
+        fs::write(
+            &tfr_path,
+            nav_kv_package::xz_frame_uncompressed_bytes(&bytes).map_err(anyhow::Error::msg)?,
+        )?;
+        let status = DaemonStatus::default();
+        let mut update = PublishedLiveFeedUpdate {
+            product: "notams".into(),
+            version: "notam-state".into(),
+            unchanged: false,
+            state_path: temp.path().join("unused-notams.json.xz"),
+            version_manifest_path: temp.path().join("unused-version.json"),
+            version_manifest_url: String::new(),
+            state_url: String::new(),
+            state_sha256: String::new(),
+            published_at_utc: None,
+            collected_at_utc: None,
+            history: Vec::new(),
+            delta_path: None,
+            changed_count: 0,
+            removed_count: 0,
+            notam_server_only_record_ids: Some(Arc::new(BTreeSet::from(["A".into(), "B".into()]))),
+            status_quality: Some(serde_json::json!({
+                "source_record_count": 3, "client_record_count": 1,
+                "server_only_records_by_keyword": {"AIRSPACE": 2}
+            })),
+            publication_ack: None,
+            notam_compaction: None,
+        };
+        status.record_product_success(&update, false);
+        let audit = || {
+            status.snapshot().products["notams"]
+                .quality
+                .as_ref()
+                .unwrap()["delivery_audit"]
+                .clone()
+        };
+        assert!(audit()["without_delivery_count"].is_null());
+        let mut tfr = update.clone();
+        tfr.product = "tfrs".into();
+        tfr.version = "tfr-1".into();
+        tfr.state_path = tfr_path.clone();
+        tfr.status_quality = None;
+        tfr.notam_server_only_record_ids = None;
+        status.record_product_success(&tfr, false);
+        assert_eq!(audit()["tfr_overlap_count"], 1);
+        assert_eq!(audit()["without_delivery_count"], 1);
+
+        // A server-only addition does not change the client content version.
+        update.unchanged = true;
+        update.notam_server_only_record_ids = Some(Arc::new(BTreeSet::from([
+            "A".into(),
+            "B".into(),
+            "C".into(),
+        ])));
+        update.status_quality = Some(serde_json::json!({
+            "source_record_count": 4, "client_record_count": 1,
+            "server_only_records_by_keyword": {"AIRSPACE": 3}
+        }));
+        status.record_product_success(&update, false);
+        assert_eq!(audit()["without_delivery_count"], 2);
+        assert_eq!(
+            status.snapshot().products["notams"]
+                .quality
+                .as_ref()
+                .unwrap()["source_record_count"],
+            4
+        );
+
+        // The status endpoint uses cached counts, not per-request file reads.
+        fs::write(&tfr_path, b"corrupt")?;
+        assert_eq!(audit()["without_delivery_count"], 2);
+        tfr.version = "tfr-2".into();
+        status.record_product_success(&tfr, false);
+        assert!(audit()["without_delivery_count"].is_null());
+        assert!(audit()["error"].as_str().unwrap().contains("decode"));
+        let payload = serde_json::to_value(status.snapshot())?;
+        assert_eq!(payload["schema_version"], 4);
+        assert!(!payload.to_string().contains("record_ids"));
         Ok(())
     }
 
@@ -4900,6 +5014,7 @@ mod tests {
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,
+                    notam_server_only_record_ids: None,
                     status_quality: None,
                     publication_ack: None,
                     notam_compaction: None,
@@ -4965,6 +5080,7 @@ mod tests {
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,
+                    notam_server_only_record_ids: None,
                     status_quality: None,
                     publication_ack: None,
                     notam_compaction: None,

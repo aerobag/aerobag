@@ -55,6 +55,14 @@ Generated schemas, wires, conformance data and symbols are compared in temporary
 paths first, before Android generation can overwrite stale checked-in files.
 The run also fails if source files or HEAD change while checks are in progress.
 
+The local services lane includes the ACS workload's latency assertions, so the
+shared lane runner executes it exclusively after joining the other lanes. Do not
+benchmark its requests against concurrent preflight Rust/Kotlin compilation or
+weaken its limits to tolerate that contention. This only isolates the current
+run's lanes, not other developers' processes on the host. Workload request
+deadlines cover headers and response bodies and report the method, path, and
+stalled phase without authentication headers or query credentials.
+
 The Node harness contracts also have a standalone ordinary-CI job. They run
 without waiting for the web build or launching a browser. The full release
 preflight retains all ordinary-CI checks, including app builds and startup smoke.

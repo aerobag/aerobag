@@ -64,6 +64,8 @@ class Lane:
     cwd: Path = ROOT
     env: dict[str, str] | None = None
     timeout_seconds: int = 7_200
+    # Latency-sensitive workloads must not compete with our own build/test lanes.
+    exclusive: bool = False
 
 
 @dataclass(frozen=True)
@@ -457,8 +459,11 @@ def run_lanes(lanes: Iterable[Lane], log_dir: Path, workers: int) -> list[LaneRe
     if not selected:
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = [executor.submit(run_lane, lane, log_dir) for lane in selected]
+        futures = [executor.submit(run_lane, lane, log_dir) for lane in selected if not lane.exclusive]
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
+    # Joining the pool is the barrier, not a delay or a guess about host idleness.
+    # Keep running selected lanes after failures, then report every failed result.
+    results.extend(run_lane(lane, log_dir) for lane in selected if lane.exclusive)
     failures = [result for result in results if not result.passed]
     if failures:
         for failure in failures:
@@ -524,6 +529,7 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
                 f" && python3 {ROOT / 'tools/verify_acs_workload_report.py'} {workload} --output {workload_health}"
             ),
             ROOT / "services",
+            exclusive=True,
         ),
         Lane(
             "ci-rust-preprocessor",

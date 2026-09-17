@@ -1202,14 +1202,22 @@ async fn dispatch(
     request_timeout_ms: u64,
 ) -> anyhow::Result<RawResponse> {
     let started = Instant::now();
-    let response = timeout(
-        Duration::from_millis(request_timeout_ms),
-        router.clone().oneshot(request),
-    )
+    // Log only the operation, never authentication headers or query credentials.
+    let operation = format!("{} {}", request.method(), request.uri().path());
+    let mut phase = "response headers";
+    let (status, body) = timeout(Duration::from_millis(request_timeout_ms), async {
+        let response = router.clone().oneshot(request).await?;
+        let status = response.status();
+        phase = "response body";
+        let body = response.into_body().collect().await?.to_bytes().to_vec();
+        Ok::<_, anyhow::Error>((status, body))
+    })
     .await
-    .context("ACS workload request timed out")??;
-    let status = response.status();
-    let body = response.into_body().collect().await?.to_bytes().to_vec();
+    .with_context(|| {
+        format!(
+            "ACS workload {operation} timed out after {request_timeout_ms} ms waiting for {phase}"
+        )
+    })??;
     Ok(RawResponse {
         status,
         body,
@@ -1430,6 +1438,40 @@ fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn request_timeout_identifies_operation_and_stalled_headers() {
+        let router = Router::new().route(
+            "/stalled",
+            axum::routing::post(|| std::future::pending::<StatusCode>()),
+        );
+        let request = Request::post("/stalled?credential=do-not-log")
+            .header(header::AUTHORIZATION, "do-not-log")
+            .body(Body::empty())
+            .unwrap();
+        let error = dispatch(&router, request, 1).await.err().unwrap();
+        let message = error.to_string();
+        assert!(message.contains("POST /stalled timed out after 1 ms waiting for response headers"));
+        assert!(!message.contains("do-not-log"));
+    }
+
+    #[tokio::test]
+    async fn request_deadline_also_bounds_stalled_response_body() {
+        let router = Router::new().route(
+            "/stalled-body",
+            axum::routing::get(|| async {
+                Body::from_stream(async_stream::stream! {
+                    std::future::pending::<()>().await;
+                    yield Ok::<_, std::io::Error>(bytes::Bytes::new());
+                })
+            }),
+        );
+        let request = Request::get("/stalled-body").body(Body::empty()).unwrap();
+        let error = dispatch(&router, request, 1).await.err().unwrap();
+        assert!(error
+            .to_string()
+            .contains("GET /stalled-body timed out after 1 ms waiting for response body"));
+    }
 
     #[test]
     fn workload_profiles_are_explicit() {

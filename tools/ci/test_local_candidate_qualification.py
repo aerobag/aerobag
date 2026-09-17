@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -25,6 +26,63 @@ import diagnose_release_journey as diagnostic  # noqa: E402
 
 
 class LocalCandidateQualificationTests(unittest.TestCase):
+    def test_exclusive_workloads_wait_for_all_parallel_lanes(self) -> None:
+        parallel = {"build-a", "build-b"}
+        completed = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def run(lane, logs):
+            if lane.exclusive:
+                self.assertTrue(parallel.issubset(completed))
+            else:
+                # Prove the ordinary lanes still overlap; this is a deadlock
+                # watchdog, not an elapsed-time assertion.
+                barrier.wait(timeout=30)
+            with lock:
+                completed.append(lane.name)
+            return qualification.LaneResult(lane.name, 0, 0, logs / lane.name)
+
+        lanes = [
+            qualification.Lane("workload-a", ("true",), exclusive=True),
+            qualification.Lane("build-a", ("true",)),
+            qualification.Lane("workload-b", ("true",), exclusive=True),
+            qualification.Lane("build-b", ("true",)),
+        ]
+        with mock.patch.object(qualification, "run_lane", side_effect=run):
+            results = qualification.run_lanes(lanes, Path("unused-logs"), 2)
+        self.assertEqual(set(completed[:2]), parallel)
+        self.assertEqual(completed[2:], ["workload-a", "workload-b"])
+        self.assertEqual([result.name for result in results], sorted(completed))
+
+    def test_exclusive_lane_failures_are_reported_without_retries_or_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logs = Path(directory)
+
+            def run(lane, log_dir):
+                log = log_dir / lane.name
+                log.write_text("deliberate failure", encoding="utf-8")
+                return qualification.LaneResult(lane.name, 1, 0, log)
+
+            lanes = [
+                qualification.Lane("build", ("false",)),
+                qualification.Lane("workload", ("false",), exclusive=True),
+            ]
+            with mock.patch.object(qualification, "run_lane", side_effect=run) as runner:
+                with self.assertRaisesRegex(qualification.QualificationError, "build, workload"):
+                    qualification.run_lanes(lanes, logs, 2)
+            self.assertEqual([call.args[0].name for call in runner.call_args_list],
+                             ["build", "workload"])
+
+    def test_services_latency_workload_is_exclusive_in_all_local_preflights(self) -> None:
+        import cheap_preflight
+
+        with tempfile.TemporaryDirectory() as directory:
+            for select in (qualification.ordinary_lanes, cheap_preflight.cheap_lanes):
+                lanes = select(Path(directory))
+                self.assertEqual([lane.name for lane in lanes if lane.exclusive],
+                                 ["ci-rust-services"])
+
     def test_full_qualification_uses_the_pinned_browser_not_ambient_chrome(self) -> None:
         import install_test_browser
 

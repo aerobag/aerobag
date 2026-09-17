@@ -9,7 +9,8 @@ its existing root compare-and-swap provides atomicity, not schema enforcement.
 ## Contract
 
 - The encrypted root's existing `version` is the account data-format declaration.
-  Format 2 is the current account format (including flight-plan record schema 4).
+  Format 3 is the current account format (including flight-plan record schema 4
+  and the aircraft codec with glide-performance support).
   Account format numbers are distinct from application versions and individual
   record schema numbers. Do not renumber unchanged data merely to match examples.
 - Decode the stable version header before decoding the version-specific root
@@ -78,6 +79,21 @@ Schema 4 carries route selection, stable occurrence IDs, resolved offline
 geometry, aircraft/performance selection and planning inputs. Active guidance,
 ownship and debug display geometry are not synchronized. Conversion calls the
 ordinary core flight-plan validator; it does not reproduce planner algorithms.
+
+## Format 2 To 3 Policy
+
+The glide feature advanced the aircraft definition codec to schema 3. The frozen
+account-2 inventory and migration-coverage checks caught this change during
+integration; neither historical snapshot was rewritten. Account 3 explicitly
+advances aircraft record envelopes to schema 3 without changing their definition
+payloads, content hashes, memberships, or flight-plan references. The existing
+aircraft codec reads both frozen definition schema 2 and schema 3 with glide data.
+
+The rule also explicitly accepts schema-3 envelopes emitted by format-1 clients
+before this guard landed. All other envelope versions fail migration. The same
+consent and atomic root CAS apply. Upgrading account 2 preserves its schema-4
+flight plan; upgrading account 1 still discards only the old crossfill via its
+declared 1-to-2 policy. Tests audit every edge of this migration chain.
 
 ## Core-Owned UX
 
@@ -234,10 +250,10 @@ September 17 verification:
    snapshot. Add frozen old/new data tests and run the multi-instance race and UI
    suites. Record meaningful payload changes, not just relabeled version fields.
 
-The hermetic successor used by tests is format 3 with a different page shape
+The hermetic successor used by tests is format 4 with a different page shape
 and a synthetic record migration. It is available only under Rust tests or
 `cloud-format-test`, which app build scripts enable only for E2E builds.
-Ordinary clients require format 2 and do not offer this fake upgrade. The
+Ordinary clients require format 3 and do not offer this fake upgrade. The
 journey simulates a binary update by changing only a test-build selector while
 the old app is stopped; all account reads, consent, encryption, migrations,
 CAS, and UI transitions use production paths. Production accounts and device

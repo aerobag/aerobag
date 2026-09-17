@@ -39,6 +39,7 @@ pub struct AircraftDefinition {
 /// Power-off performance is independent of the selected cruise-power profile.
 /// The source records configuration assumptions (gear, flaps and propeller).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftGlideDefinition {
     pub best_glide_ias_kt: f64,

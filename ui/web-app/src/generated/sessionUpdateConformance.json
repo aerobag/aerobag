@@ -143,6 +143,10 @@
       "update": { "ui_contract_version": 2, "session_revision": 8 }
     },
     {
+      "name": "rejects previous contract",
+      "update": { "ui_contract_version": 17, "session_revision": 8 }
+    },
+    {
       "name": "rejects non-array assignments",
       "update": {
         "ui_contract_version": 18,

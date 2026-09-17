@@ -7,13 +7,13 @@
 use super::*;
 
 pub(crate) static NEXT: AccountFormat = AccountFormat {
-    version: 3,
+    version: 4,
     predecessor: Some(&CURRENT),
     decode_node: |value| serde_json::from_value(value).map_err(cloud_json_error),
     decode_page: |value| {
         let page: TestPage = serde_json::from_value(value).map_err(cloud_json_error)?;
-        if page.version != 3 {
-            return Err(cloud_error("Expected test account page 3"));
+        if page.version != 4 {
+            return Err(cloud_error("Expected test account page 4"));
         }
         let page = page_for_records(&page.entries);
         validate_cloud_page(&page)?;
@@ -24,7 +24,7 @@ pub(crate) static NEXT: AccountFormat = AccountFormat {
         validate_cloud_page(page)?;
         check_marker(&page.records)?;
         serde_json::to_value(TestPage {
-            version: 3,
+            version: 4,
             entries: page.records.clone(),
         })
         .map_err(cloud_json_error)

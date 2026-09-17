@@ -1,0 +1,1324 @@
+{
+  "account_version": 3,
+  "envelope": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "account_tag": {
+        "type": "string"
+      },
+      "ciphertext_base64": {
+        "type": "string"
+      },
+      "nonce_base64": {
+        "type": "string"
+      },
+      "role": {
+        "type": "string"
+      },
+      "version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "account_tag",
+      "role",
+      "nonce_base64",
+      "ciphertext_base64"
+    ],
+    "title": "CloudEnvelope",
+    "type": "object"
+  },
+  "envelope_version": 1,
+  "page": {
+    "$defs": {
+      "CloudRecord": {
+        "properties": {
+          "modified_at_epoch_ms": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": true
+        },
+        "required": [
+          "schema_version",
+          "value"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "records": {
+        "additionalProperties": {
+          "$ref": "#/$defs/CloudRecord"
+        },
+        "type": "object"
+      },
+      "version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "records"
+    ],
+    "title": "CloudPage",
+    "type": "object"
+  },
+  "page_version": 3,
+  "records": [
+    {
+      "key": {
+        "exact": "flight_plan/current"
+      },
+      "mutable": true,
+      "payload": {
+        "$defs": {
+          "AircraftSelection": {
+            "additionalProperties": false,
+            "properties": {
+              "definition_hash": {
+                "type": "string"
+              },
+              "profile_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "definition_hash",
+              "profile_id"
+            ],
+            "type": "object"
+          },
+          "Airway": {
+            "additionalProperties": false,
+            "properties": {
+              "branch_key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "entry": {
+                "type": "string"
+              },
+              "exit": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "entry",
+              "exit"
+            ],
+            "type": "object"
+          },
+          "Discontinuity": {
+            "oneOf": [
+              {
+                "enum": [
+                  "vectors",
+                  "hold"
+                ],
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "other": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "other"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "DisplayElement": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "end": {
+                    "$ref": "#/$defs/Position"
+                  },
+                  "kind": {
+                    "const": "segment",
+                    "type": "string"
+                  },
+                  "start": {
+                    "$ref": "#/$defs/Position"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "start",
+                  "end"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "center": {
+                    "$ref": "#/$defs/Position"
+                  },
+                  "clockwise": {
+                    "type": "boolean"
+                  },
+                  "end": {
+                    "$ref": "#/$defs/Position"
+                  },
+                  "kind": {
+                    "const": "arc",
+                    "type": "string"
+                  },
+                  "radius_nm": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "start": {
+                    "$ref": "#/$defs/Position"
+                  },
+                  "sweep_degrees": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "center",
+                  "radius_nm",
+                  "start",
+                  "end",
+                  "clockwise",
+                  "sweep_degrees"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "DisplayPath": {
+            "additionalProperties": false,
+            "properties": {
+              "effective_terminal_course_deg": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "elements": {
+                "items": {
+                  "$ref": "#/$defs/DisplayElement"
+                },
+                "type": "array"
+              },
+              "style": {
+                "$ref": "#/$defs/PathStyle"
+              }
+            },
+            "required": [
+              "style",
+              "elements"
+            ],
+            "type": "object"
+          },
+          "LegSource": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "component_index": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "route_component",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "component_index"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "from_component_index": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "synthetic_bridge",
+                    "type": "string"
+                  },
+                  "to_component_index": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "from_component_index",
+                  "to_component_index"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "NavRef": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "Airport": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Airport"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "Navaid": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Navaid"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "Fix": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Fix"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "LatLon": {
+                    "$ref": "#/$defs/Position"
+                  }
+                },
+                "required": [
+                  "LatLon"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "Spot": {
+                    "$ref": "#/$defs/Position"
+                  }
+                },
+                "required": [
+                  "Spot"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "ArincNavaid": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "icao_code": {
+                        "type": "string"
+                      },
+                      "identifier": {
+                        "type": "string"
+                      },
+                      "section_code": {
+                        "type": "string"
+                      },
+                      "subsection_code": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "identifier",
+                      "icao_code",
+                      "section_code",
+                      "subsection_code"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "ArincNavaid"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "TerminalNavaid": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "airport_id": {
+                        "type": "string"
+                      },
+                      "icao_code": {
+                        "type": "string"
+                      },
+                      "identifier": {
+                        "type": "string"
+                      },
+                      "section_code": {
+                        "type": "string"
+                      },
+                      "subsection_code": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "airport_id",
+                      "identifier",
+                      "icao_code",
+                      "section_code",
+                      "subsection_code"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "TerminalNavaid"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PathStyle": {
+            "enum": [
+              "solid",
+              "dashed",
+              "vectors"
+            ],
+            "type": "string"
+          },
+          "Position": {
+            "additionalProperties": false,
+            "properties": {
+              "lat": {
+                "format": "double",
+                "type": "number"
+              },
+              "lon": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "lat",
+              "lon"
+            ],
+            "type": "object"
+          },
+          "Procedure": {
+            "additionalProperties": false,
+            "properties": {
+              "airport_id": {
+                "type": "string"
+              },
+              "data_quality": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "display_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enroute_transition": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "$ref": "#/$defs/ProcedureKind"
+              },
+              "procedure_id": {
+                "type": "string"
+              },
+              "runway_transition": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "terminal_discontinuity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Discontinuity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "airport_id",
+              "procedure_id",
+              "kind",
+              "data_quality"
+            ],
+            "type": "object"
+          },
+          "ProcedureKind": {
+            "enum": [
+              "sid",
+              "star",
+              "approach"
+            ],
+            "type": "string"
+          },
+          "ProcedureRole": {
+            "enum": [
+              "enroute_transition",
+              "common",
+              "runway_transition"
+            ],
+            "type": "string"
+          },
+          "Provenance": {
+            "additionalProperties": false,
+            "properties": {
+              "airport_id": {
+                "type": "string"
+              },
+              "discontinuity_after": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Discontinuity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "display_path": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DisplayPath"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "$ref": "#/$defs/ProcedureKind"
+              },
+              "leg_sequence": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "path_termination": {
+                "$ref": "#/$defs/Termination"
+              },
+              "procedure_id": {
+                "type": "string"
+              },
+              "role": {
+                "$ref": "#/$defs/ProcedureRole"
+              }
+            },
+            "required": [
+              "airport_id",
+              "procedure_id",
+              "kind",
+              "role",
+              "path_termination",
+              "leg_sequence"
+            ],
+            "type": "object"
+          },
+          "ResolvedLeg": {
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/NavRef"
+              },
+              "id": {
+                "type": "string"
+              },
+              "procedure_provenance": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Provenance"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/LegSource"
+              },
+              "to": {
+                "$ref": "#/$defs/NavRef"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to",
+              "source"
+            ],
+            "type": "object"
+          },
+          "RouteComponent": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "waypoint",
+                    "type": "string"
+                  },
+                  "waypoint": {
+                    "$ref": "#/$defs/NavRef"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "waypoint"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "airway": {
+                    "$ref": "#/$defs/Airway"
+                  },
+                  "kind": {
+                    "const": "airway",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "airway"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "procedure",
+                    "type": "string"
+                  },
+                  "procedure": {
+                    "$ref": "#/$defs/Procedure"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "procedure"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Termination": {
+            "oneOf": [
+              {
+                "enum": [
+                  "initial_fix",
+                  "track_to_fix",
+                  "course_to_fix",
+                  "direct_to_fix",
+                  "heading_to_manual",
+                  "heading_to_altitude"
+                ],
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "other": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "other"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "aircraft": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AircraftSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "alternate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cruise_altitude_ft": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "departure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "destination": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planned_departure_time_epoch_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "resolved_legs": {
+            "items": {
+              "$ref": "#/$defs/ResolvedLeg"
+            },
+            "type": "array"
+          },
+          "route_component_uid_counter": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "route_component_uids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "route_components": {
+            "items": {
+              "$ref": "#/$defs/RouteComponent"
+            },
+            "type": "array"
+          },
+          "updated_at_epoch_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "version": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "route_components",
+          "route_component_uids",
+          "route_component_uid_counter",
+          "resolved_legs",
+          "updated_at_epoch_ms",
+          "version"
+        ],
+        "title": "StoredFlightPlan",
+        "type": "object"
+      },
+      "schema_version": 4
+    },
+    {
+      "key": {
+        "prefixes": [
+          "offline_packages/region/",
+          "offline_packages/product/"
+        ]
+      },
+      "mutable": true,
+      "payload": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "unselected",
+          "pause",
+          "play"
+        ],
+        "title": "PackageSelection",
+        "type": "string"
+      },
+      "schema_version": 1
+    },
+    {
+      "key": {
+        "exact": "settings/inactivity_sleep_timeout"
+      },
+      "mutable": true,
+      "payload": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "enum": [
+          "30m",
+          "1h",
+          "2h",
+          "4h",
+          "never"
+        ],
+        "title": "SleepTimeout",
+        "type": "string"
+      },
+      "schema_version": 1
+    },
+    {
+      "key": {
+        "exact": "settings/nexrad_acquisition"
+      },
+      "mutable": true,
+      "payload": {
+        "$defs": {
+          "Cadence": {
+            "enum": [
+              "never",
+              "thirty_minutes",
+              "ten_minutes",
+              "every_update"
+            ],
+            "type": "string"
+          },
+          "Coverage": {
+            "enum": [
+              "viewport_only",
+              "full_offline"
+            ],
+            "type": "string"
+          },
+          "Detail": {
+            "enum": [
+              "offline_0",
+              "offline_low1"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "asleep_cadence": {
+            "$ref": "#/$defs/Cadence"
+          },
+          "coverage": {
+            "$ref": "#/$defs/Coverage"
+          },
+          "hidden_cadence": {
+            "$ref": "#/$defs/Cadence"
+          },
+          "offline_profile": {
+            "$ref": "#/$defs/Detail"
+          },
+          "shown_cadence": {
+            "$ref": "#/$defs/Cadence"
+          }
+        },
+        "required": [
+          "coverage",
+          "offline_profile",
+          "shown_cadence",
+          "hidden_cadence",
+          "asleep_cadence"
+        ],
+        "title": "NexradPreferences",
+        "type": "object"
+      },
+      "schema_version": 1
+    },
+    {
+      "key": {
+        "prefix": "settings/debug/"
+      },
+      "mutable": true,
+      "payload": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "boolean",
+        "type": "boolean"
+      },
+      "schema_version": 1
+    },
+    {
+      "key": {
+        "prefix": "aircraft/definition/"
+      },
+      "mutable": false,
+      "payload": {
+        "$defs": {
+          "AircraftCruisePerformancePoint": {
+            "additionalProperties": false,
+            "properties": {
+              "fuel_flow_gph": {
+                "format": "double",
+                "type": "number"
+              },
+              "pressure_altitude_ft": {
+                "format": "double",
+                "type": "number"
+              },
+              "true_airspeed_kt": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "pressure_altitude_ft",
+              "true_airspeed_kt",
+              "fuel_flow_gph"
+            ],
+            "type": "object"
+          },
+          "AircraftGlideDefinition": {
+            "additionalProperties": false,
+            "description": "Power-off performance is independent of the selected cruise-power profile.\nThe source records configuration assumptions (gear, flaps and propeller).",
+            "properties": {
+              "best_glide_ias_kt": {
+                "format": "double",
+                "type": "number"
+              },
+              "glide_ratio": {
+                "format": "double",
+                "type": "number"
+              },
+              "reference_weight_lb": {
+                "format": "double",
+                "type": "number"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "best_glide_ias_kt",
+              "glide_ratio",
+              "reference_weight_lb",
+              "source"
+            ],
+            "type": "object"
+          },
+          "AircraftPerformanceAirspeedBasis": {
+            "enum": [
+              "indicated",
+              "true"
+            ],
+            "type": "string"
+          },
+          "AircraftPerformanceProfileDefinition": {
+            "additionalProperties": false,
+            "properties": {
+              "climb": {
+                "$ref": "#/$defs/ClimbPerformanceModel"
+              },
+              "cruise": {
+                "$ref": "#/$defs/CruisePerformanceModel"
+              },
+              "descent": {
+                "$ref": "#/$defs/DescentPerformanceModel"
+              },
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "reference_weight_lb": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "source",
+              "cruise",
+              "climb",
+              "descent"
+            ],
+            "type": "object"
+          },
+          "AircraftVerticalPerformancePoint": {
+            "additionalProperties": false,
+            "properties": {
+              "airspeed_basis": {
+                "$ref": "#/$defs/AircraftPerformanceAirspeedBasis"
+              },
+              "airspeed_kt": {
+                "format": "double",
+                "type": "number"
+              },
+              "fuel_flow_gph": {
+                "format": "double",
+                "type": "number"
+              },
+              "pressure_altitude_ft": {
+                "format": "double",
+                "type": "number"
+              },
+              "vertical_speed_fpm": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "pressure_altitude_ft",
+              "airspeed_basis",
+              "airspeed_kt",
+              "fuel_flow_gph",
+              "vertical_speed_fpm"
+            ],
+            "type": "object"
+          },
+          "ClimbPerformanceModel": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "fuel_flow_gph": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "ias_kt": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "model": {
+                    "const": "constant_ias_rate",
+                    "type": "string"
+                  },
+                  "vertical_speed_fpm": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "model",
+                  "ias_kt",
+                  "fuel_flow_gph",
+                  "vertical_speed_fpm"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "model": {
+                    "const": "pressure_altitude_table",
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/AircraftVerticalPerformancePoint"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "model",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "CruisePerformanceModel": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "model": {
+                    "const": "pressure_altitude_table",
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/AircraftCruisePerformancePoint"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "model",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "DescentPerformanceModel": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "model": {
+                    "const": "cruise_offset",
+                    "type": "string"
+                  },
+                  "tas_offset_kt": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "vertical_speed_fpm": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "model",
+                  "tas_offset_kt",
+                  "vertical_speed_fpm"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "model": {
+                    "const": "pressure_altitude_table",
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/AircraftVerticalPerformancePoint"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "model",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "default_profile_id": {
+            "type": "string"
+          },
+          "glide": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AircraftGlideDefinition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "lineage_id": {
+            "type": "string"
+          },
+          "manufacturer": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "plan_view_path": {
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/$defs/AircraftPerformanceProfileDefinition"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "supersedes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "lineage_id",
+          "manufacturer",
+          "model",
+          "label",
+          "plan_view_path",
+          "default_profile_id",
+          "profiles"
+        ],
+        "title": "AircraftDefinition",
+        "type": "object"
+      },
+      "schema_version": 3
+    },
+    {
+      "key": {
+        "prefix": "aircraft/library/"
+      },
+      "mutable": true,
+      "payload": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "included": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "included"
+        ],
+        "title": "AircraftMembership",
+        "type": "object"
+      },
+      "schema_version": 2
+    },
+    {
+      "key": {
+        "prefix": "service/read/"
+      },
+      "mutable": false,
+      "payload": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "boolean",
+        "type": "boolean"
+      },
+      "schema_version": 1
+    }
+  ],
+  "root": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "generation": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "merkle_root_hash": {
+        "type": "string"
+      },
+      "merkle_root_id": {
+        "type": "string"
+      },
+      "next_slot_id": {
+        "type": "string"
+      },
+      "parent_node_hash": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "parent_node_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "published_at_epoch_ms": {
+        "default": null,
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "generation",
+      "merkle_root_id",
+      "merkle_root_hash",
+      "next_slot_id"
+    ],
+    "title": "CloudNode",
+    "type": "object"
+  }
+}

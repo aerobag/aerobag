@@ -183,3 +183,14 @@ fn validate_key_binding(key: &str, record: &CloudRecord) -> AppResult<()> {
     }
     Ok(())
 }
+
+pub(super) fn migrate_aircraft_definition(record: CloudRecord) -> AppResult<Option<CloudRecord>> {
+    // Change the account's envelope contract, never the content-addressed
+    // definition itself. The current aircraft codec explicitly reads v2/v3.
+    let migrated = CloudRecord {
+        schema_version: AircraftRecord::VERSION,
+        ..record
+    };
+    migrated.decode::<AircraftRecord>()?;
+    Ok(Some(migrated))
+}

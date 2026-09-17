@@ -46,19 +46,18 @@ pub(super) static LEGACY: AccountFormat = AccountFormat {
     migrations: &[],
 };
 
-pub(super) static CURRENT: AccountFormat = AccountFormat {
-    version: CLOUD_NODE_VERSION,
+pub(super) static FORMAT_2: AccountFormat = AccountFormat {
+    version: 2,
     predecessor: Some(&LEGACY),
     decode_node: |value| serde_json::from_value(value).map_err(cloud_json_error),
     decode_page: |value| {
-        let page = serde_json::from_value(value).map_err(cloud_json_error)?;
-        validate_cloud_page(&page)?;
+        let page: CloudPage = serde_json::from_value(value).map_err(cloud_json_error)?;
+        if page.version != 2 {
+            return Err(cloud_error("Expected account format 2 page"));
+        }
         Ok(page)
     },
-    encode_page: |page| {
-        validate_cloud_page(page)?;
-        serde_json::to_value(page).map_err(cloud_json_error)
-    },
+    encode_page: |_| Err(cloud_error("Historical account format 2 is read-only")),
     migrations: &[RecordMigration {
         key: KeyPattern::Exact(FLIGHT_PLAN_RECORD_KEY),
         source_versions: &[1, 2, 3],
@@ -71,6 +70,30 @@ pub(super) static CURRENT: AccountFormat = AccountFormat {
         target_version: Some(2),
         convert: migrate_legacy_membership,
         explanation: "",
+    }],
+};
+
+pub(super) static CURRENT: AccountFormat = AccountFormat {
+    version: CLOUD_NODE_VERSION,
+    predecessor: Some(&FORMAT_2),
+    decode_node: |value| serde_json::from_value(value).map_err(cloud_json_error),
+    decode_page: |value| {
+        let page = serde_json::from_value(value).map_err(cloud_json_error)?;
+        validate_cloud_page(&page)?;
+        Ok(page)
+    },
+    encode_page: |page| {
+        validate_cloud_page(page)?;
+        serde_json::to_value(page).map_err(cloud_json_error)
+    },
+    migrations: &[RecordMigration {
+        key: KeyPattern::Prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX),
+        // Format 1 clients also published schema 3 before the account-format
+        // guard landed. Keep those definitions as well as frozen schema 2.
+        source_versions: &[2, 3],
+        target_version: Some(3),
+        convert: records::migrate_aircraft_definition,
+        explanation: "This upgrade enables aircraft glide-performance data. Existing aircraft definitions and library choices are retained.",
     }],
 };
 

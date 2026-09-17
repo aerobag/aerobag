@@ -61,7 +61,8 @@ fn future_format_is_a_pause_before_decoding_its_unknown_body() {
         &old,
         &mut provider,
         serde_json::json!({
-            "version": 3, "future_body": { "deliberately_not_a_v2_node": true }
+            "version": account_format::test_format::NEXT.version,
+            "future_body": { "deliberately_not_a_current_node": true }
         }),
     );
     let (mut joining, adopted) = link_account(&mut provider, code, 3_000);
@@ -73,7 +74,10 @@ fn future_format_is_a_pause_before_decoding_its_unknown_body() {
     let status = joining
         .status_record(3_000)
         .expect("persistent format caution");
-    assert!(format!("{status:?}").contains("format 3"));
+    assert!(format!("{status:?}").contains(&format!(
+        "format {}",
+        account_format::test_format::NEXT.version
+    )));
     assert!(joining
         .page_state(3_000)
         .sync_account_panels
@@ -387,7 +391,10 @@ fn upgrade_is_explicit_and_two_instances_recover_without_losing_local_edits() {
 
     confirm_upgrade(&mut newer, 64_000);
     pump_acs(&mut newer, &mut provider, 64_000);
-    assert_eq!(root_plaintext(&provider, &newer)["version"], 3);
+    assert_eq!(
+        root_plaintext(&provider, &newer)["version"],
+        account_format::test_format::NEXT.version
+    );
     assert_eq!(newer.status_summary(64_000).label, "LINKED");
     assert!(newer.persistent.records.pending_keys.is_empty());
     assert_eq!(
@@ -472,7 +479,10 @@ fn upgrader_losing_cas_remigrates_the_latest_cloud_edit() {
     pump_acs(&mut old, &mut provider, 4_000);
     deliver(&mut newer, &mut provider, pending, 5_000);
     pump_acs(&mut newer, &mut provider, 5_000);
-    assert_eq!(root_plaintext(&provider, &newer)["version"], 3);
+    assert_eq!(
+        root_plaintext(&provider, &newer)["version"],
+        account_format::test_format::NEXT.version
+    );
     let record = &cloud_records(&provider, &newer)[FLIGHT_PLAN_RECORD_KEY];
     assert_eq!(
         flight_plan_from_record(record).unwrap().plan,
@@ -681,12 +691,12 @@ fn unknown_older_format_disables_upgrade_without_guessing_a_migration() {
     replace_root(
         &old,
         &mut provider,
-        serde_json::json!({"version": 3, "future_body": true}),
+        serde_json::json!({"version": account_format::CURRENT.version + 1, "future_body": true}),
     );
     let mut newer = CloudEngine::new_with_format(
         old.persistent,
         Box::leak(Box::new(AccountFormat {
-            version: 4,
+            version: account_format::CURRENT.version + 2,
             predecessor: Some(&account_format::CURRENT),
             decode_node: account_format::CURRENT.decode_node,
             decode_page: account_format::CURRENT.decode_page,

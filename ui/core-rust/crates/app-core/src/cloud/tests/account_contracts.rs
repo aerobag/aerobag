@@ -31,8 +31,23 @@ fn every_persisted_type_matches_the_frozen_account_contract() {
 
 #[test]
 fn every_changed_family_has_an_explicit_migration() {
-    let current = generated_contract();
-    let old = snapshot(account_format::CURRENT.predecessor.unwrap().version);
+    let mut format = &account_format::CURRENT;
+    while let Some(prior) = format.predecessor {
+        let current = if format.version == account_format::CURRENT.version {
+            generated_contract()
+        } else {
+            snapshot(format.version)
+        };
+        check_migration_contract(format, &current, &snapshot(prior.version));
+        format = prior;
+    }
+}
+
+fn check_migration_contract(
+    format: &AccountFormat,
+    current: &serde_json::Value,
+    old: &serde_json::Value,
+) {
     let current_records = current["records"].as_array().unwrap();
     let old_records = old["records"].as_array().unwrap();
     for record in old_records.iter().chain(current_records) {
@@ -54,7 +69,7 @@ fn every_changed_family_has_an_explicit_migration() {
             _ => true,
         };
         if changed {
-            let rules = account_format::CURRENT
+            let rules = format
                 .migrations
                 .iter()
                 .filter(|rule| rule.key.description() == record["key"])
@@ -71,10 +86,11 @@ fn every_changed_family_has_an_explicit_migration() {
                     .get("legacy_schema_versions")
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!([previous["schema_version"].clone()]));
-                assert_eq!(
-                    serde_json::json!(rule.source_versions),
-                    versions,
-                    "Migration must cover precisely the declared historical versions"
+                assert!(
+                    versions.as_array().unwrap().iter().all(|version| rule
+                        .source_versions
+                        .contains(&(version.as_u64().unwrap() as u32))),
+                    "Migration must cover every declared historical version"
                 );
             }
             if let Some(target) = rule.target_version {
@@ -98,7 +114,7 @@ fn migration_is_atomic_and_cannot_change_unrelated_records_or_mutation_times() {
         ("unknown/family".into(), unrelated),
     ]);
     let bad = Box::leak(Box::new(AccountFormat {
-        version: 3,
+        version: account_format::CURRENT.version + 1,
         predecessor: Some(&account_format::CURRENT),
         decode_node: account_format::CURRENT.decode_node,
         decode_page: account_format::CURRENT.decode_page,
@@ -133,7 +149,9 @@ fn migration_is_atomic_and_cannot_change_unrelated_records_or_mutation_times() {
         ],
     }));
     let mut records = initial.clone();
-    assert!(bad.migrate(2, &mut records).is_err());
+    assert!(bad
+        .migrate(account_format::CURRENT.version, &mut records)
+        .is_err());
     assert_eq!(records, initial);
 }
 

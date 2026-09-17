@@ -108,8 +108,9 @@ touch test uses the production map layer owner while panning, zooming, and
 rotating, and verifies both map and Home receive taps through the overlay.
 
 NAV28 extends NAV27's NOTAM-catalog schema 2 with the schema-3 bundled aircraft
-models. NAV27's immutable descriptor remains unchanged. Publish NAV28 through
-the normal preprocessor build, then rebuild the Android smoke and release-journey
-fixtures from that publication before updating their artifact lock. The local
-NAV27 demo and its unpublished fixtures are not a NAV28 publication or a
-substitute for that validation.
+models. NAV27's immutable descriptor remains unchanged. The pinned Android smoke
+and release-journey fixtures were rebuilt from the normal NAV28 publication;
+the release fixture also includes the current contract-9 NOTAM feed. All five
+bundled aircraft definitions were read through the shared NAV reader and matched
+against the checked-in models. The N550AR browser replay renders the glide ring
+using that normal publication.

@@ -157,11 +157,13 @@ function modelRuntime(t, platform, fixtureOrigin, defect = null, { unrelatedStat
       assert.ok(row, `missing rendered notice ${title}`);
       return row;
     },
-    async eventually(description, probe) {
+    async eventually(description, probe, timeoutMs = 200) {
+      // UI state is synchronous in this model; real HTTP/SSE readiness still
+      // needs the bounded resource deadline explicitly supplied by the journey.
       return (await observeUntil(description, async () => {
         await sync();
         return probe();
-      }, { timeoutMs: 200, intervalMs: 5 })).value;
+      }, { timeoutMs, intervalMs: 5 })).value;
     },
     async stable(description, probe) {
       return (await observeValueUntilStable(description, async () => {
@@ -277,7 +279,7 @@ for (const [defect, expected] of [
   ["lost-history", /missing rendered notice/],
   ["lost-archive", /missing rendered notice Journey archived notice/],
 ]) {
-  test(`service journey rejects ${defect} and resets its publication`, { timeout: 5_000 }, async (t) => {
+  test(`service journey rejects ${defect} and resets its publication`, { timeout: 20_000 }, async (t) => {
     const { origin } = await fixtureServer(t);
     await assert.rejects(releaseJourneyImplementation(journeyId)(modelRuntime(t, "android", origin, defect)), expected);
     const health = await fetch(`${origin}/__health`).then((response) => response.json());

@@ -201,7 +201,7 @@
   ],
   "title": "UiSessionUpdate",
   "type": "object",
-  "x-contract-version": 18,
+  "x-contract-version": 19,
   "x-export-order": [
     "UiSessionProjectionAssignment",
     "UiSessionProjectionPatch",

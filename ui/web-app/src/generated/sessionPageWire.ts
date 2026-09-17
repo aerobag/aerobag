@@ -5,7 +5,7 @@
 
 import type { NavSymbolFeature } from "./navQueryWire";
 
-export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 18 as const;
+export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 19 as const;
 
 export const UI_INVALIDATION_VALUES = ["nav_data", "session_snapshot", "raster_tiles", "map_overlay", "nexrad_overlay", "terrain_overlay", "flight_plan_route", "debug_panel"] as const;
 

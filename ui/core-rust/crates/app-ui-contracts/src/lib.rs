@@ -10,4 +10,4 @@ pub mod session;
 pub mod tour;
 pub mod work;
 
-pub const UI_WIRE_CONTRACT_VERSION: u32 = 18;
+pub const UI_WIRE_CONTRACT_VERSION: u32 = 19;

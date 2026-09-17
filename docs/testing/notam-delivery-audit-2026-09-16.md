@@ -272,3 +272,17 @@ Integration note: upstream subsequently advanced the client to NAV28 for glide
 performance data. After rebasing, the pending compact-fixture handoff must target
 NAV28/NOTAM9, not NAV27/NOTAM9. The earlier NAV27 publication/replay evidence
 above remains the actual tested input, not relabeled fixture metadata.
+
+### Completed Raw-Replay Fixture Handoff
+
+Heavy Fixture CI run `35269957905` used artifact commit `d7c244ef` with rebuilt
+NAV28/NOTAM9 compact fixtures, but the raw NMS replay expectation still described
+the older projection. Its measured counts and final hash exactly matched the
+reviewed v9 result above. It stopped at the stale 1,407-mutation assertion, before
+the client recovery checks.
+
+Artifact commit `4a0aa71284d6b57021ccba38f24b4215331db52f` completes that handoff:
+only the raw replay's derived expectation and adjacent audit notes change. It
+sets 1,443 mutations, 1,209 removals, and the reviewed `cebde572...cc6d` final hash.
+All capture bytes, capture schema, compact fixtures, and replay assertions remain
+unchanged. The application fixture lock now pins this revision.

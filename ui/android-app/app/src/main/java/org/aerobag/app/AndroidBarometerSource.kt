@@ -13,7 +13,7 @@ import android.os.SystemClock
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
-import org.aerobag.app.generated.BarometerCommand
+import org.aerobag.app.generated.FlightDataCommand
 
 /** Transport only: pressure, capability and sample time. Core owns altitude and freshness. */
 internal class AndroidBarometerSource(
@@ -26,7 +26,7 @@ internal class AndroidBarometerSource(
     fun observations() = callbackFlow {
         val sensor = manager.getDefaultSensor(Sensor.TYPE_PRESSURE)
         val started = now()
-        trySend(BarometerCommand.Observe(sensor != null, started, null, started))
+        trySend(FlightDataCommand.Observe(sensor != null, started, null, started))
         val listener = object : SensorEventListener {
             private var lastEmittedNanos: Long? = null
 
@@ -37,7 +37,7 @@ internal class AndroidBarometerSource(
                 lastEmittedNanos = event.timestamp
                 val received = now()
                 val observed = received - ((elapsedNanos() - event.timestamp).coerceAtLeast(0L) / 1_000_000L)
-                trySend(BarometerCommand.Observe(true, observed, event.values.firstOrNull()?.toDouble(), received))
+                trySend(FlightDataCommand.Observe(true, observed, event.values.firstOrNull()?.toDouble(), received))
             }
 
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit

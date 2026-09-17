@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { BarometerCommand, UiAirwayRouteDragPhase, UiGlideRing } from "../generated/sessionPageWire";
+import type { FlightDataCommand, UiAirwayRouteDragPhase, UiGlideRing } from "../generated/sessionPageWire";
 import type {
   AltitudeComparisonPanelUiView,
   AppUiState,
@@ -864,7 +864,7 @@ export interface UiSession {
   performFlightPlanColumnAction(actionId: string): Promise<UiSessionSnapshot>;
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
   performFlightDataBannerCellAction(cellId: string): Promise<UiSessionSnapshot>;
-  performBarometerCommand(command: BarometerCommand): Promise<UiSessionSnapshot>;
+  performFlightDataCommand(command: FlightDataCommand): Promise<UiSessionSnapshot>;
   performMapInspectionCommand(command: import("../generated/sessionPageWire").MapInspectionCommand): Promise<UiSessionSnapshot>;
   statusActionDecision(actionId: string): Promise<UiStatusActionDecision>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
@@ -1068,7 +1068,7 @@ type WasmModule = {
     sessionHandle: number,
     cellId: string,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
-  perform_barometer_command_in_session(
+  perform_flight_data_command_in_session(
     sessionHandle: number,
     commandJson: string,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -1818,9 +1818,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_flight_data_banner_cell_action_in_session(handle, cellId),
         );
       },
-      performBarometerCommand: async (command) => {
+      performFlightDataCommand: async (command) => {
         return runSessionMutation(() =>
-          this.module.perform_barometer_command_in_session(handle, JSON.stringify(command)),
+          this.module.perform_flight_data_command_in_session(handle, JSON.stringify(command)),
         );
       },
       performMapInspectionCommand: async (command) => {

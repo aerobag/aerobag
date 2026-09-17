@@ -470,6 +470,7 @@ data class FlightDataCell(
     val action: FlightDataCellAction? = null,
     val tone: String = "planned",
     val estimateKind: String = "basic",
+    val attention: org.aerobag.app.generated.FlightDataAttention? = null,
 )
 
 data class FlightDataColumn(
@@ -480,13 +481,10 @@ data class FlightDataColumn(
 
 data class FlightDataBannerModel(
     val cells: List<FlightDataCell> = emptyList(),
-    val barometerEditor: org.aerobag.app.generated.BarometerEditor? = null,
+    val editor: org.aerobag.app.generated.FlightDataEditor? = null,
 )
 
-data class FlightPlanWeatherBadgeUiView(
-    val flightCategory: String,
-    val ceilingAmount: String,
-)
+typealias FlightPlanWeatherBadgeUiView = org.aerobag.app.generated.FlightPlanWeatherBadgeUiView
 
 data class FlightPlanDisplayRowUiView(
     val uid: String = "",
@@ -687,6 +685,7 @@ enum class SituationControlInput {
 }
 
 data class OwnshipRenderState(
+    val altitudeIntercept: org.aerobag.app.generated.GeographicLineAnnotation? = null,
     val mode: OwnshipMode = OwnshipMode.None,
     val bannerText: String = "NO GPS POSITION",
     val bannerSeverity: OwnshipBannerSeverity = OwnshipBannerSeverity.Warning,

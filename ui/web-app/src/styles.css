@@ -2008,17 +2008,19 @@ button {
   z-index: var(--z-modal-content);
 }
 
-.chartTray.barometerSettingTray {
+.chartTray.isOpen.flightDataSettingTray {
   top: 50%;
   left: 50%;
-  width: calc(var(--thumb) * 3);
+  width: calc(var(--thumb) * 3.8);
   max-width: calc(100vw - var(--thumb-gap) * 2);
   transform: translate(-50%, -50%);
   color: var(--theme-panel-fg);
   background: var(--theme-panel-bg);
+  max-height: calc(100dvh - var(--thumb-gap) * 2);
+  overflow-y: auto;
 }
 
-.barometerSettingTray input {
+.flightDataSettingTray input {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -2026,10 +2028,92 @@ button {
   font-size: calc(var(--thumb) * 0.5);
   color: var(--theme-panel-fg);
   background: var(--theme-text-input-bg);
+  min-width: 0;
 }
 
-.barometerSettingTray [role="alert"] {
+.flightDataSettingInput {
+  display: flex;
+  align-items: center;
+  gap: var(--thumb-gap);
+  margin-top: var(--thumb-gap);
+}
+
+.flightDataSettingTray [role="alert"] {
   color: var(--theme-data-status-warning-stroke);
+}
+
+.flightDataSettingActions {
+  display: grid;
+  margin-top: var(--thumb-gap);
+  gap: var(--thumb-gap);
+}
+
+.flightDataSettingActionRow {
+  display: grid;
+  gap: var(--thumb-gap);
+}
+
+.flightDataSettingActions .trayButton {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+  letter-spacing: 0;
+}
+
+.flightDataSettingWarning {
+  background: var(--theme-data-status-caution-bg);
+  padding: var(--thumb-gap);
+  white-space: pre-line;
+}
+
+.flightDataCell.isAttention {
+  border-color: var(--theme-data-status-caution-bg);
+  color: var(--theme-data-status-caution-bg);
+}
+
+.flightDataCell.isAttention .flightDataLabel,
+.flightDataCell.isAttention .flightDataValue {
+  color: var(--theme-data-status-caution-bg);
+}
+
+.flightDataAttentionIcon {
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.2em;
+  --data-status-symbol-ink: currentColor;
+}
+
+.geographicLineOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.geographicLineOverlay polyline {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.geographicLineContrast {
+  stroke: var(--theme-map-line-contrast);
+  stroke-width: 6;
+}
+
+.geographicLineStroke {
+  stroke: var(--theme-altitude-intercept);
+  stroke-width: 3;
+}
+
+.geographicLineOverlay text {
+  fill: var(--theme-altitude-intercept);
+  stroke: var(--theme-traffic-contrast);
+  stroke-width: 3;
+  paint-order: stroke;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .chartTray.isOpen {
@@ -4375,6 +4459,18 @@ button {
   font-size: calc(var(--thumb) * 0.16);
   font-weight: 700;
   line-height: 1;
+}
+
+.trayButton .waypointButtonTitle {
+  font-size: inherit;
+}
+
+.trayButton .waypointButtonDetail {
+  color: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-transform: none;
 }
 
 .planWaypointSymbol {

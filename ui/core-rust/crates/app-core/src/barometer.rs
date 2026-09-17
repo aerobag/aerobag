@@ -3,17 +3,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::{LatLon, MetarProductPayload};
-pub use app_ui_contracts::session::{BarometerCommand, BarometerEditor};
+pub use app_ui_contracts::session::{FlightDataCommand, FlightDataEditor};
 
 const HPA_PER_INHG: f64 = 33.863_886_666_7;
 const SAMPLE_LIFETIME_MS: i64 = 5_000;
 const FILTER_TIME_CONSTANT_MS: f64 = 1_000.0;
 const MAX_WEATHER_AGE_MS: i64 = 80 * 60 * 1_000;
 const MAX_WEATHER_DISTANCE_NM: f64 = 100.0;
+const NO_NEARBY_ALTIMETER: &str =
+    "No recent nearby METAR altimeter setting is available for the current position.";
 pub(crate) const BAROMETER_CELL_ID: &str = "barometer";
 
 pub(crate) struct NearbyAltimeter {
-    station: String,
+    pub station: String,
+    pub position: LatLon,
+    weather_badge: Option<crate::planning::FlightPlanWeatherBadgeUiView>,
     setting_inhg: f64,
     distance_nm: f64,
     observed_epoch_ms: i64,
@@ -60,6 +64,14 @@ pub(crate) fn nearest_altimeter(
             }
             Some(NearbyAltimeter {
                 station: report.station_id.clone(),
+                position: LatLon {
+                    lat: report.latitude,
+                    lon: report.longitude,
+                },
+                weather_badge: crate::map_overlay::weather_badge_for_metar(
+                    report,
+                    chrono::DateTime::from_timestamp_millis(now),
+                ),
                 setting_inhg: metar_setting_inhg(&report.raw_text)?,
                 distance_nm,
                 observed_epoch_ms,
@@ -104,7 +116,8 @@ fn metar_setting_inhg(text: &str) -> Option<f64> {
 #[derive(Debug, Clone)]
 pub struct BarometerReading {
     pub altitude_ft: Option<f64>,
-    pub editor: Option<BarometerEditor>,
+    pub editor: Option<FlightDataEditor>,
+    pub warning: Option<String>,
 }
 
 /// Device pressure is deliberately separate from ownship's aviation pressure altitude.
@@ -114,7 +127,8 @@ pub(crate) struct Barometer {
     available: bool,
     sample: Option<(i64, f64)>,
     setting_inhg: f64,
-    editor: Option<BarometerEditor>,
+    editor: Option<FlightDataEditor>,
+    pressure_history: std::collections::VecDeque<(i64, f64)>,
 }
 
 impl Default for Barometer {
@@ -124,6 +138,7 @@ impl Default for Barometer {
             sample: None,
             setting_inhg: 29.92,
             editor: None,
+            pressure_history: Default::default(),
         }
     }
 }
@@ -132,17 +147,20 @@ impl Barometer {
     pub fn reading(&self, now: i64, nearest: Option<&NearbyAltimeter>) -> Option<BarometerReading> {
         self.available.then(|| BarometerReading {
             altitude_ft: self.altitude_ft(now),
+            warning: self.setting_warning(now, nearest),
             editor: self.editor().map(|mut editor| {
-                editor.nearest_enabled = nearest.is_some();
-                editor.nearest_detail = nearest.map(|report| {
+                let action = &mut editor.action_rows[0][0];
+                action.enabled = nearest.is_some();
+                action.disabled_reason = nearest.is_none().then(|| NO_NEARBY_ALTIMETER.into());
+                editor.warning = self.setting_warning(now, nearest);
+                action.secondary_label = nearest.map(|report| {
                     format!(
-                        "{}: {:.2} inHg, {}nm, {} min old",
+                        "{} {}min old",
                         report.station,
-                        report.setting_inhg,
-                        crate::flight_data::format_nm(report.distance_nm),
-                        (now - report.observed_epoch_ms) / 60_000,
+                        (now - report.observed_epoch_ms) / 60_000
                     )
                 });
+                action.weather_badge = nearest.and_then(|report| report.weather_badge.clone());
                 editor
             }),
         })
@@ -154,12 +172,12 @@ impl Barometer {
 
     pub fn apply(
         &mut self,
-        command: BarometerCommand,
+        command: FlightDataCommand,
         now: i64,
         nearest: Option<&NearbyAltimeter>,
     ) {
         match command {
-            BarometerCommand::Observe {
+            FlightDataCommand::Observe {
                 available,
                 pressure_hpa,
                 observed_epoch_ms,
@@ -168,6 +186,7 @@ impl Barometer {
                 self.available = available;
                 if !available {
                     self.sample = None;
+                    self.pressure_history.clear();
                     self.editor = None;
                     return;
                 }
@@ -175,6 +194,7 @@ impl Barometer {
                     pressure_hpa.filter(|p| p.is_finite() && (100.0..=1_200.0).contains(p))
                 else {
                     self.sample = None;
+                    self.pressure_history.clear();
                     return;
                 };
                 if observed_epoch_ms > now
@@ -193,15 +213,40 @@ impl Barometer {
                                 .exp();
                         previous_pressure + weight * (pressure - previous_pressure)
                     }
-                    _ => pressure,
+                    _ => {
+                        self.pressure_history.clear();
+                        pressure
+                    }
                 };
                 self.sample = Some((observed_epoch_ms, filtered));
+                self.pressure_history
+                    .push_back((observed_epoch_ms, pressure_altitude(pressure, 29.92)));
+                while self
+                    .pressure_history
+                    .front()
+                    .is_some_and(|(time, _)| observed_epoch_ms - time > 20_000)
+                    || self.pressure_history.len() > 64
+                {
+                    self.pressure_history.pop_front();
+                }
             }
-            BarometerCommand::SetSetting { input } => {
+            FlightDataCommand::SetInput { editor_id, input } if editor_id == BAROMETER_CELL_ID => {
                 let Some(editor) = self.editor.as_mut() else {
                     return;
                 };
-                editor.input = input;
+                editor.input_correction = (input.len() == 4
+                    && input.bytes().all(|c| c.is_ascii_digit()))
+                .then(|| app_ui_contracts::session::FlightDataInputCorrection {
+                    source: input.clone(),
+                    start: 2,
+                    end: 2,
+                    text: ".".into(),
+                });
+                editor.input = if editor.input_correction.is_some() {
+                    format!("{}.{}", &input[..2], &input[2..])
+                } else {
+                    input
+                };
                 match editor.input.trim().parse::<f64>() {
                     Ok(setting) if setting.is_finite() && (25.0..=35.0).contains(&setting) => {
                         self.setting_inhg = (setting * 100.0).round() / 100.0;
@@ -213,36 +258,65 @@ impl Barometer {
                     }
                 }
             }
-            BarometerCommand::UseNearest => {
+            FlightDataCommand::EditorAction {
+                editor_id,
+                action_id,
+            } if editor_id == BAROMETER_CELL_ID => {
+                if action_id == "close" {
+                    self.editor = None;
+                    return;
+                }
+                if action_id != "nearest" {
+                    return;
+                }
                 if let (Some(editor), Some(report)) = (self.editor.as_mut(), nearest) {
                     self.setting_inhg = report.setting_inhg;
                     editor.input = format!("{:.2}", self.setting_inhg);
                     editor.input_revision += 1;
+                    editor.input_correction = None;
                     editor.error = None;
                 }
             }
-            BarometerCommand::CloseEditor => self.editor = None,
+            _ => {}
         }
     }
 
     pub fn open_editor(&mut self) {
         if self.available {
-            self.editor = Some(BarometerEditor {
-                title: "BARO".to_string(),
-                label: "Altimeter inHg".to_string(),
+            self.editor = Some(FlightDataEditor {
+                id: BAROMETER_CELL_ID.into(),
+                title: None,
+                label: "Altimeter setting".into(),
+                unit: "inHg".into(),
                 input: format!("{:.2}", self.setting_inhg),
                 input_revision: 0,
+                input_correction: None,
                 error: None,
-                nearest_label: "NEAREST".to_string(),
-                nearest_enabled: false,
-                nearest_detail: None,
+                notice: "BARO ALT from device is cabin alt. Cross-check.".into(),
+                detail: None,
+                warning: None,
+                action_rows: vec![vec![app_ui_contracts::session::FlightDataEditorAction {
+                    id: "nearest".into(),
+                    label: "NEAREST".into(),
+                    enabled: false,
+                    selected: false,
+                    secondary_label: None,
+                    symbol_feature: None,
+                    weather_badge: None,
+                    disabled_reason: Some(NO_NEARBY_ALTIMETER.into()),
+                }]],
+                dismiss_action_id: "close".into(),
                 close_label: "CLOSE".to_string(),
             });
         }
     }
 
-    pub fn editor(&self) -> Option<BarometerEditor> {
+    pub fn editor(&self) -> Option<FlightDataEditor> {
         self.editor.clone()
+    }
+
+    pub fn close_editor(&mut self) {
+        self.editor = None;
     }
 
     pub fn altitude_ft(&self, now: i64) -> Option<f64> {
@@ -254,10 +328,33 @@ impl Barometer {
         // Standard-atmosphere altimetry with the manually selected sea-level pressure.
         // Android SensorManager.getAltitude documents the same pressure relationship:
         // https://developer.android.com/reference/android/hardware/SensorManager#getAltitude(float,%20float)
-        Some(
-            44_330.0 / 0.3048
-                * (1.0 - (pressure / (self.setting_inhg * HPA_PER_INHG)).powf(1.0 / 5.255)),
+        Some(pressure_altitude(pressure, self.setting_inhg))
+    }
+
+    pub fn vertical_speed_fpm(&self, now: i64) -> Option<f64> {
+        self.altitude_ft(now)?;
+        crate::ownship::estimate_vertical_speed_fpm(
+            self.pressure_history
+                .iter()
+                .map(|&(time, altitude)| (time, altitude, Some(3.0))),
+            self.sample?.0,
         )
+    }
+
+    fn setting_warning(&self, now: i64, nearest: Option<&NearbyAltimeter>) -> Option<String> {
+        let report = nearest?;
+        self.altitude_ft(now)?;
+        let discrepancy = (self.setting_inhg * 100.0).round() as i32
+            - (report.setting_inhg * 100.0).round() as i32;
+        if discrepancy.abs() <= 10 {
+            return None;
+        }
+        Some(format!(
+            "Check baro setting:\n{} {:.2} {} min ago",
+            report.station,
+            report.setting_inhg,
+            (now - report.observed_epoch_ms) / 60_000,
+        ))
     }
 
     pub fn next_refresh(&self, now: i64) -> Option<i64> {
@@ -267,9 +364,206 @@ impl Barometer {
     }
 }
 
+fn pressure_altitude(pressure: f64, setting_inhg: f64) -> f64 {
+    44_330.0 / 0.3048 * (1.0 - (pressure / (setting_inhg * HPA_PER_INHG)).powf(1.0 / 5.255))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn four_digit_setting_entry_inserts_decimal_before_applying() {
+        let now = 2_000_000_000_000;
+        let mut baro = Barometer::default();
+        observe(&mut baro, Some(1002.64), now);
+        baro.open_editor();
+        for input in ["3", "30", "300", "3006"] {
+            baro.apply(
+                FlightDataCommand::SetInput {
+                    editor_id: "barometer".into(),
+                    input: input.into(),
+                },
+                now,
+                None,
+            );
+        }
+        assert_eq!(baro.editor().unwrap().input, "30.06");
+        assert!(baro.editor().unwrap().error.is_none());
+        assert_eq!(
+            baro.editor().unwrap().input_correction,
+            Some(app_ui_contracts::session::FlightDataInputCorrection {
+                source: "3006".into(),
+                start: 2,
+                end: 2,
+                text: ".".into(),
+            })
+        );
+        baro.close_editor();
+        baro.open_editor();
+        assert_eq!(baro.editor().unwrap().input, "30.06");
+        assert!(baro.editor().unwrap().input_correction.is_none());
+        for input in ["30.06", "29.", "2500", "3500"] {
+            baro.apply(
+                FlightDataCommand::SetInput {
+                    editor_id: "barometer".into(),
+                    input: input.into(),
+                },
+                now,
+                None,
+            );
+            assert!(baro.editor().unwrap().error.is_none(), "{input}");
+            if input.contains('.') {
+                assert_eq!(baro.editor().unwrap().input, input);
+                assert!(baro.editor().unwrap().input_correction.is_none());
+            }
+        }
+    }
+
     use super::*;
+
+    #[test]
+    fn discrepant_setting_warns_on_cell_and_in_editor_without_changing_setting() {
+        let now = 1_700_000_000_000;
+        let mut baro = Barometer::default();
+        baro.apply(
+            FlightDataCommand::Observe {
+                available: true,
+                pressure_hpa: Some(1000.0),
+                observed_epoch_ms: now,
+                received_epoch_ms: now,
+            },
+            now,
+            None,
+        );
+        let report = NearbyAltimeter {
+            station: "KSEA".into(),
+            position: LatLon {
+                lat: 47.45,
+                lon: -122.3,
+            },
+            weather_badge: None,
+            setting_inhg: 30.12,
+            distance_nm: 10.0,
+            observed_epoch_ms: now - 60_000,
+        };
+        let warning = baro
+            .reading(now, Some(&report))
+            .unwrap()
+            .warning
+            .expect("BARO cell must explain a discrepant setting");
+        assert_eq!(warning, "Check baro setting:\nKSEA 30.12 1 min ago");
+        baro.open_editor();
+        let reading = baro.reading(now, Some(&report)).unwrap();
+        let editor = reading.editor.unwrap();
+        assert_eq!(editor.warning.as_deref(), Some(warning.as_str()));
+        assert_eq!(
+            editor.notice,
+            "BARO ALT from device is cabin alt. Cross-check."
+        );
+        assert!(editor.title.is_none());
+        assert_eq!(editor.unit, "inHg");
+        assert_eq!(editor.input, "29.92");
+        assert!(baro.reading(now, None).unwrap().warning.is_none());
+        assert!(
+            baro.altitude_ft(now).is_some(),
+            "weather loss cannot disable altitude"
+        );
+    }
+
+    #[test]
+    fn warning_threshold_is_strictly_more_than_ten_hundredths_and_setting_change_clears_it() {
+        let now = 1_700_000_000_000;
+        let mut baro = Barometer::default();
+        baro.apply(
+            FlightDataCommand::Observe {
+                available: true,
+                pressure_hpa: Some(1000.0),
+                observed_epoch_ms: now,
+                received_epoch_ms: now,
+            },
+            now,
+            None,
+        );
+        for (setting, warned) in [(30.02, false), (29.82, false), (30.03, true), (29.81, true)] {
+            let report = NearbyAltimeter {
+                station: "KSEA".into(),
+                position: LatLon {
+                    lat: 47.45,
+                    lon: -122.3,
+                },
+                weather_badge: None,
+                setting_inhg: setting,
+                distance_nm: 10.0,
+                observed_epoch_ms: now,
+            };
+            assert_eq!(
+                baro.reading(now, Some(&report)).unwrap().warning.is_some(),
+                warned
+            );
+        }
+        let report = NearbyAltimeter {
+            station: "KSEA".into(),
+            position: LatLon {
+                lat: 47.45,
+                lon: -122.3,
+            },
+            weather_badge: None,
+            setting_inhg: 30.12,
+            distance_nm: 10.0,
+            observed_epoch_ms: now,
+        };
+        baro.open_editor();
+        baro.apply(
+            FlightDataCommand::EditorAction {
+                editor_id: "barometer".into(),
+                action_id: "nearest".into(),
+            },
+            now,
+            Some(&report),
+        );
+        assert!(baro.reading(now, Some(&report)).unwrap().warning.is_none());
+    }
+
+    #[test]
+    fn changing_kollsman_does_not_become_a_vertical_speed_and_gaps_reset_history() {
+        let now = 1_700_000_000_000;
+        let mut baro = Barometer::default();
+        for second in 0..=20 {
+            let time = now + second * 1000;
+            baro.apply(
+                FlightDataCommand::Observe {
+                    available: true,
+                    pressure_hpa: Some(1000.0),
+                    observed_epoch_ms: time,
+                    received_epoch_ms: time,
+                },
+                time,
+                None,
+            );
+        }
+        assert!(baro.vertical_speed_fpm(now + 20_000).unwrap().abs() < 0.01);
+        baro.open_editor();
+        baro.apply(
+            FlightDataCommand::SetInput {
+                editor_id: "barometer".into(),
+                input: "30.42".into(),
+            },
+            now + 20_000,
+            None,
+        );
+        assert!(baro.vertical_speed_fpm(now + 20_000).unwrap().abs() < 0.01);
+        let time = now + 26_000;
+        baro.apply(
+            FlightDataCommand::Observe {
+                available: true,
+                pressure_hpa: Some(1010.0),
+                observed_epoch_ms: time,
+                received_epoch_ms: time,
+            },
+            time,
+            None,
+        );
+        assert!(baro.vertical_speed_fpm(time).is_none());
+    }
 
     fn weather(reports: &[(&str, f64, i64, &str)], now: i64) -> MetarProductPayload {
         MetarProductPayload {
@@ -390,7 +684,8 @@ mod tests {
         observe(&mut baro, Some(1002.64), now);
         baro.open_editor();
         baro.apply(
-            BarometerCommand::SetSetting {
+            FlightDataCommand::SetInput {
+                editor_id: "barometer".into(),
                 input: "oops".into(),
             },
             now,
@@ -399,29 +694,46 @@ mod tests {
         let payload = weather(&[("TEST", 0.0, 60_000, "A2997")], now);
         let nearest = nearest_altimeter(Some(LatLon { lat: 0.0, lon: 0.0 }), Some(&payload), now);
         let editor = baro.reading(now, nearest.as_ref()).unwrap().editor.unwrap();
-        assert!(editor.nearest_enabled);
-        assert!(editor.nearest_detail.unwrap().contains("TEST: 29.97 inHg"));
-        baro.apply(BarometerCommand::UseNearest, now, nearest.as_ref());
+        assert!(editor.action_rows[0][0].enabled);
+        assert!(editor.action_rows[0][0].disabled_reason.is_none());
+        assert_eq!(
+            editor.action_rows[0][0].secondary_label.as_deref(),
+            Some("TEST 1min old")
+        );
+        assert!(editor.detail.is_none());
+        baro.apply(
+            FlightDataCommand::EditorAction {
+                editor_id: "barometer".into(),
+                action_id: "nearest".into(),
+            },
+            now,
+            nearest.as_ref(),
+        );
         assert_eq!(baro.editor().unwrap().input, "29.97");
         assert_eq!(baro.editor().unwrap().input_revision, 1);
         assert!(baro.editor().unwrap().error.is_none());
         assert!((baro.altitude_ft(now).unwrap() - 336.0).abs() < 1.0);
-        assert!(
-            !baro
-                .reading(now, None)
-                .unwrap()
-                .editor
-                .unwrap()
-                .nearest_enabled
+        let editor = baro.reading(now, None).unwrap().editor.unwrap();
+        assert!(!editor.action_rows[0][0].enabled);
+        assert_eq!(
+            editor.action_rows[0][0].disabled_reason.as_deref(),
+            Some(NO_NEARBY_ALTIMETER)
         );
         let before = baro.clone();
-        baro.apply(BarometerCommand::UseNearest, now, None);
+        baro.apply(
+            FlightDataCommand::EditorAction {
+                editor_id: "barometer".into(),
+                action_id: "nearest".into(),
+            },
+            now,
+            None,
+        );
         assert_eq!(baro, before);
     }
 
     fn observe(baro: &mut Barometer, pressure: Option<f64>, time: i64) {
         baro.apply(
-            BarometerCommand::Observe {
+            FlightDataCommand::Observe {
                 available: true,
                 pressure_hpa: pressure,
                 observed_epoch_ms: time,
@@ -438,7 +750,8 @@ mod tests {
         observe(&mut baro, Some(1002.64), 10_000);
         baro.open_editor();
         baro.apply(
-            BarometerCommand::SetSetting {
+            FlightDataCommand::SetInput {
+                editor_id: "barometer".into(),
                 input: "29.97".into(),
             },
             10_000,
@@ -479,7 +792,7 @@ mod tests {
         observe(&mut baro, Some(800.0), 9_000);
         assert_eq!(baro.altitude_ft(10_000), original);
         baro.apply(
-            BarometerCommand::Observe {
+            FlightDataCommand::Observe {
                 available: true,
                 pressure_hpa: Some(700.0),
                 observed_epoch_ms: 11_000,
@@ -497,9 +810,10 @@ mod tests {
         observe(&mut baro, Some(900.0), 10_000);
         let original = baro.altitude_ft(10_000);
         baro.open_editor();
-        for input in ["", "2997", "NaN", "-3", "100"] {
+        for input in ["", "2499", "3501", "NaN", "-3", "100", "30060"] {
             baro.apply(
-                BarometerCommand::SetSetting {
+                FlightDataCommand::SetInput {
+                    editor_id: "barometer".into(),
                     input: input.into(),
                 },
                 10_000,
@@ -509,7 +823,8 @@ mod tests {
             assert_eq!(baro.altitude_ft(10_000), original);
         }
         baro.apply(
-            BarometerCommand::SetSetting {
+            FlightDataCommand::SetInput {
+                editor_id: "barometer".into(),
                 input: "30.12".into(),
             },
             10_000,

@@ -11,7 +11,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.aerobag.app.generated.BarometerCommand
+import org.aerobag.app.generated.FlightDataCommand
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,7 +28,7 @@ class AndroidBarometerSourceTest {
     @Test fun sensorlessDevicesReportUnsupportedWithoutRegisteringAnything() = runBlocking {
         withTimeout(2_000) {
             val manager = manager()
-            val events = Channel<BarometerCommand.Observe>(Channel.UNLIMITED)
+            val events = Channel<FlightDataCommand.Observe>(Channel.UNLIMITED)
             val job = launch { AndroidBarometerSource(manager).observations().collect { events.send(it) } }
             assertFalse(events.receive().available)
             assertTrue(shadowOf(manager).listeners.isEmpty())
@@ -41,7 +41,7 @@ class AndroidBarometerSourceTest {
             val manager = manager()
             val shadow = shadowOf(manager)
             shadow.addSensor(ShadowSensor.newInstance(Sensor.TYPE_PRESSURE))
-            val events = Channel<BarometerCommand.Observe>(Channel.UNLIMITED)
+            val events = Channel<FlightDataCommand.Observe>(Channel.UNLIMITED)
             val job = launch {
                 AndroidBarometerSource(manager, now = { 10_000L }, elapsedNanos = { 2_000_000_000L })
                     .observations().collect { events.send(it) }

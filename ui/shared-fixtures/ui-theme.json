@@ -50,6 +50,7 @@
     "tfr_active": "#e04646",
     "tfr_upcoming": "#b88700",
     "intersection_cyan": "#39d9ff",
+    "altitude_intercept": "#39d9ff",
     "traffic": "#39d9ff",
     "traffic_contrast": "#081218",
     "traffic_label": "#f7fbff",

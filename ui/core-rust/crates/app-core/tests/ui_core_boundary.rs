@@ -1474,7 +1474,26 @@ fn flight_data_banner_activation_policy_is_core_owned() {
     assert!(!android_banner.contains("nexrad_age"));
     assert!(!android_banner.contains("performTimeDisplayAction"));
     for source in [&android_map, &android_charts] {
-        assert!(source.contains("performFlightDataBannerCellAction(cellId)"));
+        assert!(source.contains("sessionWorkRunner.submitFlightDataBannerCellAction(cellId,"));
+        assert!(source.contains("sessionWorkRunner.submitFlightDataCommand(command,"));
+        assert!(!source.contains("performFlightDataBannerCellAction(cellId)"));
+    }
+    let runner =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/UiSessionWorkRunner.kt");
+    assert!(runner.contains("submitMutation(\"performFlightDataBannerCellAction\", { it.performFlightDataBannerCellAction(cellId) }"));
+    assert!(runner.contains(
+        "submitMutation(\"performFlightDataCommand\", { it.performFlightDataCommand(command) }"
+    ));
+
+    let android_editor =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightDataSettingTray.kt");
+    assert!(android_editor.contains("editor.actionRows.forEach"));
+    assert!(android_editor.contains("action(editor.dismissActionId)"));
+    assert!(web_banner.contains("props.editor.action_rows.map"));
+    assert!(web_banner.contains("action(props.editor.dismiss_action_id)"));
+    for source in [&android_editor, web_banner] {
+        assert!(!source.contains("\"barometer\""));
+        assert!(!source.contains("\"altitude_target\""));
     }
 }
 

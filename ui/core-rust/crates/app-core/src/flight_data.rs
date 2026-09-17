@@ -48,6 +48,8 @@ pub struct FlightTimeFuelEstimate {
 #[derive(Debug, Clone, Default)]
 pub struct FlightDataBannerInput {
     pub barometer: Option<crate::BarometerReading>,
+    pub altitude_target: Option<FlightDataCell>,
+    pub target_editor: Option<crate::FlightDataEditor>,
     pub altitude_ft: Option<f64>,
     pub agl_ft: Option<f64>,
     pub vertical_speed_fpm: Option<f64>,
@@ -63,6 +65,7 @@ pub struct FlightDataBannerInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlightDataBannerField {
     Barometer,
+    AltitudeTarget,
     Altitude,
     AboveGroundLevel,
     GroundSpeed,
@@ -88,13 +91,18 @@ struct FlightDataBannerCellDefinition {
 
 pub(crate) const FLIGHT_DATA_AGL_CELL_ID: &str = "agl";
 
-const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 15] = [
+const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 16] = [
     banner_cell(
         FlightDataBannerField::Barometer,
         crate::barometer::BAROMETER_CELL_ID,
         "BARO ft",
     ),
     banner_cell(FlightDataBannerField::Altitude, "altitude", "MSL ft"),
+    banner_cell(
+        FlightDataBannerField::AltitudeTarget,
+        crate::altitude_target::TARGET_CELL_ID,
+        "TGT ALT",
+    ),
     banner_cell(
         FlightDataBannerField::AboveGroundLevel,
         FLIGHT_DATA_AGL_CELL_ID,
@@ -224,18 +232,29 @@ impl FlightDataComputer {
         });
 
         FlightDataBannerModel {
-            barometer_editor: input
-                .barometer
-                .as_ref()
-                .and_then(|reading| reading.editor.clone()),
+            editor: input.target_editor.or_else(|| {
+                input
+                    .barometer
+                    .as_ref()
+                    .and_then(|reading| reading.editor.clone())
+            }),
             cells: FLIGHT_DATA_BANNER_CELLS
                 .iter()
                 .filter(|definition| {
-                    definition.field != FlightDataBannerField::Barometer
-                        || input.barometer.is_some()
+                    (definition.field != FlightDataBannerField::Barometer
+                        || input.barometer.is_some())
+                        && (definition.field != FlightDataBannerField::AltitudeTarget
+                            || input.altitude_target.is_some())
                 })
                 .map(|definition| {
+                    if definition.field == FlightDataBannerField::AltitudeTarget {
+                        return input
+                            .altitude_target
+                            .clone()
+                            .expect("target cells are filtered above");
+                    }
                     let value = match definition.field {
+                        FlightDataBannerField::AltitudeTarget => unreachable!(),
                         FlightDataBannerField::Barometer => input
                             .barometer
                             .as_ref()
@@ -297,6 +316,14 @@ impl FlightDataComputer {
                     } else if definition.field == FlightDataBannerField::NexradAge {
                         cell.action = input.nexrad_action.clone();
                     } else if definition.field == FlightDataBannerField::Barometer {
+                        cell.attention = input
+                            .barometer
+                            .as_ref()
+                            .and_then(|reading| reading.warning.as_ref())
+                            .map(|message| app_ui_contracts::session::FlightDataAttention {
+                                message: message.clone(),
+                                highlighted: true,
+                            });
                         cell.action = Some(flight_data_cell_action(
                             crate::barometer::BAROMETER_CELL_ID,
                             "Set barometric altimeter",
@@ -357,6 +384,7 @@ impl FlightDataComputer {
                         }),
                         tone: FlightDataCellTone::Planned,
                         estimate_kind: FlightEstimateKind::Basic,
+                        attention: None,
                     }
                 })
                 .collect();
@@ -600,6 +628,7 @@ pub fn cell_with_tone(
         action: None,
         tone,
         estimate_kind: FlightEstimateKind::Basic,
+        attention: None,
     }
 }
 
@@ -616,6 +645,7 @@ pub fn cell_with_estimate(
         action: None,
         tone: FlightDataCellTone::Planned,
         estimate_kind,
+        attention: None,
     }
 }
 
@@ -637,6 +667,7 @@ fn actionable_cell_with_estimate(
         )),
         tone: FlightDataCellTone::Planned,
         estimate_kind,
+        attention: None,
     }
 }
 

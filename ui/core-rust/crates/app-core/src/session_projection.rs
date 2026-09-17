@@ -375,6 +375,7 @@ mod tests {
                     action: None,
                     tone: Default::default(),
                     estimate_kind: Default::default(),
+                    attention: None,
                 });
         });
         assert_group_change!(situation, |value: &mut SessionProjectionDependencies| {

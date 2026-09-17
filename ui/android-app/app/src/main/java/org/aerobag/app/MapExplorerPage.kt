@@ -3580,6 +3580,7 @@ internal fun MapExplorerPage(
                 labelFillPaint = mapRenderPaints.situationLabelFill,
                 aircraftPlanViewPath = aircraftPlanViewPath,
             )
+            GeographicLineOverlay(ownship.altitudeIntercept, mapGeometryFrame, uiTheme)
             E2eProjectionView(
                 viewId = R.id.e2e_ownship_state_projection,
                 state =
@@ -3621,12 +3622,12 @@ internal fun MapExplorerPage(
                 situationDockTopPadding = situationDockTopPadding,
                 uiTheme = uiTheme,
                 onCellActivated = { cellId ->
-                    applySessionCommand("performFlightDataBannerCellAction") {
-                        uiSession.performFlightDataBannerCellAction(cellId)
-                    }
+                    sessionWorkRunner.submitFlightDataBannerCellAction(cellId,
+                        onResult = actions.onSessionSnapshotChange, onError = actions.onSessionCommandFailure)
                 },
-                onBarometerCommand = { command ->
-                    applySessionCommand("performBarometerCommand") { uiSession.performBarometerCommand(command) }
+                onFlightDataCommand = { command ->
+                    sessionWorkRunner.submitFlightDataCommand(command,
+                        onResult = actions.onSessionSnapshotChange, onError = actions.onSessionCommandFailure)
                 },
                 modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
             )

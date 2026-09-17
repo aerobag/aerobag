@@ -5,7 +5,7 @@
 
 import type { NavSymbolFeature } from "./navQueryWire";
 
-export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 17 as const;
+export const UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION = 18 as const;
 
 export const UI_INVALIDATION_VALUES = ["nav_data", "session_snapshot", "raster_tiles", "map_overlay", "nexrad_overlay", "terrain_overlay", "flight_plan_route", "debug_panel"] as const;
 
@@ -136,6 +136,7 @@ export type FlightDataCellAction = {
 
 export type FlightDataCell = {
   action?: FlightDataCellAction | null;
+  attention?: FlightDataAttention | null;
   estimate_kind?: FlightEstimateKind;
   id: string;
   label: string;
@@ -150,23 +151,68 @@ export type FlightDataColumn = {
 };
 
 export type FlightDataBannerModel = {
-  barometer_editor?: BarometerEditor | null;
   cells: FlightDataCell[];
+  editor?: FlightDataEditor | null;
 };
 
-export type BarometerEditor = {
+export type FlightDataEditor = {
+  action_rows: FlightDataEditorAction[][];
   close_label: string;
+  detail?: string | null;
+  dismiss_action_id: string;
   error?: string | null;
+  id: string;
   input: string;
+  input_correction?: FlightDataInputCorrection | null;
   input_revision: number;
   label: string;
-  nearest_detail?: string | null;
-  nearest_enabled: boolean;
-  nearest_label: string;
-  title: string;
+  notice: string;
+  title?: string | null;
+  unit: string;
+  warning?: string | null;
 };
 
-export type BarometerCommand = { available: boolean; kind: "observe"; observed_epoch_ms: number; pressure_hpa?: number | null; received_epoch_ms: number } | { input: string; kind: "set_setting" } | { kind: "use_nearest" } | { kind: "close_editor" };
+export type FlightDataCommand = { available: boolean; kind: "observe"; observed_epoch_ms: number; pressure_hpa?: number | null; received_epoch_ms: number } | { editor_id: string; input: string; kind: "set_input" } | { action_id: string; editor_id: string; kind: "editor_action" };
+
+export type FlightDataEditorAction = {
+  disabled_reason?: string | null;
+  enabled: boolean;
+  id: string;
+  label: string;
+  secondary_label?: string | null;
+  selected: boolean;
+  symbol_feature?: NavSymbolFeature | null;
+  weather_badge?: FlightPlanWeatherBadgeUiView | null;
+};
+
+export type FlightDataInputCorrection = {
+  end: number;
+  source: string;
+  start: number;
+  text: string;
+};
+
+export type FlightPlanWeatherBadgeUiView = {
+  ceiling_amount: string;
+  flight_category: string;
+};
+
+export type FlightDataAttention = {
+  highlighted: boolean;
+  message: string;
+};
+
+export type GeographicLineAnnotation = {
+  label: string;
+  label_bearing_deg: number;
+  label_position: GeographicAnnotationPoint;
+  points: GeographicAnnotationPoint[];
+};
+
+export type GeographicAnnotationPoint = {
+  lat: number;
+  lon: number;
+};
 
 export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";
 

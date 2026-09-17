@@ -132,6 +132,16 @@ pub struct FlightDataCell {
     pub tone: FlightDataCellTone,
     #[serde(default, skip_serializing_if = "FlightEstimateKind::is_basic")]
     pub estimate_kind: FlightEstimateKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention: Option<FlightDataAttention>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FlightDataAttention {
+    pub message: String,
+    pub highlighted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,46 +154,109 @@ pub struct FlightDataColumn {
     pub action_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FlightDataBannerModel {
     pub cells: Vec<FlightDataCell>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub barometer_editor: Option<BarometerEditor>,
+    pub editor: Option<FlightDataEditor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FlightDataEditor {
+    pub id: String,
+    pub title: Option<String>,
+    /// Accessible input name, not another visible heading.
+    pub label: String,
+    pub unit: String,
+    pub input: String,
+    pub input_revision: u64,
+    pub input_correction: Option<FlightDataInputCorrection>,
+    pub error: Option<String>,
+    pub notice: String,
+    pub detail: Option<String>,
+    pub warning: Option<String>,
+    pub action_rows: Vec<Vec<FlightDataEditorAction>>,
+    pub dismiss_action_id: String,
+    pub close_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
-pub struct BarometerEditor {
-    pub title: String,
+pub struct FlightDataInputCorrection {
+    /// Apply only to this exact local edit buffer, never to newer typing.
+    pub source: String,
+    /// UTF-16 offsets, matching native and browser text selections.
+    pub start: u32,
+    pub end: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FlightPlanWeatherBadgeUiView {
+    pub flight_category: String,
+    pub ceiling_amount: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FlightDataEditorAction {
+    pub id: String,
     pub label: String,
-    pub input: String,
-    pub input_revision: u64,
-    pub error: Option<String>,
-    pub nearest_label: String,
-    pub nearest_enabled: bool,
-    pub nearest_detail: Option<String>,
-    pub close_label: String,
+    pub enabled: bool,
+    pub selected: bool,
+    pub secondary_label: Option<String>,
+    pub symbol_feature: Option<crate::nav_query::NavSymbolFeature>,
+    pub weather_badge: Option<FlightPlanWeatherBadgeUiView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 /// Device observations and UI inputs are interpreted by the same core-owned altimeter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BarometerCommand {
+pub enum FlightDataCommand {
     Observe {
         available: bool,
         pressure_hpa: Option<f64>,
         observed_epoch_ms: i64,
         received_epoch_ms: i64,
     },
-    SetSetting {
+    SetInput {
+        editor_id: String,
         input: String,
     },
-    UseNearest,
-    CloseEditor,
+    EditorAction {
+        editor_id: String,
+        action_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GeographicLineAnnotation {
+    pub points: Vec<GeographicAnnotationPoint>,
+    pub label_position: GeographicAnnotationPoint,
+    /// Clockwise from true north; the map's shared transform supplies screen rotation.
+    pub label_bearing_deg: f64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GeographicAnnotationPoint {
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

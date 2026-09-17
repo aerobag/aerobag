@@ -267,13 +267,13 @@ pub fn perform_flight_data_banner_cell_action_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn perform_barometer_command_in_session_json(
+pub fn perform_flight_data_command_in_session_json(
     handle: u64,
     command_json: &str,
 ) -> Result<String, String> {
     let command =
         serde_json::from_str(command_json).map_err(|err| format!("barometer command: {err}"))?;
-    let outcome = app_core::perform_barometer_command_in_session(handle as u32, command)
+    let outcome = app_core::perform_flight_data_command_in_session(handle as u32, command)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -3841,7 +3841,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightD
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performBarometerCommandInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightDataCommandInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -3849,7 +3849,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performBaromet
 ) -> jstring {
     let result = (|| {
         let command_json = get_java_string(&mut env, command_json)?;
-        perform_barometer_command_in_session_json(handle as u64, &command_json)
+        perform_flight_data_command_in_session_json(handle as u64, &command_json)
     })();
     return_string(&mut env, result)
 }

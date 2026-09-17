@@ -1043,7 +1043,11 @@ impl WeatherStationAirportAliases {
         }
     }
 
-    fn airport_id_for_station(&self, station_id: &str, station_position: LatLon) -> Option<&str> {
+    pub(crate) fn airport_id_for_station(
+        &self,
+        station_id: &str,
+        station_position: LatLon,
+    ) -> Option<&str> {
         self.station_to_airport
             .get(&station_id.trim().to_ascii_uppercase())
             .filter(|alias| {
@@ -4572,6 +4576,13 @@ pub(crate) fn flight_plan_weather_badge_for_airport(
     }
     let station_id = weather_station_id_for_airport(&airport_id, aliases, metar_payload, None);
     let record = metar_payload?.metars_by_station.get(&station_id)?;
+    weather_badge_for_metar(record, age_reference_utc)
+}
+
+pub(crate) fn weather_badge_for_metar(
+    record: &MetarRecord,
+    age_reference_utc: Option<DateTime<Utc>>,
+) -> Option<crate::planning::FlightPlanWeatherBadgeUiView> {
     let observed_at = record
         .observed_at_utc
         .as_deref()

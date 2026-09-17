@@ -8,6 +8,7 @@ import { BrowserGeolocationWatch } from "./domain/browserGeolocationWatch";
 import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, GuidedTourPageBoundary, useGuidedTour } from "./GuidedTour";
 import type { UiTourAction } from "./generated/sessionPageWire";
 import { useMapGeometryBinding } from "./MapGeometryLayer";
+import { GeographicLineOverlay } from "./GeographicLineOverlay";
 import { AirwayRoutingOverlay } from "./AirwayRoutingOverlay";
 import { GlideRingOverlay } from "./GlideRingOverlay";
 import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
@@ -996,6 +997,7 @@ type UiThemeJson = {
     tfr_active: string;
     tfr_upcoming: string;
     intersection_cyan: string;
+    altitude_intercept: string;
     traffic: string;
     traffic_contrast: string;
     traffic_label: string;
@@ -1987,7 +1989,7 @@ function PlanWaypointSymbol(props: {
   weatherBadge?: FlightPlanWeatherBadgeUiView | null;
 }) {
   const { feature, weatherBadge } = props;
-  if (!feature) {
+  if (!feature && !weatherBadge) {
     return null;
   }
   return (
@@ -1997,9 +1999,9 @@ function PlanWaypointSymbol(props: {
       aria-hidden="true"
       data-testid={weatherBadge ? `parity:plan-weather-badge:${weatherBadge.flight_category}` : undefined}
     >
-      <VectorPointSymbol feature={feature} showLabel={false} />
+      {feature ? <VectorPointSymbol feature={feature} showLabel={false} /> : null}
       {weatherBadge ? (
-        <g className="planWaypointWeatherBadge" transform="translate(10 10) scale(1)">
+        <g className="planWaypointWeatherBadge" transform={feature ? "translate(10 10)" : undefined}>
           <MetarGlyph
             flightCategory={weatherBadge.flight_category}
             ceilingAmount={weatherBadge.ceiling_amount}
@@ -2060,7 +2062,7 @@ function WaypointButtonContent(props: {
   const details = (props.details ?? []).filter((detail): detail is string => Boolean(detail?.trim()));
   const fullWidthLabel = flightPlanWaypointUsesFullWidthLabel(
     Boolean(props.fullWidthLabel),
-    Boolean(props.symbolFeature),
+    Boolean(props.symbolFeature || props.weatherBadge),
   );
   return (
     <>
@@ -2332,6 +2334,9 @@ const appThemeVars = {
   "--theme-tfr-active": loadedUiTheme.aviation.tfr_active,
   "--theme-tfr-upcoming": loadedUiTheme.aviation.tfr_upcoming,
   "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
+  "--theme-altitude-intercept": loadedUiTheme.aviation.altitude_intercept,
+  "--theme-map-line-contrast": loadedUiTheme.flight_plan_route.contrast,
+  "--theme-traffic-contrast": loadedUiTheme.aviation.traffic_contrast,
   "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
   "--theme-obstacle-danger": loadedUiTheme.aviation.obstacle_danger,
   "--theme-obstacle-caution": loadedUiTheme.aviation.obstacle_caution,
@@ -7592,6 +7597,7 @@ function MapPage(props: {
             onError={(error) => showDisabledAction(errorMessage(error))}
           />
         ) : null}
+        <GeographicLineOverlay binding={mapGeometry} annotation={ownship.altitude_intercept} />
         <span
           hidden
           data-testid={`parity:viewport:center-x:${viewport.centerWorldX.toFixed(3)}:center-y:${viewport.centerWorldY.toFixed(3)}:zoom:${viewport.zoom.toFixed(3)}:up:${plannedMapUpDeg.toFixed(1)}`}
@@ -7626,15 +7632,16 @@ function MapPage(props: {
                 edgeColumnCount={flightDataBannerEdgeColumnCount}
                 edgeLayout={flightDataBannerEdgeLayout}
                 lowered={statusControlDockLowered}
+                onDisabledAction={showDisabledAction}
                 onCellActivated={(cellId) => {
                   if (!uiSession) return;
                   void uiSession.performFlightDataBannerCellAction(cellId).then((snapshot) => {
                     props.onSessionSnapshot(snapshot, "flight_data_cell_action");
                   });
                 }}
-                onBarometerCommand={(command) => {
+                onFlightDataCommand={(command) => {
                   if (!uiSession) return;
-                  void uiSession.performBarometerCommand(command).then((snapshot) => {
+                  void uiSession.performFlightDataCommand(command).then((snapshot) => {
                     props.onSessionSnapshot(snapshot, "barometer_action");
                   });
                 }}
@@ -8652,7 +8659,8 @@ export function FlightDataBanner(props: {
   edgeLayout?: boolean;
   lowered?: boolean;
   onCellActivated: (cellId: string) => void;
-  onBarometerCommand: (command: import("./generated/sessionPageWire").BarometerCommand) => void;
+  onFlightDataCommand: (command: import("./generated/sessionPageWire").FlightDataCommand) => void;
+  onDisabledAction: (message: string) => void;
 }) {
   const cells = props.banner.cells;
   if (cells.length === 0) {
@@ -8665,8 +8673,8 @@ export function FlightDataBanner(props: {
       : "";
   return (
     <>
-    {props.banner.barometer_editor ? (
-      <BarometerSettingTray editor={props.banner.barometer_editor} onCommand={props.onBarometerCommand} />
+    {props.banner.editor ? (
+      <FlightDataSettingTray key={props.banner.editor.id} editor={props.banner.editor} onCommand={props.onFlightDataCommand} onDisabledAction={props.onDisabledAction} />
     ) : null}
     <div
       className={`flightDataBanner${props.edgeLayout ? ` isEdgeLayout${edgeClass}` : ""}${edgeColumnClass}${props.lowered ? " isLowered" : ""}`}
@@ -8677,7 +8685,8 @@ export function FlightDataBanner(props: {
           key={cell.id}
           data-testid={`flight-data-cell:${cell.id}`}
           data-e2e-state={cell.action?.action_id}
-          className={`flightDataCell${cell.action ? " isActionable" : ""}`}
+          className={`flightDataCell${cell.action ? " isActionable" : ""}${cell.attention?.highlighted ? " isAttention" : ""}`}
+          title={cell.attention?.message}
           role={cell.action ? "button" : undefined}
           tabIndex={cell.action ? 0 : undefined}
           aria-label={cell.action?.accessibility_label}
@@ -8702,12 +8711,18 @@ export function FlightDataBanner(props: {
   );
 }
 
-function BarometerSettingTray(props: {
-  editor: import("./generated/sessionPageWire").BarometerEditor;
-  onCommand: (command: import("./generated/sessionPageWire").BarometerCommand) => void;
+function FlightDataSettingTray(props: {
+  editor: import("./generated/sessionPageWire").FlightDataEditor;
+  onCommand: (command: import("./generated/sessionPageWire").FlightDataCommand) => void;
+  onDisabledAction: (message: string) => void;
 }) {
   // This is only the DOM edit buffer; core parses input and controls the tray lifetime.
   const [input, setInput] = useState(props.editor.input);
+  const inputElement = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    inputElement.current?.focus({ preventScroll: true });
+    inputElement.current?.select();
+  }, []);
   // A core-requested replacement (NEAREST) is distinct from echoed typing.
   const inputRevision = useRef(props.editor.input_revision);
   useEffect(() => {
@@ -8716,23 +8731,64 @@ function BarometerSettingTray(props: {
       setInput(props.editor.input);
     }
   }, [props.editor.input_revision, props.editor.input]);
-  const close = () => props.onCommand({ kind: "close_editor" });
+  useEffect(() => {
+    const edit = props.editor.input_correction;
+    const element = inputElement.current;
+    if (!edit || !element || element.value !== edit.source) return;
+    const position = (value: number) => value <= edit.start ? value
+      : value >= edit.end ? value + edit.text.length - (edit.end - edit.start)
+      : edit.start + edit.text.length;
+    const start = position(element.selectionStart ?? edit.source.length);
+    const end = position(element.selectionEnd ?? edit.source.length);
+    const next = edit.source.slice(0, edit.start) + edit.text + edit.source.slice(edit.end);
+    // Update the native edit buffer as well so selection survives React's commit.
+    element.value = next;
+    element.setSelectionRange(start, end);
+    setInput(next);
+  }, [props.editor.input_correction]);
+  const action = (action_id: string) => props.onCommand({ kind: "editor_action", editor_id: props.editor.id, action_id });
+  const close = () => action(props.editor.dismiss_action_id);
   return <>
     <TrayScrim ariaLabel={props.editor.close_label} onClose={close} />
-    <section className="chartTray chartTrayPortal isOpen barometerSettingTray" role="dialog" aria-modal="true" aria-label={props.editor.title}>
-      <strong>{props.editor.title}</strong>
-      <label>{props.editor.label}
-        <input data-testid="barometer-setting" inputMode="decimal" value={input}
+    <section className="chartTray chartTrayPortal isOpen flightDataSettingTray" role="dialog" aria-modal="true" aria-label={props.editor.title ?? props.editor.label}
+      onPointerDown={stopPointer} onPointerMove={stopPointer} onPointerUp={stopPointer} onPointerCancel={stopPointer}
+      onWheel={stopWheel} onClick={stopClick} onDoubleClick={stopDoubleClick}>
+      {props.editor.title ? <strong>{props.editor.title}</strong> : null}
+      <div className="flightDataSettingInput">
+        <input aria-label={props.editor.label} ref={inputElement} data-testid={`${props.editor.id}-setting`} inputMode="decimal" value={input}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.stopPropagation();
+              close();
+            }
+          }}
           onChange={(event) => {
             setInput(event.target.value);
-            props.onCommand({ kind: "set_setting", input: event.target.value });
+            props.onCommand({ kind: "set_input", editor_id: props.editor.id, input: event.target.value });
           }} />
-      </label>
+        <span>{props.editor.unit}</span>
+      </div>
       {props.editor.error ? <p role="alert">{props.editor.error}</p> : null}
-      <button className="trayButton" data-testid="barometer-nearest" disabled={!props.editor.nearest_enabled}
-        onClick={() => props.onCommand({ kind: "use_nearest" })}>{props.editor.nearest_label}</button>
-      {props.editor.nearest_detail ? <p>{props.editor.nearest_detail}</p> : null}
-      <button className="trayButton" data-testid="barometer-close" onClick={close}>{props.editor.close_label}</button>
+      {props.editor.warning ? <p className="flightDataSettingWarning" role="status">{props.editor.warning}</p> : null}
+      <div className="flightDataSettingActions">
+        {props.editor.action_rows.map((row, index) => <div className="flightDataSettingActionRow" key={index}
+          style={{gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))`}}>
+        {row.map((item) => {
+          const reason = disabledReasonText(item.disabled_reason);
+          return <button key={item.id} className={`trayButton${item.selected ? " isActive" : ""}${!item.enabled ? " isDisabled" : ""}`}
+            data-testid={`${props.editor.id}-${item.id}`} disabled={!item.enabled && !reason}
+            aria-disabled={!item.enabled} aria-pressed={item.selected} title={reason ?? undefined}
+            onClick={() => {
+              if (item.enabled) action(item.id);
+              else if (reason) props.onDisabledAction(reason);
+            }}><WaypointButtonContent label={item.label} details={[item.secondary_label]}
+              symbolFeature={item.symbol_feature} weatherBadge={item.weather_badge}
+              fullWidthLabel={!item.symbol_feature && !item.weather_badge} /></button>;
+        })}</div>)}
+      </div>
+      <p>{props.editor.notice}</p>
+      {props.editor.detail ? <p>{props.editor.detail}</p> : null}
     </section>
   </>;
 }
@@ -8742,7 +8798,12 @@ function FlightDataCellContents(props: { cell: FlightDataBannerModel["cells"][nu
   const symbol = symbolId ? actionSymbol(symbolId) : undefined;
   return (
     <>
-      <span className="flightDataLabel">{props.cell.label}</span>
+      <span className="flightDataLabel">
+        {props.cell.attention ? <svg className="flightDataAttentionIcon" viewBox="-50 -50 100 100" aria-hidden="true">
+          <RenderNavSymbolLayers layers={dataStatusWarningSymbol} />
+        </svg> : null}
+        {props.cell.label}
+      </span>
       <span className="flightDataValueRow">
         <span className={`flightDataValue${props.cell.value ? "" : " isMissing"}`}>
           {props.cell.value ?? "\u2014"}

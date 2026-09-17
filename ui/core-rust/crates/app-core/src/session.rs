@@ -4769,7 +4769,17 @@ pub fn perform_flight_data_banner_cell_action_in_session(
     let session = &mut *session_guard;
     match cell_id.as_str() {
         crate::barometer::BAROMETER_CELL_ID if session.situation.barometer().available() => {
+            session.situation.altitude_target_mut().close_editor();
             session.situation.barometer_mut().open_editor();
+            changed_session_update_outcome(session)
+        }
+        crate::altitude_target::TARGET_CELL_ID => {
+            session.situation.barometer_mut().close_editor();
+            let barometer = session.situation.barometer().clone();
+            session
+                .situation
+                .altitude_target_mut()
+                .open_editor(&barometer);
             changed_session_update_outcome(session)
         }
         "final_eta" | "clock" => {
@@ -4790,20 +4800,45 @@ pub fn perform_flight_data_banner_cell_action_in_session(
     }
 }
 
-pub fn perform_barometer_command_in_session(
+pub fn perform_flight_data_command_in_session(
     handle: u32,
-    command: crate::BarometerCommand,
+    command: crate::FlightDataCommand,
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
-    run_session_model_transaction(&mut session_guard, |session| {
-        if let crate::BarometerCommand::Observe {
+    // Samples, target altitude, and altimeter calibration are session-local;
+    // they must not serialize and synchronously rewrite settings on every edit.
+    run_session_model_transaction_without_persistence(&mut session_guard, |session| {
+        if let crate::FlightDataCommand::Observe {
             received_epoch_ms, ..
         } = &command
         {
             advance_session_wall_clock(session, *received_epoch_ms);
         }
         let now = session.coordinator.wall_clock_epoch_ms;
+        match &command {
+            crate::FlightDataCommand::SetInput { editor_id, input }
+                if editor_id == crate::altitude_target::TARGET_CELL_ID =>
+            {
+                session
+                    .situation
+                    .altitude_target_mut()
+                    .set_input(input.clone());
+                return Ok(vec![UiInvalidation::SessionSnapshot]);
+            }
+            crate::FlightDataCommand::EditorAction {
+                editor_id,
+                action_id,
+            } if editor_id == crate::altitude_target::TARGET_CELL_ID => {
+                let barometer = session.situation.barometer().clone();
+                session
+                    .situation
+                    .altitude_target_mut()
+                    .action(action_id, &barometer);
+                return Ok(vec![UiInvalidation::SessionSnapshot]);
+            }
+            _ => {}
+        }
         let nearest = barometer_nearest_weather(session);
         session
             .situation
@@ -4839,12 +4874,42 @@ pub fn perform_map_inspection_command_in_session(
 }
 
 fn barometer_nearest_weather(session: &UiSession) -> Option<crate::barometer::NearbyAltimeter> {
-    session.situation.barometer().editor()?;
+    if !session.situation.barometer().available() {
+        return None;
+    }
     crate::barometer::nearest_altimeter(
         session.situation.ownship().render.position,
         session.weather.runtime().metar_payload.as_ref(),
         session.coordinator.wall_clock_epoch_ms,
     )
+}
+
+fn project_barometer_reading(
+    session: &UiSession,
+    nearest: Option<&crate::barometer::NearbyAltimeter>,
+) -> Result<Option<crate::barometer::BarometerReading>, HadReadError> {
+    let mut reading = session
+        .situation
+        .barometer()
+        .reading(session.coordinator.wall_clock_epoch_ms, nearest);
+    if let (Some(store), Some(nearest), Some(editor)) = (
+        session.nav_data.store(),
+        nearest,
+        reading.as_mut().and_then(|reading| reading.editor.as_mut()),
+    ) {
+        // A METAR can exist without an airport (e.g. KSMP). Resolve an actual
+        // NAVDB symbol; absence is valid, but deferred reads must propagate.
+        let airport_id = session
+            .weather
+            .runtime()
+            .weather_station_airport_aliases
+            .as_ref()
+            .and_then(|aliases| aliases.airport_id_for_station(&nearest.station, nearest.position))
+            .unwrap_or(&nearest.station);
+        editor.action_rows[0][0].symbol_feature =
+            crate::had_ops::nav_symbol_feature(store, &NavRef::Airport(airport_id.into()))?;
+    }
+    Ok(reading)
 }
 
 pub fn perform_flight_plan_column_action_in_session(
@@ -12810,6 +12875,9 @@ fn try_snapshot_for_session(
     session
         .situation
         .refresh_ownship_at(session.coordinator.wall_clock_epoch_ms);
+    session
+        .situation
+        .refresh_altitude_target(session.coordinator.wall_clock_epoch_ms);
     let resources = forecast_atmosphere_snapshot_resources(session);
     if !resources.is_empty() {
         return Err(SessionSnapshotProjectionError::NeedResources(resources));
@@ -13025,6 +13093,13 @@ fn try_snapshot_for_session(
                 session
                     .situation
                     .barometer()
+                    .next_refresh(session.coordinator.wall_clock_epoch_ms)
+                    .unwrap_or(i64::MAX),
+            )
+            .min(
+                session
+                    .situation
+                    .altitude_target()
                     .next_refresh(session.coordinator.wall_clock_epoch_ms)
                     .unwrap_or(i64::MAX),
             )
@@ -13998,11 +14073,20 @@ fn project_flight_data_banner(
         }
     }
 
+    let nearest = barometer_nearest_weather(session);
+    let barometer = project_barometer_reading(session, nearest.as_ref())?;
     let banner = flight_data_computer.banner(crate::FlightDataBannerInput {
-        barometer: session.situation.barometer().reading(
-            session.coordinator.wall_clock_epoch_ms,
-            barometer_nearest_weather(session).as_ref(),
+        altitude_target: Some(
+            session
+                .situation
+                .altitude_target()
+                .cell(session.situation.barometer()),
         ),
+        target_editor: session
+            .situation
+            .altitude_target()
+            .editor(session.situation.barometer()),
+        barometer,
         altitude_ft,
         agl_ft,
         vertical_speed_fpm: session
@@ -17669,7 +17753,11 @@ mod tests {
         let row = &snapshot.settings_page_state.rows[0];
         assert_eq!(row.id, "flight_data_visibility");
         assert_eq!(row.kind, "grid_choices");
-        assert_eq!(row.items.len(), 14);
+        assert_eq!(row.items.len(), 15);
+        assert!(row
+            .items
+            .iter()
+            .any(|item| item.cell.id == "altitude_target"));
         assert!(row.items.iter().all(|item| item.enabled));
         assert!(row.items.iter().any(|item| item.cell.id == "clock"));
         assert_eq!(snapshot.settings_page_state.sections.len(), 1);
@@ -18683,7 +18771,7 @@ mod tests {
             Some(storage.clone()),
         )
         .expect("configure platform capabilities");
-        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 14);
+        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 15);
 
         let snapshot = perform_settings_action_in_session(
             init.handle,
@@ -25205,6 +25293,170 @@ mod tests {
     }
 
     #[test]
+    fn flight_data_edits_and_observations_do_not_write_persistent_settings() {
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            // Any accidental write fails the operation, as well as adding avoidable
+            // serialization and synchronous disk work to this transient UI path.
+            session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
+        }
+        let now = 2_000_000_000_000;
+        for second in 0..3 {
+            let time = now + second * 1000;
+            perform_flight_data_command_in_session(
+                init.handle,
+                crate::FlightDataCommand::Observe {
+                    available: true,
+                    pressure_hpa: Some(1000.0),
+                    observed_epoch_ms: time,
+                    received_epoch_ms: time,
+                },
+            )
+            .expect("sensor observations must not write settings");
+        }
+        for editor_id in ["altitude_target", "barometer"] {
+            perform_flight_data_banner_cell_action_in_session(init.handle, editor_id.into())
+                .unwrap();
+            for input in ["2", "29", "29.97"] {
+                perform_flight_data_command_in_session(
+                    init.handle,
+                    crate::FlightDataCommand::SetInput {
+                        editor_id: editor_id.into(),
+                        input: input.into(),
+                    },
+                )
+                .expect("numeric editor typing must not write settings");
+            }
+            perform_flight_data_command_in_session(
+                init.handle,
+                crate::FlightDataCommand::EditorAction {
+                    editor_id: editor_id.into(),
+                    action_id: "close".into(),
+                },
+            )
+            .expect("editor dismissal must not write settings");
+            assert!(get_session_snapshot(init.handle)
+                .unwrap()
+                .app_ui_state
+                .flight_data_banner
+                .editor
+                .is_none());
+        }
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn target_editor_arc_attention_and_expiry_reach_session_projections() {
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        let now = 2_000_000_000_000;
+        for second in 0..=20 {
+            let time = now + second * 1000;
+            push_test_ownship_position(
+                init.handle,
+                LatLon {
+                    lat: 47.5,
+                    lon: -122.3,
+                },
+                time,
+            );
+            let altitude = 2100.0 - second as f64 * 500.0 / 60.0;
+            let pressure =
+                29.92 * 33.863_886_666_7 * (1.0 - altitude * 0.3048 / 44330.0).powf(5.255);
+            perform_flight_data_command_in_session(
+                init.handle,
+                crate::FlightDataCommand::Observe {
+                    available: true,
+                    pressure_hpa: Some(pressure),
+                    observed_epoch_ms: time,
+                    received_epoch_ms: time,
+                },
+            )
+            .unwrap();
+        }
+        perform_flight_data_banner_cell_action_in_session(init.handle, "altitude_target".into())
+            .unwrap();
+        let opened = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(
+            opened.app_ui_state.flight_data_banner.editor.unwrap().id,
+            "altitude_target"
+        );
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::SetInput {
+                editor_id: "altitude_target".into(),
+                input: "1500".into(),
+            },
+        )
+        .unwrap();
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(
+            snapshot
+                .app_ui_state
+                .ownship
+                .render
+                .altitude_intercept
+                .as_ref()
+                .unwrap()
+                .label,
+            "1500 BARO"
+        );
+        let target_cell = |snapshot: UiSessionSnapshot| {
+            snapshot
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .into_iter()
+                .find(|cell| cell.id == "altitude_target")
+                .unwrap()
+        };
+        assert_eq!(
+            snapshot.next_session_snapshot_refresh_epoch_ms,
+            now + 20_500
+        );
+        assert!(target_cell(snapshot).attention.unwrap().highlighted);
+        let blink = get_session_snapshot_at_epoch_ms(init.handle, now + 20_500).unwrap();
+        assert!(!target_cell(blink).attention.unwrap().highlighted);
+        let expired = get_session_snapshot_at_epoch_ms(init.handle, now + 25_000).unwrap();
+        assert!(expired
+            .app_ui_state
+            .ownship
+            .render
+            .altitude_intercept
+            .is_none());
+        assert_eq!(target_cell(expired).label, "TGT BARO");
+        perform_flight_data_banner_cell_action_in_session(init.handle, "barometer".into()).unwrap();
+        let barometer = get_session_snapshot(init.handle)
+            .unwrap()
+            .app_ui_state
+            .flight_data_banner
+            .editor
+            .unwrap();
+        assert_eq!(barometer.id, "barometer");
+        assert_eq!(
+            barometer.notice,
+            "BARO ALT from device is cabin alt. Cross-check."
+        );
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::SetInput {
+                editor_id: "altitude_target".into(),
+                input: "9000".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            target_cell(get_session_snapshot(init.handle).unwrap())
+                .value
+                .as_deref(),
+            Some("1500"),
+            "late input from a closed editor cannot change the target"
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn barometer_nearest_refreshes_when_weather_arrives_and_rechecks_before_applying() {
         let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
         let now = 2_000_000_000_000;
@@ -25213,9 +25465,9 @@ mod tests {
             lon: -122.3,
         };
         push_test_ownship_position(init.handle, position, now);
-        perform_barometer_command_in_session(
+        perform_flight_data_command_in_session(
             init.handle,
-            crate::BarometerCommand::Observe {
+            crate::FlightDataCommand::Observe {
                 available: true,
                 pressure_hpa: Some(1002.64),
                 observed_epoch_ms: now,
@@ -25229,10 +25481,10 @@ mod tests {
                 .unwrap()
                 .app_ui_state
                 .flight_data_banner
-                .barometer_editor
+                .editor
                 .unwrap()
         };
-        assert!(!editor().nearest_enabled);
+        assert!(!editor().action_rows[0][0].enabled);
         {
             let slot = session_slot(init.handle).unwrap();
             let mut session = slot.lock_running().unwrap();
@@ -25261,18 +25513,29 @@ mod tests {
             });
         }
         assert!(
-            editor().nearest_enabled,
+            editor().action_rows[0][0].enabled,
             "arrival of weather must update the already-open editor"
         );
         let snapshot = get_session_snapshot(init.handle).unwrap();
         assert_eq!(snapshot.next_session_snapshot_refresh_epoch_ms, now + 1);
-        perform_barometer_command_in_session(init.handle, crate::BarometerCommand::UseNearest)
-            .unwrap();
-        assert_eq!(editor().input, "29.97");
-        assert!(editor().nearest_detail.unwrap().contains("KBFI"));
-        perform_barometer_command_in_session(
+        perform_flight_data_command_in_session(
             init.handle,
-            crate::BarometerCommand::SetSetting {
+            crate::FlightDataCommand::EditorAction {
+                editor_id: "barometer".into(),
+                action_id: "nearest".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(editor().input, "29.97");
+        assert_eq!(
+            editor().action_rows[0][0].secondary_label.as_deref(),
+            Some("KBFI 80min old")
+        );
+        assert!(editor().detail.is_none());
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::SetInput {
+                editor_id: "barometer".into(),
                 input: "30.01".into(),
             },
         )
@@ -25283,14 +25546,175 @@ mod tests {
             !expired
                 .app_ui_state
                 .flight_data_banner
-                .barometer_editor
+                .editor
                 .unwrap()
-                .nearest_enabled
+                .action_rows[0][0]
+                .enabled
         );
-        perform_barometer_command_in_session(init.handle, crate::BarometerCommand::UseNearest)
-            .unwrap();
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::EditorAction {
+                editor_id: "barometer".into(),
+                action_id: "nearest".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(editor().input, "30.01");
         destroy_session(init.handle);
+    }
+
+    #[test]
+    fn barometer_nearest_symbol_uses_real_airports_and_station_only_weather() {
+        let now = 2_000_000_000_000;
+        let entries: &[(&str, &[u8])] = &[
+            ("navref/symbol/airport/KBFI", br#"{"kind":"airport","label":"KBFI","symbol_kind":"airport","style_class":"airport","towered":true}"#),
+            ("navref/symbol/airport/1S5", br#"{"kind":"airport","label":"1S5","symbol_kind":"airport","style_class":"airport","towered":false}"#),
+        ];
+        let (store, pages) =
+            crate::navkv::nav_kv_store_without_pages_and_pages_for_test(entries, 1024);
+        let mut session = isolated_test_session(Some(store));
+        session.coordinator.wall_clock_epoch_ms = now;
+        session.situation.barometer_mut().apply(
+            crate::FlightDataCommand::Observe {
+                available: true,
+                pressure_hpa: Some(1002.64),
+                observed_epoch_ms: now,
+                received_epoch_ms: now,
+            },
+            now,
+            None,
+        );
+        session.situation.barometer_mut().open_editor();
+        session
+            .weather
+            .runtime_mut()
+            .weather_station_airport_aliases =
+            Some(WeatherStationAirportAliases::from_station_to_airport([(
+                "K1S5".into(),
+                "1S5".into(),
+                LatLon {
+                    lat: 46.327,
+                    lon: -119.970,
+                },
+            )]));
+        for (station, position, airport) in [
+            (
+                "KBFI",
+                LatLon {
+                    lat: 47.530,
+                    lon: -122.302,
+                },
+                Some("KBFI"),
+            ),
+            (
+                "KSMP",
+                LatLon {
+                    lat: 47.276,
+                    lon: -121.337,
+                },
+                None,
+            ),
+            (
+                "K1S5",
+                LatLon {
+                    lat: 46.327,
+                    lon: -119.970,
+                },
+                Some("1S5"),
+            ),
+        ] {
+            let payload = MetarProductPayload {
+                schema_version: 3,
+                version_label: "test".into(),
+                generated_at_utc: None,
+                observed_at_utc: None,
+                metar_count: Some(1),
+                metars_by_station: HashMap::from([(
+                    station.into(),
+                    crate::MetarRecord {
+                        station_id: station.into(),
+                        latitude: position.lat,
+                        longitude: position.lon,
+                        raw_text: format!("METAR {station} 010000Z 00000KT 10SM CLR 10/08 A3006"),
+                        observed_at_utc: Some(
+                            chrono::DateTime::from_timestamp_millis(now - 52 * 60_000)
+                                .unwrap()
+                                .to_rfc3339(),
+                        ),
+                        flight_category: Some("VFR".into()),
+                        clouds: None,
+                    },
+                )]),
+            };
+            let nearest = crate::barometer::nearest_altimeter(Some(position), Some(&payload), now);
+            let store_id = session.nav_data.store_id().unwrap();
+            session.nav_data.clear_pages_if_attached(store_id);
+            assert!(
+                matches!(
+                    project_barometer_reading(&session, nearest.as_ref()),
+                    Err(HadReadError::NeedPages(_))
+                ),
+                "{station}: pending NAVDB is not an absent airport"
+            );
+            for (index, bytes) in pages.iter().enumerate() {
+                session
+                    .nav_data
+                    .insert_page_if_attached(store_id, index as u32, bytes);
+            }
+            let editor = project_barometer_reading(&session, nearest.as_ref())
+                .unwrap()
+                .unwrap()
+                .editor
+                .unwrap();
+            assert!(editor.title.is_none());
+            assert_eq!(editor.unit, "inHg");
+            assert!(editor.detail.is_none());
+            assert_eq!(editor.action_rows.len(), 1);
+            assert_eq!(editor.action_rows[0].len(), 1);
+            let button = &editor.action_rows[0][0];
+            assert!(button.enabled);
+            assert_eq!(button.label, "NEAREST");
+            assert_eq!(button.secondary_label, Some(format!("{station} 52min old")));
+            assert_eq!(
+                button
+                    .symbol_feature
+                    .as_ref()
+                    .map(|symbol| symbol.label.as_str()),
+                airport
+            );
+            assert_eq!(
+                button.weather_badge.as_ref().unwrap().flight_category,
+                "vfr"
+            );
+            session.situation.barometer_mut().apply(
+                crate::FlightDataCommand::EditorAction {
+                    editor_id: "barometer".into(),
+                    action_id: "nearest".into(),
+                },
+                now,
+                nearest.as_ref(),
+            );
+            assert_eq!(
+                session.situation.barometer().editor().unwrap().input,
+                "30.06"
+            );
+
+            let expired = crate::barometer::nearest_altimeter(
+                Some(position),
+                Some(&payload),
+                now + 29 * 60_000,
+            );
+            let editor = project_barometer_reading(&session, expired.as_ref())
+                .unwrap()
+                .unwrap()
+                .editor
+                .unwrap();
+            let button = &editor.action_rows[0][0];
+            assert!(!button.enabled);
+            assert!(button.secondary_label.is_none());
+            assert!(button.weather_badge.is_none());
+            assert!(button.symbol_feature.is_none());
+        }
     }
 
     #[test]
@@ -25305,13 +25729,14 @@ mod tests {
             .iter()
             .any(|cell| cell.id == "barometer"));
 
-        let observation = |time| crate::BarometerCommand::Observe {
+        let observation = |time| crate::FlightDataCommand::Observe {
             available: true,
             pressure_hpa: Some(1002.64),
             observed_epoch_ms: time,
             received_epoch_ms: time,
         };
-        let outcome = perform_barometer_command_in_session(init.handle, observation(now)).unwrap();
+        let outcome =
+            perform_flight_data_command_in_session(init.handle, observation(now)).unwrap();
         let HadOperationOutcome::Complete {
             result,
             invalidations,
@@ -25326,9 +25751,10 @@ mod tests {
             "sensor pushes must publish a flight-data update without another click"
         );
         perform_flight_data_banner_cell_action_in_session(init.handle, "barometer".into()).unwrap();
-        perform_barometer_command_in_session(
+        perform_flight_data_command_in_session(
             init.handle,
-            crate::BarometerCommand::SetSetting {
+            crate::FlightDataCommand::SetInput {
+                editor_id: "barometer".into(),
                 input: "29.97".into(),
             },
         )
@@ -25343,7 +25769,7 @@ mod tests {
         assert_eq!(cell.label, "BARO ft");
         assert_eq!(cell.value.as_deref(), Some("336"));
         assert!(cell.action.is_some());
-        assert_eq!(banner.barometer_editor.as_ref().unwrap().input, "29.97");
+        assert_eq!(banner.editor.as_ref().unwrap().input, "29.97");
         assert_eq!(
             snapshot.app_ui_state.ownship.render,
             before.app_ui_state.ownship.render
@@ -25362,7 +25788,7 @@ mod tests {
                 .value,
             None
         );
-        perform_barometer_command_in_session(init.handle, observation(now + 6_000)).unwrap();
+        perform_flight_data_command_in_session(init.handle, observation(now + 6_000)).unwrap();
         let recovered = get_session_snapshot(init.handle).unwrap();
         assert_eq!(
             recovered
@@ -25376,13 +25802,19 @@ mod tests {
                 .as_deref(),
             Some("336")
         );
-        perform_barometer_command_in_session(init.handle, crate::BarometerCommand::CloseEditor)
-            .unwrap();
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::EditorAction {
+                editor_id: "barometer".into(),
+                action_id: "close".into(),
+            },
+        )
+        .unwrap();
         assert!(get_session_snapshot(init.handle)
             .unwrap()
             .app_ui_state
             .flight_data_banner
-            .barometer_editor
+            .editor
             .is_none());
     }
 

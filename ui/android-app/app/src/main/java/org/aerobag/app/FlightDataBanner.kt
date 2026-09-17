@@ -5,6 +5,7 @@
 package org.aerobag.app
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -27,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -35,6 +37,7 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
@@ -71,9 +74,9 @@ internal fun FlightDataBanner(
     uiTheme: UiTheme,
     modifier: Modifier = Modifier,
     onCellActivated: (String) -> Unit,
-    onBarometerCommand: (org.aerobag.app.generated.BarometerCommand) -> Unit,
+    onFlightDataCommand: (org.aerobag.app.generated.FlightDataCommand) -> Unit,
 ) {
-    banner.barometerEditor?.let { BarometerSettingTray(it, onBarometerCommand) }
+    banner.editor?.let { FlightDataSettingTray(it, onFlightDataCommand) }
     val cells = banner.cells
     if (cells.isEmpty() || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
         return
@@ -269,6 +272,7 @@ private fun FlightDataBannerCell(
     )
     Box(
         modifier = modifier
+            .semantics { cell.attention?.let { stateDescription = it.message } }
             .width(cellWidth)
             .height(cellHeight)
             .clip(shape)
@@ -279,7 +283,7 @@ private fun FlightDataBannerCell(
                     drawRect(foregroundOverlay)
                 }
             }
-            .border(1.dp, uiTheme.controls.flightDataBorder, shape)
+            .border(1.dp, if (cell.attention?.highlighted == true) uiTheme.controls.dataStatusCautionBg else uiTheme.controls.flightDataBorder, shape)
             .padding(horizontal = ThumbSize * 0.08f, vertical = FlightDataCellVerticalPadding),
         contentAlignment = Alignment.Center,
     ) {
@@ -287,18 +291,30 @@ private fun FlightDataBannerCell(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(FlightDataTextGap),
         ) {
-            FittedSingleLineText(
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              cell.attention?.let {
+                Canvas(Modifier.size(14.dp).padding(end = 2.dp)) {
+                    val scale = size.minDimension / 100f
+                    org.aerobag.app.generated.dataStatusWarningSymbol(Offset(size.width / 2, size.height / 2), scale).forEach { layer ->
+                        drawNavSymbolLayer(layer, scale, uiTheme, mapOf("data_status_symbol_ink" to
+                            if (it.highlighted) uiTheme.controls.dataStatusCautionBg else uiTheme.controls.flightDataLabel))
+                    }
+                }
+              }
+              FittedSingleLineText(
                 text = cell.label,
-                color = uiTheme.controls.flightDataLabel,
+                color = if (cell.attention?.highlighted == true) uiTheme.controls.dataStatusCautionBg else uiTheme.controls.flightDataLabel,
                 style = labelStyle,
                 textAlign = TextAlign.Center,
                 minFontSize = 9.5.sp,
                 modifier = Modifier.fillMaxWidth(),
-            )
+              )
+            }
             Box(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     text = cell.value ?: "\u2014",
-                    color = if (cell.value == null) uiTheme.controls.flightDataMissingValue else uiTheme.controls.flightDataValue,
+                    color = if (cell.attention?.highlighted == true) uiTheme.controls.dataStatusCautionBg
+                        else if (cell.value == null) uiTheme.controls.flightDataMissingValue else uiTheme.controls.flightDataValue,
                     style = valueStyle,
                     textAlign = TextAlign.Center,
                     maxLines = 1,

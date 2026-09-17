@@ -3208,8 +3208,16 @@ internal fun AerobagApp(
     LaunchedEffect(uiSession, barometerLifecycle) {
         barometerLifecycle.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
             AndroidBarometerSource(appContext).observations().collect { observation ->
-                applyBackgroundSessionCommand("observeBarometer", "AerobagBarometer") {
-                    uiSession.performBarometerCommand(observation)
+                try {
+                    applySessionSnapshot(uiSessionWorkRunner.awaitFlightDataObservation(observation))
+                } catch (error: Throwable) {
+                    if (error is NativeSessionCommandRejectedException) {
+                        recoverSessionCommandFailure(error, notifyUser = false)
+                    } else if (error is CancellationException) {
+                        throw error
+                    } else {
+                        Log.w("AerobagBarometer", "barometer observation failed", error)
+                    }
                 }
             }
         }

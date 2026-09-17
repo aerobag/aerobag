@@ -375,10 +375,7 @@ export type FlightPlanDisplayRowUiView = {
   action_matrix?: FlightPlanRowActionUiView[][];
 };
 
-export type FlightPlanWeatherBadgeUiView = {
-  flight_category: string;
-  ceiling_amount: string;
-};
+export type FlightPlanWeatherBadgeUiView = import("../generated/sessionPageWire").FlightPlanWeatherBadgeUiView;
 
 export type PlateProcedureLoadCandidateInput = {
   airport_id: string;
@@ -643,6 +640,7 @@ export type OwnshipSourceStatusUpdate = {
 };
 
 export type OwnshipRenderState = {
+  altitude_intercept?: import("../generated/sessionPageWire").GeographicLineAnnotation | null;
   mode: OwnshipMode;
   banner_text: string;
   banner_severity: OwnshipBannerSeverity;

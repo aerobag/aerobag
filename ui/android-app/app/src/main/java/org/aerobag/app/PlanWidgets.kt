@@ -357,134 +357,136 @@ internal fun PlanWaypointSymbol(
     modifier: Modifier = Modifier,
     weatherBadge: FlightPlanWeatherBadgeUiView? = null,
 ) {
-    if (feature == null) {
+    if (feature == null && weatherBadge == null) {
         return
     }
     val uiTheme = LocalAerobagUiTheme.current
     Canvas(modifier = modifier.size(ThumbSize * 0.78f)) {
         val scale = size.minDimension / 40f
         val center = Offset(size.width / 2f, size.height / 2f)
-        val fixMarkerStrokeColor = Color(0xB3081218)
-        val fixMarkerFillColor = uiTheme.aviation.intersectionCyan
-        val airportMarkerStrokeColor = Color(0xB3081218)
-        val airportFillColor = if (feature.towered) uiTheme.aviation.classBDBlue else uiTheme.aviation.classCMagenta
-        val openAirportStrokeColor = uiTheme.aviation.classCMagenta
-        val vorMarkerColor = uiTheme.aviation.classBDBlue
-        when (feature.symbolKind) {
-            "airport" -> {
-                val usesOpenAirportCircle =
-                    feature.heliport == true ||
-                        feature.hasWaterRunway == true ||
-                        feature.hasPavedRunway == false
-                if (usesOpenAirportCircle) {
-                    airportOpenMarkerSymbol(center, scale).forEach { layer ->
+        if (feature != null) {
+            val fixMarkerStrokeColor = Color(0xB3081218)
+            val fixMarkerFillColor = uiTheme.aviation.intersectionCyan
+            val airportMarkerStrokeColor = Color(0xB3081218)
+            val airportFillColor = if (feature.towered) uiTheme.aviation.classBDBlue else uiTheme.aviation.classCMagenta
+            val openAirportStrokeColor = uiTheme.aviation.classCMagenta
+            val vorMarkerColor = uiTheme.aviation.classBDBlue
+            when (feature.symbolKind) {
+                "airport" -> {
+                    val usesOpenAirportCircle =
+                        feature.heliport == true ||
+                            feature.hasWaterRunway == true ||
+                            feature.hasPavedRunway == false
+                    if (usesOpenAirportCircle) {
+                        airportOpenMarkerSymbol(center, scale).forEach { layer ->
+                            drawNavSymbolLayer(layer, scale, uiTheme)
+                        }
+                    } else if (feature.fuelAvailable) {
+                        val markerPath = airportFuelMarkerPath(center, scale)
+                        drawPath(markerPath, airportFillColor)
+                        drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
+                    } else {
+                        val markerPath = airportCircleMarkerPath(center, scale)
+                        drawPath(markerPath, airportFillColor)
+                        drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
+                    }
+                    if (feature.heliport == true) {
+                        val heliportPath = heliportHPath(center, scale)
+                        drawPath(
+                            heliportPath,
+                            openAirportStrokeColor,
+                            style = Stroke(width = 2.4f * scale, cap = StrokeCap.Round),
+                        )
+                    } else if (feature.hasWaterRunway == true) {
+                        rotate(15f, center) {
+                            val anchorPath = seaplaneAnchorPath(center, scale)
+                            drawPath(
+                                anchorPath,
+                                openAirportStrokeColor,
+                                style = Stroke(width = 2.2f * scale, cap = StrokeCap.Round),
+                            )
+                        }
+                    }
+                    if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { heading ->
+                        val runwayHalfLength = 8f * feature.runwayLengthRatio.coerceAtLeast(0.2).toFloat() * scale
+                        rotate(heading.toFloat(), center) {
+                            drawLine(
+                                color = airportMarkerStrokeColor,
+                                start = Offset(center.x, center.y - runwayHalfLength),
+                                end = Offset(center.x, center.y + runwayHalfLength),
+                                strokeWidth = 5f * scale,
+                                cap = StrokeCap.Round,
+                            )
+                            drawLine(
+                                color = Color.White,
+                                start = Offset(center.x, center.y - runwayHalfLength),
+                                end = Offset(center.x, center.y + runwayHalfLength),
+                                strokeWidth = 3f * scale,
+                                cap = StrokeCap.Round,
+                            )
+                        }
+                    }
+                }
+
+                "nav" -> {
+                    val radius = 8f * scale
+                    val outerHex = vorOuterHexPath(center, radius)
+                    val band = vorBandPath(center, radius)
+                    drawPath(band, vorMarkerColor)
+                    drawPath(band, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
+                    drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
+                }
+
+                "weather_camera" -> {
+                    weatherCameraSymbol(center, scale).forEach { layer ->
                         drawNavSymbolLayer(layer, scale, uiTheme)
                     }
-                } else if (feature.fuelAvailable) {
-                    val markerPath = airportFuelMarkerPath(center, scale)
-                    drawPath(markerPath, airportFillColor)
-                    drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
-                } else {
-                    val markerPath = airportCircleMarkerPath(center, scale)
-                    drawPath(markerPath, airportFillColor)
-                    drawPath(markerPath, airportMarkerStrokeColor, style = Stroke(width = 2f * scale))
                 }
-                if (feature.heliport == true) {
-                    val heliportPath = heliportHPath(center, scale)
+
+                "obstacle" -> {
+                    val isTallObstacle = feature.obstacleVariant == "tall"
+                    val obstaclePath = if (isTallObstacle) {
+                        obstacleTallPath(center, scale)
+                    } else {
+                        obstacleShortPath(center, scale)
+                    }
+                    val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
+                    val obstacleColor = obstacleToneColor(uiTheme, feature.obstacleTone)
+                    val obstacleUnderColor = uiTheme.aviation.obstacleUnder
                     drawPath(
-                        heliportPath,
-                        openAirportStrokeColor,
-                        style = Stroke(width = 2.4f * scale, cap = StrokeCap.Round),
+                        obstaclePath,
+                        obstacleUnderColor,
+                        style = Stroke(width = 2.4f * scale, join = StrokeJoin.Miter),
                     )
-                } else if (feature.hasWaterRunway == true) {
-                    rotate(15f, center) {
-                        val anchorPath = seaplaneAnchorPath(center, scale)
-                        drawPath(
-                            anchorPath,
-                            openAirportStrokeColor,
-                            style = Stroke(width = 2.2f * scale, cap = StrokeCap.Round),
-                        )
-                    }
+                    drawPath(
+                        obstaclePath,
+                        obstacleColor,
+                        style = Stroke(width = 1.2f * scale, join = StrokeJoin.Miter),
+                    )
+                    drawCircle(
+                        color = obstacleUnderColor,
+                        radius = obstacleDotRadius * scale,
+                        center = Offset(center.x, center.y + dotY * scale),
+                    )
+                    drawCircle(
+                        color = obstacleColor,
+                        radius = obstacleDotRadius * scale,
+                        center = Offset(center.x, center.y + dotY * scale),
+                    )
                 }
-                if (!usesOpenAirportCircle) feature.longestRunwayHeadingTrueDeg?.let { heading ->
-                    val runwayHalfLength = 8f * feature.runwayLengthRatio.coerceAtLeast(0.2).toFloat() * scale
-                    rotate(heading.toFloat(), center) {
-                        drawLine(
-                            color = airportMarkerStrokeColor,
-                            start = Offset(center.x, center.y - runwayHalfLength),
-                            end = Offset(center.x, center.y + runwayHalfLength),
-                            strokeWidth = 5f * scale,
-                            cap = StrokeCap.Round,
-                        )
-                        drawLine(
-                            color = Color.White,
-                            start = Offset(center.x, center.y - runwayHalfLength),
-                            end = Offset(center.x, center.y + runwayHalfLength),
-                            strokeWidth = 3f * scale,
-                            cap = StrokeCap.Round,
-                        )
-                    }
+
+                else -> {
+                    val triangle = fixTrianglePath(center, 8f * scale)
+                    drawPath(triangle, fixMarkerFillColor)
+                    drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * scale))
                 }
-            }
-
-            "nav" -> {
-                val radius = 8f * scale
-                val outerHex = vorOuterHexPath(center, radius)
-                val band = vorBandPath(center, radius)
-                drawPath(band, vorMarkerColor)
-                drawPath(band, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
-                drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
-            }
-
-            "weather_camera" -> {
-                weatherCameraSymbol(center, scale).forEach { layer ->
-                    drawNavSymbolLayer(layer, scale, uiTheme)
-                }
-            }
-
-            "obstacle" -> {
-                val isTallObstacle = feature.obstacleVariant == "tall"
-                val obstaclePath = if (isTallObstacle) {
-                    obstacleTallPath(center, scale)
-                } else {
-                    obstacleShortPath(center, scale)
-                }
-                val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
-                val obstacleColor = obstacleToneColor(uiTheme, feature.obstacleTone)
-                val obstacleUnderColor = uiTheme.aviation.obstacleUnder
-                drawPath(
-                    obstaclePath,
-                    obstacleUnderColor,
-                    style = Stroke(width = 2.4f * scale, join = StrokeJoin.Miter),
-                )
-                drawPath(
-                    obstaclePath,
-                    obstacleColor,
-                    style = Stroke(width = 1.2f * scale, join = StrokeJoin.Miter),
-                )
-                drawCircle(
-                    color = obstacleUnderColor,
-                    radius = obstacleDotRadius * scale,
-                    center = Offset(center.x, center.y + dotY * scale),
-                )
-                drawCircle(
-                    color = obstacleColor,
-                    radius = obstacleDotRadius * scale,
-                    center = Offset(center.x, center.y + dotY * scale),
-                )
-            }
-
-            else -> {
-                val triangle = fixTrianglePath(center, 8f * scale)
-                drawPath(triangle, fixMarkerFillColor)
-                drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * scale))
             }
         }
         weatherBadge?.let { badge ->
             drawMetarDisc(
                 flightCategory = badge.flightCategory,
                 ceilingAmount = badge.ceilingAmount,
-                center = Offset(center.x + 10f * scale, center.y + 10f * scale),
+                center = if (feature == null) center else Offset(center.x + 10f * scale, center.y + 10f * scale),
                 densityScale = scale,
                 uiTheme = uiTheme,
             )

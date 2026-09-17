@@ -1754,15 +1754,17 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
     fun performFlightDataBannerCellAction(cellId: String): UiSessionSnapshot {
         return runPagedSnapshot("performFlightDataBannerCellAction") {
             bridge.performFlightDataBannerCellActionInSessionJson(handle, cellId)
         }
     }
 
-    fun performBarometerCommand(command: org.aerobag.app.generated.BarometerCommand): UiSessionSnapshot {
-        return runPagedSnapshot("performBarometerCommand") {
-            bridge.performBarometerCommandInSessionJson(handle, json.encodeToString(command))
+    @RawUiSessionWorkApi
+    fun performFlightDataCommand(command: org.aerobag.app.generated.FlightDataCommand): UiSessionSnapshot {
+        return runPagedSnapshot("performFlightDataCommand") {
+            bridge.performFlightDataCommandInSessionJson(handle, json.encodeToString(command))
         }
     }
 
@@ -2275,6 +2277,7 @@ private fun OwnshipSelection.toWire(): WireOwnshipSelection = when (this) {
 }
 
 private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
+    altitude_intercept = altitudeIntercept,
     mode = mode.toWire(),
     banner_text = bannerText,
     banner_severity = bannerSeverity.toWire(),
@@ -2363,6 +2366,7 @@ private fun WireOwnshipSelection.toUi(): OwnshipSelection = when (this) {
 }
 
 private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
+    altitudeIntercept = altitude_intercept,
     mode = mode.toUi(),
     bannerText = banner_text,
     bannerSeverity = banner_severity.toUi(),
@@ -4354,6 +4358,7 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
 )
 
 private fun WireFlightDataCell.toUi() = FlightDataCell(
+    attention = attention,
     id = id,
     label = label,
     value = value,
@@ -4369,6 +4374,7 @@ private fun WireFlightDataCell.toUi() = FlightDataCell(
 )
 
 private fun FlightDataCell.toWire() = WireFlightDataCell(
+    attention = attention,
     id = id,
     label = label,
     value = value,
@@ -4400,7 +4406,7 @@ private fun WireFlightDataColumn.toUi() = FlightDataColumn(
 
 private fun WireFlightDataBannerModel.toUi() = FlightDataBannerModel(
     cells = cells.map { it.toUi() },
-    barometerEditor = barometerEditor,
+    editor = editor,
 )
 
 private fun FlightDataColumn.toWire() = WireFlightDataColumn(

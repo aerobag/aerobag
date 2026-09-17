@@ -247,6 +247,8 @@ impl ResolvedOwnshipState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnshipRenderState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub altitude_intercept: Option<app_ui_contracts::session::GeographicLineAnnotation>,
     pub mode: OwnshipMode,
     pub banner_text: String,
     pub banner_severity: OwnshipBannerSeverity,
@@ -820,6 +822,7 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
         crate::terrain_altitude_bucket_ft(altitude_msl_ft.or(pressure_altitude_ft));
 
     OwnshipRenderState {
+        altitude_intercept: None,
         mode: resolved.mode,
         banner_text: resolved.banner_text.clone(),
         banner_severity: resolved.banner_severity,
@@ -845,20 +848,32 @@ fn filtered_vertical_speed_fpm(
     latest: &SituationSample,
 ) -> Option<f64> {
     sample_altitude_ft(latest).filter(|altitude_ft| altitude_ft.is_finite())?;
-    let points = source
-        .recent_samples
-        .iter()
-        .filter_map(|sample| {
-            let age_ms = latest
-                .event_time_epoch_ms
-                .checked_sub(sample.event_time_epoch_ms)?;
+    estimate_vertical_speed_fpm(
+        source.recent_samples.iter().filter_map(|sample| {
+            Some((
+                sample.event_time_epoch_ms,
+                sample_altitude_ft(sample)?,
+                sample.vertical_accuracy_m,
+            ))
+        }),
+        latest.event_time_epoch_ms,
+    )
+}
+
+pub(crate) fn estimate_vertical_speed_fpm(
+    samples: impl Iterator<Item = (i64, f64, Option<f64>)>,
+    latest_epoch_ms: i64,
+) -> Option<f64> {
+    let points = samples
+        .filter_map(|(time, altitude_ft, accuracy)| {
+            let age_ms = latest_epoch_ms.checked_sub(time)?;
             if !(0..=VERTICAL_SPEED_HISTORY_RETENTION_MS).contains(&age_ms) {
                 return None;
             }
-            let altitude_ft =
-                sample_altitude_ft(sample).filter(|altitude_ft| altitude_ft.is_finite())?;
-            let accuracy_m = sample
-                .vertical_accuracy_m
+            if !altitude_ft.is_finite() {
+                return None;
+            }
+            let accuracy_m = accuracy
                 .filter(|accuracy_m| accuracy_m.is_finite() && *accuracy_m > 0.0)
                 .unwrap_or(VERTICAL_SPEED_DEFAULT_ACCURACY_M)
                 .clamp(VERTICAL_SPEED_MIN_ACCURACY_M, VERTICAL_SPEED_MAX_ACCURACY_M);

@@ -1255,7 +1255,7 @@ mod tests {
 
     fn banner() -> FlightDataBannerModel {
         FlightDataBannerModel {
-            barometer_editor: None,
+            editor: None,
             cells: vec![
                 FlightDataCell {
                     id: "altitude".to_string(),
@@ -1264,6 +1264,7 @@ mod tests {
                     action: None,
                     tone: Default::default(),
                     estimate_kind: Default::default(),
+                    attention: None,
                 },
                 FlightDataCell {
                     id: "nexrad_age".to_string(),
@@ -1272,6 +1273,7 @@ mod tests {
                     action: None,
                     tone: Default::default(),
                     estimate_kind: Default::default(),
+                    attention: None,
                 },
             ],
         }

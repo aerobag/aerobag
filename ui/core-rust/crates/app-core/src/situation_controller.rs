@@ -41,6 +41,7 @@ pub(crate) struct PlanPreviewPointer {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct SituationModel {
     barometer: crate::barometer::Barometer,
+    altitude_target: crate::altitude_target::AltitudeTarget,
     ownship: OwnshipState,
     playback: PlaybackSessionState,
     plan_preview: PlanPreviewState,
@@ -81,6 +82,25 @@ pub(crate) struct SituationController {
 }
 
 impl SituationController {
+    pub fn altitude_target(&self) -> &crate::altitude_target::AltitudeTarget {
+        &self.model.altitude_target
+    }
+
+    pub fn altitude_target_mut(&mut self) -> &mut crate::altitude_target::AltitudeTarget {
+        self.note_change();
+        &mut self.model.altitude_target
+    }
+
+    pub fn refresh_altitude_target(&mut self, now: i64) {
+        if self
+            .model
+            .altitude_target
+            .refresh(&self.model.ownship, &self.model.barometer, now)
+        {
+            self.note_change();
+        }
+    }
+
     pub fn barometer(&self) -> &crate::barometer::Barometer {
         &self.model.barometer
     }
@@ -303,7 +323,10 @@ impl SituationController {
         }
         let projection = SituationProjection {
             ownship: OwnshipUiState {
-                render: self.model.ownship.render.clone(),
+                render: crate::OwnshipRenderState {
+                    altitude_intercept: self.model.altitude_target.annotation(),
+                    ..self.model.ownship.render.clone()
+                },
                 controls: self.model.ownship.controls.clone(),
             },
             playback_ui_state: self.model.playback.ui_state(),

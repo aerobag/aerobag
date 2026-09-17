@@ -51,8 +51,9 @@ fn session_schema() -> Value {
     add_definition::<session::FlightPlanControlUiView>(&mut root, "FlightPlanControlUiView");
     add_definition::<session::FlightDataColumn>(&mut root, "FlightDataColumn");
     add_definition::<session::FlightDataBannerModel>(&mut root, "FlightDataBannerModel");
-    add_definition::<session::BarometerCommand>(&mut root, "BarometerCommand");
     add_definition::<session::MapInspectionCommand>(&mut root, "MapInspectionCommand");
+    add_definition::<session::FlightDataCommand>(&mut root, "FlightDataCommand");
+    add_definition::<session::GeographicLineAnnotation>(&mut root, "GeographicLineAnnotation");
     add_definition::<session::MapLayerId>(&mut root, "MapLayerId");
     add_definition::<session::DebugFlagId>(&mut root, "DebugFlagId");
     root
@@ -198,8 +199,14 @@ fn main() {
                 "FlightDataCell",
                 "FlightDataColumn",
                 "FlightDataBannerModel",
-                "BarometerEditor",
-                "BarometerCommand",
+                "FlightDataEditor",
+                "FlightDataCommand",
+                "FlightDataEditorAction",
+                "FlightDataInputCorrection",
+                "FlightPlanWeatherBadgeUiView",
+                "FlightDataAttention",
+                "GeographicLineAnnotation",
+                "GeographicAnnotationPoint",
                 "UiStatusSeverity",
                 "UiStatusActionStyle",
                 "UiStatusAction",
@@ -266,7 +273,7 @@ fn main() {
             ],
             tagged_unions: &[
                 ("UiStatusPlatformEffect", "kind"),
-                ("BarometerCommand", "kind"),
+                ("FlightDataCommand", "kind"),
             ],
             schema: session_schema,
         },

@@ -1,139 +1,5 @@
 {
   "$defs": {
-    "BarometerCommand": {
-      "description": "Device observations and UI inputs are interpreted by the same core-owned altimeter.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "available": {
-              "type": "boolean"
-            },
-            "kind": {
-              "const": "observe",
-              "type": "string"
-            },
-            "observed_epoch_ms": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "pressure_hpa": {
-              "format": "double",
-              "type": [
-                "number",
-                "null"
-              ]
-            },
-            "received_epoch_ms": {
-              "format": "int64",
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "available",
-            "observed_epoch_ms",
-            "received_epoch_ms"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "input": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "set_setting",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "input"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "use_nearest",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "close_editor",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        }
-      ],
-      "title": "BarometerCommand",
-      "x-discriminator": "kind"
-    },
-    "BarometerEditor": {
-      "additionalProperties": false,
-      "properties": {
-        "close_label": {
-          "type": "string"
-        },
-        "error": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "input": {
-          "type": "string"
-        },
-        "input_revision": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "label": {
-          "type": "string"
-        },
-        "nearest_detail": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "nearest_enabled": {
-          "type": "boolean"
-        },
-        "nearest_label": {
-          "type": "string"
-        },
-        "title": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "title",
-        "label",
-        "input",
-        "input_revision",
-        "nearest_label",
-        "nearest_enabled",
-        "close_label"
-      ],
-      "type": "object"
-    },
     "ClientBuildInfo": {
       "additionalProperties": false,
       "properties": {
@@ -184,24 +50,40 @@
       "title": "DebugFlagId",
       "type": "string"
     },
+    "FlightDataAttention": {
+      "additionalProperties": false,
+      "properties": {
+        "highlighted": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "highlighted"
+      ],
+      "type": "object"
+    },
     "FlightDataBannerModel": {
       "additionalProperties": false,
       "properties": {
-        "barometer_editor": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/BarometerEditor"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "cells": {
           "items": {
             "$ref": "#/$defs/FlightDataCell"
           },
           "type": "array"
+        },
+        "editor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlightDataEditor"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -217,6 +99,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/FlightDataCellAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlightDataAttention"
             },
             {
               "type": "null"
@@ -301,6 +193,262 @@
       "title": "FlightDataColumn",
       "type": "object"
     },
+    "FlightDataCommand": {
+      "description": "Device observations and UI inputs are interpreted by the same core-owned altimeter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "observe",
+              "type": "string"
+            },
+            "observed_epoch_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "pressure_hpa": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "received_epoch_ms": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "available",
+            "observed_epoch_ms",
+            "received_epoch_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "editor_id": {
+              "type": "string"
+            },
+            "input": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "set_input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "editor_id",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action_id": {
+              "type": "string"
+            },
+            "editor_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "editor_action",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "editor_id",
+            "action_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "FlightDataCommand",
+      "x-discriminator": "kind"
+    },
+    "FlightDataEditor": {
+      "additionalProperties": false,
+      "properties": {
+        "action_rows": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/FlightDataEditorAction"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "close_label": {
+          "type": "string"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dismiss_action_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "input_correction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlightDataInputCorrection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "description": "Accessible input name, not another visible heading.",
+          "type": "string"
+        },
+        "notice": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": "string"
+        },
+        "warning": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "unit",
+        "input",
+        "input_revision",
+        "notice",
+        "action_rows",
+        "dismiss_action_id",
+        "close_label"
+      ],
+      "type": "object"
+    },
+    "FlightDataEditorAction": {
+      "additionalProperties": false,
+      "properties": {
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "secondary_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selected": {
+          "type": "boolean"
+        },
+        "symbol_feature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NavSymbolFeature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "weather_badge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlightPlanWeatherBadgeUiView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "enabled",
+        "selected"
+      ],
+      "type": "object"
+    },
+    "FlightDataInputCorrection": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "description": "Apply only to this exact local edit buffer, never to newer typing.",
+          "type": "string"
+        },
+        "start": {
+          "description": "UTF-16 offsets, matching native and browser text selections.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "start",
+        "end",
+        "text"
+      ],
+      "type": "object"
+    },
     "FlightEstimateKind": {
       "enum": [
         "basic",
@@ -354,6 +502,70 @@
         "selected"
       ],
       "title": "FlightPlanControlUiView",
+      "type": "object"
+    },
+    "FlightPlanWeatherBadgeUiView": {
+      "additionalProperties": false,
+      "properties": {
+        "ceiling_amount": {
+          "type": "string"
+        },
+        "flight_category": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "flight_category",
+        "ceiling_amount"
+      ],
+      "type": "object"
+    },
+    "GeographicAnnotationPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "GeographicLineAnnotation": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "label_bearing_deg": {
+          "description": "Clockwise from true north; the map's shared transform supplies screen rotation.",
+          "format": "double",
+          "type": "number"
+        },
+        "label_position": {
+          "$ref": "#/$defs/GeographicAnnotationPoint"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/GeographicAnnotationPoint"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "points",
+        "label_position",
+        "label_bearing_deg",
+        "label"
+      ],
+      "title": "GeographicLineAnnotation",
       "type": "object"
     },
     "LiveFeedAcquisitionPolicy": {
@@ -2606,7 +2818,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 17,
+  "x-contract-version": 18,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -2632,8 +2844,14 @@
     "FlightDataCell",
     "FlightDataColumn",
     "FlightDataBannerModel",
-    "BarometerEditor",
-    "BarometerCommand",
+    "FlightDataEditor",
+    "FlightDataCommand",
+    "FlightDataEditorAction",
+    "FlightDataInputCorrection",
+    "FlightPlanWeatherBadgeUiView",
+    "FlightDataAttention",
+    "GeographicLineAnnotation",
+    "GeographicAnnotationPoint",
     "UiStatusSeverity",
     "UiStatusActionStyle",
     "UiStatusAction",

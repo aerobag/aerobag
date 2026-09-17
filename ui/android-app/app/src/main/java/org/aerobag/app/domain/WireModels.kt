@@ -107,6 +107,7 @@ data class WireResolvedOwnshipState(
 
 @Serializable
 data class WireOwnshipRenderState(
+    val altitude_intercept: org.aerobag.app.generated.GeographicLineAnnotation? = null,
     val mode: WireOwnshipMode = WireOwnshipMode.None,
     val banner_text: String = "NO GPS POSITION",
     val banner_severity: WireOwnshipBannerSeverity = WireOwnshipBannerSeverity.Warning,

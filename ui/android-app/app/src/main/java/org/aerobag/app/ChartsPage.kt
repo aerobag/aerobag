@@ -830,9 +830,13 @@ internal fun ChartsPage(
                 situationDockTopPadding = situationDockTopPadding,
                 uiTheme = uiTheme,
                 onCellActivated = { cellId ->
-                    applySessionCommand { uiSession.performFlightDataBannerCellAction(cellId) }
+                    sessionWorkRunner.submitFlightDataBannerCellAction(cellId,
+                        onResult = onSessionSnapshotChange, onError = onSessionCommandFailure)
                 },
-                onBarometerCommand = { command -> applySessionCommand { uiSession.performBarometerCommand(command) } },
+                onFlightDataCommand = { command ->
+                    sessionWorkRunner.submitFlightDataCommand(command,
+                        onResult = onSessionSnapshotChange, onError = onSessionCommandFailure)
+                },
                 modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
             )
         }
@@ -2191,6 +2195,7 @@ internal fun MenuPanelRow(
     modifier: Modifier = Modifier,
     width: Dp = Dp.Unspecified,
     maxLines: Int = 2,
+    secondaryLabel: String? = null,
     onSelect: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -2263,7 +2268,7 @@ internal fun MenuPanelRow(
                     .background(renderedAccentColor),
             )
         }
-        if (iconResId != null || toggleState != null || accessoryIconResId != null || trailingContent != null) {
+        if (iconResId != null || toggleState != null || accessoryIconResId != null || trailingContent != null || secondaryLabel != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2277,14 +2282,19 @@ internal fun MenuPanelRow(
                         modifier = Modifier.size(ThumbSize * 0.72f),
                     )
                 }
-                Text(
-                    text = renderedLabel,
-                    modifier = Modifier.weight(1f),
-                    style = renderedLabelStyle,
-                    maxLines = maxLines,
-                    overflow = TextOverflow.Ellipsis,
-                    color = rowTextColor,
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = renderedLabel,
+                        style = renderedLabelStyle,
+                        maxLines = if (secondaryLabel == null) maxLines else 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = rowTextColor,
+                    )
+                    secondaryLabel?.let {
+                        Text(it, style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1, color = rowTextColor)
+                    }
+                }
                 trailingContent?.invoke()
                 if (toggleState != null) {
                     LayerToggle(

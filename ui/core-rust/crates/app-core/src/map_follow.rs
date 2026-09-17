@@ -181,6 +181,7 @@ mod tests {
 
     fn ownship(lat: f64, lon: f64) -> OwnshipRenderState {
         OwnshipRenderState {
+            altitude_intercept: None,
             mode: OwnshipMode::Live,
             banner_text: String::new(),
             banner_severity: OwnshipBannerSeverity::Info,
@@ -200,6 +201,7 @@ mod tests {
 
     fn no_ownship() -> OwnshipRenderState {
         OwnshipRenderState {
+            altitude_intercept: None,
             mode: OwnshipMode::None,
             banner_text: "NO GPS POSITION".to_string(),
             banner_severity: OwnshipBannerSeverity::Warning,

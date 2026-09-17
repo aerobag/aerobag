@@ -161,6 +161,30 @@ class UiSessionWorkRunner(
         )
     }
 
+    fun submitFlightDataBannerCellAction(
+        cellId: String,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation("performFlightDataBannerCellAction", { it.performFlightDataBannerCellAction(cellId) }, onResult, onError)
+    }
+
+    fun submitFlightDataCommand(
+        command: org.aerobag.app.generated.FlightDataCommand,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation("performFlightDataCommand", { it.performFlightDataCommand(command) }, onResult, onError)
+    }
+
+    suspend fun awaitFlightDataObservation(observation: org.aerobag.app.generated.FlightDataCommand.Observe): UiSessionSnapshot {
+        // Keep the source flow's conflation effective: only one sensor observation
+        // may wait in the command queue, rather than accumulating old samples.
+        val result = CompletableDeferred<UiSessionSnapshot>()
+        submitFlightDataCommand(observation, { result.complete(it) }, { result.completeExceptionally(it) })
+        return result.await()
+    }
+
     fun submitAircraftLibraryAction(
         actionId: String,
         sourceJson: String,

@@ -322,12 +322,16 @@ class NativeUiSessionBoundaryTest {
         val runnerSource =
             sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+        val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val chartsPage = sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
 
         for (method in listOf(
             "performSettingsAction",
             "performAircraftLibraryAction",
             "acceptDisclaimer",
             "performCloudUiAction",
+            "performFlightDataCommand",
+            "performFlightDataBannerCellAction",
         )) {
             val declaration = sessionSource.substringBefore("fun $method(").takeLast(80)
             assertTrue(
@@ -340,7 +344,7 @@ class NativeUiSessionBoundaryTest {
             )
             assertFalse(
                 "Compose must not invoke $method directly.",
-                mainActivity.contains("uiSession.$method("),
+                listOf(mainActivity, mapPage, chartsPage).any { it.contains("uiSession.$method(") },
             )
         }
         assertTrue(
@@ -354,6 +358,10 @@ class NativeUiSessionBoundaryTest {
                 mainActivity.contains("uiSessionWorkRunner.submitDisclaimerAcceptance(") &&
                 mainActivity.contains("uiSessionWorkRunner.submitCloudUiAction("),
         )
+        val observation = balancedBlockAfterMarker(runnerSource, "suspend fun awaitFlightDataObservation(")
+        assertTrue("Sensor collection must await its queued observation to retain source conflation.",
+            observation.contains("submitFlightDataCommand(") && observation.contains("result.await()") &&
+                mainActivity.contains("uiSessionWorkRunner.awaitFlightDataObservation(observation)"))
         val cloudPage = sourceFile("src/main/java/org/aerobag/app/CloudPage.kt").readText()
         assertTrue(
             "Cloud platform effects must wait until core accepts the scheduled mutation.",

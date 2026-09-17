@@ -1176,11 +1176,7 @@ pub enum FlightPlanRowActionEffect {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightPlanWeatherBadgeUiView {
-    pub flight_category: String,
-    pub ceiling_amount: String,
-}
+pub use app_ui_contracts::session::FlightPlanWeatherBadgeUiView;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanDisplayRowUiView {

@@ -818,13 +818,13 @@ pub fn perform_flight_data_banner_cell_action_in_session(
 }
 
 #[wasm_bindgen]
-pub fn perform_barometer_command_in_session(
+pub fn perform_flight_data_command_in_session(
     session_handle: u32,
     command_json: &str,
 ) -> Result<String, JsValue> {
     let command = serde_json::from_str(command_json)
         .map_err(|err| JsValue::from_str(&format!("barometer command: {err}")))?;
-    let outcome = app_core::perform_barometer_command_in_session(session_handle, command)
+    let outcome = app_core::perform_flight_data_command_in_session(session_handle, command)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }

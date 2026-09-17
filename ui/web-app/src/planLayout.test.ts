@@ -90,7 +90,7 @@ describe("flight plan layout CSS", () => {
   it("overlays core-projected weather on the existing waypoint symbol cell", () => {
     expect(appSource).toContain("weatherBadge: row.weather_badge ?? null");
     expect(appSource).toContain("weatherBadge={row.weatherBadge}");
-    expect(appSource).toContain('<g className="planWaypointWeatherBadge" transform="translate(10 10) scale(1)">');
+    expect(appSource).toContain('<g className="planWaypointWeatherBadge" transform={feature ? "translate(10 10)" : undefined}>');
 
     const symbolBlocks = [...styles.matchAll(/\.planWaypointSymbol\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")

@@ -8,7 +8,7 @@
       "ownship": { "label": "NO GPS" },
       "flight_data_banner": { "cells": [] }
     },
-    "settings_page_state": { "rows": [{ "items": [{ "enabled": false }] }] },
+    "settings_page_state": { "blocks": [{ "kind": "controls", "rows": [{ "items": [{ "enabled": false }] }] }] },
     "debug_state": { "tile_labels": false },
     "unchanged": "retained"
   },
@@ -34,7 +34,7 @@
           "ownship": { "label": "NO GPS" },
           "flight_data_banner": { "cells": [] }
         },
-        "settings_page_state": { "rows": [{ "items": [{ "enabled": false }] }] },
+        "settings_page_state": { "blocks": [{ "kind": "controls", "rows": [{ "items": [{ "enabled": false }] }] }] },
         "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
@@ -60,7 +60,7 @@
           "ownship": { "label": "NO GPS" },
           "flight_data_banner": { "cells": [] }
         },
-        "settings_page_state": { "rows": [{ "items": [{ "enabled": false }] }] },
+        "settings_page_state": { "blocks": [{ "kind": "controls", "rows": [{ "items": [{ "enabled": false }] }] }] },
         "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
@@ -86,7 +86,7 @@
           "version": 5,
           "assignments": [
             {
-              "path": ["settings_page_state", "rows", "0", "items", "0", "enabled"],
+              "path": ["settings_page_state", "blocks", "0", "rows", "0", "items", "0", "enabled"],
               "value": true
             }
           ]
@@ -101,7 +101,7 @@
           "ownship": { "label": "GPS" },
           "flight_data_banner": { "cells": [] }
         },
-        "settings_page_state": { "rows": [{ "items": [{ "enabled": true }] }] },
+        "settings_page_state": { "blocks": [{ "kind": "controls", "rows": [{ "items": [{ "enabled": true }] }] }] },
         "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
@@ -127,7 +127,7 @@
           "ownship": { "label": "GPS" },
           "flight_data_banner": { "cells": [] }
         },
-        "settings_page_state": { "rows": [{ "items": [{ "enabled": true }] }] },
+        "settings_page_state": { "blocks": [{ "kind": "controls", "rows": [{ "items": [{ "enabled": true }] }] }] },
         "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }

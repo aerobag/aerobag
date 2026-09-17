@@ -1,0 +1,77 @@
+{
+  "account_version": 1,
+  "page_version": 1,
+  "envelope_version": 1,
+  "note": "Pre-inventory account format. Published with flight-plan schemas 1, 2 and 3. The explicit format-2 migration discards that crossfill without decoding it.",
+  "records": [
+    {
+      "key": {
+        "exact": "flight_plan/current"
+      },
+      "legacy_schema_versions": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "key": {
+        "prefixes": [
+          "offline_packages/region/",
+          "offline_packages/product/"
+        ]
+      },
+      "legacy_schema_versions": [
+        1
+      ]
+    },
+    {
+      "key": {
+        "exact": "settings/inactivity_sleep_timeout"
+      },
+      "legacy_schema_versions": [
+        1
+      ]
+    },
+    {
+      "key": {
+        "exact": "settings/nexrad_acquisition"
+      },
+      "legacy_schema_versions": [
+        1
+      ]
+    },
+    {
+      "key": {
+        "prefix": "settings/debug/"
+      },
+      "legacy_schema_versions": [
+        1
+      ]
+    },
+    {
+      "key": {
+        "prefix": "aircraft/definition/"
+      },
+      "legacy_schema_versions": [
+        2
+      ]
+    },
+    {
+      "key": {
+        "prefix": "aircraft/library/"
+      },
+      "legacy_schema_versions": [
+        1
+      ]
+    },
+    {
+      "key": {
+        "prefix": "service/read/"
+      },
+      "legacy_schema_versions": [
+        1
+      ]
+    }
+  ]
+}

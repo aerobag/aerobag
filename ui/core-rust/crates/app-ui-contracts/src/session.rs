@@ -582,6 +582,8 @@ pub struct UiAircraftLibraryEditor {
 pub struct UiAircraftLibraryState {
     pub title: String,
     pub summary: String,
+    pub column_min_width_thumbs: f64,
+    pub column_gap_thumbs: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_indicator: Option<UiSettingsSyncIndicator>,
     pub entries: Vec<UiAircraftLibraryEntry>,
@@ -596,13 +598,23 @@ pub struct UiAircraftLibraryState {
 pub struct UiSettingsSyncIndicator {
     pub symbol: String,
     pub help_text: String,
+    pub tone: UiStatusSeverity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiSettingsRowKind {
+    GridChoices,
+    Slider,
+    Toggle,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiSettingsPageRow {
-    pub kind: String,
+    pub kind: UiSettingsRowKind,
     pub id: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -624,7 +636,8 @@ pub struct UiSettingsPageRow {
 pub struct UiSettingsPageSection {
     pub id: String,
     pub title: String,
-    pub collapsed_by_default: bool,
+    pub expanded: bool,
+    pub toggle_action: UiSettingsAction,
     pub rows: Vec<UiSettingsPageRow>,
 }
 
@@ -634,11 +647,44 @@ pub struct UiSettingsPageSection {
 pub struct UiSettingsPageState {
     pub title: String,
     pub summary: String,
-    pub rows: Vec<UiSettingsPageRow>,
-    #[serde(default)]
-    pub sections: Vec<UiSettingsPageSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aircraft_library: Option<UiAircraftLibraryState>,
+    pub blocks: Vec<UiSettingsPageBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UiSettingsPageBlock {
+    Controls { rows: Vec<UiSettingsPageRow> },
+    AircraftLibrary { library: UiAircraftLibraryState },
+    Section { section: UiSettingsPageSection },
+}
+
+impl UiSettingsPageState {
+    /// The live grid is in the leading controls block; its incremental updates
+    /// must not resend the aircraft definitions/editor or diagnostic controls.
+    pub fn controls(&self) -> &[UiSettingsPageRow] {
+        match self.blocks.first() {
+            Some(UiSettingsPageBlock::Controls { rows }) => rows,
+            _ => panic!("settings projection must begin with its controls block"),
+        }
+    }
+
+    pub fn sections(&self) -> Vec<&UiSettingsPageSection> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match block {
+                UiSettingsPageBlock::Section { section } => Some(section),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn aircraft_library(&self) -> Option<&UiAircraftLibraryState> {
+        self.blocks.iter().find_map(|block| match block {
+            UiSettingsPageBlock::AircraftLibrary { library } => Some(library),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

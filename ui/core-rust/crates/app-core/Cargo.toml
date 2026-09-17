@@ -42,3 +42,5 @@ rusqlite.workspace = true
 [dev-dependencies]
 app-fixtures = { path = "../app-fixtures" }
 nav-db-fixture = { path = "../../../../crates/nav-db-fixture" }
+schemars.workspace = true
+product-contracts = { path = "../../../../crates/product-contracts", features = ["schema"] }

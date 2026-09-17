@@ -12,6 +12,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+import check_cloud_contract_history
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = Path("crates/product-contracts/contracts")
@@ -53,7 +55,7 @@ def check(repo_root: Path) -> list[str]:
 
 
 def main() -> int:
-    errors = check(ROOT)
+    errors = check_cloud_contract_history.check(ROOT) + check(ROOT)
     if errors:
         print("Generated contract inventories do not match:\n" + "\n".join(errors))
         return 1

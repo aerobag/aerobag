@@ -3896,8 +3896,8 @@ button {
   gap: calc(var(--thumb) * 0.18);
   padding: calc(var(--thumb) * 0.24);
   border-radius: calc(var(--thumb-radius) * 0.65);
-  background: color-mix(in srgb, white 90%, var(--theme-button-unchecked) 10%);
-  color: #101820;
+  background: color-mix(in srgb, var(--theme-text-input-bg) 90%, var(--theme-button-unchecked) 10%);
+  color: var(--theme-panel-fg);
 }
 
 .settingsAircraftLibraryHeader,
@@ -3948,10 +3948,15 @@ button {
   cursor: pointer;
 }
 
+.settingsSyncIndicator[data-tone="caution"],
+.settingsAircraftLibrary button.settingsSyncIndicator[data-tone="caution"] {
+  color: var(--theme-data-status-caution-stroke);
+}
+
 .settingsAircraftGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 4.2), 1fr));
-  gap: calc(var(--thumb) * 0.1);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--aircraft-column-min-width)), 1fr));
+  gap: var(--aircraft-column-gap);
 }
 
 .settingsAircraftEntry {
@@ -3962,7 +3967,7 @@ button {
   padding: calc(var(--thumb) * 0.14);
   border: 1px solid var(--theme-panel-border);
   border-radius: calc(var(--thumb-radius) * 0.5);
-  background: white;
+  background: var(--theme-text-input-bg);
 }
 
 .settingsAircraftEntry.isHidden::after {

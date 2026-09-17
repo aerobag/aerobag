@@ -902,6 +902,14 @@
         "add_action": {
           "$ref": "#/$defs/UiAircraftLibraryAction"
         },
+        "column_gap_thumbs": {
+          "format": "double",
+          "type": "number"
+        },
+        "column_min_width_thumbs": {
+          "format": "double",
+          "type": "number"
+        },
         "editor": {
           "anyOf": [
             {
@@ -938,6 +946,8 @@
       "required": [
         "title",
         "summary",
+        "column_min_width_thumbs",
+        "column_gap_thumbs",
         "entries",
         "add_action"
       ],
@@ -2279,6 +2289,65 @@
       ],
       "type": "object"
     },
+    "UiSettingsPageBlock": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "controls",
+              "type": "string"
+            },
+            "rows": {
+              "items": {
+                "$ref": "#/$defs/UiSettingsPageRow"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "rows"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "aircraft_library",
+              "type": "string"
+            },
+            "library": {
+              "$ref": "#/$defs/UiAircraftLibraryState"
+            }
+          },
+          "required": [
+            "kind",
+            "library"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "section",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/UiSettingsPageSection"
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "kind"
+    },
     "UiSettingsPageRow": {
       "additionalProperties": false,
       "properties": {
@@ -2309,7 +2378,7 @@
           "type": "array"
         },
         "kind": {
-          "type": "string"
+          "$ref": "#/$defs/UiSettingsRowKind"
         },
         "stops": {
           "items": {
@@ -2347,7 +2416,7 @@
     "UiSettingsPageSection": {
       "additionalProperties": false,
       "properties": {
-        "collapsed_by_default": {
+        "expanded": {
           "type": "boolean"
         },
         "id": {
@@ -2361,12 +2430,16 @@
         },
         "title": {
           "type": "string"
+        },
+        "toggle_action": {
+          "$ref": "#/$defs/UiSettingsAction"
         }
       },
       "required": [
         "id",
         "title",
-        "collapsed_by_default",
+        "expanded",
+        "toggle_action",
         "rows"
       ],
       "type": "object"
@@ -2374,26 +2447,9 @@
     "UiSettingsPageState": {
       "additionalProperties": false,
       "properties": {
-        "aircraft_library": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/UiAircraftLibraryState"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "rows": {
+        "blocks": {
           "items": {
-            "$ref": "#/$defs/UiSettingsPageRow"
-          },
-          "type": "array"
-        },
-        "sections": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/UiSettingsPageSection"
+            "$ref": "#/$defs/UiSettingsPageBlock"
           },
           "type": "array"
         },
@@ -2407,9 +2463,17 @@
       "required": [
         "title",
         "summary",
-        "rows"
+        "blocks"
       ],
       "type": "object"
+    },
+    "UiSettingsRowKind": {
+      "enum": [
+        "grid_choices",
+        "slider",
+        "toggle"
+      ],
+      "type": "string"
     },
     "UiSettingsSliderStop": {
       "additionalProperties": false,
@@ -2435,11 +2499,15 @@
         },
         "symbol": {
           "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/UiStatusSeverity"
         }
       },
       "required": [
         "symbol",
-        "help_text"
+        "help_text",
+        "tone"
       ],
       "type": "object"
     },
@@ -2897,6 +2965,8 @@
     "UiAircraftLibraryState",
     "UiSettingsPageRow",
     "UiSettingsPageSection",
+    "UiSettingsPageBlock",
+    "UiSettingsRowKind",
     "UiSettingsPageState",
     "UiServiceNoticeAction",
     "UiServiceNoticeLink",

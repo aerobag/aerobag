@@ -252,6 +252,8 @@ fn main() {
                 "UiAircraftLibraryState",
                 "UiSettingsPageRow",
                 "UiSettingsPageSection",
+                "UiSettingsPageBlock",
+                "UiSettingsRowKind",
                 "UiSettingsPageState",
                 "UiServiceNoticeAction",
                 "UiServiceNoticeLink",
@@ -274,6 +276,7 @@ fn main() {
             tagged_unions: &[
                 ("UiStatusPlatformEffect", "kind"),
                 ("FlightDataCommand", "kind"),
+                ("UiSettingsPageBlock", "kind"),
             ],
             schema: session_schema,
         },

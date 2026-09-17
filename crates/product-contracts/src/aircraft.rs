@@ -19,6 +19,7 @@ const MAX_AIRCRAFT_PROFILES: usize = 16;
 const MAX_AIRCRAFT_PERFORMANCE_POINTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftDefinition {
     pub schema_version: u32,
@@ -62,6 +63,7 @@ impl AircraftGlideDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftPerformanceProfileDefinition {
     pub id: String,
@@ -75,6 +77,7 @@ pub struct AircraftPerformanceProfileDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "model", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CruisePerformanceModel {
     PressureAltitudeTable {
@@ -83,6 +86,7 @@ pub enum CruisePerformanceModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "model", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClimbPerformanceModel {
     ConstantIasRate {
@@ -96,6 +100,7 @@ pub enum ClimbPerformanceModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "model", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DescentPerformanceModel {
     CruiseOffset {
@@ -108,6 +113,7 @@ pub enum DescentPerformanceModel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftCruisePerformancePoint {
     pub pressure_altitude_ft: f64,
@@ -116,6 +122,7 @@ pub struct AircraftCruisePerformancePoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AircraftPerformanceAirspeedBasis {
     Indicated,
@@ -123,6 +130,7 @@ pub enum AircraftPerformanceAirspeedBasis {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftVerticalPerformancePoint {
     pub pressure_altitude_ft: f64,
@@ -133,6 +141,7 @@ pub struct AircraftVerticalPerformancePoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftSelection {
     pub definition_hash: String,
@@ -140,6 +149,7 @@ pub struct AircraftSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AircraftLibraryMembership {
     pub included: bool,

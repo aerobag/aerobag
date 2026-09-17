@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -53,12 +54,17 @@ import androidx.compose.ui.zIndex
 import kotlin.math.floor
 import kotlin.math.roundToInt
 import org.aerobag.app.domain.NavElementUiView
-import org.aerobag.app.domain.UiAircraftLibraryAction
-import org.aerobag.app.domain.UiAircraftLibraryState
-import org.aerobag.app.domain.UiSettingsPageRow
-import org.aerobag.app.domain.UiSettingsPageSection
-import org.aerobag.app.domain.UiSettingsPageState
-import org.aerobag.app.domain.UiSettingsSyncIndicator
+import org.aerobag.app.generated.UiAircraftLibraryAction
+import org.aerobag.app.generated.UiAircraftLibraryState
+import org.aerobag.app.generated.UiAircraftLibraryEntry
+import org.aerobag.app.generated.UiSettingsPageRow
+import org.aerobag.app.generated.UiSettingsPageSection
+import org.aerobag.app.generated.UiSettingsPageState
+import org.aerobag.app.generated.UiSettingsSyncIndicator
+import org.aerobag.app.generated.UiSettingsPageBlock
+import org.aerobag.app.generated.UiSettingsRowKind
+import org.aerobag.app.generated.UiStatusSeverity
+import org.aerobag.app.domain.toUi
 
 private val SettingsPageTitleTextSize = 16.sp
 private val SettingsPageRowTitleTextSize = 13.sp
@@ -123,9 +129,9 @@ internal fun SettingsPage(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (state.rows.isEmpty() && state.sections.isEmpty() && state.aircraftLibrary == null) {
+            if (state.blocks.isEmpty()) {
                 Text(
-                    text = state.summary.ifBlank { "No settings available." },
+                    text = state.summary,
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontSize = SettingsPageRowTitleTextSize,
                         lineHeight = SettingsPageRowTitleTextSize * 1.2f,
@@ -138,23 +144,17 @@ internal fun SettingsPage(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
                 ) {
-                    lazyColumnItems(state.rows, key = { it.id }) { row ->
-                        SettingsPageRowView(row = row, onSettingsAction = onSettingsAction)
-                    }
-                    state.aircraftLibrary?.let { library ->
-                        item(key = "aircraft-library") {
-                            SettingsAircraftLibrary(
-                                state = library,
-                                onAction = onAircraftLibraryAction,
-                            )
-                        }
-                    }
-                    state.sections.forEach { section ->
-                        item(key = "section:${section.id}") {
-                            SettingsPageSectionView(
-                                section = section,
-                                onSettingsAction = onSettingsAction,
-                            )
+                    state.blocks.forEach { block ->
+                        when (block) {
+                            is UiSettingsPageBlock.Controls -> lazyColumnItems(block.rows, key = { it.id }) { row ->
+                                SettingsPageRowView(row = row, onSettingsAction = onSettingsAction)
+                            }
+                            is UiSettingsPageBlock.AircraftLibrary -> item(key = "aircraft-library") {
+                                SettingsAircraftLibrary(state = block.library, onAction = onAircraftLibraryAction)
+                            }
+                            is UiSettingsPageBlock.Section -> item(key = "section:${block.section.id}") {
+                                SettingsPageSectionView(section = block.section, onSettingsAction = onSettingsAction)
+                            }
                         }
                     }
                 }
@@ -164,7 +164,7 @@ internal fun SettingsPage(
 }
 
 @Composable
-private fun SettingsAircraftLibrary(
+internal fun SettingsAircraftLibrary(
     state: UiAircraftLibraryState,
     onAction: (String, String) -> Unit,
 ) {
@@ -184,7 +184,7 @@ private fun SettingsAircraftLibrary(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(ThumbRadius))
-            .background(uiTheme.controls.panelBg)
+            .background(uiTheme.controls.buttonUnchecked.copy(alpha = 0.1f).compositeOver(uiTheme.controls.textInputBg))
             .padding(ThumbSize * 0.22f),
         verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.12f),
     ) {
@@ -223,68 +223,19 @@ private fun SettingsAircraftLibrary(
                 )
             }
         }
-        state.entries.forEach { entry ->
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(ThumbRadius * 0.7f))
-                    .background(uiTheme.controls.buttonUnchecked)
-                    .padding(ThumbSize * 0.12f),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = entry.label,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                fontSize = SettingsPageRowTitleTextSize,
-                                fontWeight = FontWeight.Black,
-                                color = uiTheme.controls.buttonFg,
-                            )
-                            Text(
-                                text = entry.sourceLabel,
-                                fontSize = SettingsPageStopTextSize,
-                                fontWeight = FontWeight.Black,
-                                color = uiTheme.controls.buttonFg,
-                            )
-                        }
-                        AircraftPlanViewIcon(
-                            symbol = entry.symbol,
-                            modifier = Modifier.size(ThumbSize * 0.72f),
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
-                        CompactSquareButton(
-                            label = entry.toggleAction.label,
-                            wide = true,
-                            modifier = Modifier
-                                .width(ThumbSize * 1.4f)
-                                .height(ThumbSize * 0.66f),
-                            onClick = { invoke(entry.toggleAction) },
-                        )
-                        entry.editAction?.let { editAction ->
-                            CompactSquareButton(
-                                label = editAction.label,
-                                wide = true,
-                                modifier = Modifier
-                                    .width(ThumbSize * 1.4f)
-                                    .height(ThumbSize * 0.66f),
-                                onClick = { invoke(editAction) },
-                            )
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val gap = ThumbSize * state.columnGapThumbs.toFloat()
+            val minWidth = ThumbSize * state.columnMinWidthThumbs.toFloat()
+            val columnCount = floor((maxWidth.value + gap.value) / (minWidth.value + gap.value))
+                .toInt().coerceIn(1, state.entries.size.coerceAtLeast(1))
+            val cardWidth = (maxWidth - gap * (columnCount - 1)) / columnCount
+            Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+                state.entries.chunked(columnCount).forEach { entries ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                        entries.forEach { entry ->
+                            SettingsAircraftCard(entry, Modifier.width(cardWidth)) { invoke(it) }
                         }
                     }
-                }
-                if (!entry.included) {
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .background(uiTheme.controls.buttonDisabled.copy(alpha = 0.4f)),
-                    )
                 }
             }
         }
@@ -335,6 +286,81 @@ private fun SettingsAircraftLibrary(
 }
 
 @Composable
+private fun SettingsAircraftCard(
+    entry: UiAircraftLibraryEntry,
+    modifier: Modifier,
+    onAction: (UiAircraftLibraryAction) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Box(
+        modifier = modifier
+            .testTag("settings-aircraft-entry-${entry.definitionHash}")
+            .clip(RoundedCornerShape(ThumbRadius * 0.7f))
+            .background(uiTheme.controls.textInputBg)
+            .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius * 0.7f))
+            .padding(ThumbSize * 0.12f),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = entry.label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = SettingsPageRowTitleTextSize,
+                        fontWeight = FontWeight.Black,
+                        color = uiTheme.controls.panelFg,
+                    )
+                    Text(
+                        text = entry.sourceLabel,
+                        fontSize = SettingsPageStopTextSize,
+                        fontWeight = FontWeight.Black,
+                        color = uiTheme.controls.panelFg,
+                    )
+                }
+                AircraftPlanViewIcon(
+                    symbol = entry.symbol.toUi(),
+                    modifier = Modifier.size(ThumbSize * 0.72f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                CompactSquareButton(
+                    label = entry.toggleAction.label,
+                    wide = true,
+                    modifier = Modifier
+                        .width(ThumbSize * 1.4f)
+                        .height(ThumbSize * 0.66f)
+                        .e2eIndexedControl(semanticTag = "parity:settings-aircraft:${entry.toggleAction.actionId}", enabled = entry.toggleAction.enabled),
+                    onClick = { onAction(entry.toggleAction) },
+                )
+                entry.editAction?.let { editAction ->
+                    CompactSquareButton(
+                        label = editAction.label,
+                        wide = true,
+                        modifier = Modifier
+                            .width(ThumbSize * 1.4f)
+                            .height(ThumbSize * 0.66f)
+                            .e2eIndexedControl(semanticTag = "parity:settings-aircraft:${editAction.actionId}", enabled = editAction.enabled),
+                        onClick = { onAction(editAction) },
+                    )
+                }
+            }
+        }
+        if (!entry.included) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(uiTheme.controls.buttonDisabled.copy(alpha = 0.4f)),
+            )
+        }
+    }
+}
+
+@Composable
 private fun SettingsPageRowView(
     row: UiSettingsPageRow,
     onSettingsAction: (String, String) -> Unit,
@@ -345,9 +371,9 @@ private fun SettingsPageRowView(
             .padding(start = ThumbSize * (0.35f * row.indentLevel.toFloat())),
     ) {
         when (row.kind) {
-            "grid_choices" -> SettingsGridChoicesRow(row, onSettingsAction)
-            "slider" -> SettingsSliderRow(row, onSettingsAction)
-            "toggle" -> SettingsToggleRow(row, onSettingsAction)
+            UiSettingsRowKind.GridChoices -> SettingsGridChoicesRow(row, onSettingsAction)
+            UiSettingsRowKind.Slider -> SettingsSliderRow(row, onSettingsAction)
+            UiSettingsRowKind.Toggle -> SettingsToggleRow(row, onSettingsAction)
         }
     }
 }
@@ -358,7 +384,7 @@ private fun SettingsPageSectionView(
     onSettingsAction: (String, String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    var expanded by remember(section.id) { mutableStateOf(!section.collapsedByDefault) }
+    val expanded = section.expanded
     Column(
         verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.1f),
     ) {
@@ -373,7 +399,7 @@ private fun SettingsPageSectionView(
                     color = uiTheme.controls.panelBorder,
                     shape = RoundedCornerShape(ThumbRadius * 0.65f),
                 )
-                .clickable { expanded = !expanded }
+                .clickable { onSettingsAction(section.toggleAction.actionId, section.toggleAction.valueId) }
                 .e2eIndexedControl(
                     semanticTag = "parity:settings-section:${section.id}",
                     enabled = true,
@@ -573,6 +599,7 @@ private fun SettingsSyncIndicatorView(
     testId: String,
 ) {
     val context = LocalContext.current
+    val colors = LocalAerobagUiTheme.current.controls
     Box(
         modifier = Modifier
             .size(26.dp)
@@ -581,14 +608,18 @@ private fun SettingsSyncIndicatorView(
                 indication = null,
                 role = Role.Button,
             ) { showActionToast(context, indicator.helpText, long = true) }
-            .testTag("parity:settings-sync:$testId"),
+            .e2eIndexedControl(
+                semanticTag = "parity:settings-sync:$testId",
+                enabled = true,
+                text = indicator.helpText,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = indicator.symbol,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.ExtraBold,
-            color = Color(0xFF101820),
+            color = if (indicator.tone == UiStatusSeverity.Caution) colors.dataStatusCautionStroke else colors.panelFg,
         )
     }
 }

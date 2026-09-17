@@ -9,7 +9,7 @@ its existing root compare-and-swap provides atomicity, not schema enforcement.
 ## Contract
 
 - The encrypted root's existing `version` is the account data-format declaration.
-  Format 1 is the current account format (including flight-plan record schema 3).
+  Format 2 is the current account format (including flight-plan record schema 4).
   Account format numbers are distinct from application versions and individual
   record schema numbers. Do not renumber unchanged data merely to match examples.
 - Decode the stable version header before decoding the version-specific root
@@ -18,6 +18,20 @@ its existing root compare-and-swap provides atomicity, not schema enforcement.
 - A format identifies the root/page/record contract as a whole. Future changes
   to stored meaning require a new format and a registered, explicit migration.
   Internal-only refactors do not automatically require a new stored format.
+- `cloud/wire` defines persisted payloads independently of runtime models.
+  Exhaustive typed conversions make runtime changes a compile-time decision,
+  without changing stored bytes merely because an internal model changed.
+  Aircraft definitions reuse the already-versioned `product-contracts` wire
+  contract; its recursive shape is included in the account inventory too.
+- `cloud/records.rs` is the sealed registry of record families, key patterns,
+  schema numbers, mutability, codecs and validation. Production writers cannot
+  construct arbitrary version/JSON pairs. It generates a recursive schema
+  inventory for every registered payload, root, page and encrypted envelope.
+- `cloud/contracts/account-vN.json` freezes that inventory per account version.
+  Tests reject type/field/enum/schema-number changes without a new account
+  descriptor and a declared per-family migration. CI compares snapshots with
+  their first Git commit and rejects rewriting or deleting a published file.
+  Schema generation is test-only, not a new client runtime dependency.
 - Normal sync reads and writes only the exact format required by the client.
   A newer client does not automatically migrate or publish an older format.
 - Every normal publication must be based on a root revision whose format this
@@ -35,6 +49,35 @@ its existing root compare-and-swap provides atomicity, not schema enforcement.
   again unless the new root was already committed.
 - Migration/encoding failures publish nothing and retain local edits. A missing
   migration path is explained; do not guess a conversion or drop fields.
+
+## Format 1 To 2 Policy
+
+Format 1 was published with several incompatible flight-plan schemas (1, 2,
+and 3). Its decoder reads the structural record envelope, not a historical
+runtime FlightPlan. After explicit confirmation, format 2 discards the shared
+flight-plan record rather than guessing how to convert its route. Confirmation
+explains this loss before the root CAS. The flight plan open on this device is
+not cleared or replaced by that operation.
+
+Other synchronized values are retained. Aircraft-library membership schema 1
+is explicitly normalized to schema 2, preserving `included` and its original
+mutation time while removing the retired development `deleted` field. Package
+choices, NEXRAD preferences, sleep settings, debug preferences, aircraft
+definitions and service-read receipts otherwise keep their bytes and timestamps.
+Unknown record families are preserved unchanged.
+
+Local cached/outbox/deferred copies use the same declared migration at client
+startup. Old crossfills are discarded there too, so they cannot resurrect the
+discarded cloud plan. The historical decoder failure is cleared only after a
+successful local transition; the authoritative root is checked read-only again.
+This does not approve or write a cloud upgrade. A plan edited in the new client
+while sync is paused remains in the outbox and is reconciled after upgrade,
+using the user's edit time, not the migration or upload time.
+
+Schema 4 carries route selection, stable occurrence IDs, resolved offline
+geometry, aircraft/performance selection and planning inputs. Active guidance,
+ownship and debug display geometry are not synchronized. Conversion calls the
+ordinary core flight-plan validator; it does not reproduce planner algorithms.
 
 ## Core-Owned UX
 
@@ -109,6 +152,39 @@ its existing root compare-and-swap provides atomicity, not schema enforcement.
 
 ## Verification
 
+### Format 2 Coverage
+
+- `cloud/tests/legacy_upgrade.rs` constructs encrypted format-1 accounts with
+  each old flight-plan schema and all other record families. It exercises the
+  actual provider request/response and core UI action paths: pause, confirmation,
+  cancellation, approved upgrade, restart, clearing a previous decoder failure,
+  no old-plan resurrection, and current edits made while another device upgrades.
+- `cloud/tests/wire_payloads.rs` covers connected airways with repeated fixes,
+  occurrence identity, every navigation-reference domain, procedures and resolved
+  display paths. It asserts that guidance/debug fields are absent from the wire.
+- `cloud/tests/account_contracts.rs` derives the real recursive payload shapes,
+  compares them to the frozen inventory, requires policies covering source/target
+  schemas, and rejects migrations that alter user-mutation times.
+- `tools/ci/test_check_cloud_contract_history.py` proves that both working-tree
+  and committed rewrites/deletions are rejected, while new versions are allowed.
+
+September 17 verification:
+
+- Core cloud-related tests: 66 passed; the inventory-printing utility is ignored
+  by design. Deliberately bumping only the flight-plan record version failed the
+  contract test. Renaming a nested airway wire field without changing any version
+  also failed it. Both mutations were removed and the contract tests passed.
+- The existing `shared.cloud-account-upgrade` journey passed on rebuilt web and
+  Android release-mode E2E apps, each with two browser peers and a disposable ACS.
+  This exercises the generic format-2-to-synthetic-3 mixed-client UI protocol;
+  the actual format-1-to-2 discard policy is covered by the core tests above.
+  Results/screenshots: `/tmp/aerobag-cloud-contract-web-results/` and
+  `/tmp/aerobag-cloud-contract-android-results/`. Real accounts were not used.
+- All 13 cheap preflight suites passed. Full hosted qualification and unrelated
+  fixture/release journeys were not run as part of this change.
+
+### Original Framework Verification (September 12)
+
 - Core protocol tests are in `cloud/tests/account_formats.rs`; existing creation,
   crossfill, encryption, and record tests remain in `cloud.rs`. The mismatch and
   restart-write tests were observed failing before implementation. Additional
@@ -145,20 +221,23 @@ its existing root compare-and-swap provides atomicity, not schema enforcement.
    record schema constant underneath the old decoder. Internal model refactors
    must preserve the stored shape through explicit conversion; changes to stored
    meaning need the new descriptor and migration instead.
-2. Implement and test the cloud-record migration and page encoder. Migration
-   retains existing keys and their mutation stamps, including unknown unrelated
-   records. A future key-renaming/deletion migration needs an explicit extension
-   of that invariant, not deletion of the guard.
+2. Declare a `RecordMigration` for each changed family. It takes one matching
+   record and returns the replacement or `None` for deliberate discard. Declare
+   source versions and target version (`None` for discard). The engine enforces
+   the declared output version, preserves mutation timestamps, rejects overlapping
+   rules and applies the migration atomically. It cannot edit unrelated records.
 3. Keep the stable root header readable. Change the client's current descriptor;
    keep the historical local-settings default at format 1. Application version,
    account format, and individual record schema numbers are different contracts.
-4. Add frozen old/new data tests and run the existing multi-instance race and UI
+4. Add the newly numbered contract snapshot using the ignored
+   `print_new_account_contract` test. Never regenerate an existing published
+   snapshot. Add frozen old/new data tests and run the multi-instance race and UI
    suites. Record meaningful payload changes, not just relabeled version fields.
 
-The hermetic successor used by tests is format 2 with a different page shape
+The hermetic successor used by tests is format 3 with a different page shape
 and a synthetic record migration. It is available only under Rust tests or
 `cloud-format-test`, which app build scripts enable only for E2E builds.
-Ordinary clients require format 1 and do not offer this fake upgrade. The
+Ordinary clients require format 2 and do not offer this fake upgrade. The
 journey simulates a binary update by changing only a test-build selector while
 the old app is stopped; all account reads, consent, encryption, migrations,
 CAS, and UI transitions use production paths. Production accounts and device

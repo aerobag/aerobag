@@ -256,6 +256,8 @@ pub(crate) fn project_state(
     });
     UiAircraftLibraryState {
         title: "Aircraft library".to_string(),
+        column_min_width_thumbs: 4.2,
+        column_gap_thumbs: 0.1,
         summary:
             "Choose aircraft for the Altitude page short menu, or add a private performance model."
                 .to_string(),

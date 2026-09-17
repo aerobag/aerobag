@@ -94,11 +94,25 @@ class GeneratedContractInventoriesTests(unittest.TestCase):
 
         with (
             mock.patch.object(inventories, "ROOT", self.root),
+            mock.patch.object(inventories.check_cloud_contract_history, "check", return_value=[]) as history,
             mock.patch.object(inventories.subprocess, "run", side_effect=generate),
             redirect_stdout(io.StringIO()) as output,
         ):
             self.assertEqual(inventories.main(), 1)
+        history.assert_called_once_with(self.root)
         self.assertIn("omitted required inventory: live-feed-compatibility.json", output.getvalue())
+
+    def test_changed_cloud_history_fails_even_when_generated_outputs_match(self):
+        with (
+            mock.patch.object(inventories.check_cloud_contract_history, "check",
+                              return_value=["Published cloud contract changed"]) as history,
+            mock.patch.object(inventories, "check", return_value=[]) as generated,
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(inventories.main(), 1)
+        history.assert_called_once_with(inventories.ROOT)
+        generated.assert_called_once_with(inventories.ROOT)
+        self.assertIn("Published cloud contract changed", output.getvalue())
 
     def test_generator_failure_is_not_retried_or_swallowed(self):
         with mock.patch.object(inventories.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "cargo")) as run:

@@ -463,10 +463,13 @@ export type UiAircraftLibraryEditor = {
 export type UiSettingsSyncIndicator = {
   help_text: string;
   symbol: string;
+  tone: UiStatusSeverity;
 };
 
 export type UiAircraftLibraryState = {
   add_action: UiAircraftLibraryAction;
+  column_gap_thumbs: number;
+  column_min_width_thumbs: number;
   editor?: UiAircraftLibraryEditor | null;
   entries: UiAircraftLibraryEntry[];
   summary: string;
@@ -480,7 +483,7 @@ export type UiSettingsPageRow = {
   id: string;
   indent_level: number;
   items: UiSettingsGridItem[];
-  kind: string;
+  kind: UiSettingsRowKind;
   stops: UiSettingsSliderStop[];
   sync_indicator?: UiSettingsSyncIndicator | null;
   title: string;
@@ -488,16 +491,19 @@ export type UiSettingsPageRow = {
 };
 
 export type UiSettingsPageSection = {
-  collapsed_by_default: boolean;
+  expanded: boolean;
   id: string;
   rows: UiSettingsPageRow[];
   title: string;
+  toggle_action: UiSettingsAction;
 };
 
+export type UiSettingsPageBlock = { kind: "controls"; rows: UiSettingsPageRow[] } | { kind: "aircraft_library"; library: UiAircraftLibraryState } | { kind: "section"; section: UiSettingsPageSection };
+
+export type UiSettingsRowKind = "grid_choices" | "slider" | "toggle";
+
 export type UiSettingsPageState = {
-  aircraft_library?: UiAircraftLibraryState | null;
-  rows: UiSettingsPageRow[];
-  sections: UiSettingsPageSection[];
+  blocks: UiSettingsPageBlock[];
   summary: string;
   title: string;
 };

@@ -107,8 +107,11 @@ impl CloudController {
         self.engine().persistent()
     }
 
-    pub fn has_linked_account(&self) -> bool {
-        self.engine().has_linked_account()
+    pub fn settings_sync_indicator(
+        &self,
+        now_epoch_ms: i64,
+    ) -> Option<app_ui_contracts::session::UiSettingsSyncIndicator> {
+        self.engine().settings_sync_indicator(now_epoch_ms)
     }
 
     pub(crate) fn service_read_receipts(&self) -> AppResult<std::collections::BTreeSet<String>> {

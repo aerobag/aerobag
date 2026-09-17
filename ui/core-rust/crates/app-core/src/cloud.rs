@@ -42,25 +42,15 @@ use crate::{
 };
 
 mod account_format;
+mod records;
+mod wire;
 use account_format::{AccountFormat, ObservedRoot};
+use records::*;
 
 const CLOUD_PERSISTENCE_VERSION: u32 = 6;
 const CLOUD_ENVELOPE_VERSION: u32 = 1;
-const CLOUD_PAGE_VERSION: u32 = 1;
-const CLOUD_NODE_VERSION: u32 = 1;
-const FLIGHT_PLAN_RECORD_KEY: &str = "flight_plan/current";
-const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 3;
-const OFFLINE_PACKAGE_REGION_RECORD_PREFIX: &str = "offline_packages/region/";
-const OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX: &str = "offline_packages/product/";
-const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
-const INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY: &str = "settings/inactivity_sleep_timeout";
-const INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION: u32 = 1;
-const NEXRAD_ACQUISITION_RECORD_KEY: &str = "settings/nexrad_acquisition";
-const NEXRAD_ACQUISITION_SCHEMA_VERSION: u32 = 1;
-const DEBUG_FLAG_RECORD_PREFIX: &str = "settings/debug/";
-const DEBUG_FLAG_SCHEMA_VERSION: u32 = 1;
-const AIRCRAFT_LIBRARY_RECORD_PREFIX: &str = "aircraft/library/";
-const AIRCRAFT_LIBRARY_SCHEMA_VERSION: u32 = 1;
+const CLOUD_PAGE_VERSION: u32 = 2;
+const CLOUD_NODE_VERSION: u32 = 2;
 const LEGACY_UNKNOWN_MUTATION_EPOCH_MS: i64 = i64::MIN;
 const CLOUD_POLL_INTERVAL_MS: i64 = 60_000;
 const CLOUD_TRANSIENT_RETRY_MS: i64 = 5_000;
@@ -167,14 +157,6 @@ pub struct CloudStatusSummary {
     pub facts: Vec<CloudStatusFact>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct CloudRecord {
-    schema_version: u32,
-    #[serde(default)]
-    modified_at_epoch_ms: Option<i64>,
-    value: serde_json::Value,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 struct SynchronizedRecordStore {
     #[serde(default)]
@@ -191,44 +173,15 @@ struct StampedFlightPlan {
     modified_at_epoch_ms: i64,
 }
 
-impl<'de> Deserialize<'de> for StampedFlightPlan {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Current {
-                plan: FlightPlan,
-                modified_at_epoch_ms: i64,
-            },
-            Legacy(FlightPlan),
-        }
-
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::Current {
-                plan,
-                modified_at_epoch_ms,
-            } => Self {
-                plan,
-                modified_at_epoch_ms,
-            },
-            Wire::Legacy(plan) => Self {
-                plan,
-                modified_at_epoch_ms: LEGACY_UNKNOWN_MUTATION_EPOCH_MS,
-            },
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 struct CloudPage {
     version: u32,
     records: BTreeMap<String, CloudRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 struct CloudNode {
     version: u32,
     generation: u64,
@@ -242,6 +195,7 @@ struct CloudNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 struct CloudEnvelope {
     version: u32,
     account_tag: String,
@@ -376,12 +330,6 @@ pub struct CloudPersistentState {
     workflow: Option<CloudWorkflow>,
     #[serde(default)]
     records: SynchronizedRecordStore,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cached_flight_plan: Option<StampedFlightPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_flight_plan: Option<StampedFlightPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_remote_flight_plan: Option<StampedFlightPlan>,
     #[serde(default)]
     local_revision: u64,
     #[serde(default)]
@@ -413,9 +361,6 @@ impl Default for CloudPersistentState {
             account: None,
             workflow: None,
             records: SynchronizedRecordStore::default(),
-            cached_flight_plan: None,
-            pending_flight_plan: None,
-            pending_remote_flight_plan: None,
             local_revision: 0,
             next_request_id: 1,
             last_success_epoch_ms: None,
@@ -524,36 +469,8 @@ impl CloudEngine {
     ) -> Self {
         let persisted_version = persistent.version;
         persistent.version = CLOUD_PERSISTENCE_VERSION;
-        if persisted_version < 4 {
-            if let Some(record) = persistent.cached_flight_plan.take() {
-                if let Ok(record) = cloud_record_for_flight_plan(&record) {
-                    persistent
-                        .records
-                        .cached
-                        .insert(FLIGHT_PLAN_RECORD_KEY.to_string(), record);
-                }
-            }
-            if let Some(record) = persistent.pending_flight_plan.take() {
-                if let Ok(record) = cloud_record_for_flight_plan(&record) {
-                    persistent
-                        .records
-                        .cached
-                        .insert(FLIGHT_PLAN_RECORD_KEY.to_string(), record);
-                    persistent
-                        .records
-                        .pending_keys
-                        .insert(FLIGHT_PLAN_RECORD_KEY.to_string());
-                }
-            }
-            if let Some(record) = persistent.pending_remote_flight_plan.take() {
-                if let Ok(record) = cloud_record_for_flight_plan(&record) {
-                    persistent
-                        .records
-                        .deferred_adoption
-                        .insert(FLIGHT_PLAN_RECORD_KEY.to_string(), record);
-                }
-            }
-        }
+        // Pre-generic-record flight-plan crossfills are intentionally ignored
+        // by deserialization. They cannot be imported through runtime types.
         if persisted_version < 3 {
             // Old outbox entries have no user-mutation time, so they must never
             // overwrite a value merely because this client reconnects later.
@@ -863,13 +780,9 @@ impl CloudEngine {
                 if existing == Some(*selection) {
                     continue;
                 }
-                let record = CloudRecord {
-                    schema_version: OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION,
-                    modified_at_epoch_ms: Some(
-                        self.next_record_mutation_epoch_ms(&key, now_epoch_ms),
-                    ),
-                    value: serde_json::to_value(selection).map_err(cloud_json_error)?,
-                };
+                let modified = Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms));
+                let value = wire::preferences::PackageSelection::from(*selection);
+                let record = CloudRecord::encode::<PackageSelectionRecord>(&value, modified)?;
                 self.record_local_cloud_record(&key, record);
                 changed = true;
             }
@@ -893,14 +806,13 @@ impl CloudEngine {
             return Ok(false);
         }
         let record =
-            CloudRecord {
-                schema_version: INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION,
-                modified_at_epoch_ms: Some(self.next_record_mutation_epoch_ms(
+            CloudRecord::encode::<SleepRecord>(
+                &timeout.into(),
+                Some(self.next_record_mutation_epoch_ms(
                     INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY,
                     now_epoch_ms,
                 )),
-                value: serde_json::to_value(timeout).map_err(cloud_json_error)?,
-            };
+            )?;
         self.record_local_cloud_record(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY, record);
         Ok(true)
     }
@@ -929,13 +841,10 @@ impl CloudEngine {
         if existing == Some(preferences) {
             return Ok(false);
         }
-        let record = CloudRecord {
-            schema_version: NEXRAD_ACQUISITION_SCHEMA_VERSION,
-            modified_at_epoch_ms: Some(
-                self.next_record_mutation_epoch_ms(NEXRAD_ACQUISITION_RECORD_KEY, now_epoch_ms),
-            ),
-            value: serde_json::to_value(preferences).map_err(cloud_json_error)?,
-        };
+        let record = CloudRecord::encode::<NexradRecord>(
+            &preferences.into(),
+            Some(self.next_record_mutation_epoch_ms(NEXRAD_ACQUISITION_RECORD_KEY, now_epoch_ms)),
+        )?;
         self.record_local_cloud_record(NEXRAD_ACQUISITION_RECORD_KEY, record);
         Ok(true)
     }
@@ -966,11 +875,10 @@ impl CloudEngine {
         if existing == Some(enabled) {
             return Ok(false);
         }
-        let record = CloudRecord {
-            schema_version: DEBUG_FLAG_SCHEMA_VERSION,
-            modified_at_epoch_ms: Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms)),
-            value: serde_json::to_value(enabled).map_err(cloud_json_error)?,
-        };
+        let record = CloudRecord::encode::<DebugRecord>(
+            &enabled,
+            Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms)),
+        )?;
         self.record_local_cloud_record(&key, record);
         Ok(true)
     }
@@ -1061,11 +969,7 @@ impl CloudEngine {
     ) -> AppResult<bool> {
         let hash = definition.content_hash().map_err(cloud_error)?;
         let key = product_contracts::aircraft_definition_key(&hash).map_err(cloud_error)?;
-        let record = CloudRecord {
-            schema_version: product_contracts::AIRCRAFT_DEFINITION_SCHEMA_VERSION,
-            modified_at_epoch_ms: None,
-            value: serde_json::to_value(definition).map_err(cloud_json_error)?,
-        };
+        let record = CloudRecord::encode::<AircraftRecord>(definition, None)?;
         if self.persistent.records.cached.get(&key) == Some(&record) {
             return Ok(false);
         }
@@ -1089,11 +993,7 @@ impl CloudEngine {
     }
 
     pub(crate) fn record_service_read(&mut self, id: &str) -> AppResult<bool> {
-        let record = CloudRecord {
-            schema_version: 1,
-            modified_at_epoch_ms: None,
-            value: serde_json::Value::Bool(true),
-        };
+        let record = CloudRecord::encode::<ServiceReceiptRecord>(&true, None)?;
         validate_service_receipt(id, &record)?;
         let key = format!("{}{id}", crate::service_notifications::RECEIPT_PREFIX);
         if self.persistent.records.cached.contains_key(&key) {
@@ -1122,11 +1022,10 @@ impl CloudEngine {
         if existing == Some(membership) {
             return Ok(false);
         }
-        let record = CloudRecord {
-            schema_version: AIRCRAFT_LIBRARY_SCHEMA_VERSION,
-            modified_at_epoch_ms: Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms)),
-            value: serde_json::to_value(membership).map_err(cloud_json_error)?,
-        };
+        let record = CloudRecord::encode::<AircraftMembershipRecord>(
+            &membership.into(),
+            Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms)),
+        )?;
         self.record_local_cloud_record(&key, record);
         Ok(true)
     }
@@ -1139,7 +1038,7 @@ impl CloudEngine {
             .get(key)
             .into_iter()
             .chain(self.persistent.records.deferred_adoption.get(key))
-            .filter_map(|record| record.modified_at_epoch_ms)
+            .filter_map(|record| record.modified_at_epoch_ms())
             .max()
             .unwrap_or(LEGACY_UNKNOWN_MUTATION_EPOCH_MS);
         now_epoch_ms.max(latest.saturating_add(1))
@@ -1389,7 +1288,16 @@ impl CloudEngine {
             validate_cloud_records(&records.cached)?;
             validate_cloud_records(&records.deferred_adoption)?;
             self.persistent.records = records;
+            self.persistent
+                .records
+                .pending_keys
+                .retain(|key| self.persistent.records.cached.contains_key(key));
             self.persistent.records_format = self.format.version;
+            // A successful local-format transition supersedes failures raised
+            // by the old decoder. Recheck the authoritative root, read-only.
+            self.persistent.last_provider_failure = None;
+            self.persistent.next_retry_epoch_ms = None;
+            self.persistent.force_poll = self.persistent.account.is_some();
         }
         validate_cloud_records(&self.persistent.records.cached)
     }
@@ -1983,6 +1891,9 @@ impl CloudEngine {
                         return Err(cloud_error("Account upgrade is not authorized"));
                     }
                     self.format.migrate(node.version, &mut page.records)?;
+                    // The successor encodes the migrated records, never the
+                    // predecessor's page-version declaration.
+                    let page = page_for_records(&page.records);
                     let parent = VerifiedTip {
                         node_id: ACS_FIXED_ROOT_ID.to_string(),
                         node_hash: root.root_hash.clone(),
@@ -2543,12 +2454,16 @@ impl CloudEngine {
     }
 
     fn overall_status_panel(&self, now_epoch_ms: i64) -> UiCloudPanel {
-        if let Some(detail) = self.compatibility_detail() {
+        if let Some(problem) = self.status_record(now_epoch_ms) {
             return cloud_panel(
                 "overall_status",
                 "Cloud sync paused",
-                UiCloudPanelState::Caution,
-                Some(&detail),
+                if problem.drives_caution {
+                    UiCloudPanelState::Caution
+                } else {
+                    UiCloudPanelState::Informational
+                },
+                Some(&problem.detail),
                 Vec::new(),
                 None,
             );
@@ -2559,22 +2474,6 @@ impl CloudEngine {
                 "Cloud not active",
                 UiCloudPanelState::Informational,
                 Some("No Sync Account linked yet."),
-                Vec::new(),
-                None,
-            );
-        }
-
-        if self
-            .persistent
-            .last_provider_failure
-            .as_ref()
-            .is_some_and(|failure| failure.kind == CloudProviderErrorKind::Transient)
-        {
-            return cloud_panel(
-                "overall_status",
-                "Cloud not active",
-                UiCloudPanelState::Informational,
-                Some("Sync Account linked, but provider is temporarily unavailable."),
                 Vec::new(),
                 None,
             );
@@ -2636,9 +2535,10 @@ impl CloudEngine {
         facts
     }
 
-    pub fn status_summary(&self, _now_epoch_ms: i64) -> CloudStatusSummary {
+    pub fn status_summary(&self, now_epoch_ms: i64) -> CloudStatusSummary {
         let linked = self.has_linked_account();
-        if !linked {
+        let problem = self.status_record(now_epoch_ms);
+        if !linked && problem.is_none() {
             return CloudStatusSummary {
                 label: "UNLINKED".to_string(),
                 severity: UiStatusSeverity::Info,
@@ -2702,28 +2602,11 @@ impl CloudEngine {
             });
         }
 
-        if let Some(detail) = self.compatibility_detail() {
+        if let Some(problem) = problem {
             return CloudStatusSummary {
-                label: "PAUSED".to_string(),
-                severity: UiStatusSeverity::Caution,
-                detail,
-                facts,
-            };
-        }
-        if let Some(failure) = self.persistent.last_provider_failure.as_ref() {
-            return CloudStatusSummary {
-                label: if failure.kind == CloudProviderErrorKind::Transient {
-                    "OFFLINE"
-                } else {
-                    "ERROR"
-                }
-                .to_string(),
-                severity: if failure.kind == CloudProviderErrorKind::Transient {
-                    UiStatusSeverity::Info
-                } else {
-                    UiStatusSeverity::Caution
-                },
-                detail: failure.detail.clone(),
+                label: problem.value.expect("cloud problems have a status label"),
+                severity: problem.severity,
+                detail: problem.detail,
                 facts,
             };
         }
@@ -2796,7 +2679,7 @@ impl CloudEngine {
             LinkedAccountDetail::ConfirmUpgrade { from } => {
                 let reason = self.upgradeable_account_format().err().map(|error| error.message);
                 cloud_panel("confirm_upgrade", "Upgrade this Sync Account?", UiCloudPanelState::Caution,
-                    Some(&format!("Upgrade account format {from} to {}. This cannot be undone. Every other device and browser tab using this account must run a compatible Aerobag version before it can sync again. Update those applications or reload their tabs. Local changes are kept until sync resumes.", self.format.version)),
+                    Some(&format!("Upgrade account format {from} to {}. This cannot be undone. Every other device and browser tab using this account must run a compatible Aerobag version before it can sync again. Update those applications or reload their tabs. {} Local changes made in this version are kept until sync resumes.", self.format.version, self.format.upgrade_explanation(from))),
                     vec![
                         cloud_action(CloudUiActionId::CloseLinkedDetail, "Cancel", true, ""),
                         cloud_action(CloudUiActionId::ConfirmAccountUpgrade, "Upgrade account", reason.is_none(), reason.as_deref().unwrap_or("")),
@@ -2870,14 +2753,6 @@ impl CloudEngine {
                 detail,
             ));
         }
-        let linked = self
-            .persistent
-            .account
-            .as_ref()
-            .is_some_and(|account| account.tip.is_some());
-        if !linked {
-            return None;
-        }
         let failure = self.persistent.last_provider_failure.as_ref()?;
         let transient = failure.kind == CloudProviderErrorKind::Transient;
         Some(DataStatusRecord::new(
@@ -2892,6 +2767,28 @@ impl CloudEngine {
             !transient,
             failure.detail.clone(),
         ))
+    }
+
+    pub(crate) fn settings_sync_indicator(
+        &self,
+        now_epoch_ms: i64,
+    ) -> Option<app_ui_contracts::session::UiSettingsSyncIndicator> {
+        self.persistent.account.as_ref()?;
+        let failed = self.status_record(now_epoch_ms).is_some();
+        Some(app_ui_contracts::session::UiSettingsSyncIndicator {
+            symbol: "\u{2601}\u{fe0e}".to_string(),
+            help_text: if failed {
+                "Cloud Account Sync not working; see Status page."
+            } else {
+                "Synchronized through your Sync Account."
+            }
+            .to_string(),
+            tone: if failed {
+                UiStatusSeverity::Caution
+            } else {
+                UiStatusSeverity::Ok
+            },
+        })
     }
 
     pub fn device_setup_code(&self) -> AppResult<String> {
@@ -3171,77 +3068,34 @@ fn validate_cloud_records(records: &BTreeMap<String, CloudRecord>) -> AppResult<
 }
 
 fn cloud_record_for_flight_plan(record: &StampedFlightPlan) -> AppResult<CloudRecord> {
-    Ok(CloudRecord {
-        schema_version: FLIGHT_PLAN_SCHEMA_VERSION,
-        modified_at_epoch_ms: Some(record.modified_at_epoch_ms),
-        value: serde_json::to_value(&record.plan).map_err(cloud_json_error)?,
-    })
+    CloudRecord::encode::<FlightPlanRecord>(
+        &record.plan.clone().into(),
+        Some(record.modified_at_epoch_ms),
+    )
 }
 
 fn flight_plan_from_record(record: &CloudRecord) -> AppResult<StampedFlightPlan> {
-    let modified_at_epoch_ms = match record.schema_version {
-        FLIGHT_PLAN_SCHEMA_VERSION => record.modified_at_epoch_ms.ok_or_else(|| {
-            cloud_error("cloud flight-plan record has no user-mutation timestamp")
-        })?,
-        version => {
-            return Err(cloud_error(format!(
-                "unsupported cloud flight-plan schema {version}"
-            )))
-        }
-    };
-    let plan: FlightPlan =
-        serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
+    let wire = record.decode::<FlightPlanRecord>()?;
     Ok(StampedFlightPlan {
-        plan: crate::build_flight_plan(plan)?,
-        modified_at_epoch_ms,
+        plan: wire.try_into()?,
+        modified_at_epoch_ms: record
+            .modified_at_epoch_ms()
+            .expect("mutable record validated"),
     })
 }
 
 fn offline_package_selection_from_record(
     record: &CloudRecord,
 ) -> AppResult<OfflinePackageSelection> {
-    if record.schema_version != OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported offline-package selection schema {}",
-            record.schema_version
-        )));
-    }
-    if record.modified_at_epoch_ms.is_none() {
-        return Err(cloud_error(
-            "offline-package selection has no user-mutation timestamp",
-        ));
-    }
-    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+    record.decode::<PackageSelectionRecord>().map(Into::into)
 }
 
 fn inactivity_sleep_timeout_from_record(record: &CloudRecord) -> AppResult<InactivitySleepTimeout> {
-    if record.schema_version != INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported inactivity sleep timeout schema {}",
-            record.schema_version
-        )));
-    }
-    if record.modified_at_epoch_ms.is_none() {
-        return Err(cloud_error(
-            "inactivity sleep timeout has no user-mutation timestamp",
-        ));
-    }
-    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+    record.decode::<SleepRecord>().map(Into::into)
 }
 
 fn nexrad_acquisition_from_record(record: &CloudRecord) -> AppResult<NexradAcquisitionPreferences> {
-    if record.schema_version != NEXRAD_ACQUISITION_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported NEXRAD acquisition schema {}",
-            record.schema_version
-        )));
-    }
-    if record.modified_at_epoch_ms.is_none() {
-        return Err(cloud_error(
-            "NEXRAD acquisition setting has no user-mutation timestamp",
-        ));
-    }
-    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+    record.decode::<NexradRecord>().map(Into::into)
 }
 
 fn debug_flag_record_key(flag_id: DebugFlagId) -> String {
@@ -3249,40 +3103,16 @@ fn debug_flag_record_key(flag_id: DebugFlagId) -> String {
 }
 
 fn debug_flag_from_record(record: &CloudRecord) -> AppResult<bool> {
-    if record.schema_version != DEBUG_FLAG_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported debug flag schema {}",
-            record.schema_version
-        )));
-    }
-    if record.modified_at_epoch_ms.is_none() {
-        return Err(cloud_error("debug flag has no user-mutation timestamp"));
-    }
-    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+    record.decode::<DebugRecord>()
 }
 
 fn aircraft_definition_from_record(
     expected_hash: &str,
     record: &CloudRecord,
 ) -> AppResult<product_contracts::AircraftDefinition> {
-    if record.schema_version != product_contracts::AIRCRAFT_DEFINITION_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported aircraft definition schema {}",
-            record.schema_version
-        )));
-    }
-    if record.modified_at_epoch_ms.is_some() {
-        return Err(cloud_error(
-            "immutable aircraft definition has a mutation timestamp",
-        ));
-    }
-    let definition: product_contracts::AircraftDefinition =
-        serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
-    let actual_hash = definition.content_hash().map_err(cloud_error)?;
-    if actual_hash != expected_hash {
-        return Err(cloud_error(format!(
-            "aircraft definition record hash mismatch: key has {expected_hash}, value has {actual_hash}"
-        )));
+    let definition = record.decode::<AircraftRecord>()?;
+    if definition.content_hash().map_err(cloud_error)? != expected_hash {
+        return Err(cloud_error("aircraft definition record hash mismatch"));
     }
     Ok(definition)
 }
@@ -3290,75 +3120,33 @@ fn aircraft_definition_from_record(
 fn aircraft_library_membership_from_record(
     record: &CloudRecord,
 ) -> AppResult<product_contracts::AircraftLibraryMembership> {
-    if record.schema_version != AIRCRAFT_LIBRARY_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported aircraft library schema {}",
-            record.schema_version
-        )));
-    }
-    if record.modified_at_epoch_ms.is_none() {
-        return Err(cloud_error(
-            "aircraft library membership has no user-mutation timestamp",
-        ));
-    }
-    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+    record.decode::<AircraftMembershipRecord>().map(Into::into)
 }
 
 fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
-    if let Some(id) = key.strip_prefix(crate::service_notifications::RECEIPT_PREFIX) {
-        validate_service_receipt(id, record)?;
-    } else if key == FLIGHT_PLAN_RECORD_KEY {
-        flight_plan_from_record(record)?;
-    } else if key == INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY {
-        inactivity_sleep_timeout_from_record(record)?;
-    } else if key == NEXRAD_ACQUISITION_RECORD_KEY {
-        nexrad_acquisition_from_record(record)?;
-    } else if let Some(id) = key.strip_prefix(DEBUG_FLAG_RECORD_PREFIX) {
-        // Older clients preserve unknown settings records for forward compatibility.
-        if debug_flag_from_id(id).is_some() {
-            debug_flag_from_record(record)?;
-        }
-    } else if key.starts_with(OFFLINE_PACKAGE_REGION_RECORD_PREFIX)
-        || key.starts_with(OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX)
-    {
-        offline_package_selection_from_record(record)?;
-    } else if let Some(hash) = key.strip_prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX) {
-        aircraft_definition_from_record(hash, record)?;
-    } else if let Some(hash) = key.strip_prefix(AIRCRAFT_LIBRARY_RECORD_PREFIX) {
-        product_contracts::validate_aircraft_definition_hash(hash).map_err(cloud_error)?;
-        aircraft_library_membership_from_record(record)?;
-    }
-    Ok(())
+    records::validate(key, record)
 }
 
 fn validate_service_receipt(id: &str, record: &CloudRecord) -> AppResult<()> {
-    if id.len() != 64
-        || !id.bytes().all(|c| c.is_ascii_hexdigit())
-        || record.schema_version != 1
-        || record.modified_at_epoch_ms.is_some()
-        || record.value != serde_json::Value::Bool(true)
-    {
-        return Err(cloud_error("invalid immutable service read receipt"));
-    }
-    Ok(())
+    records::validate(&format!("{SERVICE_RECEIPT_PREFIX}{id}"), record)
 }
 
 fn compare_cloud_records(left: &CloudRecord, right: &CloudRecord) -> AppResult<Ordering> {
     let time_order = left
-        .modified_at_epoch_ms
+        .modified_at_epoch_ms()
         .unwrap_or(LEGACY_UNKNOWN_MUTATION_EPOCH_MS)
         .cmp(
             &right
-                .modified_at_epoch_ms
+                .modified_at_epoch_ms()
                 .unwrap_or(LEGACY_UNKNOWN_MUTATION_EPOCH_MS),
         );
     if time_order != Ordering::Equal {
         return Ok(time_order);
     }
     let left_bytes =
-        serde_json::to_vec(&(left.schema_version, &left.value)).map_err(cloud_json_error)?;
+        serde_json::to_vec(&(left.schema_version(), left.value())).map_err(cloud_json_error)?;
     let right_bytes =
-        serde_json::to_vec(&(right.schema_version, &right.value)).map_err(cloud_json_error)?;
+        serde_json::to_vec(&(right.schema_version(), right.value())).map_err(cloud_json_error)?;
     let left_digest: [u8; 32] = Sha256::digest(left_bytes).into();
     let right_digest: [u8; 32] = Sha256::digest(right_bytes).into();
     Ok(left_digest.cmp(&right_digest))
@@ -3481,7 +3269,10 @@ fn unexpected_response(context: &str, response: CloudProviderResponse) -> AppErr
 
 #[cfg(test)]
 mod tests {
+    mod account_contracts;
     mod account_formats;
+    mod legacy_upgrade;
+    mod wire_payloads;
     use super::*;
     use crate::{planning::RouteComponent, NavRef};
 
@@ -3495,22 +3286,25 @@ mod tests {
             modified_at_epoch_ms: 12345,
         };
         let record = cloud_record_for_flight_plan(&stamped).unwrap();
-        assert_eq!(record.schema_version, 3);
+        assert_eq!(record.schema_version(), 4);
         assert_eq!(flight_plan_from_record(&record).unwrap(), stamped);
-        for version in [1, 2] {
-            let mut old = record.clone();
-            old.schema_version = version;
+        for version in [1, 2, 3] {
+            let old = CloudRecord::fixture(
+                version,
+                record.modified_at_epoch_ms(),
+                record.value().clone(),
+            );
             assert!(flight_plan_from_record(&old)
                 .unwrap_err()
                 .message
-                .contains("unsupported cloud flight-plan schema"));
+                .contains("unsupported cloud record schema"));
         }
         let mut invalid = stamped.clone();
         let RouteComponent::Airway { airway } = &mut invalid.plan.route_components[1] else {
             panic!("airway")
         };
         airway.exit.0 = "missing-waypoint-occurrence".into();
-        assert!(flight_plan_from_record(&cloud_record_for_flight_plan(&invalid).unwrap()).is_err());
+        assert!(cloud_record_for_flight_plan(&invalid).is_err());
     }
 
     fn bundled_private_aircraft() -> product_contracts::AircraftDefinition {
@@ -4080,11 +3874,7 @@ mod tests {
     fn aircraft_definition_record_rejects_a_content_hash_mismatch() {
         let definition = bundled_private_aircraft();
         let wrong_hash = "0".repeat(64);
-        let record = CloudRecord {
-            schema_version: product_contracts::AIRCRAFT_DEFINITION_SCHEMA_VERSION,
-            modified_at_epoch_ms: None,
-            value: serde_json::to_value(definition).unwrap(),
-        };
+        let record = CloudRecord::encode::<AircraftRecord>(&definition, None).unwrap();
 
         let error = validate_known_record(
             &product_contracts::aircraft_definition_key(&wrong_hash).unwrap(),
@@ -4095,7 +3885,7 @@ mod tests {
     }
 
     #[test]
-    fn version_three_flight_plan_outbox_migrates_into_generic_records() {
+    fn obsolete_pre_generic_crossfill_is_discarded_without_decoding_runtime_plan() {
         let plan = plan(&["KRNT", "KPAE"]);
         let stamped = StampedFlightPlan {
             plan: plan.clone(),
@@ -4115,8 +3905,8 @@ mod tests {
         );
 
         let engine = CloudEngine::new(serde_json::from_value(wire).unwrap());
-        assert_eq!(engine.cached_flight_plan(), Some(plan));
-        assert!(engine
+        assert_eq!(engine.cached_flight_plan(), None);
+        assert!(!engine
             .persistent
             .records
             .pending_keys
@@ -4129,11 +3919,11 @@ mod tests {
             version: CLOUD_PAGE_VERSION,
             records: BTreeMap::from([(
                 "offline_packages/product/terrain".to_string(),
-                CloudRecord {
-                    schema_version: OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION,
-                    modified_at_epoch_ms: Some(100),
-                    value: serde_json::to_value(OfflinePackageSelection::Play).unwrap(),
-                },
+                CloudRecord::encode::<PackageSelectionRecord>(
+                    &wire::preferences::PackageSelection::Play,
+                    Some(100),
+                )
+                .unwrap(),
             )]),
         };
 
@@ -4288,6 +4078,15 @@ mod tests {
         assert_eq!(record.value.as_deref(), Some("ERROR"));
         assert_eq!(record.severity, UiStatusSeverity::Caution);
         assert!(record.drives_caution);
+        let panel = engine.page_state(2_001).overall_status;
+        assert_eq!(panel.state, UiCloudPanelState::Caution);
+        assert_eq!(panel.summary.as_deref(), Some(record.detail.as_str()));
+        let indicator = engine.settings_sync_indicator(2_001).unwrap();
+        assert_eq!(indicator.tone, UiStatusSeverity::Caution);
+        assert_eq!(
+            indicator.help_text,
+            "Cloud Account Sync not working; see Status page."
+        );
         assert!(engine.take_provider_request(3_000).unwrap().is_none());
 
         engine
@@ -4301,5 +4100,54 @@ mod tests {
                 .map(|request| &request.operation),
             Some(CloudProviderOperation::AcsReadRoot)
         ));
+    }
+
+    #[test]
+    fn all_cloud_problem_kinds_have_one_detail_across_status_page_and_cloud_page() {
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut engine = configured_engine();
+        assert!(engine.settings_sync_indicator(0).is_none());
+        create_account(&mut engine, &mut provider, &plan(&["KRNT", "KPAE"]), 1_000);
+        for (kind, detail, state) in [
+            (
+                CloudProviderErrorKind::Permanent,
+                "unsupported cloud flight-plan schema 2",
+                UiCloudPanelState::Caution,
+            ),
+            (
+                CloudProviderErrorKind::Unauthorized,
+                "Provider authorization required",
+                UiCloudPanelState::Caution,
+            ),
+            (
+                CloudProviderErrorKind::Transient,
+                "Network unavailable",
+                UiCloudPanelState::Informational,
+            ),
+        ] {
+            engine.persistent.last_provider_failure = Some(CloudProviderFailure {
+                kind,
+                detail: detail.to_string(),
+            });
+            let panel = engine.page_state(2_000).overall_status;
+            let status = engine.status_record(2_000).unwrap();
+            assert_eq!(panel.summary.as_deref(), Some(status.detail.as_str()));
+            assert_eq!(panel.state, state);
+            assert_eq!(engine.status_summary(2_000).detail, status.detail);
+            assert_eq!(
+                engine.settings_sync_indicator(2_000).unwrap().tone,
+                UiStatusSeverity::Caution
+            );
+        }
+        engine.persistent.last_provider_failure = None;
+        assert!(engine.status_record(3_000).is_none());
+        assert_eq!(
+            engine.page_state(3_000).overall_status.state,
+            UiCloudPanelState::Complete
+        );
+        assert_eq!(
+            engine.settings_sync_indicator(3_000).unwrap().tone,
+            UiStatusSeverity::Ok
+        );
     }
 }

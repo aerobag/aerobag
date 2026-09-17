@@ -81,7 +81,7 @@ pub(crate) struct StatusProjectionDependencies {
 pub(crate) struct SettingsProjectionDependencies {
     pub static_revision: u64,
     pub display_policy_available: bool,
-    pub sync_account_configured: bool,
+    pub sync_indicator: Option<app_ui_contracts::session::UiSettingsSyncIndicator>,
     pub debug_state: UiDebugState,
 }
 
@@ -289,7 +289,7 @@ mod tests {
             settings: SettingsProjectionDependencies {
                 static_revision: 0,
                 display_policy_available: false,
-                sync_account_configured: false,
+                sync_indicator: None,
                 debug_state: UiDebugState {
                     tile_labels: false,
                     nexrad_tile_labels: false,

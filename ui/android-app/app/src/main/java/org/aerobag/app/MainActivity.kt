@@ -292,7 +292,6 @@ import org.aerobag.app.domain.androidNavigationPageState
 import org.aerobag.app.domain.UiDisclaimerState
 import org.aerobag.app.domain.UiDisplayPolicy
 import org.aerobag.app.domain.UiMapLayerToggleState
-import org.aerobag.app.domain.UiSettingsPageRow
 import org.aerobag.app.domain.UiSettingsPageState
 import org.aerobag.app.domain.UiStatusActionStyle
 import org.aerobag.app.domain.UiStatusSeverity

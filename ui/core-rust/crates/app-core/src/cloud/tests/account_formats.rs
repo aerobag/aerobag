@@ -61,7 +61,7 @@ fn future_format_is_a_pause_before_decoding_its_unknown_body() {
         &old,
         &mut provider,
         serde_json::json!({
-            "version": 2, "future_body": { "deliberately_not_a_v1_node": true }
+            "version": 3, "future_body": { "deliberately_not_a_v2_node": true }
         }),
     );
     let (mut joining, adopted) = link_account(&mut provider, code, 3_000);
@@ -73,7 +73,7 @@ fn future_format_is_a_pause_before_decoding_its_unknown_body() {
     let status = joining
         .status_record(3_000)
         .expect("persistent format caution");
-    assert!(format!("{status:?}").contains("format 2"));
+    assert!(format!("{status:?}").contains("format 3"));
     assert!(joining
         .page_state(3_000)
         .sync_account_panels
@@ -203,7 +203,7 @@ fn deferred_navigation_adoption_survives_client_update_and_account_upgrade() {
 }
 
 #[test]
-fn current_account_record_wire_shape_is_not_an_internal_model_version() {
+fn historical_account_records_are_opaque_until_the_declared_migration() {
     let value = serde_json::json!({
         "id": "frozen-format-1", "name": "TEST ONLY", "route_components": [],
         "route_component_uids": [], "route_component_uid_counter": 0,
@@ -217,14 +217,11 @@ fn current_account_record_wire_shape_is_not_an_internal_model_version() {
     let page_value = serde_json::json!({"version": 1, "records": {
         "flight_plan/current": {"schema_version": 3, "modified_at_epoch_ms": 456000, "value": value}
     }});
-    let page = (account_format::CURRENT.decode_page)(page_value.clone()).unwrap();
+    let page = (account_format::LEGACY.decode_page)(page_value.clone()).unwrap();
     let record = &page.records[FLIGHT_PLAN_RECORD_KEY];
-    let decoded = flight_plan_from_record(record).unwrap();
-    assert_eq!(cloud_record_for_flight_plan(&decoded).unwrap(), *record);
-    assert_eq!(
-        (account_format::CURRENT.encode_page)(&page).unwrap(),
-        page_value
-    );
+    assert_eq!(record.schema_version(), 3);
+    assert!(flight_plan_from_record(record).is_err());
+    assert_eq!(serde_json::to_value(page).unwrap(), page_value);
 }
 
 fn as_next_client(engine: CloudEngine) -> CloudEngine {
@@ -390,7 +387,7 @@ fn upgrade_is_explicit_and_two_instances_recover_without_losing_local_edits() {
 
     confirm_upgrade(&mut newer, 64_000);
     pump_acs(&mut newer, &mut provider, 64_000);
-    assert_eq!(root_plaintext(&provider, &newer)["version"], 2);
+    assert_eq!(root_plaintext(&provider, &newer)["version"], 3);
     assert_eq!(newer.status_summary(64_000).label, "LINKED");
     assert!(newer.persistent.records.pending_keys.is_empty());
     assert_eq!(
@@ -475,13 +472,13 @@ fn upgrader_losing_cas_remigrates_the_latest_cloud_edit() {
     pump_acs(&mut old, &mut provider, 4_000);
     deliver(&mut newer, &mut provider, pending, 5_000);
     pump_acs(&mut newer, &mut provider, 5_000);
-    assert_eq!(root_plaintext(&provider, &newer)["version"], 2);
+    assert_eq!(root_plaintext(&provider, &newer)["version"], 3);
     let record = &cloud_records(&provider, &newer)[FLIGHT_PLAN_RECORD_KEY];
     assert_eq!(
         flight_plan_from_record(record).unwrap().plan,
         plan(&["KSEA"])
     );
-    assert_eq!(record.modified_at_epoch_ms, Some(4_000));
+    assert_eq!(record.modified_at_epoch_ms(), Some(4_000));
 }
 
 #[test]
@@ -524,19 +521,11 @@ fn migration_changes_real_wire_data_and_preserves_unrelated_records_and_stamps()
     let (mut provider, mut old, _) = fixture();
     old.record_local_cloud_record(
         "test/format_marker",
-        CloudRecord {
-            schema_version: 1,
-            modified_at_epoch_ms: Some(123),
-            value: "old marker".into(),
-        },
+        CloudRecord::fixture(1, Some(123), "old marker".into()),
     );
     old.record_local_cloud_record(
         "future/unrelated",
-        CloudRecord {
-            schema_version: 79,
-            modified_at_epoch_ms: Some(456),
-            value: serde_json::json!({"keep": [1,2,3]}),
-        },
+        CloudRecord::fixture(79, Some(456), serde_json::json!({"keep": [1,2,3]})),
     );
     pump_acs(&mut old, &mut provider, 3_000);
     let before = cloud_records(&provider, &old);
@@ -550,11 +539,14 @@ fn migration_changes_real_wire_data_and_preserves_unrelated_records_and_stamps()
         after[FLIGHT_PLAN_RECORD_KEY],
         before[FLIGHT_PLAN_RECORD_KEY]
     );
-    assert_eq!(after["test/format_marker"].modified_at_epoch_ms, Some(123));
-    assert_eq!(after["test/format_marker"].schema_version, 2);
     assert_eq!(
-        after["test/format_marker"].value,
-        serde_json::json!({"migrated_marker": "new marker"})
+        after["test/format_marker"].modified_at_epoch_ms(),
+        Some(123)
+    );
+    assert_eq!(after["test/format_marker"].schema_version(), 2);
+    assert_eq!(
+        after["test/format_marker"].value(),
+        &serde_json::json!({"migrated_marker": "new marker"})
     );
     let node = root_plaintext(&provider, &newer);
     let id = node["merkle_root_id"].as_str().unwrap();
@@ -621,11 +613,7 @@ fn failed_migration_writes_nothing_and_does_not_consume_pending_edits() {
     let (mut provider, mut old, mut newer) = fixture();
     old.record_local_cloud_record(
         "test/format_marker",
-        CloudRecord {
-            schema_version: 1,
-            modified_at_epoch_ms: Some(123),
-            value: "invalid marker".into(),
-        },
+        CloudRecord::fixture(1, Some(123), "invalid marker".into()),
     );
     pump_acs(&mut old, &mut provider, 3_000);
     newer
@@ -703,7 +691,7 @@ fn unknown_older_format_disables_upgrade_without_guessing_a_migration() {
             decode_node: account_format::CURRENT.decode_node,
             decode_page: account_format::CURRENT.decode_page,
             encode_page: account_format::CURRENT.encode_page,
-            migrate_records: |_| Ok(()),
+            migrations: &[],
         })),
     );
     read_only_pump(&mut newer, &mut provider, 3_000);

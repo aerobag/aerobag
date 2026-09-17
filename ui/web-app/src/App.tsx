@@ -2514,8 +2514,7 @@ function OperationalApp() {
     settings_page_state: {
       title: "Settings",
       summary: "No platform settings are available.",
-      rows: [],
-      sections: [],
+      blocks: [],
     },
     cloud_page_state: {
       action_revision: 0,
@@ -13290,7 +13289,7 @@ export function CloudPage(props: {
   );
 }
 
-function SettingsPage(props: {
+export function SettingsPage(props: {
   page: AppPage;
   state: UiSessionSnapshot["settings_page_state"];
   navElement: NavElementUiView | null | undefined;
@@ -13319,29 +13318,21 @@ function SettingsPage(props: {
           {props.state.summary ? <p>{props.state.summary}</p> : null}
         </header>
         <div className="settingsPageRows">
-          {props.state.rows.map((row) => (
-            <SettingsPageRowView
-              key={row.id}
-              row={row}
-              onSettingsAction={props.onSettingsAction}
-              onHelp={showSettingsHelp}
-            />
-          ))}
-          {props.state.aircraft_library ? (
-            <SettingsAircraftLibrary
-              state={props.state.aircraft_library}
-              onAction={props.onAircraftLibraryAction}
-              onDisabledAction={showSettingsHelp}
-            />
-          ) : null}
-          {props.state.sections.map((section) => (
-            <SettingsPageSectionView
-              key={section.id}
-              section={section}
-              onSettingsAction={props.onSettingsAction}
-              onHelp={showSettingsHelp}
-            />
-          ))}
+          {props.state.blocks.map((block, index): JSX.Element => {
+            switch (block.kind) {
+              case "controls":
+                return <Fragment key={index}>{block.rows.map((row) => (
+                  <SettingsPageRowView key={row.id} row={row}
+                    onSettingsAction={props.onSettingsAction} onHelp={showSettingsHelp} />
+                ))}</Fragment>;
+              case "aircraft_library":
+                return <SettingsAircraftLibrary key={index} state={block.library}
+                  onAction={props.onAircraftLibraryAction} onDisabledAction={showSettingsHelp} />;
+              case "section":
+                return <SettingsPageSectionView key={index} section={block.section}
+                  onSettingsAction={props.onSettingsAction} onHelp={showSettingsHelp} />;
+            }
+          })}
         </div>
       </div>
       {settingsHelpToast ? (
@@ -13353,7 +13344,8 @@ function SettingsPage(props: {
   );
 }
 
-type AircraftLibraryState = NonNullable<UiSessionSnapshot["settings_page_state"]["aircraft_library"]>;
+type SettingsBlock = UiSessionSnapshot["settings_page_state"]["blocks"][number];
+type AircraftLibraryState = Extract<SettingsBlock, { kind: "aircraft_library" }>["library"];
 
 function SettingsAircraftLibrary(props: {
   state: AircraftLibraryState;
@@ -13400,7 +13392,10 @@ function SettingsAircraftLibrary(props: {
           </button>
         ) : null}
       </div>
-      <div className="settingsAircraftGrid">
+      <div className="settingsAircraftGrid" style={{
+        "--aircraft-column-min-width": `calc(var(--thumb) * ${props.state.column_min_width_thumbs})`,
+        "--aircraft-column-gap": `calc(var(--thumb) * ${props.state.column_gap_thumbs})`,
+      } as CSSProperties}>
         {props.state.entries.map((entry) => (
           <article
             className={`settingsAircraftEntry${entry.included ? "" : " isHidden"}`}
@@ -13470,15 +13465,15 @@ function SettingsAircraftLibrary(props: {
   );
 }
 
-type SettingsPageRowState = UiSessionSnapshot["settings_page_state"]["rows"][number];
-type SettingsPageSectionState = UiSessionSnapshot["settings_page_state"]["sections"][number];
+type SettingsPageRowState = Extract<SettingsBlock, { kind: "controls" }>["rows"][number];
+type SettingsPageSectionState = Extract<SettingsBlock, { kind: "section" }>["section"];
 
 function SettingsPageSectionView(props: {
   section: SettingsPageSectionState;
   onSettingsAction: (actionId: string, valueId: string) => void;
   onHelp: (message: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(!props.section.collapsed_by_default);
+  const expanded = props.section.expanded;
   const contentId = useId();
   return (
     <section className={`settingsPageSection${expanded ? " isExpanded" : ""}`}>
@@ -13488,7 +13483,7 @@ function SettingsPageSectionView(props: {
         data-testid={`settings-section-${props.section.id}`}
         aria-expanded={expanded}
         aria-controls={contentId}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => props.onSettingsAction(props.section.toggle_action.action_id, props.section.toggle_action.value_id)}
       >
         <span className="settingsPageSectionChevron" aria-hidden="true">{expanded ? "\u25BE" : "\u25B8"}</span>
         <span>{props.section.title}</span>
@@ -13618,6 +13613,7 @@ function SettingsSyncIndicatorView(props: {
     <button
       type="button"
       className="settingsSyncIndicator"
+      data-tone={props.indicator.tone}
       aria-label={props.indicator.help_text}
       title={props.indicator.help_text}
       data-testid={`settings-sync-${props.testId}`}

@@ -96,6 +96,8 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/shared
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Install Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Install cargo-nextest

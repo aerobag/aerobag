@@ -46,7 +46,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightDataCell
-import org.aerobag.app.domain.UiSettingsGridItem
+import org.aerobag.app.generated.UiSettingsGridItem
+import org.aerobag.app.domain.toUi
 import org.aerobag.app.domain.UiTheme
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -234,7 +235,7 @@ internal fun FlightDataSettingsCell(
     val density = LocalDensity.current
     val cellHeight = remember(density.fontScale) { flightDataCellHeight(density) }
     FlightDataBannerCell(
-        cell = item.cell,
+        cell = item.cell.toUi(),
         uiTheme = uiTheme,
         cellWidth = FlightDataCellMinWidth,
         cellHeight = cellHeight,

@@ -16,12 +16,39 @@ pub(super) struct AccountFormat {
     pub decode_node: fn(serde_json::Value) -> AppResult<CloudNode>,
     pub decode_page: fn(serde_json::Value) -> AppResult<CloudPage>,
     pub encode_page: fn(&CloudPage) -> AppResult<serde_json::Value>,
-    pub migrate_records: fn(&mut BTreeMap<String, CloudRecord>) -> AppResult<()>,
+    pub migrations: &'static [RecordMigration],
 }
+
+#[derive(Debug)]
+pub(super) struct RecordMigration {
+    pub key: KeyPattern,
+    pub source_versions: &'static [u32],
+    pub target_version: Option<u32>,
+    pub convert: fn(CloudRecord) -> AppResult<Option<CloudRecord>>,
+    pub explanation: &'static str,
+}
+
+// Historical format 1 was unfortunately published with FP schemas 1, 2, and
+// 3. Read its structural envelope only; the approved successor discards that
+// crossfill without attempting to deserialize any historical FlightPlan.
+pub(super) static LEGACY: AccountFormat = AccountFormat {
+    version: 1,
+    predecessor: None,
+    decode_node: |value| serde_json::from_value(value).map_err(cloud_json_error),
+    decode_page: |value| {
+        let page: CloudPage = serde_json::from_value(value).map_err(cloud_json_error)?;
+        if page.version != 1 {
+            return Err(cloud_error("Expected account format 1 page"));
+        }
+        Ok(page)
+    },
+    encode_page: |_| Err(cloud_error("Historical account format 1 is read-only")),
+    migrations: &[],
+};
 
 pub(super) static CURRENT: AccountFormat = AccountFormat {
     version: CLOUD_NODE_VERSION,
-    predecessor: None,
+    predecessor: Some(&LEGACY),
     decode_node: |value| serde_json::from_value(value).map_err(cloud_json_error),
     decode_page: |value| {
         let page = serde_json::from_value(value).map_err(cloud_json_error)?;
@@ -32,8 +59,41 @@ pub(super) static CURRENT: AccountFormat = AccountFormat {
         validate_cloud_page(page)?;
         serde_json::to_value(page).map_err(cloud_json_error)
     },
-    migrate_records: |_| Err(cloud_error("Account format 1 has no predecessor")),
+    migrations: &[RecordMigration {
+        key: KeyPattern::Exact(FLIGHT_PLAN_RECORD_KEY),
+        source_versions: &[1, 2, 3],
+        target_version: None,
+        convert: |_| Ok(None),
+        explanation: "This upgrade removes the previously shared flight plan. Other synchronized data is retained. It does not clear the flight plan currently open on this device.",
+    }, RecordMigration {
+        key: KeyPattern::Prefix(AIRCRAFT_LIBRARY_RECORD_PREFIX),
+        source_versions: &[1],
+        target_version: Some(2),
+        convert: migrate_legacy_membership,
+        explanation: "",
+    }],
 };
+
+fn migrate_legacy_membership(record: CloudRecord) -> AppResult<Option<CloudRecord>> {
+    // Freeze the historical reader here, not in the current wire or runtime
+    // model. The retired tombstone field did not affect the included choice.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyMembership {
+        included: bool,
+        #[serde(default, rename = "deleted")]
+        _deleted: bool,
+    }
+    let value: LegacyMembership =
+        serde_json::from_value(record.value().clone()).map_err(cloud_json_error)?;
+    CloudRecord::encode::<AircraftMembershipRecord>(
+        &wire::preferences::AircraftMembership {
+            included: value.included,
+        },
+        record.modified_at_epoch_ms(),
+    )
+    .map(Some)
+}
 
 impl AccountFormat {
     pub fn find(&'static self, version: u32) -> Option<&'static Self> {
@@ -67,22 +127,69 @@ impl AccountFormat {
                     self.version
                 ))
             })?;
-        prior.migrate(from, records)?;
-        let stamps = records
-            .iter()
-            .map(|(key, record)| (key.clone(), record.modified_at_epoch_ms))
-            .collect::<BTreeMap<_, _>>();
-        (self.migrate_records)(records)?;
-        if stamps.iter().any(|(key, stamp)| {
-            records
-                .get(key)
-                .is_none_or(|record| record.modified_at_epoch_ms != *stamp)
-        }) {
-            return Err(cloud_error(
-                "Account migration lost a record or changed its mutation timestamp",
-            ));
+        let mut migrated = records.clone();
+        prior.migrate(from, &mut migrated)?;
+        let prior_records = migrated.clone();
+        for (key, original) in &prior_records {
+            let rules = self
+                .migrations
+                .iter()
+                .filter(|rule| rule.key.matches(key))
+                .collect::<Vec<_>>();
+            if rules.len() > 1 {
+                return Err(cloud_error("Overlapping account migration rules"));
+            }
+            let Some(rule) = rules.first() else {
+                continue;
+            };
+            if !rule.source_versions.contains(&original.schema_version()) {
+                return Err(cloud_error(format!(
+                    "No migration for {key} schema {}",
+                    original.schema_version()
+                )));
+            }
+            match (rule.convert)(original.clone())? {
+                Some(record) => {
+                    if rule.target_version != Some(record.schema_version())
+                        || record.modified_at_epoch_ms() != original.modified_at_epoch_ms()
+                    {
+                        return Err(cloud_error(
+                            "Account migration changed its declared schema or mutation timestamp",
+                        ));
+                    }
+                    migrated.insert(key.clone(), record);
+                }
+                None => {
+                    if rule.target_version.is_some() {
+                        return Err(cloud_error(
+                            "Account migration unexpectedly discarded a record",
+                        ));
+                    }
+                    migrated.remove(key);
+                }
+            }
         }
+        *records = migrated;
         Ok(())
+    }
+
+    pub fn upgrade_explanation(&'static self, from: u32) -> String {
+        if from == self.version {
+            return String::new();
+        }
+        let mut parts = self
+            .predecessor
+            .map(|prior| prior.upgrade_explanation(from))
+            .unwrap_or_default();
+        for rule in self.migrations {
+            if !rule.explanation.is_empty() {
+                if !parts.is_empty() {
+                    parts.push(' ');
+                }
+                parts.push_str(rule.explanation);
+            }
+        }
+        parts
     }
 }
 

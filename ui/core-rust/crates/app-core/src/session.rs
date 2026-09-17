@@ -126,8 +126,8 @@ use crate::{
         SettingsProjectionDependencies, StatusProjectionDependencies,
     },
     settings_controller::{
-        cloud_sync_indicator, cloud_synced_settings_record, debug_flag_settings_action,
-        CloudSyncedSettingsRecord, SettingsController, SettingsModelCheckpoint, SettingsProjection,
+        cloud_synced_settings_record, debug_flag_settings_action, CloudSyncedSettingsRecord,
+        SettingsController, SettingsModelCheckpoint, SettingsProjection,
     },
     situation_controller::{
         selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
@@ -12676,7 +12676,7 @@ fn session_projection_dependencies(
             banner: snapshot.app_ui_state.flight_data_banner.clone(),
             settings_items: snapshot
                 .settings_page_state
-                .rows
+                .controls()
                 .first()
                 .map(|row| row.items.clone())
                 .unwrap_or_default(),
@@ -12706,7 +12706,9 @@ fn session_projection_dependencies(
         settings: SettingsProjectionDependencies {
             static_revision: session.settings.static_revision(),
             display_policy_available: capabilities.display_policy.is_some(),
-            sync_account_configured: session.cloud.has_linked_account(),
+            sync_indicator: session
+                .cloud
+                .settings_sync_indicator(session.coordinator.wall_clock_epoch_ms),
             debug_state: session.coordinator.debug_state.clone(),
         },
         cloud: CloudProjectionDependencies {
@@ -12814,8 +12816,13 @@ fn assemble_session_update(
             };
             if !settings_changed {
                 assignments.push(UiSessionProjectionAssignment {
-                    path: vec!["settings_page_state".to_string(), "rows".to_string()],
-                    value: serde_json::json!(snapshot.settings_page_state.rows),
+                    path: vec![
+                        "settings_page_state".to_string(),
+                        "blocks".to_string(),
+                        "0".to_string(),
+                        "rows".to_string(),
+                    ],
+                    value: serde_json::json!(snapshot.settings_page_state.controls()),
                 });
             }
             assignments
@@ -12993,26 +13000,9 @@ fn try_snapshot_for_session(
             capability.acquisition_policy == LiveFeedAcquisitionPolicy::DurableCompleteStates
         })
         .map(|_| session.weather.live_feeds().nexrad_install_profile_bytes());
-    let sync_account_configured = session.cloud.has_linked_account();
-    let settings_projection = session.settings.project(
-        display_policy_available,
-        sync_account_configured,
-        nexrad_profile_bytes.as_ref(),
-        &app_ui_state.flight_data_banner,
-        &session.coordinator.debug_state,
-    );
-    if settings_projection.rebuilt {
-        session
-            .diagnostics
-            .settings_projection_count
-            .fetch_add(1, Ordering::Relaxed);
-    }
-    let SettingsProjection {
-        mut settings_page_state,
-        display_policy,
-        disclaimer_state,
-        flight_data_banner,
-    } = settings_projection.projection;
+    let sync_indicator = session
+        .cloud
+        .settings_sync_indicator(session.coordinator.wall_clock_epoch_ms);
     let system_aircraft_definitions = match session.nav_data.store() {
         Some(store) => crate::had_ops::system_aircraft_definitions(store)?,
         None => BTreeMap::new(),
@@ -13030,11 +13020,31 @@ fn try_snapshot_for_session(
         &private_aircraft_definitions,
         &aircraft_library_memberships,
     );
-    settings_page_state.aircraft_library = Some(crate::aircraft_library::project_state(
+    let aircraft_library = crate::aircraft_library::project_state(
         &aircraft_catalog,
         session.settings.aircraft_editor(),
-        cloud_sync_indicator(sync_account_configured),
-    ));
+        sync_indicator.clone(),
+    );
+    let settings_projection = session.settings.project(
+        display_policy_available,
+        sync_indicator,
+        nexrad_profile_bytes.as_ref(),
+        &app_ui_state.flight_data_banner,
+        &session.coordinator.debug_state,
+        Some(&aircraft_library),
+    );
+    if settings_projection.rebuilt {
+        session
+            .diagnostics
+            .settings_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    let SettingsProjection {
+        settings_page_state,
+        display_policy,
+        disclaimer_state,
+        flight_data_banner,
+    } = settings_projection.projection;
     app_ui_state.flight_data_banner = flight_data_banner;
     let cloud_page_state = cloud_projection.page_state;
     let package_projection = session
@@ -13064,8 +13074,8 @@ fn try_snapshot_for_session(
             "projections": ["app_ui", "flight_plan", "situation", "weather", "settings", "map", "packages", "cloud"],
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
-            "settings_page_rows": settings_page_state.rows.len()
-                + settings_page_state.sections.iter().map(|section| section.rows.len()).sum::<usize>(),
+            "settings_page_rows": settings_page_state.controls().len()
+                + settings_page_state.sections().iter().map(|section| section.rows.len()).sum::<usize>(),
             "map_families": raster_map.as_ref().map(|state| state.family_options.len()).unwrap_or(0),
         })
     });
@@ -16103,6 +16113,136 @@ mod tests {
     }
 
     #[test]
+    fn cloud_failure_and_recovery_update_settings_without_a_settings_action() {
+        let mut session = isolated_test_session(None);
+        session
+            .cloud
+            .set_acs_default_base_url(Some("https://cloud.example/cloud/".to_string()))
+            .unwrap();
+        for action in [CloudUiActionId::BeginCreate, CloudUiActionId::CreateAccount] {
+            session
+                .cloud
+                .perform_ui_action(action, &[], &FlightPlan::default(), 1_000)
+                .unwrap();
+        }
+        let initial = try_snapshot_for_session(&mut session).unwrap();
+        assert_eq!(
+            initial
+                .settings_page_state
+                .aircraft_library()
+                .unwrap()
+                .sync_indicator
+                .as_ref()
+                .unwrap()
+                .tone,
+            UiStatusSeverity::Ok
+        );
+        let request = session.cloud.take_provider_request(2_000).unwrap().unwrap();
+        session
+            .cloud
+            .complete_provider_request(
+                request.request_id,
+                CloudHttpResponse::Completed {
+                    status_code: 403,
+                    body_base64: String::new(),
+                },
+                2_001,
+            )
+            .unwrap();
+        let failed =
+            session_update_from_outcome(changed_session_update_outcome(&mut session).unwrap());
+        let mut displayed = serde_json::to_value(initial).unwrap();
+        for assignment in &failed
+            .settings
+            .as_ref()
+            .expect("cloud error must invalidate settings")
+            .assignments
+        {
+            apply_projection_assignment_for_test(&mut displayed, assignment);
+        }
+        let settings: UiSettingsPageState =
+            serde_json::from_value(displayed["settings_page_state"].clone()).unwrap();
+        assert_eq!(
+            settings
+                .aircraft_library()
+                .unwrap()
+                .sync_indicator
+                .as_ref()
+                .unwrap()
+                .tone,
+            UiStatusSeverity::Caution
+        );
+        session
+            .cloud
+            .perform_ui_action(CloudUiActionId::SyncNow, &[], &FlightPlan::default(), 3_000)
+            .unwrap();
+        let recovered =
+            session_update_from_outcome(changed_session_update_outcome(&mut session).unwrap());
+        for assignment in &recovered
+            .settings
+            .as_ref()
+            .expect("cloud recovery must invalidate settings")
+            .assignments
+        {
+            apply_projection_assignment_for_test(&mut displayed, assignment);
+        }
+        let settings: UiSettingsPageState =
+            serde_json::from_value(displayed["settings_page_state"].clone()).unwrap();
+        assert_eq!(
+            settings
+                .aircraft_library()
+                .unwrap()
+                .sync_indicator
+                .as_ref()
+                .unwrap()
+                .tone,
+            UiStatusSeverity::Ok
+        );
+    }
+
+    #[test]
+    fn settings_blocks_order_and_section_expansion_are_core_owned() {
+        use app_ui_contracts::session::UiSettingsPageBlock;
+        let mut session = isolated_test_session(None);
+        let initial = try_snapshot_for_session(&mut session).unwrap();
+        let blocks = &initial.settings_page_state.blocks;
+        assert!(matches!(
+            blocks.as_slice(),
+            [
+                UiSettingsPageBlock::Controls { .. },
+                UiSettingsPageBlock::AircraftLibrary { .. },
+                UiSettingsPageBlock::Section { .. }
+            ]
+        ));
+        let debug = initial.settings_page_state.sections()[0];
+        assert!(!debug.expanded);
+        session
+            .settings
+            .perform_action(&debug.toggle_action, false, false)
+            .unwrap();
+        let update =
+            session_update_from_outcome(changed_session_update_outcome(&mut session).unwrap());
+        assert!(update.settings.is_some());
+        let expanded = try_snapshot_for_session(&mut session).unwrap();
+        assert!(expanded.settings_page_state.sections()[0].expanded);
+        session
+            .settings
+            .perform_action(
+                &expanded.settings_page_state.sections()[0].toggle_action,
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(
+            !try_snapshot_for_session(&mut session)
+                .unwrap()
+                .settings_page_state
+                .sections()[0]
+                .expanded
+        );
+    }
+
+    #[test]
     fn ordinary_mutation_payload_is_update_only_and_smaller_than_full_snapshot() {
         let mut session = isolated_test_session(None);
         try_snapshot_for_session(&mut session).expect("initial snapshot");
@@ -16150,7 +16290,7 @@ mod tests {
             BTreeSet::from([
                 "app_ui_state/flight_data_banner".to_string(),
                 "next_session_snapshot_refresh_epoch_ms".to_string(),
-                "settings_page_state/rows".to_string(),
+                "settings_page_state/blocks/0/rows".to_string(),
             ]),
         );
         assert!(update.application_shell.is_none());
@@ -17761,10 +17901,13 @@ mod tests {
         )
         .expect("configure platform capabilities");
 
-        assert_eq!(snapshot.settings_page_state.rows.len(), 1);
-        let row = &snapshot.settings_page_state.rows[0];
+        assert_eq!(snapshot.settings_page_state.controls().len(), 1);
+        let row = &snapshot.settings_page_state.controls()[0];
         assert_eq!(row.id, "flight_data_visibility");
-        assert_eq!(row.kind, "grid_choices");
+        assert_eq!(
+            row.kind,
+            app_ui_contracts::session::UiSettingsRowKind::GridChoices
+        );
         assert_eq!(row.items.len(), 15);
         assert!(row
             .items
@@ -17772,13 +17915,16 @@ mod tests {
             .any(|item| item.cell.id == "altitude_target"));
         assert!(row.items.iter().all(|item| item.enabled));
         assert!(row.items.iter().any(|item| item.cell.id == "clock"));
-        assert_eq!(snapshot.settings_page_state.sections.len(), 1);
-        let debug = &snapshot.settings_page_state.sections[0];
+        assert_eq!(snapshot.settings_page_state.sections().len(), 1);
+        let debug = &snapshot.settings_page_state.sections()[0];
         assert_eq!(debug.id, "debug_diagnostics");
         assert_eq!(debug.title, "Debug Diagnostics");
-        assert!(debug.collapsed_by_default);
+        assert!(!debug.expanded);
         assert_eq!(debug.rows.len(), 10);
-        assert!(debug.rows.iter().all(|row| row.kind == "toggle"));
+        assert!(debug
+            .rows
+            .iter()
+            .all(|row| row.kind == app_ui_contracts::session::UiSettingsRowKind::Toggle));
         assert!(debug.rows.iter().all(|row| row.value_id == "off"));
         assert!(snapshot.display_policy.is_none());
     }
@@ -17788,7 +17934,7 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let initial = get_session_snapshot(init.handle).expect("initial snapshot");
-        let debug = &initial.settings_page_state.sections[0];
+        let debug = &initial.settings_page_state.sections()[0];
         let action_ids = debug
             .rows
             .iter()
@@ -17821,7 +17967,7 @@ mod tests {
         )
         .expect("enable plate flight-plan diagnostics");
         assert!(enabled.debug_state.plate_flight_plan);
-        let row = enabled.settings_page_state.sections[0]
+        let row = enabled.settings_page_state.sections()[0]
             .rows
             .iter()
             .find(|row| row.id == "debug_plate_flight_plan")
@@ -17838,7 +17984,7 @@ mod tests {
         )
         .expect("disable plate flight-plan diagnostics");
         assert!(!disabled.debug_state.plate_flight_plan);
-        let row = disabled.settings_page_state.sections[0]
+        let row = disabled.settings_page_state.sections()[0]
             .rows
             .iter()
             .find(|row| row.id == "debug_plate_flight_plan")
@@ -17861,10 +18007,10 @@ mod tests {
         )
         .expect("configure platform capabilities");
 
-        assert_eq!(snapshot.settings_page_state.rows.len(), 4);
-        assert_eq!(snapshot.settings_page_state.rows[1].value_id, "2m");
-        assert_eq!(snapshot.settings_page_state.rows[2].value_id, "off");
-        assert_eq!(snapshot.settings_page_state.rows[3].value_id, "1h");
+        assert_eq!(snapshot.settings_page_state.controls().len(), 4);
+        assert_eq!(snapshot.settings_page_state.controls()[1].value_id, "2m");
+        assert_eq!(snapshot.settings_page_state.controls()[2].value_id, "off");
+        assert_eq!(snapshot.settings_page_state.controls()[3].value_id, "1h");
         assert_eq!(
             snapshot
                 .display_policy
@@ -17889,7 +18035,7 @@ mod tests {
             100,
         )
         .expect("perform settings action");
-        assert_eq!(snapshot.settings_page_state.rows[1].value_id, "30s");
+        assert_eq!(snapshot.settings_page_state.controls()[1].value_id, "30s");
         assert_eq!(
             snapshot
                 .display_policy
@@ -17918,7 +18064,10 @@ mod tests {
             Some(storage),
         )
         .expect("configure platform capabilities");
-        assert_eq!(next_snapshot.settings_page_state.rows[1].value_id, "30s");
+        assert_eq!(
+            next_snapshot.settings_page_state.controls()[1].value_id,
+            "30s"
+        );
         assert_eq!(
             next_snapshot
                 .display_policy
@@ -17990,7 +18139,7 @@ mod tests {
         let restored =
             configure_platform_capabilities_in_session(next.handle, capabilities, Some(storage))
                 .unwrap();
-        assert_eq!(restored.settings_page_state.rows[2].value_id, "on");
+        assert_eq!(restored.settings_page_state.controls()[2].value_id, "on");
         assert_eq!(
             restored.display_policy.unwrap().dim_after_ms,
             Some(120_000),
@@ -18034,7 +18183,7 @@ mod tests {
             1_234,
         )
         .expect("change inactivity sleep timeout");
-        assert_eq!(changed.settings_page_state.rows[3].value_id, "2h");
+        assert_eq!(changed.settings_page_state.controls()[3].value_id, "2h");
         assert_eq!(
             changed
                 .display_policy
@@ -18069,7 +18218,7 @@ mod tests {
             Some(storage),
         )
         .expect("restore setting");
-        assert_eq!(restored.settings_page_state.rows[3].value_id, "2h");
+        assert_eq!(restored.settings_page_state.controls()[3].value_id, "2h");
         assert_eq!(
             restored
                 .display_policy
@@ -18109,7 +18258,7 @@ mod tests {
         assert_eq!(
             changed
                 .settings_page_state
-                .rows
+                .controls()
                 .iter()
                 .find(|row| row.id == "nexrad_coverage")
                 .unwrap()
@@ -18170,7 +18319,7 @@ mod tests {
         assert_eq!(
             restored
                 .settings_page_state
-                .rows
+                .controls()
                 .iter()
                 .find(|row| row.id == "nexrad_coverage")
                 .unwrap()
@@ -18185,7 +18334,7 @@ mod tests {
             assert_eq!(
                 restored
                     .settings_page_state
-                    .rows
+                    .controls()
                     .iter()
                     .find(|row| row.id == row_id)
                     .unwrap()
@@ -18418,7 +18567,7 @@ mod tests {
             Some(Arc::new(RejectingSettingsStorage)),
         )
         .expect("configure rejecting storage");
-        assert_eq!(before.settings_page_state.rows[1].value_id, "2m");
+        assert_eq!(before.settings_page_state.controls()[1].value_id, "2m");
 
         let error = super::perform_settings_action_in_session(
             init.handle,
@@ -18433,7 +18582,7 @@ mod tests {
 
         let after = get_session_snapshot(init.handle).expect("snapshot retained setting");
         assert_eq!(after.session_revision, before.session_revision);
-        assert_eq!(after.settings_page_state.rows[1].value_id, "2m");
+        assert_eq!(after.settings_page_state.controls()[1].value_id, "2m");
         assert_eq!(
             after
                 .display_policy
@@ -18456,7 +18605,7 @@ mod tests {
         let opened = get_session_snapshot(init.handle).expect("open editor snapshot");
         let editor = opened
             .settings_page_state
-            .aircraft_library
+            .aircraft_library()
             .as_ref()
             .and_then(|library| library.editor.as_ref())
             .expect("aircraft editor");
@@ -18472,7 +18621,7 @@ mod tests {
         let invalid = get_session_snapshot(init.handle).expect("invalid editor snapshot");
         assert!(invalid
             .settings_page_state
-            .aircraft_library
+            .aircraft_library()
             .as_ref()
             .and_then(|library| library.editor.as_ref())
             .and_then(|editor| editor.validation_error.as_ref())
@@ -18488,8 +18637,7 @@ mod tests {
         let saved = get_session_snapshot(init.handle).expect("saved library snapshot");
         let library = saved
             .settings_page_state
-            .aircraft_library
-            .as_ref()
+            .aircraft_library()
             .expect("aircraft library");
         assert!(library.editor.is_none());
         let entry = library
@@ -18512,8 +18660,8 @@ mod tests {
         let edit_source = get_session_snapshot(init.handle)
             .expect("edit aircraft snapshot")
             .settings_page_state
-            .aircraft_library
-            .and_then(|library| library.editor)
+            .aircraft_library()
+            .and_then(|library| library.editor.clone())
             .expect("aircraft editor")
             .source_json;
         let mut edited_definition: serde_json::Value =
@@ -18531,7 +18679,7 @@ mod tests {
         let edited = get_session_snapshot(init.handle).expect("edited library snapshot");
         let edited_entry = edited
             .settings_page_state
-            .aircraft_library
+            .aircraft_library()
             .as_ref()
             .expect("aircraft library")
             .entries
@@ -18554,8 +18702,8 @@ mod tests {
         let current_source = get_session_snapshot(init.handle)
             .expect("current aircraft editor snapshot")
             .settings_page_state
-            .aircraft_library
-            .and_then(|library| library.editor)
+            .aircraft_library()
+            .and_then(|library| library.editor.clone())
             .expect("current aircraft editor")
             .source_json;
         perform_aircraft_library_action_in_session(
@@ -18572,7 +18720,7 @@ mod tests {
         assert!(
             !hidden
                 .settings_page_state
-                .aircraft_library
+                .aircraft_library()
                 .as_ref()
                 .expect("aircraft library")
                 .entries
@@ -18595,7 +18743,7 @@ mod tests {
         assert_eq!(
             rejected
                 .settings_page_state
-                .aircraft_library
+                .aircraft_library()
                 .as_ref()
                 .and_then(|library| library.editor.as_ref())
                 .and_then(|editor| editor.validation_error.as_deref()),
@@ -18604,7 +18752,7 @@ mod tests {
         assert_eq!(
             rejected
                 .settings_page_state
-                .aircraft_library
+                .aircraft_library()
                 .as_ref()
                 .expect("aircraft library")
                 .entries
@@ -18633,7 +18781,7 @@ mod tests {
         let restored = get_session_snapshot(init.handle).expect("restored library snapshot");
         let restored_entry = restored
             .settings_page_state
-            .aircraft_library
+            .aircraft_library()
             .as_ref()
             .expect("aircraft library")
             .entries
@@ -18670,8 +18818,8 @@ mod tests {
         let source = get_session_snapshot(first.handle)
             .expect("editor snapshot")
             .settings_page_state
-            .aircraft_library
-            .and_then(|library| library.editor)
+            .aircraft_library()
+            .and_then(|library| library.editor.clone())
             .expect("aircraft editor")
             .source_json;
         perform_aircraft_library_action_in_session(
@@ -18693,7 +18841,7 @@ mod tests {
         .expect("restore aircraft library");
         assert!(restored
             .settings_page_state
-            .aircraft_library
+            .aircraft_library()
             .as_ref()
             .expect("aircraft library")
             .entries
@@ -18720,7 +18868,7 @@ mod tests {
         let snapshot = get_session_snapshot(init.handle).expect("retained initial snapshot");
         assert_eq!(snapshot.session_revision, 0);
         assert!(snapshot.display_policy.is_none());
-        assert!(snapshot.settings_page_state.rows.len() == 1);
+        assert!(snapshot.settings_page_state.controls().len() == 1);
         let diagnostics = session_diagnostics(init.handle).expect("diagnostics");
         assert_eq!(diagnostics.transaction_rollback_count, 1);
         destroy_session(init.handle);
@@ -18883,7 +19031,7 @@ mod tests {
             .cells
             .iter()
             .any(|cell| cell.id == "clock"));
-        let settings_item = snapshot.settings_page_state.rows[0]
+        let settings_item = snapshot.settings_page_state.controls()[0]
             .items
             .iter()
             .find(|item| item.cell.id == "clock")

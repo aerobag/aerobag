@@ -47,17 +47,10 @@ import org.aerobag.app.generated.UiMapLayerOption as WireUiMapLayerOption
 import org.aerobag.app.generated.UiMapLayerToggleState as WireUiMapLayerToggleState
 import org.aerobag.app.generated.UiNavDbIdentity as WireUiNavDbIdentity
 import org.aerobag.app.generated.UiPlaybackPanelState as WireUiPlaybackPanelState
-import org.aerobag.app.generated.UiAircraftLibraryAction as WireUiAircraftLibraryAction
-import org.aerobag.app.generated.UiAircraftLibraryEditor as WireUiAircraftLibraryEditor
-import org.aerobag.app.generated.UiAircraftLibraryEntry as WireUiAircraftLibraryEntry
-import org.aerobag.app.generated.UiAircraftLibraryState as WireUiAircraftLibraryState
 import org.aerobag.app.generated.UiAircraftSymbol as WireUiAircraftSymbol
-import org.aerobag.app.generated.UiSettingsGridItem as WireUiSettingsGridItem
 import org.aerobag.app.generated.UiSettingsPageRow as WireUiSettingsPageRow
-import org.aerobag.app.generated.UiSettingsPageSection as WireUiSettingsPageSection
 import org.aerobag.app.generated.UiSettingsPageState as WireUiSettingsPageState
-import org.aerobag.app.generated.UiSettingsSliderStop as WireUiSettingsSliderStop
-import org.aerobag.app.generated.UiSettingsSyncIndicator as WireUiSettingsSyncIndicator
+import org.aerobag.app.generated.UiSettingsPageBlock
 import org.aerobag.app.generated.UiSessionUpdateGroup
 import org.aerobag.app.generated.UiStatusAction as WireUiStatusAction
 import org.aerobag.app.generated.UiStatusActionDecision
@@ -830,21 +823,24 @@ private fun landAppUiState(
     )
 }
 
-private fun landSettingsPageState(
+internal fun landSettingsPageState(
     previous: UiSettingsPageState,
     path: List<String>,
     value: JsonElement,
     json: Json,
 ): UiSettingsPageState = when (path) {
     listOf("settings_page_state") ->
-        json.decodeFromJsonElement<WireUiSettingsPageState>(value).toUi()
-    listOf("settings_page_state", "rows") ->
-        previous.copy(
-            rows = json.decodeFromJsonElement(
+        json.decodeFromJsonElement<WireUiSettingsPageState>(value)
+    listOf("settings_page_state", "blocks", "0", "rows") -> {
+        val controls = previous.blocks.firstOrNull() as? UiSettingsPageBlock.Controls
+            ?: throw SessionUpdateContractException("Settings must begin with a controls block")
+        previous.copy(blocks = previous.blocks.toMutableList().apply {
+            this[0] = controls.copy(rows = json.decodeFromJsonElement(
                 ListSerializer(WireUiSettingsPageRow.serializer()),
                 value,
-            ).map { it.toUi() },
-        )
+            ))
+        })
+    }
     else -> throw SessionUpdateContractException(
         "Android has no settings model lander for session update path ${path.joinToString("/")}",
     )
@@ -3074,83 +3070,7 @@ data class UiDataStatusPageState(
     val rows: List<UiDataStatusPageRow>,
 )
 
-data class UiSettingsSliderStop(
-    val id: String,
-    val label: String,
-)
-
-data class UiSettingsGridItem(
-    val cell: FlightDataCell,
-    val enabled: Boolean,
-)
-
-data class UiSettingsSyncIndicator(
-    val symbol: String,
-    val helpText: String,
-)
-
-data class UiSettingsPageRow(
-    val kind: String,
-    val id: String,
-    val title: String,
-    val helpText: String?,
-    val syncIndicator: UiSettingsSyncIndicator?,
-    val indentLevel: Int,
-    val valueId: String,
-    val stops: List<UiSettingsSliderStop>,
-    val items: List<UiSettingsGridItem>,
-    val actionId: String,
-)
-
-data class UiSettingsPageSection(
-    val id: String,
-    val title: String,
-    val collapsedByDefault: Boolean,
-    val rows: List<UiSettingsPageRow>,
-)
-
-data class UiSettingsPageState(
-    val title: String,
-    val summary: String,
-    val rows: List<UiSettingsPageRow>,
-    val sections: List<UiSettingsPageSection>,
-    val aircraftLibrary: UiAircraftLibraryState?,
-)
-
-data class UiAircraftLibraryAction(
-    val actionId: String,
-    val label: String,
-    val enabled: Boolean,
-    val disabledReason: String?,
-)
-
-data class UiAircraftLibraryEntry(
-    val definitionHash: String,
-    val label: String,
-    val sourceLabel: String,
-    val included: Boolean,
-    val symbol: AircraftSymbolUiView,
-    val toggleAction: UiAircraftLibraryAction,
-    val editAction: UiAircraftLibraryAction?,
-)
-
-data class UiAircraftLibraryEditor(
-    val title: String,
-    val fieldLabel: String,
-    val sourceJson: String,
-    val validationError: String?,
-    val saveAction: UiAircraftLibraryAction,
-    val cancelAction: UiAircraftLibraryAction,
-)
-
-data class UiAircraftLibraryState(
-    val title: String,
-    val summary: String,
-    val syncIndicator: UiSettingsSyncIndicator?,
-    val entries: List<UiAircraftLibraryEntry>,
-    val addAction: UiAircraftLibraryAction,
-    val editor: UiAircraftLibraryEditor?,
-)
+typealias UiSettingsPageState = WireUiSettingsPageState
 
 data class UiDisplayPolicy(
     val keepScreenOn: Boolean,
@@ -3350,87 +3270,9 @@ private fun WireUiDataStatusPageState.toUi() = UiDataStatusPageState(
     rows = rows.map { it.toUi() },
 )
 
-private fun WireUiSettingsSliderStop.toUi() = UiSettingsSliderStop(
-    id = id,
-    label = label,
-)
-
-private fun WireUiSettingsGridItem.toUi() = UiSettingsGridItem(
-    cell = cell.toUi(),
-    enabled = enabled,
-)
-
-private fun WireUiSettingsSyncIndicator.toUi() = UiSettingsSyncIndicator(
-    symbol = symbol,
-    helpText = helpText,
-)
-
-private fun WireUiSettingsPageRow.toUi() = UiSettingsPageRow(
-    kind = kind,
-    id = id,
-    title = title,
-    helpText = helpText,
-    syncIndicator = syncIndicator?.toUi(),
-    indentLevel = indentLevel,
-    valueId = valueId,
-    stops = stops.map { it.toUi() },
-    items = items.map { it.toUi() },
-    actionId = actionId,
-)
-
-private fun WireUiSettingsPageSection.toUi() = UiSettingsPageSection(
-    id = id,
-    title = title,
-    collapsedByDefault = collapsedByDefault,
-    rows = rows.map { it.toUi() },
-)
-
-private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
-    title = title,
-    summary = summary,
-    rows = rows.map { it.toUi() },
-    sections = sections.map { it.toUi() },
-    aircraftLibrary = aircraftLibrary?.toUi(),
-)
-
-private fun WireUiAircraftSymbol.toUi() = AircraftSymbolUiView(
+internal fun WireUiAircraftSymbol.toUi() = AircraftSymbolUiView(
     pathData = pathData,
     rotationDegrees = rotationDegrees.toFloat(),
-)
-
-private fun WireUiAircraftLibraryAction.toUi() = UiAircraftLibraryAction(
-    actionId = actionId,
-    label = label,
-    enabled = enabled,
-    disabledReason = disabledReason,
-)
-
-private fun WireUiAircraftLibraryEntry.toUi() = UiAircraftLibraryEntry(
-    definitionHash = definitionHash,
-    label = label,
-    sourceLabel = sourceLabel,
-    included = included,
-    symbol = symbol.toUi(),
-    toggleAction = toggleAction.toUi(),
-    editAction = editAction?.toUi(),
-)
-
-private fun WireUiAircraftLibraryEditor.toUi() = UiAircraftLibraryEditor(
-    title = title,
-    fieldLabel = fieldLabel,
-    sourceJson = sourceJson,
-    validationError = validationError,
-    saveAction = saveAction.toUi(),
-    cancelAction = cancelAction.toUi(),
-)
-
-private fun WireUiAircraftLibraryState.toUi() = UiAircraftLibraryState(
-    title = title,
-    summary = summary,
-    syncIndicator = syncIndicator?.toUi(),
-    entries = entries.map { it.toUi() },
-    addAction = addAction.toUi(),
-    editor = editor?.toUi(),
 )
 
 private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
@@ -3489,7 +3331,7 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
     mapStatusControls = map_status_controls.toUi(),
     dataStatusPageState = data_status_page_state.toUi(),
     serviceNotifications = service_notifications,
-    settingsPageState = settings_page_state.toUi(),
+    settingsPageState = settings_page_state,
     cloudPageState = cloud_page_state,
     offlinePackagePreferencesJson = offline_package_preferences_json,
     homePageState = home_page_state,
@@ -4363,7 +4205,7 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
     },
 )
 
-private fun WireFlightDataCell.toUi() = FlightDataCell(
+internal fun WireFlightDataCell.toUi() = FlightDataCell(
     attention = attention,
     id = id,
     label = label,

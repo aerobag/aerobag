@@ -8,9 +8,10 @@ use std::{
 };
 
 use app_ui_contracts::session::{
-    DebugFlagId, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiSettingsAction,
-    UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState,
-    UiSettingsSliderStop, UiSettingsSyncIndicator,
+    DebugFlagId, UiAircraftLibraryState, UiDebugState, UiDisclaimerState, UiDisplayPolicy,
+    UiSettingsAction, UiSettingsGridItem, UiSettingsPageBlock, UiSettingsPageRow,
+    UiSettingsPageSection, UiSettingsPageState, UiSettingsRowKind, UiSettingsSliderStop,
+    UiSettingsSyncIndicator,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,8 +46,7 @@ const NEXRAD_SHOWN_CADENCE_HELP: &str = "Load fewer frames to use less data.";
 const NEXRAD_HIDDEN_CADENCE_HELP: &str = "Eagerly fetch fewer frames to use less data.";
 const NEXRAD_ASLEEP_CADENCE_HELP: &str =
     "Save data by not fetching nexrad if app is entirely asleep";
-const CLOUD_SYNC_SYMBOL: &str = "\u{2601}\u{fe0e}";
-const CLOUD_SYNC_HELP: &str = "Synchronized through your Sync Account.";
+const DEBUG_SECTION_ACTION_ID: &str = "section.debug_diagnostics";
 const NEXRAD_UPDATES_PER_HOUR: f64 = 12.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,7 +409,8 @@ pub(crate) struct SettingsProjectionResult {
 struct SettingsProjectionCache {
     settings_revision: u64,
     display_policy_available: bool,
-    sync_account_configured: bool,
+    sync_indicator: Option<UiSettingsSyncIndicator>,
+    aircraft_library: Option<UiAircraftLibraryState>,
     nexrad_profile_bytes: Option<BTreeMap<String, u64>>,
     flight_data_banner: FlightDataBannerModel,
     debug_state: UiDebugState,
@@ -420,6 +421,7 @@ struct SettingsProjectionCache {
 pub(crate) struct SettingsController {
     preferences: SettingsPreferences,
     external_power_connected: bool,
+    debug_section_expanded: bool,
     aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
     revision: u64,
     static_revision: u64,
@@ -430,6 +432,7 @@ pub(crate) struct SettingsController {
 pub(crate) struct SettingsModelCheckpoint {
     preferences: SettingsPreferences,
     external_power_connected: bool,
+    debug_section_expanded: bool,
     aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
     revision: u64,
     static_revision: u64,
@@ -448,6 +451,7 @@ impl SettingsController {
         SettingsModelCheckpoint {
             preferences: self.preferences.clone(),
             external_power_connected: self.external_power_connected,
+            debug_section_expanded: self.debug_section_expanded,
             aircraft_editor: self.aircraft_editor.clone(),
             revision: self.revision,
             static_revision: self.static_revision,
@@ -457,6 +461,7 @@ impl SettingsController {
     pub fn rollback_model(&mut self, checkpoint: SettingsModelCheckpoint) {
         self.preferences = checkpoint.preferences;
         self.external_power_connected = checkpoint.external_power_connected;
+        self.debug_section_expanded = checkpoint.debug_section_expanded;
         self.aircraft_editor = checkpoint.aircraft_editor;
         self.revision = checkpoint.revision;
         self.static_revision = checkpoint.static_revision;
@@ -546,6 +551,21 @@ impl SettingsController {
             return Err(invalid_settings_action(&action.action_id));
         }
         let (changed, static_changed) = match action.action_id.as_str() {
+            DEBUG_SECTION_ACTION_ID => {
+                let expanded = match action.value_id.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        return Err(invalid_settings_action_value(
+                            &action.action_id,
+                            &action.value_id,
+                        ))
+                    }
+                };
+                let changed = self.debug_section_expanded != expanded;
+                self.debug_section_expanded = expanded;
+                (changed, changed)
+            }
             DISPLAY_DIM_ON_BATTERY_ONLY_ID => {
                 if !display_policy_available {
                     return Err(invalid_settings_action(&action.action_id));
@@ -766,15 +786,17 @@ impl SettingsController {
     pub fn project(
         &mut self,
         display_policy_available: bool,
-        sync_account_configured: bool,
+        sync_indicator: Option<UiSettingsSyncIndicator>,
         nexrad_profile_bytes: Option<&BTreeMap<String, u64>>,
         flight_data_banner: &FlightDataBannerModel,
         debug_state: &UiDebugState,
+        aircraft_library: Option<&UiAircraftLibraryState>,
     ) -> SettingsProjectionResult {
         if let Some(cache) = self.projection_cache.as_ref() {
             if cache.settings_revision == self.revision
                 && cache.display_policy_available == display_policy_available
-                && cache.sync_account_configured == sync_account_configured
+                && cache.sync_indicator == sync_indicator
+                && cache.aircraft_library.as_ref() == aircraft_library
                 && cache.nexrad_profile_bytes.as_ref() == nexrad_profile_bytes
                 && cache.flight_data_banner == *flight_data_banner
                 && cache.debug_state == *debug_state
@@ -790,10 +812,12 @@ impl SettingsController {
             settings_page_state: project_settings_page_state(
                 &self.preferences,
                 display_policy_available,
-                sync_account_configured,
+                sync_indicator.as_ref(),
                 nexrad_profile_bytes,
                 flight_data_banner,
                 debug_state,
+                self.debug_section_expanded,
+                aircraft_library,
             ),
             display_policy: project_display_policy(
                 &self.preferences,
@@ -806,7 +830,8 @@ impl SettingsController {
         self.projection_cache = Some(SettingsProjectionCache {
             settings_revision: self.revision,
             display_policy_available,
-            sync_account_configured,
+            sync_indicator,
+            aircraft_library: aircraft_library.cloned(),
             nexrad_profile_bytes: nexrad_profile_bytes.cloned(),
             flight_data_banner: flight_data_banner.clone(),
             debug_state: debug_state.clone(),
@@ -830,13 +855,15 @@ impl SettingsController {
 fn project_settings_page_state(
     preferences: &SettingsPreferences,
     display_policy_available: bool,
-    sync_account_configured: bool,
+    sync_indicator: Option<&UiSettingsSyncIndicator>,
     nexrad_profile_bytes: Option<&BTreeMap<String, u64>>,
     flight_data_banner: &FlightDataBannerModel,
     debug_state: &UiDebugState,
+    debug_section_expanded: bool,
+    aircraft_library: Option<&UiAircraftLibraryState>,
 ) -> UiSettingsPageState {
     let mut rows = vec![UiSettingsPageRow {
-        kind: "grid_choices".to_string(),
+        kind: UiSettingsRowKind::GridChoices,
         id: FLIGHT_DATA_VISIBILITY_ROW_ID.to_string(),
         title: "Flight data grid".to_string(),
         help_text: Some(FLIGHT_DATA_VISIBILITY_HELP.to_string()),
@@ -856,7 +883,7 @@ fn project_settings_page_state(
     }];
     if display_policy_available {
         rows.push(UiSettingsPageRow {
-            kind: "slider".to_string(),
+            kind: UiSettingsRowKind::Slider,
             id: DISPLAY_DIM_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Display dims after...".to_string(),
             help_text: Some(DISPLAY_DIM_TIMEOUT_HELP.to_string()),
@@ -874,7 +901,7 @@ fn project_settings_page_state(
             action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
         });
         rows.push(UiSettingsPageRow {
-            kind: "toggle".to_string(),
+            kind: UiSettingsRowKind::Toggle,
             id: DISPLAY_DIM_ON_BATTERY_ONLY_ID.to_string(),
             title: "Only dim when on battery".to_string(),
             help_text: None,
@@ -891,7 +918,7 @@ fn project_settings_page_state(
             action_id: DISPLAY_DIM_ON_BATTERY_ONLY_ID.to_string(),
         });
         rows.push(UiSettingsPageRow {
-            kind: "slider".to_string(),
+            kind: UiSettingsRowKind::Slider,
             id: INACTIVITY_SLEEP_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Screen and GPS sleep after...".to_string(),
             help_text: Some(INACTIVITY_SLEEP_TIMEOUT_HELP.to_string()),
@@ -915,13 +942,17 @@ fn project_settings_page_state(
     let mut sections = vec![UiSettingsPageSection {
         id: DEBUG_DIAGNOSTICS_SECTION_ID.to_string(),
         title: "Debug Diagnostics".to_string(),
-        collapsed_by_default: true,
+        expanded: debug_section_expanded,
+        toggle_action: UiSettingsAction {
+            action_id: DEBUG_SECTION_ACTION_ID.to_string(),
+            value_id: if debug_section_expanded { "off" } else { "on" }.to_string(),
+        },
         rows: all_debug_flags()
             .into_iter()
             .map(|flag_id| {
                 let (id, title) = debug_flag_spec(flag_id);
                 UiSettingsPageRow {
-                    kind: "toggle".to_string(),
+                    kind: UiSettingsRowKind::Toggle,
                     id: format!("debug_{id}"),
                     title: title.to_string(),
                     help_text: None,
@@ -940,27 +971,32 @@ fn project_settings_page_state(
             })
             .collect(),
     }];
-    if sync_account_configured {
+    if let Some(indicator) = sync_indicator {
         for row in rows.iter_mut().chain(
             sections
                 .iter_mut()
                 .flat_map(|section| section.rows.iter_mut()),
         ) {
             if settings_action_is_cloud_synced(&row.action_id) {
-                row.sync_indicator = cloud_sync_indicator(true);
+                row.sync_indicator = Some(indicator.clone());
             }
         }
     }
+    let mut blocks = vec![UiSettingsPageBlock::Controls { rows }];
+    if let Some(library) = aircraft_library {
+        blocks.push(UiSettingsPageBlock::AircraftLibrary {
+            library: library.clone(),
+        });
+    }
+    blocks.extend(
+        sections
+            .into_iter()
+            .map(|section| UiSettingsPageBlock::Section { section }),
+    );
     UiSettingsPageState {
         title: "Settings".to_string(),
-        summary: if rows.is_empty() && sections.is_empty() {
-            "No platform settings are available.".to_string()
-        } else {
-            String::new()
-        },
-        rows,
-        sections,
-        aircraft_library: None,
+        summary: String::new(),
+        blocks,
     }
 }
 
@@ -1059,7 +1095,7 @@ fn settings_slider_row<const N: usize>(
     indent_level: u8,
 ) -> UiSettingsPageRow {
     UiSettingsPageRow {
-        kind: "slider".to_string(),
+        kind: UiSettingsRowKind::Slider,
         id: id.to_string(),
         title: title.to_string(),
         help_text: help_text.map(str::to_string),
@@ -1091,7 +1127,7 @@ fn nexrad_cadence_row(
         .map(|bytes| format!("{title} · {}", nexrad_usage_label(value, bytes)))
         .unwrap_or_else(|| title.to_string());
     UiSettingsPageRow {
-        kind: "slider".to_string(),
+        kind: UiSettingsRowKind::Slider,
         id: id.to_string(),
         title,
         help_text: help_text.map(str::to_string),
@@ -1173,13 +1209,6 @@ fn settings_action_is_cloud_synced(action_id: &str) -> bool {
             .strip_prefix(DEBUG_FLAG_ACTION_PREFIX)
             .and_then(debug_flag_from_id)
             .is_some()
-}
-
-pub(crate) fn cloud_sync_indicator(configured: bool) -> Option<UiSettingsSyncIndicator> {
-    configured.then(|| UiSettingsSyncIndicator {
-        symbol: CLOUD_SYNC_SYMBOL.to_string(),
-        help_text: CLOUD_SYNC_HELP.to_string(),
-    })
 }
 
 pub(crate) fn all_debug_flags() -> [DebugFlagId; 10] {
@@ -1314,6 +1343,30 @@ mod tests {
 
     use super::*;
 
+    impl SettingsController {
+        fn test_project(
+            &mut self,
+            display_policy_available: bool,
+            linked: bool,
+            bytes: Option<&BTreeMap<String, u64>>,
+            banner: &FlightDataBannerModel,
+            debug: &UiDebugState,
+        ) -> SettingsProjectionResult {
+            self.project(
+                display_policy_available,
+                linked.then(|| UiSettingsSyncIndicator {
+                    symbol: "cloud".to_string(),
+                    help_text: "Synced".to_string(),
+                    tone: app_ui_contracts::session::UiStatusSeverity::Ok,
+                }),
+                bytes,
+                banner,
+                debug,
+                None,
+            )
+        }
+    }
+
     fn banner() -> FlightDataBannerModel {
         FlightDataBannerModel {
             editor: None,
@@ -1370,7 +1423,7 @@ mod tests {
                 for connected in [false, true, true, false, true, false] {
                     controller.set_external_power_connected(connected);
                     let projection =
-                        controller.project(true, false, None, &banner(), &debug_state());
+                        controller.test_project(true, false, None, &banner(), &debug_state());
                     let policy = projection.projection.display_policy.unwrap();
                     let expected_timeout = if only_on_battery && connected {
                         None
@@ -1382,7 +1435,7 @@ mod tests {
                     assert_eq!(policy.allow_screen_off_after_ms, Some(3_600_000));
                     assert!(
                         !controller
-                            .project(true, false, None, &banner(), &debug_state())
+                            .test_project(true, false, None, &banner(), &debug_state())
                             .rebuilt
                     );
                 }
@@ -1399,10 +1452,10 @@ mod tests {
         };
         assert!(controller.perform_action(&action, false, false).is_err());
         assert!(!controller
-            .project(false, false, None, &banner(), &debug_state())
+            .test_project(false, false, None, &banner(), &debug_state())
             .projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .any(|row| row.id == DISPLAY_DIM_ON_BATTERY_ONLY_ID));
         assert!(controller
@@ -1418,12 +1471,12 @@ mod tests {
         assert!(controller.perform_action(&action, true, false).unwrap());
         assert!(!controller.perform_action(&action, true, false).unwrap());
         let projection = controller
-            .project(true, false, None, &banner(), &debug_state())
+            .test_project(true, false, None, &banner(), &debug_state())
             .projection;
-        let row = &projection.settings_page_state.rows[2];
+        let row = &projection.settings_page_state.controls()[2];
         assert_eq!(row.id, DISPLAY_DIM_ON_BATTERY_ONLY_ID);
         assert_eq!(row.title, "Only dim when on battery");
-        assert_eq!(row.kind, "toggle");
+        assert_eq!(row.kind, UiSettingsRowKind::Toggle);
         assert_eq!(row.value_id, "on");
         assert_eq!(row.action_id, DISPLAY_DIM_ON_BATTERY_ONLY_ID);
     }
@@ -1438,7 +1491,7 @@ mod tests {
         controller.set_external_power_connected(true);
         assert_eq!(
             controller
-                .project(true, false, None, &banner(), &debug_state())
+                .test_project(true, false, None, &banner(), &debug_state())
                 .projection
                 .display_policy
                 .unwrap()
@@ -1453,19 +1506,23 @@ mod tests {
         let input = banner();
         let debug = debug_state();
 
-        let first = controller.project(false, false, None, &input, &debug);
+        let first = controller.test_project(false, false, None, &input, &debug);
         assert!(first.rebuilt);
-        assert_eq!(first.projection.settings_page_state.rows.len(), 1);
+        assert_eq!(first.projection.settings_page_state.controls().len(), 1);
         assert!(first.projection.display_policy.is_none());
 
-        let cached = controller.project(false, false, None, &input, &debug);
+        let cached = controller.test_project(false, false, None, &input, &debug);
         assert!(!cached.rebuilt);
         assert_eq!(cached.projection, first.projection);
 
-        let capability_changed = controller.project(true, false, None, &input, &debug);
+        let capability_changed = controller.test_project(true, false, None, &input, &debug);
         assert!(capability_changed.rebuilt);
         assert_eq!(
-            capability_changed.projection.settings_page_state.rows.len(),
+            capability_changed
+                .projection
+                .settings_page_state
+                .controls()
+                .len(),
             4
         );
 
@@ -1473,7 +1530,7 @@ mod tests {
         changed_banner.cells[0].value = Some("13000".to_string());
         assert!(
             controller
-                .project(true, false, None, &changed_banner, &debug)
+                .test_project(true, false, None, &changed_banner, &debug)
                 .rebuilt
         );
     }
@@ -1486,22 +1543,22 @@ mod tests {
             ("offline_0".to_string(), 2048),
         ]);
         let unlinked = controller
-            .project(true, false, Some(&bytes), &banner(), &debug_state())
+            .test_project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection
             .settings_page_state;
         assert!(unlinked
-            .rows
+            .controls()
             .iter()
             .chain(
                 unlinked
-                    .sections
+                    .sections()
                     .iter()
                     .flat_map(|section| section.rows.iter())
             )
             .all(|row| row.sync_indicator.is_none()));
 
         let linked = controller
-            .project(true, true, Some(&bytes), &banner(), &debug_state())
+            .test_project(true, true, Some(&bytes), &banner(), &debug_state())
             .projection
             .settings_page_state;
         for local_id in [
@@ -1510,20 +1567,20 @@ mod tests {
             DISPLAY_DIM_ON_BATTERY_ONLY_ID,
         ] {
             assert!(linked
-                .rows
+                .controls()
                 .iter()
                 .find(|row| row.id == local_id)
                 .is_some_and(|row| row.sync_indicator.is_none()));
         }
         for synced_id in [INACTIVITY_SLEEP_TIMEOUT_ROW_ID, "nexrad_coverage"] {
             assert!(linked
-                .rows
+                .controls()
                 .iter()
                 .find(|row| row.id == synced_id)
                 .is_some_and(|row| row.sync_indicator.is_some()));
         }
         assert!(linked
-            .sections
+            .sections()
             .iter()
             .flat_map(|section| section.rows.iter())
             .all(|row| row.sync_indicator.is_some()));
@@ -1534,7 +1591,7 @@ mod tests {
         let mut controller = SettingsController::default();
         let input = banner();
         let debug = debug_state();
-        controller.project(true, false, None, &input, &debug);
+        controller.test_project(true, false, None, &input, &debug);
 
         assert!(controller
             .perform_action(
@@ -1550,7 +1607,7 @@ mod tests {
         assert_eq!(controller.static_revision(), 1);
         assert!(
             controller
-                .project(true, false, None, &input, &debug)
+                .test_project(true, false, None, &input, &debug)
                 .rebuilt
         );
 
@@ -1579,7 +1636,7 @@ mod tests {
         assert_eq!(controller.revision(), 2);
         assert_eq!(controller.static_revision(), 1);
         let projection = controller
-            .project(true, false, None, &input, &debug)
+            .test_project(true, false, None, &input, &debug)
             .projection;
         assert!(!projection
             .flight_data_banner
@@ -1587,7 +1644,7 @@ mod tests {
             .iter()
             .any(|cell| cell.id == "nexrad_age"));
         assert!(
-            !projection.settings_page_state.rows[0]
+            !projection.settings_page_state.controls()[0]
                 .items
                 .iter()
                 .find(|item| item.cell.id == "nexrad_age")
@@ -1604,11 +1661,11 @@ mod tests {
             ("offline_low1".to_string(), 512 * 1024),
         ]);
         let projection = controller
-            .project(true, false, Some(&bytes), &banner(), &debug_state())
+            .test_project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         let coverage = projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .find(|row| row.id == "nexrad_coverage")
             .unwrap();
@@ -1624,7 +1681,7 @@ mod tests {
         assert_eq!(coverage.value_id, "viewport_only");
         assert!(!projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .any(|row| row.id == "nexrad_offline_profile"));
 
@@ -1639,11 +1696,11 @@ mod tests {
             )
             .unwrap();
         let projection = controller
-            .project(true, false, Some(&bytes), &banner(), &debug_state())
+            .test_project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         let offline_detail = projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .find(|row| row.id == "nexrad_offline_profile")
             .unwrap();
@@ -1657,13 +1714,13 @@ mod tests {
         );
         assert!(projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .filter(|row| row.id.starts_with("nexrad_") && row.id != "nexrad_coverage")
             .all(|row| row.indent_level == 1));
         let shown = projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .find(|row| row.id == "nexrad_shown_cadence")
             .unwrap();
@@ -1711,16 +1768,16 @@ mod tests {
             )
             .unwrap();
         let projection = controller
-            .project(true, false, Some(&bytes), &banner(), &debug_state())
+            .test_project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         assert!(projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .any(|row| row.id == "nexrad_coverage"));
         assert!(!projection
             .settings_page_state
-            .rows
+            .controls()
             .iter()
             .any(|row| row.id == "nexrad_offline_profile"));
     }
@@ -1743,9 +1800,9 @@ mod tests {
             )
             .unwrap();
         let projection = controller
-            .project(true, false, Some(&bytes), &banner(), &debug_state())
+            .test_project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
-        let rows = &projection.settings_page_state.rows;
+        let rows = &projection.settings_page_state.controls();
         let help = |id: &str| {
             rows.iter()
                 .find(|row| row.id == id)

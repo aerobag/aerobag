@@ -43,6 +43,7 @@ class MapInspectionGesturesTest {
     private var buttonClicks = 0
     private var scrolled = 0
     private val touching = mutableListOf<Boolean>()
+    private val gestureLifecycle = mutableListOf<String>()
 
     private fun render() {
         compose.setContent {
@@ -52,7 +53,8 @@ class MapInspectionGesturesTest {
                     onTap = { if (open.value) open.value = false else taps++ },
                     onGesture = { gestures++; open.value = false },
                     onTransform = { _, _ -> transforms++ },
-                    onActiveChange = {}, onFinished = {},
+                    onActiveChange = { gestureLifecycle += "active:$it" },
+                    onFinished = { gestureLifecycle += "finished" },
                 ),
                 mapContent = {},
                 controls = {
@@ -84,6 +86,7 @@ class MapInspectionGesturesTest {
         compose.runOnIdle {
             assertTrue(transforms > firstTransforms)
             assertEquals(1, gestures)
+            assertEquals(listOf("active:true", "finished", "active:false"), gestureLifecycle)
             assertEquals(0, taps)
             assertEquals(0, buttonClicks)
         }

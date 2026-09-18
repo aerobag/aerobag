@@ -2443,10 +2443,11 @@ internal fun MapExplorerPage(
             detailId = mapSelectionDetailProjectionId(mapSelection?.detailModal),
         )
     }
-    fun syncFollowStateForViewport(nextViewport: MapViewportState) {
-        if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
-            return
-        }
+    val syncFollowStateForViewport = rememberMapFollowViewportSync(
+        following = mapFollowUiState.following,
+        widthPx = surfaceWidthPx,
+        heightPx = surfaceHeightPx,
+    ) { nextViewport, widthPx, heightPx ->
         followTargetGate.beginSync()
         perfLogInfo(MapViewportLogTag) {
             "follow-sync begin revision=${sessionSnapshot.sessionRevision} zoom=${"%.2f".format(nextViewport.zoom)} center=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)}"
@@ -2454,8 +2455,8 @@ internal fun MapExplorerPage(
         runCatching {
             uiSession.syncMapFollow(
                 nextViewport,
-                surfaceWidthPx.toDouble(),
-                surfaceHeightPx.toDouble(),
+                widthPx,
+                heightPx,
             )
         }.onSuccess { snapshot ->
             val target = snapshot.mapFollowTargetViewport?.let(::mapViewportFromCore)
@@ -2890,7 +2891,7 @@ internal fun MapExplorerPage(
         val nextViewport = mapViewportFromCore(target)
         val minimumTargetRevision = followTargetGate.minimumRevision()
         perfLogInfo(MapViewportLogTag) {
-            "follow-target revision=${sessionSnapshot.sessionRevision} minimumRevision=$minimumTargetRevision targetZoom=${"%.2f".format(nextViewport.zoom)} targetCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} localZoom=${"%.2f".format(viewportState.value.zoom)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}"
+            "follow-target revision=${sessionSnapshot.sessionRevision} highRateRevision=${highRate.sessionRevision} minimumRevision=$minimumTargetRevision targetZoom=${"%.2f".format(nextViewport.zoom)} targetCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} localZoom=${"%.2f".format(viewportState.value.zoom)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}"
         }
         if (!followTargetGate.shouldApplyTarget(sessionSnapshot.sessionRevision)) {
             perfLogInfo(MapViewportLogTag) {
@@ -3367,15 +3368,17 @@ internal fun MapExplorerPage(
                     actions.onViewportGestureActivity()
                 },
                 onActiveChange = { active ->
+                    perfLogInfo(MapViewportLogTag) { "gesture active=$active" }
                     mapGestureActive = active
                     actions.onViewportGestureActiveChange(active)
                 },
                 onFinished = {
+                    perfLogInfo(MapViewportLogTag) { "gesture finished" }
                     mapFollowSyncViewportForCompletedGesture(
                         movedViewportDuringGesture = true,
                         finalGestureViewport = viewportState.value,
                         displayRotationDeg = plannedMapUpDeg,
-                    )?.let(::syncFollowStateForViewport)
+                    )?.let(syncFollowStateForViewport)
                 },
             )
             .pointerInteropFilter { event ->

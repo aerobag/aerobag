@@ -1124,7 +1124,7 @@ function captureLayerToggleRegressionScreenshot(serial, result) {
 
 async function runLayerToggleNavDbRegression(args) {
   const { serial, route } = args;
-  const result = createTestResult("android.layer-toggle-navdb-regression");
+  const result = args.result ?? createTestResult("android.layer-toggle-navdb-regression");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, {
     clearUiPrefs: true,
@@ -1194,7 +1194,7 @@ async function runLayerToggleNavDbRegression(args) {
 
 async function runFlightPlanRouteSmoke(args) {
   const { serial, route } = args;
-  const result = createTestResult("android.flight-plan-route-smoke");
+  const result = args.result ?? createTestResult("android.flight-plan-route-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
   recordStep(result, "app launched", serial || "default adb device");
@@ -1426,7 +1426,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
 async function runRotationSessionRetentionRegression(args) {
   const { serial } = args;
   const route = ROTATION_ROUTE;
-  const result = createTestResult("android.rotation-session-retention-regression");
+  const result = args.result ?? createTestResult("android.rotation-session-retention-regression");
   const transcript = [];
   clearAerobagPersistedLiveFeeds(serial);
   adb(serial, ["logcat", "-c"]);
@@ -1484,7 +1484,7 @@ async function runRotationSessionRetentionRegression(args) {
 async function runMapFollowCtrGestureSmoke(args) {
   const { serial } = args;
   const route = CTR_STRESS_ROUTE;
-  const result = createTestResult("android.map-follow-ctr-gesture-smoke");
+  const result = args.result ?? createTestResult("android.map-follow-ctr-gesture-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
   recordStep(result, "app launched", serial || "default adb device");
@@ -1522,7 +1522,7 @@ async function runPlateFirstRenderSmoke(args) {
   }
   const fixture = loadAndroidSmokeFixture(args.androidSmokeFixture);
   const plateCapability = fixture.capabilities.plate.georeferenced;
-  const result = createTestResult("android.plate-first-render-smoke");
+  const result = args.result ?? createTestResult("android.plate-first-render-smoke");
   // The Google ATD image is required for raster rendering, but its GNSS service
   // can deadlock system_server. Plates do not depend on location.
   adb(serial, ["shell", "cmd", "location", "set-location-enabled", "false"]);
@@ -1649,7 +1649,7 @@ async function runOfflineColdStart(args) {
   if (!args.releaseFixture) throw new Error("android.offline-cold-start requires --release-fixture");
   const fixture = loadReleaseJourneyFixture(args.releaseFixture);
   const restoreClock = await useAndroidFixtureClock(args.serial, fixture.capabilities.reference_epoch_ms);
-  const result = createTestResult("android.offline-cold-start");
+  const result = args.result ?? createTestResult("android.offline-cold-start");
   try {
     await launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: true });
     await ensureOfflinePackagesReady(args.serial, result, args);
@@ -1776,7 +1776,7 @@ async function runOfflineColdStart(args) {
 
 async function runRawMapInspectorTerrainSmoke(args) {
   const { serial } = args;
-  const result = createTestResult("android.raw-map-inspector-terrain-smoke");
+  const result = args.result ?? createTestResult("android.raw-map-inspector-terrain-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
   recordStep(result, "app launched", serial || "default adb device");
@@ -1855,10 +1855,13 @@ async function main() {
   };
   for (const test of selectedTests) {
     console.log(`# ${test.id}`);
+    // The suite owns the native result from the beginning, including failures
+    // between transitions (e.g. temporal invariants after a successful drag).
+    const result = createTestResult(test.id);
     try {
-      suite.results.push(await test.run(args));
+      suite.results.push(await test.run({ ...args, result }));
     } catch (error) {
-      const failed = error.nativeResult ?? createTestResult(test.id);
+      const failed = error.nativeResult ?? result;
       failed.status = "fail";
       failed.finished_at = new Date().toISOString();
       failed.error = error.message;

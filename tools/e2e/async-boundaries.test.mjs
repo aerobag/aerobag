@@ -219,3 +219,49 @@ test("failure diagnostics cannot hang or replace the original terminal failure",
   assert.match(timings[0].diagnostic_state.diagnostic_error, /diagnostics timed out/);
   assert.equal(scheduler.pending(), 0);
 });
+
+test("temporal failures retain the accepted offset and the exact violating observation", async () => {
+  const clock = manualScheduler();
+  const sampled = deferred();
+  const scheduler = {
+    ...clock,
+    setTimeout(callback, ms) {
+      const timer = clock.setTimeout(callback, ms);
+      if (ms === 1) sampled.resolve();
+      return timer;
+    },
+  };
+  const before = { following: true, offset: 240 };
+  const after = { following: true, offset: 0 };
+  let state = before;
+  const observation = assertConditionRemains("CTR offset", () => state,
+    value => value?.following && value.offset >= 80,
+    { durationMs: 10, intervalMs: 1, scheduler });
+  await sampled.promise;
+  const rejected = assert.rejects(observation, error => {
+    assert.equal(error.diagnostics.phase, "condition");
+    assert.equal(error.diagnostics.samples, 2);
+    assert.deepEqual(error.diagnostics.observations, [
+      { elapsed_ms: 0, value: before }, { elapsed_ms: 1, value: after },
+    ]);
+    assert.deepEqual(error.diagnostics.last_value, after);
+    return true;
+  });
+  state = after;
+  clock.advance(1);
+  await rejected;
+  assert.equal(clock.pending(), 0);
+});
+
+for (const unavailable of [null, new TransientObservationError("projection", "busy")]) {
+  test(`temporal invariants cannot mistake unavailable evidence for stability: ${unavailable}`, async () => {
+    await assert.rejects(assertConditionRemains("CTR offset", () => {
+      if (unavailable instanceof Error) throw unavailable;
+      return unavailable;
+    }, Boolean, { durationMs: 10 }), error => {
+      assert.equal(error.diagnostics.phase, unavailable === null ? "condition" : "observation");
+      assert.equal(error.diagnostics.last_value, null);
+      return true;
+    });
+  });
+}

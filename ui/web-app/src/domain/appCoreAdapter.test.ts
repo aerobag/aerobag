@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl, SerializedSubscriptionOwner, UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "./appCoreAdapter";
+import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, loadWasmAdapterOnThisThread, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl, SerializedSubscriptionOwner, UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "./appCoreAdapter";
 import * as navKv from "./navKv";
 
 const TEST_SSE_TRANSPORT_POLICY = {
@@ -109,11 +109,13 @@ describe("loadBestAvailableAdapter", () => {
     })).rejects.toThrow("module not found");
   });
 
-  it("establishes the web resource policy before opening the NAV database", async () => {
+  it("establishes resource policy before NAV and keeps session actions on the injected clock", async () => {
     vi.stubGlobal("location", { href: "http://app.example.test/" });
     let sessionRevision = 0;
     let resourcePolicyEstablished = false;
     let createdAtEpochMs: number | null = null;
+    let sessionEpochMs = 1_784_000_000_123;
+    const actionTimes: Array<[string, number]> = [];
     const refreshedTimeZones: string[] = [];
     const startupCalls: string[] = [];
     vi.spyOn(navKv, "runCoreHadSessionMutationOperation")
@@ -154,7 +156,7 @@ describe("loadBestAvailableAdapter", () => {
         session_revision: sessionRevision,
       },
     });
-    const loaded = await loadBestAvailableAdapter(async () => ({
+    const loaded = await loadWasmAdapterOnThisThread(async () => ({
       situation_ring_candidates_json: () => "[]",
       create_ui_session: async (_recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, nowEpochMs: number) => {
         createdAtEpochMs = nowEpochMs;
@@ -173,6 +175,14 @@ describe("loadBestAvailableAdapter", () => {
         effect: null,
       }),
       perform_map_selection_ui_action_in_session: async () => mutationOutcomeJson(),
+      perform_map_inspection_command_in_session: async (_handle: number, command: string, epochMs: number) => {
+        actionTimes.push([JSON.parse(command), epochMs]);
+        return mutationOutcomeJson();
+      },
+      perform_aircraft_library_action_in_session: async (_handle: number, action: string, _source: string, epochMs: bigint) => {
+        actionTimes.push([action, Number(epochMs)]);
+        return mutationOutcomeJson();
+      },
       flight_plan_row_action_decision_in_session: async () => JSON.stringify({
         perform_session_mutation: true,
         dismiss_tray: true,
@@ -199,7 +209,6 @@ describe("loadBestAvailableAdapter", () => {
       set_map_layer_visibility_in_session_paged: async () => mutationOutcomeJson(),
       set_map_layer_enabled_in_session_paged: async () => mutationOutcomeJson(),
       perform_settings_action_in_session: async () => mutationOutcomeJson(),
-      perform_aircraft_library_action_in_session: async () => mutationOutcomeJson(),
       perform_guided_tour_action_in_session: async () => mutationOutcomeJson(),
       accept_disclaimer_in_session: async () => mutationOutcomeJson(),
       set_resource_policy_in_session: async () => {
@@ -308,7 +317,7 @@ describe("loadBestAvailableAdapter", () => {
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_events_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       report_live_feed_connection_event_in_session: async () => mutationOutcomeJson(),
-    }));
+    }), () => sessionEpochMs);
 
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
@@ -320,6 +329,21 @@ describe("loadBestAvailableAdapter", () => {
       .toBeLessThan(startupCalls.indexOf("nav-dependent-mutation"));
     expect(startupCalls.indexOf("set-resource-policy"))
       .toBeLessThan(startupCalls.indexOf("attach-nav-kv"));
+
+    // Model the real worker/main-thread boundary: wall time can be far ahead of
+    // the journey clock. A single leaked Date.now() makes every later GPS sample
+    // stale because core advances its session clock monotonically.
+    vi.spyOn(Date, "now").mockReturnValue(sessionEpochMs + 3_600_000);
+    await session.performMapInspectionCommand("open");
+    sessionEpochMs += 250;
+    await session.performMapInspectionCommand("dismiss");
+    sessionEpochMs += 250;
+    await session.performAircraftLibraryAction("fetch_models");
+    expect(actionTimes).toEqual([
+      ["open", 1_784_000_000_123],
+      ["dismiss", 1_784_000_000_373],
+      ["fetch_models", 1_784_000_000_623],
+    ]);
 
     // Keep the session alive while the device changes zones. Startup-only sampling
     // leaves this clock stale on long flights even though the OS knows the new zone.

@@ -5086,9 +5086,11 @@ test("revealed-element traversal is not nested inside its shorter observation de
   const start = source.indexOf("export async function establishRevealedElement");
   const end = source.indexOf("\nexport ", start + 1);
   const implementation = source.slice(start, end < 0 ? undefined : end);
-  assert.match(implementation, /const existing = await readReachable\(\)/);
+  assert.match(implementation, /existing = await readReachable\(\)/);
   assert.match(implementation, /await traverse\(\);[\s\S]*await observe\([\s\S]*readReachable/);
-  assert.doesNotMatch(implementation, /await observe\([\s\S]*await traverse\(\)/);
+  // Initial transport recovery is an observation too; traversal must remain
+  // outside that callback and the post-traversal observation callback.
+  assert.match(implementation, /\}\n  if \(existing\) return existing;[\s\S]*await traverse\(\);\s*try \{\s*return \(await observe/);
 });
 
 test("Android semantic driver rejects stale protocol artifacts before a journey", () => {
@@ -5585,7 +5587,7 @@ test("Android reveal requires reachability and traverses only known scroll colle
     source.indexOf("\n  async reload()", source.lastIndexOf("  async revealElement(elementId)")),
   );
   assert.match(revealMethod, /establishRevealedElement/);
-  assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true, true\)/);
+  assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true, true, \{ providerOnly \}\)/);
   assert.match(revealMethod, /!androidElementMayRequireVerticalScroll\(elementId\)/);
   assert.match(revealMethod, /traverse: async \(\) => false/);
   const readElementMethod = source.slice(

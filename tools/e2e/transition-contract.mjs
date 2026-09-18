@@ -244,13 +244,32 @@ export async function assertConditionRemains(
   const startedAt = scheduler.now();
   const deadline = startedAt + durationMs;
   let samples = 0;
+  const observations = [];
+  const failure = (error, phase) => {
+    error.diagnostics = {
+      ...error.diagnostics,
+      description, phase,
+      elapsed_ms: Math.round(scheduler.now() - startedAt),
+      samples,
+      observations: [...observations],
+      last_value: observations.at(-1)?.value ?? null,
+    };
+    return error;
+  };
   while (scheduler.now() < deadline) {
     // The sampling window is not a deadline for its final read. A read begun
     // just before the window ends still gets its own bounded probe budget.
-    const value = await withinDeadline(description, probe, scheduler.now() + probeTimeoutMs, scheduler);
+    let value;
+    try {
+      value = await withinDeadline(description, probe, scheduler.now() + probeTimeoutMs, scheduler);
+    } catch (error) {
+      throw failure(error, "observation");
+    }
     samples += 1;
+    observations.push({ elapsed_ms: Math.round(scheduler.now() - startedAt), value: diagnosticValue(value) });
+    if (observations.length > 16) observations.shift();
     if (!accept(value)) {
-      throw new Error(`${description} failed after ${Math.round(scheduler.now() - startedAt)}ms`);
+      throw failure(new Error(`${description} failed after ${Math.round(scheduler.now() - startedAt)}ms`), "condition");
     }
     if (scheduler.now() >= deadline) break;
     await new Promise((resolve) => scheduler.setTimeout(resolve, Math.min(intervalMs, deadline - scheduler.now())));

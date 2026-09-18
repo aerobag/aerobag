@@ -910,12 +910,21 @@ export async function establishRevealedElement({
   traverse,
   observe = observeUntil,
 }) {
+  let existing;
   try {
-    const existing = await readReachable();
-    if (existing) return existing;
+    existing = await readReachable();
   } catch (error) {
     if (!(error instanceof TransientObservationError)) throw error;
+    // Unavailability is not absence. Establish an authoritative observation
+    // before deciding whether to move the user's scroll position.
+    existing = (await observe(`${description} initial reachability`, async () => ({
+      element: await readReachable(),
+    }), {
+      timeoutMs: E2E_TIMING.localReadyMs,
+      intervalMs: E2E_TIMING.pollIntervalMs,
+    })).value.element;
   }
+  if (existing) return existing;
 
   // Traversal is a bounded UI mutation in its own right. Keep it outside the
   // observation deadline so a successful multi-scroll traversal is not
@@ -1526,7 +1535,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         // App-owned indexes are authoritative for absence too. Never search
         // the accessibility tree after an indexed control has unmounted (or
         // has not been mounted in this process at all).
-        providerOnly: indexed || semanticTag === "parity:map-selection-tray" ||
+        providerOnly: indexed || semanticTag.startsWith("parity:settings-") ||
+          semanticTag === "parity:map-selection-tray" ||
           semanticTag === "parity:map-surface",
       },
     );
@@ -1564,6 +1574,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const semanticTag = androidElementSemanticTag(elementId);
     const renderedOnly = androidElementMayRequireHorizontalScroll(elementId);
     const avoidNavigation = androidElementMayRequireVerticalScroll(elementId);
+    // Settings rows/section headers use e2eIndexedControl, including absence
+    // while a lazy item has not been composed yet.
+    const providerOnly = semanticTag.startsWith("parity:settings-");
     const reachable = () => {
       const node = queryFirstAndroidSemanticNode(
         this.serial,
@@ -1573,12 +1586,11 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
           requireReachable: true,
           renderedOnly,
           avoidNavigation,
+          providerOnly,
         },
       );
       return androidProjectedElement(node, elementId);
     };
-    const existing = reachable();
-    if (existing) return existing;
     if (androidElementMayRequireHorizontalScroll(elementId)) {
       const horizontal = await establishRevealedElement({
         description: semanticTag,
@@ -1597,7 +1609,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return establishRevealedElement({
       description: semanticTag,
       readReachable: reachable,
-      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true, true),
+      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true, true, { providerOnly }),
     });
   }
 

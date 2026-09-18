@@ -9,6 +9,7 @@ import { runInNewContext } from "node:vm";
 import {
   AndroidSemanticJourneyDriver, androidElementEnabled, androidElementSemanticTag,
   androidSemanticTag, androidDataStatusRowsFromStateTag, androidMapInspectionPoint,
+  androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll, establishRevealedElement,
 } from "./semantic-journey-driver.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
@@ -31,6 +32,13 @@ function device() {
     URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag,
     androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
     chooseUnobscuredMapPoint, androidMapInspectionPoint,
+    androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
+    establishRevealedElement: options => establishRevealedElement({
+      ...options,
+      // Controlled observation completion; no wall-clock wait in these tests.
+      observe: async (_description, probe) => ({ value: await probe() }),
+    }),
+    scrollUntilTag: () => assert.fail("unexpected traversal"),
     ANDROID_EXACT_SCALAR_PROJECTIONS: projections,
     requiredSemanticDriver: () => ({ port: 19191 }),
     semanticDriverObservationUnavailable: response => response.status === 28,
@@ -47,7 +55,7 @@ function device() {
             .filter(([id]) => id.startsWith(tag)).map(([, node]) => node)),
         };
       }
-      return responseOverride ?? {
+      return (typeof responseOverride === "function" ? responseOverride() : responseOverride) ?? {
         status: 0, stdout: JSON.stringify(snapshots.has(tag) ? [snapshots.get(tag)] : []),
       };
     },
@@ -61,10 +69,14 @@ function device() {
   context.queryFirstAndroidSemanticNode = helper("queryFirstAndroidSemanticNode", "readinessEvidenceMatchesTag");
   context.androidProjectedElement = helper("androidProjectedElement", "queryFirstAndroidSemanticNode");
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readScalarProjection", "readProjection", "readElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
+  for (const name of ["readScalarProjection", "readProjection", "readElement", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
-  return { driver, snapshots, requests, respondWith(value) { responseOverride = value; } };
+  return {
+    driver, snapshots, requests,
+    respondWith(value) { responseOverride = value; },
+    onTraversal(callback) { context.scrollUntilTag = callback; },
+  };
 }
 
 test("every fixed state projection bypasses the tree for presence, updates and absence", () => {
@@ -209,7 +221,9 @@ test("native gesture readiness takes one device snapshot, retaining follow and o
   respondWith({ status: 28, stdout: "", stderr: "provider busy" });
   await assert.rejects(read(), TransientObservationError);
   assert.match(drag, /error\.nativeResult = result;\s*throw error/);
-  assert.match(native, /const failed = error\.nativeResult \?\? createTestResult/);
+  assert.match(native, /const result = createTestResult\(test\.id\);[\s\S]*test\.run\(\{ \.\.\.args, result \}\)/);
+  assert.match(native, /const failed = error\.nativeResult \?\? result/);
+  assert.match(native, /const result = args\.result \?\? createTestResult\("android\.map-follow-ctr-gesture-smoke"\)/);
   assert.match(native, /writeFileSync\(join\(E2E_ARTIFACT_DIR, "result\.json"\)/);
 });
 
@@ -262,4 +276,45 @@ test("status popup and service collections prove absence without tree access", a
   await assert.rejects(bodies(), TransientObservationError);
   const page = readFileSync(new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/DataStatusPage.kt", import.meta.url), "utf8");
   assert.match(page, /\.e2eIndexedControl\("parity:\$testTagPrefix-panel", enabled = true\)/);
+});
+
+
+test("Settings reveal uses the control index before and after lazy-list traversal", async () => {
+  const { driver, snapshots, requests, onTraversal } = device();
+  const id = "settings-section-debug_diagnostics";
+  const tag = "parity:settings-section:debug_diagnostics";
+  const node = {
+    "resource-id": tag, "semantic-path": "projection-provider:1",
+    visible: "true", "center-reachable": "true", enabled: "true",
+    bounds: "[0,100][900,200]",
+  };
+  let traversals = 0;
+  onTraversal(async (_serial, target, _count, reachable, avoidNavigation, options) => {
+    assert.equal(target, tag);
+    assert.equal(reachable, true);
+    assert.equal(avoidNavigation, true);
+    assert.equal(options.providerOnly, true, "absence during traversal must also bypass the tree");
+    traversals += 1;
+    snapshots.set(tag, node);
+  });
+  assert.equal((await driver.revealElement(id)).test_id, tag);
+  assert.equal(traversals, 1);
+  assert.equal(requests.length, 2);
+  assert.equal((await driver.revealElement(id)).test_id, tag);
+  assert.equal(traversals, 1, "already reachable controls do not scroll");
+  snapshots.delete(tag);
+  assert.equal(await driver.readElement(id), null, "disposal uses the same authoritative index");
+});
+
+test("a busy first Settings reveal read cannot escape or trigger a speculative scroll", async () => {
+  const { driver, snapshots, respondWith } = device();
+  const tag = "parity:settings-section:debug_diagnostics";
+  snapshots.set(tag, {
+    "resource-id": tag, visible: "true", "center-reachable": "true",
+    bounds: "[0,100][900,200]",
+  });
+  let reads = 0;
+  respondWith(() => ++reads === 1 ? { status: 28, stdout: "", stderr: "provider busy" } : null);
+  assert.equal((await driver.revealElement("settings-section-debug_diagnostics")).test_id, tag);
+  assert.equal(reads, 2);
 });

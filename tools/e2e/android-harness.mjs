@@ -1204,14 +1204,15 @@ export async function scrollUntilTag(
   maxSwipes = 8,
   requireReachable = false,
   avoidNavigation = false,
+  { providerOnly = false } = {},
 ) {
   if (await scrollUntilTagInDirection(
-    serial, tag, "down", maxSwipes, requireReachable, avoidNavigation,
+    serial, tag, "down", maxSwipes, requireReachable, avoidNavigation, providerOnly,
   )) {
     return true;
   }
   return scrollUntilTagInDirection(
-    serial, tag, "up", maxSwipes, requireReachable, avoidNavigation,
+    serial, tag, "up", maxSwipes, requireReachable, avoidNavigation, providerOnly,
   );
 }
 
@@ -1361,6 +1362,7 @@ async function scrollUntilTagInDirection(
   maxSwipes,
   requireReachable,
   avoidNavigation,
+  providerOnly,
 ) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
     const target = queryAndroidExactProjection(
@@ -1370,6 +1372,7 @@ async function scrollUntilTagInDirection(
         includeDescendantText: false,
         verifyReachable: requireReachable,
         avoidNavigation,
+        providerOnly,
       },
     )[0];
     if (target && (!requireReachable || target["center-reachable"] === "true")) {
@@ -1386,6 +1389,7 @@ async function scrollUntilTagInDirection(
       includeDescendantText: false,
       verifyReachable: requireReachable,
       avoidNavigation,
+      providerOnly,
     },
   )[0];
   return Boolean(target && (!requireReachable || target["center-reachable"] === "true"));

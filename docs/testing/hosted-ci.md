@@ -102,6 +102,12 @@ disposed panels. Transport unavailability is not evidence of absence: optional
 presence probes must use the bounded observation contract too, without
 replaying a successful action or extending the transition deadline.
 
+Settings reveals follow that rule before, during, and after lazy-list traversal.
+A busy initial read must establish presence or absence before scrolling; it is
+not permission to guess that the target is offscreen. The indexed-observation
+contracts exercise the actual reveal method and forbid the accessibility queue,
+including when the first read is unavailable.
+
 The same rule applies to fixed state projections: `readScalarProjection`
 always uses `providerOnly`, including the first read and reads after disposal.
 Do not "seed" an accessibility path first. The September 15.3 release failed
@@ -181,6 +187,22 @@ functional. `MapSurfaceLayersTest` includes a reproduction of a non-consuming
 full-screen editor intercepting HOME, plus portrait/landscape tests of the
 production layer container and uncovered map input. This belongs in ordinary
 CI and cheap preflight, not in another release-only gate.
+
+Android map-follow gesture completion must read current layout dimensions and
+follow state. A retained local function reference once captured the initial
+zero-size map, skipped offset synchronization, and snapped ownship back to the
+center on the next update. `rememberMapFollowViewportSync` uses Compose's
+`rememberUpdatedState`; its physical-input component test retains the callback
+from before layout and changes the command sink while a pointer is down. E2E
+builds retain viewport handoff logs. Native failures retain the result assembled
+before the error, and temporal assertions retain bounded, copied observations
+so a lost offset can be distinguished from missing or unavailable evidence.
+
+Web session mutations must use the adapter's injected clock. The main page and
+worker have separate globals: raw worker `Date.now()` in map inspection once
+advanced core beyond every fixture-clock ownship sample, leaving Bad AP stale
+forever. The adapter regression puts wall time an hour ahead and advances the
+session clock explicitly; waiting longer cannot fix that defect.
 
 For navigation effects, exercise real removal from and reentry into composition,
 not just rerendering an always-mounted helper. `AirwayRoutingNavigationEffectTest`

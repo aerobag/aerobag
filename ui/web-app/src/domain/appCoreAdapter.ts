@@ -1825,7 +1825,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       performMapInspectionCommand: async (command) => {
         return runSessionMutation(() => this.module.perform_map_inspection_command_in_session(
-          handle, JSON.stringify(command), Date.now(),
+          handle, JSON.stringify(command), this.clockEpochMs(),
         ));
       },
       performFlightPlanColumnAction: async (actionId) => {
@@ -1926,7 +1926,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             handle,
             actionId,
             sourceJson,
-            BigInt(Date.now()),
+            BigInt(this.clockEpochMs()),
           ),
         );
         return snapshot;

@@ -106,6 +106,12 @@ the candidate builds, starts a separate live-feed daemon, and is qualified at
 `https://aerobag.org/staging/`. If the current commit is already the assigned
 staging release, the command exits and directs the operator to `--reconcile`.
 
+Staging prints its planned changes and proceeds without a `y/N` prompt, including
+when replacing an existing staging release. `--stage --watch` likewise continues
+through deployment and qualification without waiting for input. Ctrl-C during
+preflight or the scheduled-refresh wait stops before release intent or tags are
+changed. Promotion still requires confirmation.
+
 Staging qualification has two independent parts, running in parallel after
 the release push. The production reconciler
 checks the bytes and routes actually exposed under `/staging/`. A release-tag
@@ -203,7 +209,8 @@ delete that file. A failure retains it and prints the path, keeping routine
 output concise while preserving complete diagnostics for inspection or handoff.
 
 All operations reject an active release reconciliation before making changes.
-The intent-changing commands repeat that check after confirmation.
+Staging rechecks after preflight (and can wait for a scheduled refresh with
+`--watch`); promotion rechecks after confirmation.
 The internal deployment module independently closes the systemd-timer race and rejects a held
 reconciler lock; deployment no longer kills an in-progress release build. Run
 `--reconcile` after the prior reconciliation finishes instead of repeating an

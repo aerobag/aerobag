@@ -83,7 +83,10 @@ def parse_args() -> argparse.Namespace:
         "--candidate-status", action="store_true",
         help="inspect a legacy or manually requested hosted candidate run",
     )
-    operation.add_argument("--stage", action="store_true")
+    operation.add_argument(
+        "--stage", action="store_true",
+        help="run preflight and stage a new release without a confirmation prompt",
+    )
     operation.add_argument(
         "--promote", action="store_true",
         help=f"promote staging and retain outgoing production in sunset for {DEFAULT_SUNSET_DAYS} days",
@@ -101,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--watch", action="store_true",
-        help="poll exact-release qualification; after confirmation, --stage also waits up to 20 minutes for a scheduled product refresh",
+        help="poll exact-release qualification; --stage also waits up to 20 minutes for a scheduled product refresh",
     )
     parser.add_argument(
         "--watch-timeout", type=int, metavar="SECONDS",
@@ -1062,8 +1065,8 @@ def stage(
             )
 
     config = deployment.load_config(config_path)
-    # Watch mode must get the operator's answer before a potentially long wait.
-    # No release intent is mutated until the post-confirmation idle check passes.
+    # Plain staging fails fast on a busy host. Watch mode finishes preflight
+    # before waiting; neither mode mutates release intent until the final checks.
     if not watch:
         assert_remote_idle(config, wait_for_scheduled_refresh=False)
     run_stage_preflight(full=False)
@@ -1093,10 +1096,6 @@ def stage(
         color_diff(releases_path, old_text, new_text),
         note=replacement_note,
     )
-    if not confirmed():
-        print("aborted")
-        return 1
-
     assert_remote_idle(config, wait_for_scheduled_refresh=watch)
     git("fetch", "--tags", "origin", capture=False)
     assert_clean_checkout("stage")
@@ -1104,7 +1103,7 @@ def stage(
     if git("rev-parse", "HEAD") != head:
         raise ManagementError("checkout changed while preparing staging; retry with the current commit")
     if tag in existing_release_tags():
-        raise ManagementError(f"release tag {tag} appeared during confirmation; retry")
+        raise ManagementError(f"release tag {tag} appeared while preparing staging; retry")
     write_atomic(releases_path, new_text)
     git("add", str(releases_path.relative_to(REPO_ROOT)), capture=False)
     git("commit", "-m", f"Stage {tag}", capture=False)

@@ -850,6 +850,11 @@ class ReconciliationCompletionTests(unittest.TestCase):
 
 
 class StageOrderingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch(
+            "builtins.input", side_effect=AssertionError("staging must never prompt"),
+        ))
+
     @staticmethod
     def clean_git(*args: str, capture: bool = True) -> str:
         if args[:2] == ("status", "--porcelain"):
@@ -960,13 +965,13 @@ class StageOrderingTests(unittest.TestCase):
         load_config.assert_not_called()
         idle.assert_not_called()
 
-    def test_running_reconciler_aborts_before_confirmation_or_git_mutation(self) -> None:
+    def test_running_reconciler_aborts_before_preflight_or_git_mutation(self) -> None:
         document = desired_document()
 
         with (
             mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
-            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
-            mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git) as git,
+            mock.patch.object(prod_manage, "run_stage_preflight") as preflight,
             mock.patch.object(prod_manage, "assert_candidate_is_qualified"),
             mock.patch.object(
                 prod_manage,
@@ -974,14 +979,17 @@ class StageOrderingTests(unittest.TestCase):
                 side_effect=prod_manage.ManagementError("still running"),
             ),
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
-            mock.patch.object(prod_manage, "confirmed") as confirmed,
+            mock.patch.object(prod_manage, "write_atomic") as write,
         ):
             with self.assertRaisesRegex(prod_manage.ManagementError, "still running"):
                 prod_manage.stage(
                     prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
                 )
 
-        confirmed.assert_not_called()
+        preflight.assert_not_called()
+        write.assert_not_called()
+        self.assertFalse(any(call.args[0] in {"add", "commit", "tag", "push"}
+                             for call in git.call_args_list))
 
     def test_remote_busy_message_preserves_reconciliation_context(self) -> None:
         busy = prod_manage.deployment.ReleaseReconciliationBusy(
@@ -1022,7 +1030,6 @@ class StageOrderingTests(unittest.TestCase):
             mock.patch.object(prod_manage, "assert_remote_idle"),
             mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
             mock.patch.object(prod_manage, "print_proposal"),
-            mock.patch.object(prod_manage, "confirmed", return_value=False),
             mock.patch.object(prod_manage, "write_atomic") as write_atomic,
         ):
             with self.assertRaisesRegex(
@@ -1037,7 +1044,7 @@ class StageOrderingTests(unittest.TestCase):
         candidate.assert_not_called()
         write_atomic.assert_not_called()
 
-    def test_confirmed_stage_executes_the_printed_git_transaction_in_order(self) -> None:
+    def test_stage_executes_the_printed_git_transaction_in_order_without_prompting(self) -> None:
         document = desired_document()
         git_calls: list[tuple[tuple[str, ...], bool]] = []
 
@@ -1060,7 +1067,6 @@ class StageOrderingTests(unittest.TestCase):
                 prod_manage, "next_release_name", return_value="2026-08-22.1"
             ),
             mock.patch.object(prod_manage, "print_proposal"),
-            mock.patch.object(prod_manage, "confirmed", return_value=True),
             mock.patch.object(prod_manage, "write_atomic") as write_atomic,
             mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
             mock.patch.object(prod_manage, "print_success") as success,
@@ -1108,6 +1114,29 @@ class StageOrderingTests(unittest.TestCase):
             )
         )
 
+    def test_replacing_staging_keeps_the_notice_but_does_not_prompt(self) -> None:
+        document = desired_document(staging="2026-08-21.1")
+        old_staging = releases.ResolvedTag("2026-08-21.1", "b" * 40, "c" * 40)
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "load_release_document", return_value=document),
+            mock.patch.object(prod_manage.releases, "resolve_release_tag", return_value=old_staging),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
+            mock.patch.object(prod_manage, "print_proposal") as proposal,
+            mock.patch.object(prod_manage, "write_atomic") as write,
+            mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(prod_manage.stage(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES,
+            ), 0)
+        self.assertIn("replaces staging release 2026-08-21.1", proposal.call_args.kwargs["note"])
+        self.assertEqual(json.loads(write.call_args.args[1])["staging"], {"tag": "2026-08-22.1"})
+        reconcile.assert_called_once_with(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES)
+
     def test_failed_stage_build_prints_explicit_red_result_before_reraising(self) -> None:
         document = desired_document()
         failed = releases.ObservedRelease(
@@ -1130,7 +1159,6 @@ class StageOrderingTests(unittest.TestCase):
                 prod_manage, "next_release_name", return_value="2026-08-22.1"
             ),
             mock.patch.object(prod_manage, "print_proposal"),
-            mock.patch.object(prod_manage, "confirmed", return_value=True),
             mock.patch.object(prod_manage, "write_atomic"),
             mock.patch.object(
                 prod_manage,
@@ -1177,10 +1205,6 @@ class StageOrderingTests(unittest.TestCase):
                 events.append("watch")
                 return watch_result
 
-            def confirm():
-                events.append("confirm")
-                return True
-
             def idle_check(*_args, **_kwargs):
                 events.append("idle")
 
@@ -1193,7 +1217,6 @@ class StageOrderingTests(unittest.TestCase):
                 mock.patch.object(prod_manage, "run_stage_preflight"),
                 mock.patch.object(prod_manage, "next_release_name", return_value=identity.tag),
                 mock.patch.object(prod_manage, "print_proposal"),
-                mock.patch.object(prod_manage, "confirmed", side_effect=confirm) as confirmed,
                 mock.patch.object(prod_manage, "write_atomic"),
                 mock.patch.object(prod_manage.releases, "resolve_release_tag", side_effect=resolve),
                 mock.patch.object(prod_manage, "reconcile", side_effect=reconcile),
@@ -1208,8 +1231,6 @@ class StageOrderingTests(unittest.TestCase):
             self.assertEqual(idle.call_args_list, [
                 mock.call({}, wait_for_scheduled_refresh=True),
             ])
-            confirmed.assert_called_once()
-            self.assertLess(events.index("confirm"), events.index("idle"))
             self.assertLess(events.index("idle"), events.index("commit"))
             self.assertLess(events.index("commit"), events.index("resolve"))
             self.assertLess(events.index("resolve"), events.index("push"))
@@ -1243,70 +1264,70 @@ class StageOrderingTests(unittest.TestCase):
                 mock.patch.object(prod_manage, "run_stage_preflight"),
                 mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
                 mock.patch.object(prod_manage, "print_proposal"),
-                mock.patch.object(prod_manage, "confirmed", return_value=True) as confirmed,
                 mock.patch.object(prod_manage, "write_atomic") as write,
                 mock.patch.object(prod_manage, "reconcile") as reconcile,
                 redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(KeyboardInterrupt if interrupt else prod_manage.ManagementError):
                     prod_manage.stage(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True)
-                confirmed.assert_called_once()
                 write.assert_not_called()
                 reconcile.assert_not_called()
                 self.assertFalse(any(call.args[0] in {"add", "commit", "tag", "push"}
                                      and call.kwargs.get("capture") is False
                                      for call in git.call_args_list))
 
-    def test_declining_watched_stage_never_probes_or_waits_for_refresh(self) -> None:
+    def test_interrupting_preflight_never_waits_for_refresh_or_mutates_intent(self) -> None:
         with (
-            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git) as git,
             mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
             mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage.time, "sleep") as sleep,
-            mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(prod_manage, "run_stage_preflight", side_effect=KeyboardInterrupt),
             mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
             mock.patch.object(prod_manage, "print_proposal"),
-            mock.patch.object(prod_manage, "confirmed", return_value=False),
             mock.patch.object(prod_manage, "write_atomic") as write,
             redirect_stdout(io.StringIO()),
         ):
-            self.assertEqual(prod_manage.stage(
-                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True,
-            ), 1)
+            with self.assertRaises(KeyboardInterrupt):
+                prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True,
+                )
         idle.assert_not_called()
         sleep.assert_not_called()
         write.assert_not_called()
+        self.assertFalse(any(call.args[0] in {"add", "commit", "tag", "push"}
+                             for call in git.call_args_list))
 
     def test_checkout_changes_during_wait_abort_before_mutation(self) -> None:
-        for change in ("dirty", "new-commit", "behind"):
-            confirmed = False
+        for change in ("dirty", "new-commit", "behind", "tag"):
+            wait_finished = False
 
             def fake_git(*args, **kwargs):
-                if confirmed:
+                if wait_finished:
                     if change == "dirty" and args[:2] == ("status", "--porcelain"):
                         return " M app"
                     if change == "new-commit" and args[:2] == ("rev-parse", "HEAD"):
                         return "c" * 40
                     if change == "behind" and args[:3] == ("rev-list", "--left-right", "--count"):
                         return "1 0"
+                    if change == "tag" and args[:2] == ("tag", "--list"):
+                        return "2026-08-22.1"
                 return self.clean_git(*args, **kwargs)
 
-            def confirm():
-                nonlocal confirmed
-                confirmed = True
-                return True
+            def idle_check(*_args, **_kwargs):
+                nonlocal wait_finished
+                wait_finished = True
 
             with (
                 self.subTest(change=change),
                 mock.patch.object(prod_manage, "git", side_effect=fake_git),
                 mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
                 mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
-                mock.patch.object(prod_manage, "assert_remote_idle"),
+                mock.patch.object(prod_manage, "assert_remote_idle", side_effect=idle_check),
                 mock.patch.object(prod_manage, "run_stage_preflight"),
                 mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
                 mock.patch.object(prod_manage, "print_proposal"),
-                mock.patch.object(prod_manage, "confirmed", side_effect=confirm),
                 mock.patch.object(prod_manage, "write_atomic") as write,
                 mock.patch.object(prod_manage, "reconcile") as reconcile,
                 self.assertRaises(prod_manage.ManagementError),
@@ -1334,14 +1355,16 @@ class StageOrderingTests(unittest.TestCase):
             mock.patch.object(prod_manage, "assert_remote_idle"),
             mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
             mock.patch.object(prod_manage, "print_proposal"),
-            mock.patch.object(prod_manage, "confirmed", return_value=False),
+            mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
         ):
             result = prod_manage.stage(
                 prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
             )
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 0)
         candidate.assert_not_called()
+        reconcile.assert_called_once_with(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES)
 
 
 class ReconcileCommandTests(unittest.TestCase):
@@ -1620,7 +1643,7 @@ class PromoteCommandTests(unittest.TestCase):
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage, "assert_staging_is_qualified"),
             mock.patch.object(prod_manage, "print_proposal") as proposal,
-            mock.patch.object(prod_manage, "confirmed", return_value=True),
+            mock.patch("builtins.input", return_value="y") as prompt,
             mock.patch.object(prod_manage, "write_atomic") as write,
             mock.patch.object(prod_manage, "datetime", wraps=datetime) as clock,
             mock.patch.object(
@@ -1638,6 +1661,7 @@ class PromoteCommandTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
+        prompt.assert_called_once_with("proceed? y/N ")
         self.assertEqual(idle.call_count, 2)
         mutation_calls = [
             args
@@ -1720,7 +1744,7 @@ class PromoteCommandTests(unittest.TestCase):
                 mock.patch.object(prod_manage, "assert_remote_idle"),
                 mock.patch.object(prod_manage, "assert_staging_is_qualified"),
                 mock.patch.object(prod_manage, "print_proposal") as proposal,
-                mock.patch.object(prod_manage, "confirmed", return_value=False),
+                mock.patch("builtins.input", return_value="N") as prompt,
                 mock.patch.object(prod_manage, "write_atomic") as write,
                 mock.patch.object(prod_manage, "changed_contracts_after_promotion",
                                   return_value=(prod_manage.ContractRequirement("nav-db", "NAV9"),)) as contracts,
@@ -1732,6 +1756,7 @@ class PromoteCommandTests(unittest.TestCase):
                 self.assertEqual(prod_manage.promote(
                     prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, sunset_days=days,
                 ), 1)
+            prompt.assert_called_once_with("proceed? y/N ")
             write.assert_not_called()
             activate.assert_not_called()
             reconcile.assert_not_called()

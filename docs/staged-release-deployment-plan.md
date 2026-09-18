@@ -59,7 +59,9 @@ make and apply its commits, but they do not introduce a second state model:
   staging, commits and tags that exact commit, then enters the reconciliation
   workflow. If `HEAD` is already the assigned staging release, it exits locally
   and directs the operator to `--reconcile` instead of turning a change command
-  into an implicit retry.
+  into an implicit retry. After the mandatory fast preflight, staging prints its
+  planned changes and proceeds without confirmation, even when replacing an
+  existing staging release. Full prequalification remains optional.
 - `tools/prod_manage.py --promote` is a desired-state change. It commits the
   qualified staging assignment as production, clears staging, retains outgoing
   production in sunset for 4 days, and enters activation-only reconciliation.
@@ -74,17 +76,18 @@ make and apply its commits, but they do not introduce a second state model:
   or repairs the host and fully converges the checked-in assignments. When
   production is already converged it reports that state and performs no deploy.
 
-Commands that would mutate intent retain a remote-idle safety check after
-confirmation, before mutation. Plain staging and promotion also check before
-confirmation. Reconciliation rejects an overlapping reconciler.
-With `--stage --watch`, the operator confirms first, then the idle check waits
+Commands that would mutate intent retain a remote-idle safety check immediately
+before mutation. Plain staging also checks before preflight; promotion checks
+before and after its confirmation prompt. Reconciliation rejects an overlapping
+reconciler. With `--stage --watch`, preflight runs first, then the idle check waits
 up to twenty minutes for an automatic scheduled product refresh, polling every
-ten seconds and showing its current progress. There is no second confirmation
-after waiting. This budget is separate from the qualification watch budget.
+ten seconds and showing its current progress. Staging never prompts for
+confirmation. This budget is separate from the qualification watch budget.
 An operator-initiated reconciliation, an unknown lock owner, or a status-read
 failure still stops immediately. A timeout or interrupt leaves release intent
 and tags unchanged; the refresh is never canceled. Plain `--stage` remains
-fail-fast. The checkout is revalidated after confirmation/waiting before mutation.
+fail-fast. The checkout and release tag are revalidated after preflight/waiting
+before staging mutates intent.
 Direct desired-state edits followed by `--reconcile` remain the complete
 lower-level interface.
 

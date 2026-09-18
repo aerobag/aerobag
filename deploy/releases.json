@@ -3,7 +3,9 @@
     "tag": "2026-09-15.6"
   },
   "schema_version": 2,
-  "staging": null,
+  "staging": {
+    "tag": "2026-09-18.1"
+  },
   "sunset": [
     {
       "live_feeds": "share_if_compatible",

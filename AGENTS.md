@@ -3,7 +3,7 @@
 - Keep shared behavior in `ui/core-rust`. Platform UI layers are view/controllers: they render core-exported models and dispatch core commands.
 - Do not invent one-off platform widgets when an existing UI mechanism fits. Reuse the established tray/button machinery for tray-opening controls on web and Android.
 - If a feature must behave the same across web and Android, model the state, choices, labels, selection, and side effects in core first. Platform code should not duplicate that logic.
-- Before changing or diagnosing hosted tests, read [`docs/testing/hosted-ci.md`](docs/testing/hosted-ci.md). Keep CI inputs hermetic, test selection exact, and external readiness waits bounded and diagnostic.
+- Before changing or diagnosing hosted tests, read [`docs/testing/hosted-ci.md`](docs/testing/hosted-ci.md). For journeys and their platform readiness/input contracts, also read [`tools/e2e/AGENTS.md`](tools/e2e/AGENTS.md). Keep CI inputs hermetic, test selection exact, and external readiness waits bounded and diagnostic.
 - Run the fast release preflight before staging. Full local prequalification is an optional deeper gate, not a prerequisite for discovering ordinary build and unit-test failures.
 - Treat published contract identifiers as immutable. A key, encoding, or required-shape change needs a new descriptor/version and matching fixture metadata; do not weaken readers with compatibility fallbacks.
 - Cloud account format changes require a versioned decoder/migration and explicit user-confirmed root CAS. Never auto-upgrade an encrypted account or retry a losing write without rechecking the root format; see `docs/refactor/cloud-account-format-upgrades.md`.

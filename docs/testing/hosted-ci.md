@@ -258,6 +258,41 @@ folder controls/tiles are not positive evidence that the viewer is ready;
 conversely, web can prepare the correct viewport behind an open folder. Require
 both the grid closing and the requested viewport, including after a tile click.
 
+Readiness must belong to the resource actually rendered. A selected chart ID
+plus a retained viewport once authorized wheel input before the new image loaded;
+the handler correctly ignored it, and no amount of completion polling could
+recover that one-shot gesture. Web publishes the plate viewport only with the
+selected image's dimensions and commits handler geometry in a layout effect.
+Android publishes it only with a decoded bitmap and display geometry.
+`produceKeyedResourceState` keys the Compose state as well as the loading job:
+ordinary `produceState(keys)` briefly retains the previous resource's value.
+Use that owner for replaceable asynchronous resources. React image load events
+and Compose's controlled effect dispatcher exercise these boundaries cheaply.
+
+Use `gesturePlate` for plate gestures. It records typed before/after geometry,
+requires the same document, and checks zoom or pan in the requested direction.
+Repeated identical samples are not a substitute for loaded-resource readiness.
+Browser gestures validate retained bounds and hit-test the target, subscribe
+before sending native CDP input, and await delivery of the final browser event.
+A CDP acknowledgement alone does not prove delivery. Delivery still does not
+prove application behavior: the semantic postcondition remains mandatory.
+No action is retried. The structural audit includes gesture helpers and rejects
+mutations inside observation predicates as well as observation readers.
+
+Prefer `runtime.observe(description, read, accept)` and a transition's separate
+`completionSatisfied` predicate to comparisons that discard every nonmatching
+state as `null`. Failures retain the last value and a bounded history of changed
+observations. A wrong document, wrong direction, or unchanged zoom should be
+visible in the failure artifact.
+
+Do not make hit-test expectations depend on arbitrary map geography. The
+inspector journey chooses an unobscured point and explicitly selects SPOT if a
+nearby feature wins. The core hit-test regression uses both an empty feature
+set and colocated airports to prove automatic SPOT fallback and airport priority;
+the platform journey proves that SPOT is reachable and its terrain result lands.
+The old `inspector.spot-fallback` E2E check is therefore named
+`inspector.spot-selection`, matching what the real-platform test establishes.
+
 Raster request tests cover both slow success and stalled-request recovery.
 `RasterTileImage.test.tsx` controls DOM load/error events and the recovery clock:
 elapsed time must not cancel pending images, either request can win, and a tile

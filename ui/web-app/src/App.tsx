@@ -12024,7 +12024,7 @@ function statusControlTestIdPrefix(id: UiSurfaceStatusControlId): string | undef
   return id === "procedure_geometry" ? "procedure-status" : undefined;
 }
 
-function ChartsPage(props: {
+export function ChartsPage(props: {
   sessionRenderStore: SessionRenderStore;
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
@@ -12116,7 +12116,10 @@ function ChartsPage(props: {
     }
     return createInitialImageViewport(selectedImageSize.width, selectedImageSize.height, surfaceSize.width, surfaceSize.height);
   }, [selectedImageSize, surfaceSize.height, surfaceSize.width]);
-  const effectiveViewport = viewport ?? fallbackViewport;
+  // Selection and restored view state can arrive before the image. Do not
+  // publish another document's geometry as an initialized, interactive plate.
+  const effectiveViewport = selectedImageSize && surfaceSize.width > 0 && surfaceSize.height > 0
+    ? viewport ?? fallbackViewport : null;
   const displaySize = useMemo(() => {
     if (!selectedImageSize || !effectiveViewport || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return null;
@@ -12222,7 +12225,7 @@ function ChartsPage(props: {
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setResolvedChartUrls({});
     setImageSize(null);
     viewportRef.current = null;
@@ -12340,7 +12343,7 @@ function ChartsPage(props: {
     });
   }, [selectedChart?.id, selectedChartAssetUrl]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (viewport === null) {
       viewportRef.current = null;
       lastLocalViewportRef.current = null;
@@ -12358,7 +12361,9 @@ function ChartsPage(props: {
     viewportRef.current = viewport;
   }, [viewport]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Input handlers and the rendered viewport must become ready in the same
+    // React commit; a passive effect leaves an advertised-but-inert surface.
     if (!selectedImageSize || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
@@ -12637,7 +12642,7 @@ function ChartsPage(props: {
         onWheel={handleWheel}
         onDoubleClick={handleDoubleClick}
       >
-        {effectiveViewport && selectedChart ? (
+        {effectiveViewport && selectedChart && !folderOpen ? (
           <span
             data-testid={`parity:plate-viewport:chart:${selectedChart.id}:zoom:${effectiveViewport.zoom.toFixed(3)}:left:${effectiveViewport.left.toFixed(1)}:top:${effectiveViewport.top.toFixed(1)}`}
             aria-hidden="true"

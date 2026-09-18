@@ -62,7 +62,7 @@ class ChartAssetLoadKeyTest {
         assertTrue(
             "Plate folder thumbnails must reload from the new package revision too.",
             source.contains("val thumbnailLoadKey = chartAssetLoadKey(chart.id, chartAssetDataRevision)") &&
-                source.contains("initialValue = null, thumbnailLoadKey, chart.hasThumbnail"),
+                source.contains("produceKeyedResourceState<androidx.compose.ui.graphics.ImageBitmap>(thumbnailLoadKey, chart.hasThumbnail"),
         )
     }
 

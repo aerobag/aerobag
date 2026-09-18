@@ -76,6 +76,7 @@ export async function observeUntil(
     consecutiveSuccesses = 1,
     consecutiveValueKey = null,
     waitForNextProbe = null,
+    accept = Boolean,
     scheduler = realScheduler,
   } = {},
 ) {
@@ -90,14 +91,19 @@ export async function observeUntil(
   let successfulKey = null;
   let lastValue = null;
   let attempts = 0;
+  const observations = [];
   while (scheduler.now() < deadline) {
     try {
       attempts += 1;
       const value = await withinDeadline(description, probe, deadline, scheduler);
       lastValue = diagnosticValue(value);
       const probeFinishedAt = scheduler.now();
+      if (JSON.stringify(observations.at(-1)?.value) !== JSON.stringify(lastValue)) {
+        observations.push({ elapsed_ms: Math.round(probeFinishedAt - startedAt), value: lastValue });
+        if (observations.length > 8) observations.shift();
+      }
       if (probeFinishedAt >= deadline) break;
-      if (value) {
+      if (accept(value)) {
         const currentKey = consecutiveValueKey ? consecutiveValueKey(value) : null;
         if (successfulSamples > 0 && consecutiveValueKey && currentKey !== successfulKey) {
           successfulSamples = 1;
@@ -154,6 +160,7 @@ export async function observeUntil(
       successful_samples: successfulSamples,
       required_successful_samples: consecutiveSuccesses,
       last_value: lastValue,
+      observations,
       last_error: lastError?.message ?? null,
     },
     lastError,
@@ -281,6 +288,7 @@ export async function performTransition(description, {
   ready,
   act,
   complete,
+  completionSatisfied = Boolean,
   diagnose = null,
   waitForObservation = null,
   readyTimeoutMs = E2E_TIMING.localReadyMs,
@@ -373,7 +381,7 @@ export async function performTransition(description, {
     timing.observation = error.diagnostics ?? { error: error.message };
     await recordFailure("precondition", error);
   }
-  if (completionBeforeAction) {
+  if (completionSatisfied(completionBeforeAction)) {
     if (acceptPreexistingCompletion) {
       Object.assign(timing, {
         outcome: "pass",
@@ -425,6 +433,7 @@ export async function performTransition(description, {
   let completion;
   try {
     completion = await observeUntil(`${description} completed`, complete, {
+      accept: completionSatisfied,
       timeoutMs: remainingResponseMs,
       intervalMs,
       consecutiveSuccesses: completionSamples,

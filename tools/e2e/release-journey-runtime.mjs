@@ -167,6 +167,16 @@ export function createJourneyRuntime({
       return observed.value;
     },
 
+    // Keep the observed state even when it does not satisfy the predicate.
+    // Returning null from every failed comparison hides the cause of a failure.
+    async observe(description, read, accept, timeoutMs = E2E_TIMING.localReadyMs) {
+      const observed = await observeUntil(description, read, {
+        accept, timeoutMs,
+        waitForNextProbe: driver.waitForObservation?.bind(driver) ?? null,
+      });
+      return observed.value;
+    },
+
     async stable(
       description,
       operation,

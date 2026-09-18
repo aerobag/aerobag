@@ -17,6 +17,7 @@ export { webWorkspaceDirectory };
 
 export const AUDITED_JOURNEY_FILES = Object.freeze([
   "tools/e2e/release-journey-implementations.mjs",
+  "tools/e2e/plate-gestures.mjs",
   "tools/e2e/cloud-journey-peer.mjs",
   "tools/e2e/run-android-e2e-suite.mjs",
   "tools/e2e/run-android-chrome-livefeed-e2e.mjs",
@@ -63,10 +64,11 @@ const MUTATING_FUNCTIONS = new Set([
   "tapTag",
 ]);
 
-const OBSERVATION_METHODS = new Set(["eventually"]);
+const OBSERVATION_METHODS = new Set(["eventually", "observe"]);
 const OBSERVATION_FUNCTIONS = new Set(["observeUntil", "waitFor"]);
 const OBSERVATION_CALLBACK_ARGUMENTS = new Map([
   ["eventually", 1],
+  ["observe", 1],
   ["observeUntil", 1],
   ["waitFor", 0],
 ]);
@@ -341,10 +343,11 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
       });
     }
     const isObservation = OBSERVATION_METHODS.has(method) || OBSERVATION_FUNCTIONS.has(called);
-    if (method === "eventually" && node.arguments[2] && ts.isNumericLiteral(node.arguments[2])) {
+    const observationTimeoutIndex = method === "observe" ? 3 : method === "eventually" ? 2 : null;
+    if (observationTimeoutIndex != null && node.arguments[observationTimeoutIndex] && ts.isNumericLiteral(node.arguments[observationTimeoutIndex])) {
       violations.push({
-        ...sourceLocation(source, node.arguments[2]),
-        message: "raw eventually deadline is forbidden; use a named E2E_TIMING class",
+        ...sourceLocation(source, node.arguments[observationTimeoutIndex]),
+        message: `raw ${method} deadline is forbidden; use a named E2E_TIMING class`,
       });
     }
     if (method === "enterText") {
@@ -377,6 +380,7 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
         node.arguments[OBSERVATION_CALLBACK_ARGUMENTS.get(observationName)],
         `${observationName} callback`,
       );
+      if (method === "observe") reportMutations(node.arguments[2], "observe predicate");
     }
     if (
       called === "performTransition" || called === "nativeTransition" ||
@@ -414,7 +418,7 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
             message: "action readiness must come from driver.readAction(actionId)",
           });
         }
-        if (property.name.text === "ready" || property.name.text === "complete") {
+        if (["ready", "complete", "completionSatisfied"].includes(property.name.text)) {
           reportMutations(property.initializer, `${called ?? method} ${property.name.text} callback`);
         } else if (called === "nativeTransition" && property.name.text === "act") {
           reportNativeActionEvidence(source, violations, property.initializer);

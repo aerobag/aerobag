@@ -1061,19 +1061,6 @@ test("Android map-selection state uses one fixed bounded projection", () => {
   );
 });
 
-test("inspector SPOT gestures ignore moving-ownship map rotation", () => {
-  const source = readFileSync(new URL("./release-journey-implementations.mjs", import.meta.url), "utf8");
-  const journey = source.slice(
-    source.indexOf("async function inspectorDetails"),
-    source.indexOf("async function flightPlanEditing"),
-  );
-  const spotPhase = journey.slice(
-    journey.indexOf('await runtime.openPage("map");', journey.indexOf("inspector.plates")),
-    journey.indexOf('runtime.check("inspector.spot-fallback"'),
-  );
-  assert.match(spotPhase, /viewportGeometryId\(await runtime\.driver\.readProjection\("parity:viewport:"\)\)/);
-  assert.doesNotMatch(spotPhase, /selectStationaryPlanPreview/);
-});
 
 test("map selection actions wait through asynchronous inspector materialization", async () => {
   const { waitForMapSelectionAction } = await import("./release-journey-implementations.mjs");
@@ -3119,16 +3106,11 @@ test("plate journeys rendezvous with the selected chart instead of arbitrary vie
   assert.match(implementations, /const chartId = plateChartId\(chart\)/);
   assert.match(implementations, /const multiId = plateChartId\(multi\)/);
   assert.match(implementations, /const legendChartId = plateChartId\(legendOption\)/);
-  const multiPageScroll = implementations.slice(
-    implementations.indexOf("const firstPageViewport"),
-    implementations.indexOf('runtime.check("plate.first-last-page"'),
-  );
-  assert.match(
-    multiPageScroll,
-    /zoom multi-page plate for scrolling[\s\S]*scroll multi-page plate/,
-    "a fitted multi-page plate must be zoomed before scrolling can be required to move it",
-  );
-  assert.match(multiPageScroll, /value !== scrollableViewport/);
+  assert.match(implementations, /gesturePlate\(runtime, "zoom multi-page plate for scrolling", multiId/);
+  assert.match(implementations, /gesturePlate\(runtime, "scroll multi-page plate", multiId/);
+  const gestures = readFileSync(new URL("./plate-gestures.mjs", import.meta.url), "utf8");
+  assert.match(gestures, /completionSatisfied:.*plateGestureCompleted/);
+  assert.match(gestures, /after.chartId !== before.chartId/);
   assert.doesNotMatch(implementations, /settled (?:initial plate|legend) viewport/);
 });
 

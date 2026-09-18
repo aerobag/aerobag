@@ -4,6 +4,7 @@
 
 import { writeFile } from "node:fs/promises";
 import { CdpProtocolError } from "../../ui/web-app/scripts/chrome-cdp.mjs";
+import { beginBrowserInput, finishBrowserInput, cancelBrowserInput } from "./browser-input-observation.mjs";
 import { clampDragEndpoint } from "./gesture-geometry.mjs";
 import { E2E_TIMING, observeUntil, TransientObservationError } from "./transition-contract.mjs";
 
@@ -397,59 +398,52 @@ export class WebSemanticTransport {
     return { selected, clipboard };
   }
 
-  async drag(selector, deltaX, deltaY) {
+  async deliverInput(selector, point, readyElement, eventTypes, send) {
+    if (!readyElement?.bounds) throw new Error(`web gesture has no readiness geometry: ${selector}`);
+    await this.page.evaluate(`(${beginBrowserInput.toString()})(${expressionArgument({
+      selector, point, bounds: readyElement?.bounds, eventTypes, timeoutMs: E2E_TIMING.localReadyMs,
+    })})`);
+    try {
+      await send();
+      return await this.page.evaluate(`(${finishBrowserInput.toString()})()`);
+    } finally {
+      await this.page.evaluate(`(${cancelBrowserInput.toString()})()`).catch(() => {});
+    }
+  }
+
+  async drag(selector, deltaX, deltaY, readyElement) {
     const start = await this.elementPoint(selector, 0.72, 0.72);
     const minimum = await this.elementPoint(selector, 0.02, 0.02);
     const maximum = await this.elementPoint(selector, 0.98, 0.98);
     const end = clampDragEndpoint(start, { x: deltaX, y: deltaY }, minimum, maximum);
-    await this.page.evaluate(`(() => {
-      const surface = [...document.querySelectorAll(${expressionArgument(selector)})]
-        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
-      const probe = { pointerdown: 0, pointermove: 0, pointerup: 0, targets: [], blocked_by: null };
-      const listeners = {};
-      for (const type of ["pointerdown", "pointermove", "pointerup"]) {
-        listeners[type] = (event) => {
-          probe[type] += 1;
-          if (probe.targets.length < 6) {
-            probe.targets.push({ type, tag: event.target?.tagName ?? null, class_name: event.target?.className?.baseVal ?? event.target?.className ?? null });
-          }
-        };
-        surface?.addEventListener(type, listeners[type], true);
-      }
-      if (document.querySelector('[data-testid="map-selection-tray"]')) probe.blocked_by = "map-selection";
-      else if (document.querySelector('.trayScrim')) probe.blocked_by = "tray-scrim";
-      window.__aerobagReleaseGestureProbe = { probe, surface, listeners };
-    })()`);
-    await this.page.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved", x: start.x, y: start.y, button: "none", pointerType: "mouse",
+    return this.deliverInput(selector, start, readyElement, ["pointerdown", "pointermove", "pointerup"], async () => {
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved", x: start.x, y: start.y, button: "none", pointerType: "mouse",
+      });
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mousePressed", x: start.x, y: start.y, button: "left", buttons: 1,
+        clickCount: 1, pointerType: "mouse", pointerId: 1,
+      });
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved", x: end.x, y: end.y, button: "left", buttons: 1,
+        pointerType: "mouse", pointerId: 1,
+      });
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased", x: end.x, y: end.y, button: "left", buttons: 0,
+        clickCount: 1, pointerType: "mouse", pointerId: 1,
+      });
     });
-    await this.page.send("Input.dispatchMouseEvent", {
-      type: "mousePressed", x: start.x, y: start.y, button: "left", buttons: 1,
-      clickCount: 1, pointerType: "mouse", pointerId: 1,
-    });
-    await this.page.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved", x: end.x, y: end.y, button: "left", buttons: 1,
-      pointerType: "mouse", pointerId: 1,
-    });
-    await this.page.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased", x: end.x, y: end.y, button: "left", buttons: 0,
-      clickCount: 1, pointerType: "mouse", pointerId: 1,
-    });
-    return this.page.evaluate(`(() => {
-      const state = window.__aerobagReleaseGestureProbe;
-      if (!state) return null;
-      for (const [type, listener] of Object.entries(state.listeners)) {
-        state.surface?.removeEventListener(type, listener, true);
-      }
-      delete window.__aerobagReleaseGestureProbe;
-      return state.probe;
-    })()`);
   }
 
-  async wheel(selector, amount) {
+  async wheel(selector, amount, readyElement) {
     const point = await this.elementPoint(selector, 0.5, 0.5);
-    await this.page.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: amount,
+    return this.deliverInput(selector, point, readyElement, ["wheel"], async () => {
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved", x: point.x, y: point.y, button: "none", pointerType: "mouse",
+      });
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel", x: point.x, y: point.y, deltaX: 0, deltaY: amount,
+      });
     });
   }
 

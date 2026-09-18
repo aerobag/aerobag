@@ -435,8 +435,7 @@ internal fun ChartsPage(
     val sortedCharts = selectedCollection?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmapLoadKey = chartAssetLoadKey(selectedChart?.id, chartAssetDataRevision)
-    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
-        initialValue = null,
+    val bitmap by produceKeyedResourceState<androidx.compose.ui.graphics.ImageBitmap>(
         bitmapLoadKey,
         sessionWorkRunner,
         devServerBaseUrl,
@@ -445,7 +444,7 @@ internal fun ChartsPage(
         val chartId = bitmapLoadKey.chartId
         value = null
         if (chartId == null) {
-            return@produceState
+            return@produceKeyedResourceState
         }
         var attemptedResource: CoreResourceRequest? = null
         val loadedBitmap = withContext(Dispatchers.IO) {
@@ -787,7 +786,7 @@ internal fun ChartsPage(
                     )
                 }
             }
-            if (currentViewport != null && selectedChart != null) {
+            if (currentViewport != null && currentBitmap != null && currentDisplaySize != null && selectedChart != null) {
                 E2eProjectionView(
                     viewId = R.id.e2e_plate_viewport_projection,
                     state = "chart:${selectedChart.id}" +
@@ -1841,7 +1840,7 @@ internal fun PlateFolderGrid(
     ) {
         lazyGridItems(charts, key = { it.id }) { chart ->
             val thumbnailLoadKey = chartAssetLoadKey(chart.id, chartAssetDataRevision)
-            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, thumbnailLoadKey, chart.hasThumbnail, sessionWorkRunner, devServerBaseUrl) {
+            val thumbnail by produceKeyedResourceState<androidx.compose.ui.graphics.ImageBitmap>(thumbnailLoadKey, chart.hasThumbnail, sessionWorkRunner, devServerBaseUrl) {
                 value = if (chart.hasThumbnail) {
                     withContext(Dispatchers.IO) {
                         var attemptedResource: CoreResourceRequest? = null

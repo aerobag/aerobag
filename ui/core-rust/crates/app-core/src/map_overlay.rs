@@ -12457,6 +12457,32 @@ mod tests {
             },
         );
 
+        // The fallback rule belongs in a controlled hit-test, not an E2E
+        // assumption that an arbitrary screen position misses every airport.
+        let empty_cache = HashMap::new();
+        let empty_result = query_map_selection(
+            &viewport,
+            1200.0,
+            900.0,
+            MapSelectionQuery::new(
+                &config,
+                viewport.center,
+                &empty_cache,
+                &metar_tiles,
+                &airspaces,
+                &aliases,
+                &mut availability,
+            ),
+        );
+        let selected_spot = empty_result
+            .categories
+            .iter()
+            .flat_map(|category| &category.items)
+            .find(|item| Some(item.id.as_str()) == empty_result.initial_selected_item_id.as_deref())
+            .expect("empty hit-test selects a SPOT");
+        assert_eq!(selected_spot.label, "SPOT");
+        assert_eq!(selected_spot.nav_ref, Some(NavRef::Spot(viewport.center)));
+
         assert_eq!(result.categories[0].id, "airport");
         assert_eq!(result.categories[0].items[0].label, "KSEA");
         assert_eq!(

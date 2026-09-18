@@ -513,16 +513,16 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     await this.transport.submit(webTestIdSelector(controlId), readyElement);
   }
 
-  async drag(surfaceId, { x, y }) {
+  async drag(surfaceId, { x, y }, readyElement) {
     if (surfaceId.startsWith("airport-info-modal:")) {
-      await this.transport.wheel(webTestIdSelector(surfaceId), -y);
+      await this.transport.wheel(webTestIdSelector(surfaceId), -y, readyElement);
       return { scroll: -y };
     }
-    return this.transport.drag(webTestIdSelector(surfaceId), x, y);
+    return this.transport.drag(webTestIdSelector(surfaceId), x, y, readyElement);
   }
 
-  async zoom(surfaceId, amount) {
-    await this.transport.wheel(webTestIdSelector(surfaceId), amount);
+  async zoom(surfaceId, amount, readyElement) {
+    return this.transport.wheel(webTestIdSelector(surfaceId), amount, readyElement);
   }
 
   async hover(elementId) {

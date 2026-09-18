@@ -4,6 +4,7 @@
 
 import { androidMapLayerName } from "./core-map-layer-ids.mjs";
 
+import { gesturePlate } from "./plate-gestures.mjs";
 import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import {
   E2E_TIMING, TransientObservationError,
@@ -1464,29 +1465,11 @@ async function plateOperate(runtime) {
   }, E2E_TIMING.userTransitionDeadlineMs);
   runtime.check("plate.georeferenced-ownship", Boolean(ownship));
 
-  const initialViewport = await initializedPlateViewport(
-    runtime,
-    chartId,
-    "initialized selected plate viewport",
-  );
-  const pannedViewport = await runtime.transition("pan georeferenced plate", {
-    ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.drag("plate-surface", { x: -120, y: -100 }, readyElement),
-    complete: async () => {
-      const value = await plateViewport(runtime);
-      return value && value !== initialViewport ? value : null;
-    },
-  });
-  runtime.check("plate.pan", Boolean(pannedViewport), `${initialViewport} -> ${pannedViewport}`);
-  const zoomedViewport = await runtime.transition("zoom georeferenced plate", {
-    ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.zoom("plate-surface", -360, readyElement),
-    complete: async () => {
-      const value = await plateViewport(runtime);
-      return value && value !== pannedViewport ? value : null;
-    },
-  });
-  runtime.check("plate.zoom", Boolean(zoomedViewport), `${pannedViewport} -> ${zoomedViewport}`);
+  await initializedPlateViewport(runtime, chartId, "initialized selected plate viewport");
+  const pan = await gesturePlate(runtime, "pan georeferenced plate", chartId, { pan: { x: -120, y: -100 } });
+  runtime.check("plate.pan", Boolean(pan), JSON.stringify(pan));
+  const zoom = await gesturePlate(runtime, "zoom georeferenced plate", chartId, { zoom: -360 });
+  runtime.check("plate.zoom", Boolean(zoom), JSON.stringify(zoom));
 
   const loadOption = await runtime.action("open plate procedure load choices", "plate-load-button", {
     complete: async () => {
@@ -1509,32 +1492,10 @@ async function plateOperate(runtime) {
   }
   const multi = await selectTrayOptionMatching(runtime, "plate-chart-button", multiPage.label_contains);
   const multiId = plateChartId(multi);
-  const firstPageViewport = await initializedPlateViewport(
-    runtime,
-    multiId,
-    "initialized selected multi-page plate viewport",
-  );
-  const scrollableViewport = await runtime.transition("zoom multi-page plate for scrolling", {
-    ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.zoom("plate-surface", -360, readyElement),
-    complete: async () => {
-      const value = await plateViewport(runtime);
-      return value && value !== firstPageViewport ? value : null;
-    },
-  });
-  const lastPageViewport = await runtime.transition("scroll multi-page plate", {
-    ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.drag("plate-surface", { x: 0, y: -600 }, readyElement),
-    complete: async () => {
-      const value = await plateViewport(runtime);
-      return value && value !== scrollableViewport ? value : null;
-    },
-  });
-  runtime.check(
-    "plate.first-last-page",
-    Boolean(lastPageViewport),
-    `${firstPageViewport} -> ${scrollableViewport} -> ${lastPageViewport}`,
-  );
+  await initializedPlateViewport(runtime, multiId, "initialized selected multi-page plate viewport");
+  const multiZoom = await gesturePlate(runtime, "zoom multi-page plate for scrolling", multiId, { zoom: -360 });
+  const multiScroll = await gesturePlate(runtime, "scroll multi-page plate", multiId, { pan: { x: 0, y: -600 } });
+  runtime.check("plate.first-last-page", Boolean(multiScroll), JSON.stringify({ multiZoom, multiScroll }));
 
   await runtime.action("open multi-page plate folder", "plate-folder-button", {
     complete: async () => {
@@ -1657,28 +1618,10 @@ async function plateAdvisoriesAndReferences(runtime) {
   const legendOption = await selectTrayOptionMatching(runtime, "plate-chart-button", legend.label_contains);
   runtime.check("plate.legend", Boolean(legendOption), legendOption.text);
   const legendChartId = plateChartId(legendOption);
-  const legendViewport = await initializedPlateViewport(
-    runtime,
-    legendChartId,
-    "initialized selected legend viewport",
-  );
-  const zoomedLegendViewport = await runtime.transition("zoom legend for composite scroll", {
-    ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.zoom("plate-surface", -360, readyElement),
-    complete: async () => {
-      const value = await plateViewport(runtime);
-      return value && value !== legendViewport ? value : null;
-    },
-  });
-  const scrolledLegend = await runtime.transition("scroll legend composite", {
-    ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.drag("plate-surface", { x: 0, y: -600 }, readyElement),
-    complete: async () => {
-      const value = await plateViewport(runtime);
-      return value && value !== zoomedLegendViewport ? value : null;
-    },
-  });
-  runtime.check("plate.composite-scroll", Boolean(scrolledLegend), `${zoomedLegendViewport} -> ${scrolledLegend}`);
+  await initializedPlateViewport(runtime, legendChartId, "initialized selected legend viewport");
+  const legendZoom = await gesturePlate(runtime, "zoom legend for composite scroll", legendChartId, { zoom: -360 });
+  const legendScroll = await gesturePlate(runtime, "scroll legend composite", legendChartId, { pan: { x: 0, y: -600 } });
+  runtime.check("plate.composite-scroll", Boolean(legendScroll), JSON.stringify({ legendZoom, legendScroll }));
 
   const insetOption = await selectTrayOptionMatching(runtime, "plate-chart-button", inset.label_contains);
   runtime.check("plate.inset", Boolean(insetOption), insetOption.text);
@@ -2486,6 +2429,16 @@ async function airportInfo(runtime) {
   runtime.check("airport-info.runway-fallback", Boolean(fallback), projectionId(fallback));
 }
 
+export async function selectInspectorSpot(runtime) {
+  const selected = () => runtime.driver.readProjection("parity:map-selection-selected:SPOT");
+  const current = (await selected())[0];
+  if (current) return current;
+  return runtime.action("select inspector SPOT", runtime.platform === "web"
+    ? "map-selection-item-navaid-SPOT" : "map-selection-item:navaid-SPOT", {
+    complete: async () => (await selected())[0] ?? null,
+  });
+}
+
 async function inspectorDetails(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
@@ -2543,30 +2496,14 @@ async function inspectorDetails(runtime) {
 
   await runtime.openPage("map");
   await dismissMapSelectionIfPresent(runtime, "dismiss retained inspector");
-  await disableCtrBeforeFreePan(runtime, "disable CTR before SPOT pan");
-  const viewportBeforeSpotPan = await runtime.stable("settled viewport before SPOT pan", async () =>
-    viewportGeometryId(await runtime.driver.readProjection("parity:viewport:")));
-  await runtime.transition("pan before SPOT inspection", {
-    ready: () => runtime.driver.readElement("map-surface"),
-    act: (readyElement) => runtime.driver.drag(
-      "map-surface", { x: 360, y: 260 }, readyElement,
-    ),
-    complete: async () => {
-      const viewport = viewportGeometryId(await runtime.driver.readProjection("parity:viewport:"));
-      return viewport && viewport !== viewportBeforeSpotPan ? viewport : null;
-    },
-  });
+  await disableCtrBeforeFreePan(runtime, "disable CTR before SPOT inspection");
   await runtime.inspectMap();
-  const spot = await runtime.eventually("raw SPOT selection", async () => {
-    const entries = await runtime.driver.readProjection("parity:map-selection-selected:");
-    return entries.find((entry) => /SPOT/i.test(entry.text)) ?? null;
-  }, E2E_TIMING.userTransitionDeadlineMs);
-  runtime.check("inspector.spot-fallback", Boolean(spot), spot?.text);
-  const terrain = await runtime.eventually("SPOT terrain result", async () => {
-    const entry = (await runtime.driver.readProjection("parity:map-selection-selected:"))
-      .find((candidate) => /SPOT/i.test(candidate.text));
-    return entry && /(MSL|ELEV|FT)/i.test(entry.text) ? entry : null;
-  }, E2E_TIMING.localResourceMs);
+  const spot = await selectInspectorSpot(runtime);
+  runtime.check("inspector.spot-selection", Boolean(spot), spot?.text);
+  const terrain = await runtime.observe("SPOT terrain result", async () =>
+    (await runtime.driver.readProjection("parity:map-selection-selected:SPOT"))[0] ?? null,
+    (entry) => entry && /(MSL|ELEV|FT)/i.test(entry.text), E2E_TIMING.localResourceMs);
+
   runtime.check("inspector.terrain-async", Boolean(terrain), terrain?.text);
   await dismissMapSelectionIfPresent(runtime, "dismiss SPOT inspector");
   await runtime.openPage("flight_plan");
@@ -3199,7 +3136,7 @@ async function replayTrackUp(runtime) {
       : runtime.driver.drag("playback-overview", {
         x: timelineSeekDeltaX(priorCursor, changedRate.duration),
         y: 0,
-      }),
+      }, readyElement),
     complete: async () => {
       const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
       return state && Math.abs(state.cursor - priorCursor) > 0.1 ? state : null;

@@ -17,11 +17,14 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import org.aerobag.app.domain.UiThemeLoader
 import org.aerobag.app.generated.*
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -36,6 +39,49 @@ class SettingsPageTest {
 
     @Test fun wideAircraftCardsShareARowAndReceivePhysicalTaps() = aircraftLayout(960, true)
     @Test fun narrowAircraftCardsStackAndReceivePhysicalTaps() = aircraftLayout(320, false)
+
+    @Test fun sliderDragPublishesNewIdentityAndUnmountRemovesIndexedControls() {
+        val row = mutableStateOf(UiSettingsPageRow(
+            id = "display_dim_timeout", title = "Display dims after...", helpText = "Dim the display",
+            kind = UiSettingsRowKind.Slider, valueId = "2m", actionId = "opaque-dim",
+            stops = listOf("10s", "30s", "1m", "2m", "5m", "never").map { UiSettingsSliderStop(it, it) },
+        ))
+        val mounted = mutableStateOf(true)
+        val actions = mutableListOf<Pair<String, String>>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(
+                LocalAerobagUiTheme provides theme,
+                LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map),
+            ) {
+                if (mounted.value) Box(Modifier.size(400.dp, 740.dp)) {
+                    page(UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(UiSettingsPageBlock.Controls(listOf(row.value)))),
+                        settingsAction = { id, value -> actions.add(id to value); row.value = row.value.copy(valueId = value) })
+                }
+            }
+        }
+        val oldTag = "parity:settings-slider:display_dim_timeout:2m"
+        val newTag = "parity:settings-slider:display_dim_timeout:10s"
+        val helpTag = "parity:settings-help:display_dim_timeout"
+        if (BuildConfig.AEROBAG_E2E_ENABLED) compose.runOnIdle {
+            assertNotNull("Visible slider must be in the provider index", E2eProjectionRegistry.read(oldTag)?.bounds)
+            assertNotNull("Help uses the same Settings index", E2eProjectionRegistry.read(helpTag)?.bounds)
+        }
+        compose.onNodeWithTag(oldTag).assertIsDisplayed().performTouchInput { swipe(center, centerLeft) }
+        compose.onNodeWithTag(newTag).assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(listOf("opaque-dim" to "10s"), actions)
+            if (BuildConfig.AEROBAG_E2E_ENABLED) {
+                assertNull(E2eProjectionRegistry.read(oldTag))
+                assertNotNull(E2eProjectionRegistry.read(newTag)?.bounds)
+            }
+            mounted.value = false
+        }
+        compose.runOnIdle {
+            assertNull(E2eProjectionRegistry.read(newTag))
+            assertNull(E2eProjectionRegistry.read(helpTag))
+        }
+    }
 
     private fun aircraftLayout(width: Int, multiColumn: Boolean) {
         val actions = mutableListOf<Pair<String, String>>()

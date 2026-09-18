@@ -9,6 +9,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -78,10 +79,17 @@ internal fun NotamBadgedControl(
             }
         }
     } else {
-        Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f, fill = false)) { content() }
-            badge?.let {
-                NotamBadgeButton(it, ThumbSize * 0.6f) { open = true }
+        BoxWithConstraints(modifier, propagateMinConstraints = true) {
+            val boundedWidth = constraints.hasBoundedWidth
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Reserve badge space in bounded rows. Scrollable rows have
+                // unbounded width: weighting there gives the control zero width.
+                Box(if (boundedWidth) Modifier.weight(1f, fill = false) else Modifier) {
+                    content()
+                }
+                badge?.let {
+                    NotamBadgeButton(it, ThumbSize * 0.6f) { open = true }
+                }
             }
         }
     }

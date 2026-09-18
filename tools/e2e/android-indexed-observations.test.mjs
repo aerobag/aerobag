@@ -279,6 +279,17 @@ test("status popup and service collections prove absence without tree access", a
 });
 
 
+test("all Settings controls register with the same index their driver reads", () => {
+  const page = readFileSync(new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/SettingsPage.kt", import.meta.url), "utf8");
+  // Provider-only reads cannot find a control that only has a test tag. The
+  // physical SettingsPageTest also verifies slider geometry, input and disposal
+  // with indexing enabled; this guard runs in the fixture-free harness suite.
+  assert.doesNotMatch(page, /\.testTag\("parity:settings-/);
+  for (const kind of ["slider", "help"]) {
+    assert.match(page, new RegExp(`\\.e2eIndexedControl\\(\\s*semanticTag = "parity:settings-${kind}:`));
+  }
+});
+
 test("Settings reveal uses the control index before and after lazy-list traversal", async () => {
   const { driver, snapshots, requests, onTraversal } = device();
   const id = "settings-section-debug_diagnostics";

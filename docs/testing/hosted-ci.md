@@ -108,6 +108,15 @@ not permission to guess that the target is offscreen. The indexed-observation
 contracts exercise the actual reveal method and forbid the accessibility queue,
 including when the first read is unavailable.
 
+Every control in a provider-only family must actually register with that provider.
+The September 18.1 package-maintenance failure exposed Settings sliders (and help
+buttons) that still used bare Compose test tags: the slider was visible in the
+failure screenshot but absent from the index. They now use the shared indexed
+modifier. `SettingsPageTest` physically drags the production slider and, with
+`AEROBAG_E2E_ENABLED=1`, checks its bounds, value-identity replacement and disposal.
+The cheap harness suite rejects bare Settings test tags so those readers cannot
+silently lose a newly added control.
+
 The same rule applies to fixed state projections: `readScalarProjection`
 always uses `providerOnly`, including the first read and reads after disposal.
 Do not "seed" an accessibility path first. The September 15.3 release failed
@@ -210,6 +219,15 @@ distinguishes a newly activated editor from mounting an existing draft; persiste
 state must not replay a one-shot navigation request. These component tests use
 Compose's controlled synchronization, without sleeps, emulator startup, or FAA
 fixtures. Their pinned test-library/SDK dependencies still require cold setup.
+
+Map inspector item tests mount the production `MapSelectionTray`, including its
+horizontal scroll and NOTAM wrapper. September 18.1's TFR journey found an actual
+zero-width item: a weighted child inside an unbounded scrolling row collapsed.
+`NotamBadgedControl` reserves badge space with weight only when width is bounded.
+Physical component tests cover badged and unbadged items, separate item/badge
+actions and an offscreen item; the existing flight-plan badge tests cover its
+bounded and overlay layouts. Waiting longer cannot make a zero-width button
+reachable.
 
 For overlapping async UI actions, control completion order instead of repeating
 a journey until a race appears. `cloudActionFeedback.test.tsx` mounts the actual

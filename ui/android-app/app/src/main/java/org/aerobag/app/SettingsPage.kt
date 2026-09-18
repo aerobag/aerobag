@@ -579,7 +579,11 @@ private fun SettingsPageRowHeader(row: UiSettingsPageRow) {
                         indication = null,
                         role = Role.Button,
                     ) { showActionToast(context, helpText, long = true) }
-                    .testTag("parity:settings-help:${row.id}"),
+                    .e2eIndexedControl(
+                        semanticTag = "parity:settings-help:${row.id}",
+                        enabled = true,
+                        text = helpText,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -663,7 +667,12 @@ private fun SettingsSliderRow(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("parity:settings-slider:${row.id}:${row.valueId}"),
+                        .e2eIndexedControl(
+                            semanticTag = "parity:settings-slider:${row.id}:${row.valueId}",
+                            enabled = true,
+                            text = row.title,
+                            state = row.valueId,
+                        ),
                     valueRange = 0f..maxIndex.toFloat(),
                     steps = (row.stops.size - 2).coerceAtLeast(0),
                 )

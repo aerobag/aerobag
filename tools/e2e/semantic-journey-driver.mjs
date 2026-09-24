@@ -1076,17 +1076,22 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   async readPage(pageId) {
     const tag = androidPageTag(pageId);
     if (!tag) throw new Error(`Android page ${pageId} has no semantic page tag`);
-    const node = queryFirstAndroidSemanticNode(
+    const node = this.readPageRoot(tag);
+    return node ? { pageId, node } : null;
+  }
+
+  readPageRoot(tag) {
+    // e2ePageRoot (and the map surface) publishes positioned page presence.
+    // Its absence is authoritative, including before a navigation click.
+    return queryFirstAndroidSemanticNode(
       this.serial,
       tag,
       {
-        allowPrefix: tag.endsWith(":"),
         requireVisible: true,
         includeDescendantText: false,
         providerOnly: true,
       },
     );
-    return node ? { pageId, node } : null;
   }
 
   async readNavigationAction(pageId) {
@@ -1526,6 +1531,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       if (state.row_tray !== "open") return null;
     }
     const semanticTag = androidElementSemanticTag(elementId);
+    if (semanticTag.startsWith("parity:page:") || semanticTag === "parity:map-surface") {
+      return androidProjectedElement(this.readPageRoot(semanticTag), elementId);
+    }
     const queried = queryFirstAndroidSemanticNode(
       this.serial,
       semanticTag,
@@ -1536,8 +1544,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         // the accessibility tree after an indexed control has unmounted (or
         // has not been mounted in this process at all).
         providerOnly: indexed || semanticTag.startsWith("parity:settings-") ||
-          semanticTag === "parity:map-selection-tray" ||
-          semanticTag === "parity:map-surface",
+          semanticTag === "parity:map-selection-tray",
       },
     );
     if (!queried) return null;

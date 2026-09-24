@@ -10,10 +10,11 @@ import {
   AndroidSemanticJourneyDriver, androidElementEnabled, androidElementSemanticTag,
   androidSemanticTag, androidDataStatusRowsFromStateTag, androidMapInspectionPoint,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll, establishRevealedElement,
+  androidPageTag,
 } from "./semantic-journey-driver.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
-import { TransientObservationError } from "./transition-contract.mjs";
+import { performTransition, TransientObservationError } from "./transition-contract.mjs";
 
 const source = readFileSync(new URL("semantic-journey-driver.mjs", import.meta.url), "utf8");
 const projections = runInNewContext(source.match(
@@ -29,7 +30,7 @@ function device() {
   const requests = [];
   let responseOverride = null;
   const context = {
-    URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag,
+    URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag, androidPageTag,
     androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
     chooseUnobscuredMapPoint, androidMapInspectionPoint,
     androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
@@ -69,7 +70,7 @@ function device() {
   context.queryFirstAndroidSemanticNode = helper("queryFirstAndroidSemanticNode", "readinessEvidenceMatchesTag");
   context.androidProjectedElement = helper("androidProjectedElement", "queryFirstAndroidSemanticNode");
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readScalarProjection", "readProjection", "readElement", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
+  for (const name of ["readScalarProjection", "readProjection", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
   return {
@@ -78,6 +79,49 @@ function device() {
     onTraversal(callback) { context.scrollUntilTag = callback; },
   };
 }
+
+test("both page readers use the positioned page index throughout navigation", async () => {
+  const { driver, snapshots, requests, respondWith } = device();
+  for (const page of ["map", "charts", "flight_plan", "altitude_planner", "data_status", "settings", "home", "cloud", "offline_packages"]) {
+    const tag = androidPageTag(page);
+    const element = `page:${page === "charts" ? "plate" : page}`;
+    const reads = [() => driver.readPage(page), () => driver.readElement(element), () => driver.readElement(tag)];
+    for (const read of reads) assert.equal(await read(), null, "never mounted");
+    const node = { "resource-id": tag, visible: "true", bounds: "[0,0][900,1200]" };
+    snapshots.set(tag, node);
+    assert.equal((await driver.readPage(page)).pageId, page);
+    assert.equal((await driver.readElement(element)).bounds, node.bounds);
+    assert.equal((await driver.readElement(tag)).test_id, tag);
+    snapshots.set(tag, { ...node, visible: "false" });
+    for (const read of reads) assert.equal(await read(), null, "not visible");
+    snapshots.delete(tag);
+    for (const read of reads) assert.equal(await read(), null, "left page");
+    respondWith({ status: 28, stdout: "", stderr: "provider busy" });
+    for (const read of reads) await assert.rejects(read(), TransientObservationError);
+    respondWith(null);
+  }
+  assert.equal(requests.length, 9 * 15, "one indexed request per read, no fallback or hidden retry");
+});
+
+test("chart supplement transition checks absence before delivering exactly one click", async () => {
+  const { driver, snapshots, requests } = device();
+  const tag = androidPageTag("charts");
+  let clicks = 0;
+  const { value } = await performTransition("open airport chart supplement", {
+    ready: () => ({ test_id: "parity:map-selection-action:csup" }),
+    act: () => {
+      assert.deepEqual(requests, [tag], "destination was checked before the click");
+      clicks += 1;
+      snapshots.set(tag, { "resource-id": tag, visible: "true", bounds: "[0,0][900,1200]" });
+    },
+    complete: () => driver.readElement("page:plate"),
+    readinessSamples: 1,
+    completionSamples: 1,
+  });
+  assert.equal(clicks, 1);
+  assert.equal(value.test_id, tag);
+  assert.deepEqual(requests, [tag, tag]);
+});
 
 test("every fixed state projection bypasses the tree for presence, updates and absence", () => {
   const { driver, snapshots, requests } = device();

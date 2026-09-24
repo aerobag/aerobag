@@ -102,6 +102,15 @@ disposed panels. Transport unavailability is not evidence of absence: optional
 presence probes must use the bounded observation contract too, without
 replaying a successful action or extending the transition deadline.
 
+Page markers have the same ownership rule. The September 24 scheduled run
+failed before clicking KSEA's CSUP button: `readPage` used the positioned page
+index, but `readElement("page:plate")` entered the accessibility queue while
+checking that the destination was absent. Both APIs now use `readPageRoot`.
+The indexed-observation tests exercise all page roots before mounting, while
+visible/hidden, after disposal and during provider failures, plus the actual
+transition precondition and single-click sequence. A missing destination is
+normal before navigation, not permission to fall back to a tree traversal.
+
 Settings reveals follow that rule before, during, and after lazy-list traversal.
 A busy initial read must establish presence or absence before scrolling; it is
 not permission to guess that the target is offscreen. The indexed-observation

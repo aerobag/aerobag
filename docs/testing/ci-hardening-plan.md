@@ -402,6 +402,48 @@ The local workload here is the shared web/Android matrix plus five native cases,
 not complete hosted qualification: auxiliary NAVDB rollover, Chrome-on-Android
 and external fixture-CI lanes were not included. Keep those scopes distinct.
 
+### September 25 Settings timing investigation
+
+The follow-up did **not** reproduce or fix the original Settings stall. These
+are diagnostic stability runs, not qualification receipts:
+
+| App bytes and experiment | Traversals / toggle changes | Toggle response min / median / max |
+| --- | --- | --- |
+| `ecf4ab54`, normal scheduling | 24 / 46 | 117 / 167 / 197 ms |
+| `ecf4ab54`, two host CPUs per lane, 0-256 ms tap jitter | 28 / 54 | 142 / 456 / 917 ms |
+| Original failing `04e864e5` APK, 0-256 ms tap jitter, collapse/re-expand each time | 28 / 54 | 159 / 172 / 195 ms |
+
+Each experiment ran both native CTR and layer-toggle journeys. Toggles were
+single physical taps followed by checked-state assertions under the unchanged
+deadline; no failed action was retried. The two-CPU lanes were isolated on
+separate CPU pairs. An additional one-CPU-per-lane experiment failed initial
+Home navigation in both lanes, before Settings. It establishes sensitivity to
+severe CPU starvation, not the cause of the original Settings failure.
+
+Artifacts are under `/tmp/aerobag-settings-stress-{a,b,c,original}-capture-0`.
+The temporary repetition/jitter patch was removed from the journeys and saved
+as `/tmp/aerobag-settings-stress-probe.patch`; the disposable runner is
+`/tmp/run-pointer-diagnostic.py`. Production code, gesture physics and response
+deadlines were not changed.
+
+`SettingsPageTest.toggleSurvivesCorePublicationBetweenFingerDownAndUp` now
+physically holds a toggle, replaces the rendered core model, verifies the new
+label, then releases and asserts exactly one correct action. It passes without
+changing the renderer, ruling out that particular cancellation hypothesis; it
+is additional component coverage, **not** a reproducer for the old stall.
+
+Failure collection now attempts a bounded native/managed thread dump first on
+emulators, before slower screenshots or accessibility dumps can outlive the
+stall. This complements the command-phase logs: the original trace showed a
+session-lock wait but no stack identifying the work holding the lock. It never
+tries to elevate privileges on physical devices, never restarts adbd, and
+records collection failures without suppressing other evidence. Both unchanged
+native journeys passed again after removing the probes; real thread collection
+was verified on their emulators (`/tmp/aerobag-settings-final-b-capture-0`).
+The next real Settings failure still needs this evidence before choosing a
+production fix. Further investigation is deferred at the operator's request;
+resume only if the stall reappears.
+
 ### Follow-up work
 
 - Inspect first-attempt results from the next full exact-tag qualification.

@@ -147,6 +147,38 @@ class SettingsPageTest {
         compose.onNodeWithText("Diagnostic flag").assertIsDisplayed()
     }
 
+    @Test fun toggleSurvivesCorePublicationBetweenFingerDownAndUp() {
+        val section = UiSettingsPageSection(
+            id = "debug", title = "Diagnostics", expanded = true,
+            toggleAction = UiSettingsAction(actionId = "expand", valueId = "next"),
+            rows = listOf(UiSettingsPageRow(id = "flag", title = "Diagnostic flag",
+                kind = UiSettingsRowKind.Toggle, valueId = "off", actionId = "flag", stops = emptyList())),
+        )
+        val state = mutableStateOf(UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(
+            UiSettingsPageBlock.Section(section),
+        )))
+        val actions = mutableListOf<Pair<String, String>>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(
+                LocalAerobagUiTheme provides theme,
+                LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map),
+            ) {
+                Box(Modifier.size(400.dp, 740.dp)) { page(state.value, { id, value -> actions.add(id to value) }) }
+            }
+        }
+        val toggle = compose.onNodeWithTag("parity:settings-toggle:flag")
+        toggle.assertIsDisplayed().performTouchInput { down(center) }
+        compose.runOnIdle {
+            state.value = state.value.copy(blocks = listOf(UiSettingsPageBlock.Section(
+                section.copy(title = "Diagnostics updated", rows = section.rows.map { it.copy(title = "Updated flag") }),
+            )))
+        }
+        compose.onNodeWithText("Updated flag").assertIsDisplayed()
+        toggle.performTouchInput { advanceEventTime(80); up() }
+        compose.runOnIdle { assertEquals(listOf("flag" to "on"), actions) }
+    }
+
     private fun mount(state: UiSettingsPageState, width: Int, aircraftAction: (String, String) -> Unit) {
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {

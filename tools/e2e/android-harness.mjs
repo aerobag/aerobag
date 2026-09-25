@@ -643,9 +643,23 @@ export function androidSemanticDriverRequestState(serial) {
   return response.stdout;
 }
 
+export function captureAndroidThreadStacks(serial) {
+  // CI emulators permit su without changing adbd or disrupting its forwards.
+  // Never try to elevate privileges on a developer's physical device.
+  if (!/^emulator-\d+$/.test(serial ?? "")) return "Thread dump unavailable: not an emulator.\n";
+  const pid = adb(serial, ["shell", "pidof", ANDROID_PACKAGE], { timeout: 1_000 }).trim();
+  if (!/^\d+$/.test(pid)) throw new Error(`Expected one ${ANDROID_PACKAGE} process, got ${JSON.stringify(pid)}`);
+  return adb(serial, ["shell", "su", "0", "debuggerd", "-b", pid], {
+    timeout: 5_000, maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
 export function captureAndroidFailureDiagnostics(serial, artifactDir, label) {
   mkdirSync(artifactDir, { recursive: true });
   const captures = [
+    // Take the blocked-owner evidence before hierarchy IPC or screenshots can
+    // delay us until after the transient stall has cleared.
+    ["threads.txt", () => captureAndroidThreadStacks(serial)],
     ["semantic-driver.json", () => androidSemanticDriverRequestState(serial)],
     ["logcat.txt", () => adb(serial, ["logcat", "-d", "-v", "threadtime"], {
       maxBuffer: 16 * 1024 * 1024,

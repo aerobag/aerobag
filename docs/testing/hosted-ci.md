@@ -19,6 +19,12 @@ Keep independently actionable tests in independently named jobs or report their
 JUnit cases through `tools/ci/junit_summary.py`. Do not collapse unrelated
 failures into one suite-wide boolean.
 
+Android failure collection attempts bounded native/managed thread stacks on
+emulators before slower hierarchy/screenshot diagnostics. This identifies a
+blocked command owner while the stall still exists. It does not restart adbd
+or attempt privilege elevation on physical tablets; unsupported or timed-out
+dumps are recorded in diagnostic errors while the other captures continue.
+
 The green `CI` workflow is not the status of `E2E main`. Android shared journeys
 already run all priorities on ordinary main/PR E2E runs; web runs p0 there and
 adds p1/p2 for release tags, schedules, and explicit candidate runs. Inspect

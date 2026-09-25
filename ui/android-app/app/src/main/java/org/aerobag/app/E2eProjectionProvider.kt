@@ -9,8 +9,8 @@ import android.content.ContentValues
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
+import android.os.Bundle
+import java.util.UUID
 
 internal data class E2eProjectionSnapshot(
     val state: String,
@@ -19,42 +19,74 @@ internal data class E2eProjectionSnapshot(
 )
 
 internal object E2eProjectionRegistry {
-    private val revision = AtomicLong()
-    private val entries =
-        ConcurrentHashMap<String, ConcurrentHashMap<Any, E2eProjectionSnapshot>>()
+    val incarnation: String = UUID.randomUUID().toString()
+    private var revision = 0L
+    private val entries = mutableMapOf<String, MutableMap<Any, E2eProjectionSnapshot>>()
 
+    @Synchronized
     fun publish(resourceId: String, state: String, owner: Any, bounds: String? = null) {
-        val owners = entries.computeIfAbsent(resourceId) { ConcurrentHashMap() }
-        owners.compute(owner) { _, previous ->
-            if (previous?.state == state && previous.bounds == bounds
-            ) {
-                previous
-            } else {
-                E2eProjectionSnapshot(state, bounds, revision.incrementAndGet())
-            }
+        val owners = entries.getOrPut(resourceId) { mutableMapOf() }
+        val previous = owners[owner]
+        if (previous?.state != state || previous.bounds != bounds) {
+            owners[owner] = E2eProjectionSnapshot(state, bounds, ++revision)
         }
     }
 
+    @Synchronized
     fun remove(resourceId: String, owner: Any) {
-        entries.computeIfPresent(resourceId) { _, owners ->
-            owners.remove(owner)
-            owners.takeUnless { it.isEmpty() }
-        }
+        val owners = entries[resourceId] ?: return
+        if (owners.remove(owner) != null) revision++
+        if (owners.isEmpty()) entries.remove(resourceId)
     }
 
+    @Synchronized
     fun read(resourceId: String): E2eProjectionSnapshot? =
-        entries[resourceId]?.values?.maxByOrNull(E2eProjectionSnapshot::revision)
+        entries[resourceId]?.let { unique(resourceId, it) }
 
+    @Synchronized
     fun readPrefix(resourceIdPrefix: String): List<Pair<String, E2eProjectionSnapshot>> =
         entries.entries
             .asSequence()
             .filter { (resourceId, _) -> resourceId.startsWith(resourceIdPrefix) }
             .mapNotNull { (resourceId, owners) ->
-                owners.values.maxByOrNull(E2eProjectionSnapshot::revision)?.let { resourceId to it }
+                unique(resourceId, owners)?.let { resourceId to it }
             }
             .sortedBy { (resourceId, _) -> resourceId }
             .toList()
 
+    private fun unique(id: String, owners: Map<Any, E2eProjectionSnapshot>): E2eProjectionSnapshot? {
+        check(owners.size <= 1) { "Ambiguous observation identity $id (${owners.size} mounted owners)" }
+        return owners.values.singleOrNull()
+    }
+
+    /** A window publishes one completed layout, never half of a composition. */
+    @Synchronized
+    fun replaceFrame(previous: Map<Any, String>, next: Map<Any, Pair<String, E2eProjectionSnapshot>>) {
+        previous.forEach { (owner, id) -> if (next[owner]?.first != id) remove(id, owner) }
+        next.forEach { (owner, value) -> publish(value.first, value.second.state, owner, value.second.bounds) }
+    }
+
+    @Synchronized
+    fun query(id: String?, prefix: String?): Cursor {
+        require((id == null) != (prefix == null)) { "Specify one observation selector" }
+        val selector = id ?: prefix!!
+        require((prefix != null && selector.isEmpty()) || selector.startsWith("parity:") ||
+            selector.startsWith("flight-data-cell:") || selector.startsWith("org.aerobag.app:id/e2e_")) {
+            "Invalid observation namespace: $selector"
+        }
+        val snapshots = if (prefix != null) readPrefix(prefix) else listOfNotNull(read(id!!)?.let { id to it })
+        return MatrixCursor(arrayOf("resource_id", "state", "bounds", "revision", "present")).apply {
+            snapshots.forEach { (key, snapshot) ->
+                addRow(arrayOf(key, snapshot.state, snapshot.bounds, snapshot.revision, 1))
+            }
+            // An empty cursor is a successful absence. A null cursor is a broken source.
+            extras = Bundle().apply {
+                putInt("schema", 1)
+                putString("incarnation", incarnation)
+                putLong("revision", revision)
+            }
+        }
+    }
 }
 
 /** E2E-only state channel that cannot block behind Compose accessibility traversal. */
@@ -68,38 +100,11 @@ class E2eProjectionProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
         sortOrder: String?,
     ): Cursor? {
-        if (!BuildConfig.AEROBAG_E2E_ENABLED || uri.path != "/projection") return null
+        check(BuildConfig.AEROBAG_E2E_ENABLED) { "Observation provider disabled" }
+        require(uri.path == "/projection") { "Invalid observation endpoint" }
         val resourceId = uri.getQueryParameter("resource_id")
         val resourceIdPrefix = uri.getQueryParameter("resource_id_prefix")
-        if ((resourceId == null) == (resourceIdPrefix == null)) return null
-        if (resourceIdPrefix != null) {
-            val snapshots = E2eProjectionRegistry.readPrefix(resourceIdPrefix)
-            if (snapshots.isEmpty()) return null
-            return MatrixCursor(Columns).apply {
-                snapshots.forEach { (id, snapshot) ->
-                    addRow(arrayOf(id, snapshot.state, snapshot.bounds, snapshot.revision, 1))
-                }
-            }
-        }
-        checkNotNull(resourceId)
-        val snapshot = E2eProjectionRegistry.read(resourceId)
-        val resourceName = resourceId.removePrefix("org.aerobag.app:id/")
-        val viewId = context?.resources?.getIdentifier(resourceName, "id", context?.packageName) ?: 0
-        val knownProjection = viewId != 0 && resourceName.startsWith("e2e_")
-        if (!knownProjection && snapshot == null) {
-            return null
-        }
-        return MatrixCursor(Columns).apply {
-            addRow(
-                arrayOf(
-                    resourceId,
-                    snapshot?.state,
-                    snapshot?.bounds,
-                    snapshot?.revision ?: 0L,
-                    if (snapshot == null) 0 else 1,
-                ),
-            )
-        }
+        return E2eProjectionRegistry.query(resourceId, resourceIdPrefix)
     }
 
     override fun getType(uri: Uri): String = "vnd.android.cursor.item/aerobag-e2e-projection"
@@ -115,7 +120,4 @@ class E2eProjectionProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
     ): Int = 0
 
-    private companion object {
-        val Columns = arrayOf("resource_id", "state", "bounds", "revision", "present")
-    }
 }

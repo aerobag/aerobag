@@ -188,7 +188,7 @@ test("Android physical taps dispatch once and defer success to semantic completi
     import.meta.url,
   ), "utf8");
   assert.doesNotMatch(indexedControl, /motionEventSpy|publishTouchReceipt/);
-  assert.match(indexedControl, /window-focus:\$windowFocused/);
+  assert.match(indexedControl, /window-focus:\$\{view\.hasWindowFocus\(\)\}/);
   assert.match(indexedControl, /OnWindowFocusChangeListener/);
   assert.match(indexedControl, /e2eIndexedGeometry[\s\S]*\.testTag\(semanticTag\)/);
 
@@ -410,7 +410,11 @@ test("extracts real bounds and an ordered rendered plan signature", () => {
   assert.deepEqual(displayBoundsFromXml(xml), {
     left: 0, top: 24, right: 1920, bottom: 1080, width: 1920, height: 1056,
   });
-  assert.deepEqual(renderedFlightPlanSignature(xml), {
+  assert.deepEqual(renderedFlightPlanSignature([
+    { "resource-id": "parity:plan-state:rows:3:active:row-b:from:row-a:to:row-b" },
+    { "resource-id": "parity:plan-row:row-b", bounds: "[20,200][400,280]", text: "KPWT" },
+    { "resource-id": "parity:plan-row:row-a", bounds: "[20,100][400,180]", text: "KRNT" },
+  ]), {
     rowCount: 3,
     stateTag: "parity:plan-state:rows:3:active:row-b:from:row-a:to:row-b",
     rows: [

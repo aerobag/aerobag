@@ -140,7 +140,7 @@ internal fun SettingsPage(
                     color = uiTheme.controls.buttonFg.copy(alpha = 0.78f),
                 )
             } else {
-                LazyColumn(
+                ObservedLazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
                 ) {

@@ -169,14 +169,14 @@ internal fun CloudPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .testTag("parity:cloud-action-revision:${state.actionRevision}")
+                .e2eIndexedElement("parity:cloud-action-revision:${state.actionRevision}")
                 .padding(
                     start = ThumbGap,
                     end = ThumbGap,
                     top = ThumbGap,
                     bottom = ThumbSize + (ThumbGap * 2f),
                 )
-                .verticalScroll(rememberScrollState()),
+                .observedVerticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(ThumbGap),
         ) {
             Text(
@@ -267,7 +267,7 @@ private fun CloudPanelColumn(
 }
 
 @Composable
-private fun CloudPanelView(
+internal fun CloudPanelView(
     panel: UiCloudPanel,
     fields: MutableMap<CloudUiFieldId, String>,
     copyStatus: String,
@@ -283,7 +283,12 @@ private fun CloudPanelView(
     }
     Column(
         modifier = modifier
-            .testTag("parity:cloud-panel:${panel.id}")
+            .e2eIndexedControl(
+                semanticTag = "parity:cloud-panel:${panel.id}",
+                enabled = true,
+                text = listOfNotNull(panel.title, panel.summary).joinToString("\n"),
+                state = panel.state.name.lowercase(),
+            )
             .semantics { stateDescription = "state:${panel.state.name.lowercase()}" }
             .border(2.dp, accent, RoundedCornerShape(ThumbRadius))
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
@@ -359,7 +364,7 @@ private fun CloudPanelView(
                 CloudQrCode(control.qrCode)
                 Text(
                     text = control.setupCode,
-                    modifier = Modifier.testTag("parity:cloud-setup-code-output"),
+                    modifier = Modifier.e2eIndexedLabel("parity:cloud-setup-code-output", control.setupCode),
                     style = MaterialTheme.typography.bodyMedium,
                     color = uiTheme.controls.panelFg,
                 )
@@ -367,7 +372,7 @@ private fun CloudPanelView(
                 if (copyStatus.isNotEmpty()) {
                     Text(
                         text = copyStatus,
-                        modifier = Modifier.testTag("parity:cloud-copy-status"),
+                        modifier = Modifier.e2eIndexedLabel("parity:cloud-copy-status", copyStatus),
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                         color = uiTheme.controls.panelFg,
                     )

@@ -46,7 +46,7 @@ class AltitudePlannerNavigationPolicyTest {
         assertTrue(plannerSource.contains("CircularProgressIndicator("))
         assertTrue(plannerSource.contains("parity:altitude-comparison-loading"))
         assertTrue(plannerSource.contains("if (userActionLoading || (loading && comparisonPanel == null))"))
-        assertTrue(plannerSource.contains(".horizontalScroll(rememberScrollState())"))
+        assertTrue(plannerSource.contains(".observedHorizontalScroll(rememberScrollState())"))
         assertTrue(plannerSource.contains("DepartureEditorRow("))
         assertTrue(plannerSource.contains("width = DepartureWhenFieldWidth"))
         assertTrue(plannerSource.contains("DepartureWhenFieldWidth = ThumbSize * 1.25f"))

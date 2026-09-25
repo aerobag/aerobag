@@ -2289,7 +2289,7 @@ class MainActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .testTag("parity:app-process:$AndroidProcessSemanticId"),
+                            .e2eIndexedElement("parity:app-process:$AndroidProcessSemanticId"),
                     ) {
                         AerobagApp(
                             retainedModel = retainedModel,
@@ -2473,7 +2473,7 @@ internal fun DisclaimerConsentModal(
                 text = state.text,
                 modifier = Modifier
                     .weight(1f, fill = false)
-                    .verticalScroll(scrollState),
+                    .observedVerticalScroll(scrollState),
                 color = Color(0xFF111111),
                 fontSize = 21.sp,
                 lineHeight = 27.sp,

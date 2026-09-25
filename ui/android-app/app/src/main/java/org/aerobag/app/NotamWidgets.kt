@@ -246,7 +246,7 @@ internal fun NotamModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .testTag("parity:procedure-notam-modal")
+            .e2eIndexedElement("parity:procedure-notam-modal")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),
@@ -258,7 +258,7 @@ internal fun NotamModal(
     ) {
         Column(
             modifier = Modifier
-                .verticalScroll(rememberScrollState())
+                .observedVerticalScroll(rememberScrollState())
                 .padding(ThumbSize * 0.18f),
             verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
         ) {

@@ -34,7 +34,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/31";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/32";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -434,34 +434,16 @@ export function focusAndroidSemanticNode(
   );
 }
 
-export function scrollAndroidSemanticNode(serial, bounds, direction) {
+export function scrollAndroidSemanticNode(serial, surface, direction) {
   const state = requiredSemanticDriver(serial);
-  const semanticDirection = direction === "down" || direction === "forward"
-    ? "forward"
-    : "backward";
-  const query = new URLSearchParams({ bounds, direction: semanticDirection });
+  const query = new URLSearchParams({
+    tag: surface["resource-id"], bounds: surface.bounds, path: surface["semantic-path"],
+    direction: direction === "down" || direction === "forward" ? "forward" : "backward",
+  });
   const response = semanticDriverActionRequest(state.port, `/scroll?${query}`);
-  if (response.status === 0 && response.stdout.trim() === "ok") return true;
-  if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
-    return false;
-  }
+  if (response.status === 0 && response.stdout.trim() === "ok") return;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  throw new Error(`persistent Android semantic scroll failed for ${bounds}: ${detail}`);
-}
-
-export function scrollAndroidSemanticSurface(serial, orientation, direction) {
-  const state = requiredSemanticDriver(serial);
-  const semanticDirection = direction === "down" || direction === "forward"
-    ? "forward"
-    : "backward";
-  const query = new URLSearchParams({ orientation, direction: semanticDirection });
-  const response = semanticDriverActionRequest(state.port, `/scroll?${query}`);
-  if (response.status === 0 && response.stdout.trim() === "ok") return true;
-  if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
-    return false;
-  }
-  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  throw new Error(`persistent Android ${orientation} semantic scroll failed: ${detail}`);
+  throw new Error(`Android physical scroll failed: ${detail}`);
 }
 
 export function waitForAndroidSemanticEvent(serial, timeoutMs) {
@@ -981,14 +963,15 @@ export function displayBoundsFromXml(xml) {
   };
 }
 
-export function renderedFlightPlanSignature(xml) {
-  const stateNode = findNode(xml, (node) => androidTag(node).startsWith("parity:plan-state:"));
+export function renderedFlightPlanSignature(nodes) {
+  const stateNode = nodes.find((node) => androidTag(node).startsWith("parity:plan-state:"));
   if (!stateNode) throw new Error("rendered flight-plan state semantics are unavailable");
   const stateTag = androidTag(stateNode);
   const countMatch = /^parity:plan-state:rows:(\d+):/.exec(stateTag);
   if (!countMatch) throw new Error(`invalid flight-plan state tag: ${stateTag}`);
-  const rows = findNodes(xml, (node) => androidTag(node).startsWith("parity:plan-row:"))
-    .map((node) => ({ tag: androidTag(node), label: androidNodeLabel(xml, node) }));
+  const rows = nodes.filter((node) => androidTag(node).startsWith("parity:plan-row:"))
+    .sort((a, b) => rectOfBounds(a.bounds).top - rectOfBounds(b.bounds).top)
+    .map((node) => ({ tag: androidTag(node), label: node.text || "" }));
   return {
     rowCount: Number(countMatch[1]),
     stateTag,
@@ -1066,10 +1049,10 @@ export function restoreAndroidRotationState(serial, state) {
 export async function waitForAndroidOrientation(serial, orientation, timeoutMs = 15000) {
   let observed = null;
   await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    assertNoAerobagAnr(xml);
-    if (!findNode(xml, (node) => node.package === ANDROID_PACKAGE)) return false;
-    observed = displayBoundsFromXml(xml);
+    const page = queryAndroidSemanticNodes(serial, "parity:page:", { prefix: true })
+      .find(node => node.visible === "true");
+    if (!page) return false;
+    observed = rectOfBounds(page.bounds);
     return orientation === "portrait"
       ? observed.height > observed.width
       : observed.width > observed.height;
@@ -1164,19 +1147,6 @@ export async function setAndroidWallClockAndWait(
   }, CLOCK_SET_TIMEOUT_MS, "Android fixture clock did not reach the requested epoch", 100);
 }
 
-export async function waitForNode(serial, predicate, timeoutMs, message) {
-  let found = null;
-  await waitFor(async () => {
-    found = findNode(dumpAndroid(serial), predicate);
-    return found !== null;
-  }, timeoutMs, message);
-  return found;
-}
-
-export function tagExists(serial, tag) {
-  return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
-}
-
 export async function activateAndroidNode(serial, node) {
   const tag = androidTag(node);
   if (!tag || !node?.bounds || !node?.["semantic-path"]) {
@@ -1252,64 +1222,42 @@ export function verticalScrollTargetIsReachable(xml, tag, { prefix = false } = {
     centerY >= surfaceBounds.top && centerY <= surfaceBounds.bottom;
 }
 
-export async function scrollAndroidAndAwait(serial, bounds, direction) {
-  const before = dumpAndroid(serial);
-  const surface = findNode(before, node => node.scrollable === "true" && node.bounds === bounds);
-  if (!surface?.["semantic-path"]) return false;
-  if (!scrollAndroidSemanticNode(serial, bounds, direction)) return false;
-  return awaitAndroidScrollProjectionSettled(serial, before, surface["semantic-path"]);
+export function readAndroidScrollSurface(serial, orientation = "vertical") {
+  return queryAndroidSemanticNodes(serial, "parity:scroll:", { prefix: true })
+    .filter(node => node.orientation === orientation && node.visible === "true" && node["center-reachable"] === "true")
+    // A newly mounted modal/list is above the page's older scroll surfaces.
+    .sort((a, b) => Number(b["resource-id"].split(":").at(-1)) - Number(a["resource-id"].split(":").at(-1)))[0] ?? null;
+}
+
+export async function scrollAndroidAndAwait(serial, surface, direction) {
+  const forward = direction === "down" || direction === "forward";
+  if (!surface || surface[forward ? "forward" : "backward"] === "false") return false;
+  if (surface[forward ? "forward" : "backward"] !== "true" || !surface.position || !surface.incarnation) {
+    throw new Error("Invalid rendered scroll observation");
+  }
+  scrollAndroidSemanticNode(serial, surface, direction);
+  await observeUntil("Android rendered scroll completed", () => {
+    const current = queryAndroidExactProjection(serial, surface["resource-id"])[0];
+    if (!current || current.incarnation !== surface.incarnation) {
+      throw new Error("Scroll surface disappeared or process restarted during gesture");
+    }
+    return current.position !== surface.position && current.moving === "false" ? current : null;
+  }, { timeoutMs: E2E_TIMING.userTransitionDeadlineMs, intervalMs: E2E_TIMING.pollIntervalMs });
+  return true;
 }
 
 async function scrollAndroidSemanticSurfaceAndAwait(serial, orientation, direction) {
-  const before = dumpAndroid(serial);
-  const surface = orientation === "vertical" ? findVerticalScrollSurface(before) : findHorizontalScrollSurface(before);
-  if (!surface?.["semantic-path"]) return false;
-  if (!scrollAndroidSemanticSurface(serial, orientation, direction)) return false;
-  return awaitAndroidScrollProjectionSettled(serial, before, surface["semantic-path"]);
-}
-
-export function androidScrollGeometrySignature(xml, scrollPath) {
-  // Observe the scrolled collection, not clocks, ETA values, or ownship state
-  // elsewhere in the hierarchy. Interactive identities distinguish recycled
-  // lazy-list rows even when their on-screen geometry is identical.
-  return JSON.stringify(findNodes(xml, node =>
-    node["semantic-path"] === scrollPath || node["semantic-path"]?.startsWith(`${scrollPath}/`),
-  ).map(node => [
-    node["semantic-path"], node.bounds, node.class,
-    node.clickable === "true" ? node["resource-id"] : "",
-  ]));
-}
-
-async function awaitAndroidScrollProjectionSettled(serial, before, scrollPath) {
-  try {
-    await observeChangedValueUntilStable(
-      "Android semantic scroll projection settled",
-      () => dumpAndroid(serial),
-      {
-        initialValue: before,
-        timeoutMs: E2E_TIMING.userTransitionDeadlineMs,
-        intervalMs: E2E_TIMING.pollIntervalMs,
-        valueKey: (xml) => androidScrollGeometrySignature(xml, scrollPath),
-      },
-    );
-    return true;
-  } catch (_error) {
-    return false;
-  }
+  return scrollAndroidAndAwait(serial, readAndroidScrollSurface(serial, orientation), direction);
 }
 
 export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
-  let xml = dumpAndroid(serial);
-  let found = findNode(xml, predicate);
+  const read = () => queryAndroidSemanticNodes(serial, "", { prefix: true }).find(predicate) ?? null;
+  let found = read();
   if (found) return found;
   for (const direction of ["down", "up"]) {
     for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-      const scrollSurface =
-        findVerticalScrollSurface(xml) ??
-        findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-      if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
-      xml = dumpAndroid(serial);
-      found = findNode(xml, predicate);
+      if (!await scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction)) break;
+      found = read();
       if (found) return found;
     }
   }
@@ -1324,11 +1272,7 @@ async function scrollUntilTagPrefixInDirection(
       (!requireReachable || node["center-reachable"] === "true"));
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
     if (found()) return true;
-    const xml = dumpAndroid(serial);
-    const scrollSurface =
-      findVerticalScrollSurface(xml) ??
-      findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-    if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
+    if (!await scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction)) break;
   }
   return found();
 }
@@ -1339,10 +1283,7 @@ export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
   for (const direction of ["forward", "backward"]) {
     for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
       if (found()) return true;
-      const xml = dumpAndroid(serial);
-      const horizontalSurface = findHorizontalScrollSurface(xml);
-      if (!horizontalSurface) return false;
-      if (!await scrollAndroidAndAwait(serial, horizontalSurface.bounds, direction)) break;
+      if (!await scrollAndroidSemanticSurfaceAndAwait(serial, "horizontal", direction)) break;
     }
   }
   return found();

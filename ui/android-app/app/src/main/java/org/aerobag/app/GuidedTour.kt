@@ -264,7 +264,7 @@ private fun TourOverlay(tour: UiGuidedTour, registry: TourAnchors, busy: Boolean
             .widthIn(max=minOf(380.dp,maxWidth-24.dp)).fillMaxWidth().heightIn(max=maxHeight-24.dp).then(panelModifier)
             .background(Color(0xff17242c),RoundedCornerShape(14.dp)).border(2.dp,color,RoundedCornerShape(14.dp))
             .padding(14.dp)) {
-            Column(Modifier.weight(1f,fill=false).verticalScroll(rememberScrollState())) {
+            Column(Modifier.weight(1f,fill=false).observedVerticalScroll(rememberScrollState())) {
                 if (tour.presentation == UiTourPresentation.TitleCard) {
                     Box(Modifier.fillMaxWidth().heightIn(min=160.dp).testTag("guided-tour-title-content"),contentAlignment=Alignment.Center) {
                         Text(tour.title,color=Color.White,fontSize=28.sp,textAlign=androidx.compose.ui.text.style.TextAlign.Center,

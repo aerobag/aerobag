@@ -6,16 +6,15 @@ package org.aerobag.app
 
 import android.net.Uri
 import android.view.ViewTreeObserver
+import android.view.View
 import androidx.annotation.IdRes
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -32,6 +31,7 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import java.util.concurrent.atomic.AtomicReference
+import java.util.IdentityHashMap
 import kotlin.math.roundToInt
 
 /** Stable, indexed read-only state for release journeys; never rendered in ordinary builds. */
@@ -45,15 +45,7 @@ internal fun E2eProjectionView(
     if (!BuildConfig.AEROBAG_E2E_ENABLED) return
     val resourceName = LocalContext.current.resources.getResourceEntryName(viewId)
     val resourceId = "org.aerobag.app:id/$resourceName"
-    val owner = remember(viewId) { Any() }
-    SideEffect {
-        E2eProjectionRegistry.publish(resourceId, state, owner)
-    }
-    DisposableEffect(resourceId, owner) {
-        onDispose {
-            E2eProjectionRegistry.remove(resourceId, owner)
-        }
-    }
+    ObserveRenderedFrame(resourceId) { E2eProjectionSnapshot(state, null, 0) }
     Spacer(
         modifier = modifier
             .requiredSize(1.dp)
@@ -69,50 +61,90 @@ internal fun E2eProjectionView(
 /** Indexed geometry and state for a real Compose control used by release journeys. */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun Modifier.e2eIndexedGeometry(
+internal fun Modifier.e2eIndexedGeometry(
     semanticTag: String,
     state: String,
 ): Modifier {
     if (!BuildConfig.AEROBAG_E2E_ENABLED) return this
-    val owner = remember(semanticTag) { Any() }
-    val bounds = remember(semanticTag) { AtomicReference<String?>(null) }
+    val coordinates = remember(semanticTag) { AtomicReference<LayoutCoordinates?>(null) }
     val view = LocalView.current
-    var windowFocused by remember(view) { mutableStateOf(view.hasWindowFocus()) }
-    val publishedState = "$state:window-focus:$windowFocused"
-    SideEffect {
-        bounds.get()?.let { positionedBounds ->
-            E2eProjectionRegistry.publish(semanticTag, publishedState, owner, positionedBounds)
+    ObserveRenderedFrame(semanticTag) {
+        coordinates.get()?.takeIf { it.isAttached }?.let {
+            E2eProjectionSnapshot("$state:window-focus:${view.hasWindowFocus()}", it.toE2eBounds(), 0)
         }
     }
-    DisposableEffect(semanticTag, owner, view) {
-        val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
-            windowFocused = hasFocus
+    return onGloballyPositioned { coordinates.set(it) }
+}
+
+/** Data is sampled after layout by its real rendering window, not by the IPC reader. */
+@Composable
+private fun ObserveRenderedFrame(tag: String, sample: () -> E2eProjectionSnapshot?) {
+    val view = LocalView.current
+    val owner = remember(tag, view) { Any() }
+    val currentSample = rememberUpdatedState(sample)
+    DisposableEffect(tag, owner, view) {
+        val window = RenderedObservationWindows.acquire(view)
+        window.sources[owner] = tag to { currentSample.value() }
+        onDispose { RenderedObservationWindows.release(view, owner, tag) }
+    }
+    SideEffect { view.invalidate() }
+}
+
+private object RenderedObservationWindows {
+    private val windows = IdentityHashMap<View, Window>()
+
+    fun acquire(view: View): Window = windows.getOrPut(view) { Window(view) }
+
+    fun release(view: View, owner: Any, tag: String) {
+        val window = windows[view] ?: return
+        window.sources.remove(owner)
+        E2eProjectionRegistry.remove(tag, owner)
+        if (window.sources.isEmpty()) {
+            window.close()
+            windows.remove(view)
+        } else view.invalidate()
+    }
+
+    class Window(private val view: View) : ViewTreeObserver.OnPreDrawListener,
+        ViewTreeObserver.OnWindowFocusChangeListener {
+        val sources = mutableMapOf<Any, Pair<String, () -> E2eProjectionSnapshot?>>()
+        private var previous = emptyMap<Any, String>()
+        init {
+            view.viewTreeObserver.addOnPreDrawListener(this)
+            view.viewTreeObserver.addOnWindowFocusChangeListener(this)
         }
-        val viewTreeObserver = view.viewTreeObserver
-        viewTreeObserver.addOnWindowFocusChangeListener(focusListener)
-        onDispose {
-            if (viewTreeObserver.isAlive) {
-                viewTreeObserver.removeOnWindowFocusChangeListener(focusListener)
+        override fun onPreDraw(): Boolean {
+            val frame = sources.mapNotNull { (owner, source) ->
+                source.second()?.let { owner to (source.first to it) }
+            }.toMap()
+            E2eProjectionRegistry.replaceFrame(previous, frame)
+            previous = frame.mapValues { it.value.first }
+            return true
+        }
+        override fun onWindowFocusChanged(hasFocus: Boolean) { view.invalidate() }
+        fun close() {
+            E2eProjectionRegistry.replaceFrame(previous, emptyMap())
+            if (view.viewTreeObserver.isAlive) {
+                view.viewTreeObserver.removeOnPreDrawListener(this)
+                view.viewTreeObserver.removeOnWindowFocusChangeListener(this)
             }
-            E2eProjectionRegistry.remove(semanticTag, owner)
         }
     }
-    return onGloballyPositioned { coordinates ->
-            val encoded = coordinates.toE2eBounds()
-            bounds.set(encoded)
-            E2eProjectionRegistry.publish(semanticTag, publishedState, owner, encoded)
-        }
 }
 
 /** One semantic identity for Compose tests and indexed release-journey input. */
 @Composable
 internal fun Modifier.e2eIndexedElement(
     semanticTag: String,
-    state: String,
+    state: String = "enabled:true",
 ): Modifier = e2eIndexedGeometry(
     semanticTag = semanticTag,
     state = state,
 ).testTag(semanticTag).guidedTourAnchor(semanticTag)
+
+@Composable
+internal fun Modifier.e2eIndexedLabel(semanticTag: String, text: String): Modifier =
+    e2eIndexedElement(semanticTag, "text:${Uri.encode(text)}:enabled:true")
 
 /** Standard state contract for an indexed interactive control. */
 @Composable

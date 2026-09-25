@@ -261,11 +261,11 @@ test("map gesture geometry bypasses the tree without ignoring controls or stale 
 test("provider-only batch requests bypass the server's accessibility queue and fallback", () => {
   const service = readFileSync(new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url), "utf8");
   const lock = service.slice(service.indexOf("private static boolean requiresSerializedAccessibility"), service.indexOf("private void handleSetText"));
-  assert.match(lock, /\("\/exact-projection"\.equals\(endpoint\) \|\| "\/query"\.equals\(endpoint\)\) &&\s*"true"\.equals\(query\.getOrDefault\("provider_only", "false"\)\)\) \{\s*return false/);
+  assert.match(lock, /"\/exact-projection"\.equals\(endpoint\) \|\| "\/query"\.equals\(endpoint\) \|\| "\/scroll"\.equals\(endpoint\)\) \{\s*return false/);
   const handler = service.slice(service.indexOf("private void handleQuery"), service.indexOf("private void handleExactProjection"));
-  assert.match(handler, /renderedOnly \? ProviderProjection\.unhandled\(\)/);
-  assert.match(handler, /prefix\s*\? providerProjectionPrefix\(tag\)/);
-  assert.match(handler, /providerOnly \? new JSONArray\(\)\s*: renderNodeQuery/);
+  assert.match(handler, /providerProjectionPrefix\(tag\)/);
+  assert.match(handler, /providerProjection\(tag, false\)/);
+  assert.doesNotMatch(handler, /renderNodeQuery|unhandled|new JSONArray/);
 });
 
 test("native gesture readiness takes one device snapshot, retaining follow and obstacle checks", async () => {

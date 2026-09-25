@@ -547,7 +547,7 @@ internal fun FlightPlanDataRow(
                             .height(cellHeight)
                             .then(
                                 if (row.rowKind == "group" && row.procedureId != null) {
-                                    Modifier.testTag("parity:plan-procedure-row:${row.procedureId}:uid:${row.id}")
+                                    Modifier.e2eIndexedLabel("parity:plan-procedure-row:${row.procedureId}:uid:${row.id}", row.label)
                                 } else {
                                     Modifier
                                 },
@@ -607,7 +607,7 @@ internal fun FlightPlanDataRow(
                                     .padding(end = ThumbSize * 0.12f)
                                     .then(
                                         row.weatherBadge?.let {
-                                            Modifier.testTag("parity:plan-weather-badge:${it.flightCategory}")
+                                            Modifier.e2eIndexedElement("parity:plan-weather-badge:${it.flightCategory}:row:${row.id}")
                                         } ?: Modifier,
                                     )
                                     .alpha(1f),
@@ -623,7 +623,7 @@ internal fun FlightPlanDataRow(
                 cell.value ?: "—",
                 Modifier
                     .width(dataColumnWidth)
-                    .testTag("parity:plan-data:${row.id}:${cell.id}:${cell.value ?: "none"}")
+                    .e2eIndexedElement("parity:plan-data:${row.id}:${cell.id}:${cell.value ?: "none"}")
                     .then(cell.action?.let { action ->
                         Modifier.clickable { onDataCellAction(action.actionId) }
                     } ?: Modifier),
@@ -729,7 +729,7 @@ internal fun PlanGridRow(
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .horizontalScroll(dataScrollState),
+                    .observedHorizontalScroll(dataScrollState),
                 horizontalArrangement = Arrangement.spacedBy(PlanGridGap),
             ) {
                 dataContent(dataColumnWidth)

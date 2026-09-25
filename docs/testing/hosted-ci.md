@@ -90,10 +90,9 @@ as its bootstrap, not the legacy accessibility-tree tag: a modal intentionally
 hides covered controls, but must not hide operational state from observers.
 
 For elements registered by Android's indexed-control modifiers, presence and
-absence both belong to that index. Use `readElement(id, { indexed: true })` in
-shared journeys (or `queryAndroidExactProjection(..., { providerOnly: true })`
-in native bootstrap). `indexedOnly` is a different, accessibility-based index;
-it does not bypass the serialized tree queue. In particular, never use a
+absence both belong to that index. Use `readElement(id)` in shared journeys
+(or `queryAndroidExactProjection(...)` in native bootstrap). Callers cannot
+select an observation backend. In particular, never use a
 full-tree fallback to prove a modal has closed or was never mounted. This
 stalled first-use/tour checks on hosted runners even though the app had already
 completed the transition. The first-use tests execute the actual lookup and
@@ -127,7 +126,7 @@ The cheap harness suite rejects bare Settings test tags so those readers cannot
 silently lose a newly added control.
 
 The same rule applies to fixed state projections: `readScalarProjection`
-always uses `providerOnly`, including the first read and reads after disposal.
+always uses the publisher, including the first read and reads after disposal.
 Do not "seed" an accessibility path first. The September 15.3 release failed
 before live-feed assertions and before the airport-info swipe because layer
 state and modal readiness still entered that queue. Map-layer probes now read
@@ -144,7 +143,7 @@ instead of silently ignoring this query's provider-only requirement.
 The September 15.4 hosted run exposed another instance in service notifications:
 proving the status popup was closed still searched the tree. Status popup
 presence/absence now uses its positioned indexed control, and service
-collections use `readProjection(prefix, { indexed: true })` so folded history
+collections use `readProjection(prefix)` so folded history
 is an authoritative empty collection. The service-journey model rejects any
 non-indexed Android observation, in addition to the actual-reader no-tree tests.
 
@@ -175,30 +174,32 @@ other permanent transport errors must not enter the observation retry path.
 Android observation ownership is centralized in
 `tools/e2e/android-observation-contract.mjs`. Shared indexed modifiers own app
 controls, page roots, and scalar projections, including never-mounted and
-disposed states. Legacy accessibility-only targets are explicitly listed with
-their producer, not discovered by trying a second backend. Journey readers no
-longer accept `indexed` flags, and low-level exact/prefix requests reject
-caller-selected backend options. Collection scans and reveal helpers reuse
-those readers; accessibility still locates scroll containers and observes
-scroll completion, rather than reinterpreting whether an indexed target exists.
-Mixed-backend collection prefixes are rejected instead of returning a silently
-partial collection. The empty-prefix request is the deliberate whole-index
-snapshot used for map gesture geometry.
+disposed states. There are no legacy accessibility-only app targets. Journey
+readers reject backend-selection flags. Exact reads, collection scans and
+reveal helpers all query the same publisher. The empty-prefix request is the
+deliberate whole-index snapshot used for map gesture geometry.
 
 The observation tests run the real HTTP encoders and semantic readers with
 controlled device I/O: absent, mounted, changed, hidden, disposed, temporarily
 busy, and permanently unavailable. They forbid accessibility requests for
-indexed targets. This catches backend drift without requiring a slow emulator
-to happen to stall. It does not replace focused physical-input journeys or
-eliminate the remaining legacy accessibility projections. Protocol 31 also
-requires rebuilt driver APKs for explicit accessibility collection reads.
+app targets. This catches backend drift without requiring a slow emulator to
+happen to stall. It does not replace focused physical-input journeys.
 
-Scroll completion observes geometry and interactive row identities within the
-scrolled surface, not equality of the entire accessibility XML. Live ETA/clock
-updates once prevented a successfully scrolled flight-plan list from settling,
-so traversal stopped midway and reported a reachable row missing. Controlled
-tests keep clocks ticking on every read: real scroll geometry must settle, and
-clock changes alone must never count as scroll progress.
+Protocol 32 requires rebuilt driver APKs. Compose publishes a window's measured
+frame atomically from pre-draw, with clipped bounds, state, focus, revision and
+process incarnation. Never-mounted/disposed targets give successful empty
+cursors; unavailable providers fail, and duplicate live owners are errors.
+The reader cannot repair an ambiguous identity by choosing the latest writer.
+`RenderedObservationTest` exercises the real modifiers, physical tap/swipe,
+replacement, unmount/remount, clipped geometry and retained frame snapshots.
+JVM CI enables this publisher so these tests cannot silently skip it.
+
+Scroll widgets publish position, direction availability and motion state. A
+physical gesture completes only when that owner moves and stops; reaching an
+edge is determined by its published direction flag. A stall, disappearing
+owner or broken provider fails rather than being mistaken for an edge. Live
+ETA/clock changes are irrelevant. Controlled tests keep clocks ticking on every
+read and assert one gesture even when a transient observation fails.
 
 Native smoke's package-only server still needs the Rust bulletin validator.
 Its launcher builds that dependency in the checkout-owned shared Cargo target
@@ -533,11 +534,13 @@ every first failure and executes real reset/reload boundary checks without an
 app build. It cannot issue or satisfy release qualification receipts.
 
 Release Android jobs install a same-signed instrumentation APK that serves the
-actual rendered accessibility hierarchy over an adb-forwarded localhost port.
-Do not replace rendered-node actions with direct app/core hooks. A visible,
-enabled control is located in the hierarchy and activated through Android's
-accessibility action. Text replacement uses the accessibility text action and
-verifies the rendered value.
+rendered observations over an adb-forwarded localhost port. Do not replace
+rendered-node actions with direct app/core hooks. A visible, enabled control
+has its published identity and bounds revalidated before a physical gesture;
+the journey must still observe the specific semantic result. Text uses the
+test IME and verifies the rendered value. Sliders use their actual OS progress
+action. Accessibility trees remain available for failure diagnostics, not
+ordinary app readiness or absence checks.
 
 ## Timing Rules
 

@@ -92,7 +92,7 @@ internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightD
                 }
                 val availableHeight = maxHeight
                 MenuPanel(modifier = Modifier.align(Alignment.Center).testTag("${editor.id}-tray"), width = ThumbSize * 3.8f) {
-                    Column(Modifier.heightIn(max = availableHeight).verticalScroll(rememberScrollState())) {
+                    Column(Modifier.heightIn(max = availableHeight).observedVerticalScroll(rememberScrollState())) {
                         editor.title?.let { MenuPanelHeader(it, false, ThumbSize * 2.8f) }
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {

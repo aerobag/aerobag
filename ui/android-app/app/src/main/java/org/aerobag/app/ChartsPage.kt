@@ -770,7 +770,7 @@ internal fun ChartsPage(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .testTag("parity:plate-surface"),
+                    .e2eIndexedElement("parity:plate-surface"),
             ) {
                 if (currentViewport != null && currentBitmap != null && currentDisplaySize != null) {
                     drawImage(
@@ -802,7 +802,7 @@ internal fun ChartsPage(
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        .testTag("parity:plate-flight-plan-overlay:segments:${plateFlightPlanOverlay.size}"),
+                        .e2eIndexedElement("parity:plate-flight-plan-overlay:segments:${plateFlightPlanOverlay.size}"),
                 ) {
                     drawPlateFlightPlanOverlay(
                         segments = plateFlightPlanOverlay,
@@ -815,7 +815,7 @@ internal fun ChartsPage(
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        .testTag("parity:plate-ownship-overlay"),
+                        .e2eIndexedElement("parity:plate-ownship-overlay"),
                 ) {
                     drawPlateOwnshipOverlay(plateOwnshipOverlay, aircraftPlanViewPath)
                 }
@@ -1832,7 +1832,7 @@ internal fun PlateFolderGrid(
     onOpenProcedureNotams: (NotamDetailUiView) -> Unit,
 ) {
     val context = LocalContext.current
-    LazyVerticalGrid(
+    ObservedLazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = PlateFolderTileWidth),
         modifier = modifier.padding(top = ThumbSize + (ThumbGap * 2f), start = FolderThumbGutter, end = FolderThumbGutter, bottom = FolderThumbGutter),
         horizontalArrangement = Arrangement.spacedBy(FolderThumbGutter),
@@ -2052,7 +2052,7 @@ internal fun MenuDock(
                     if (body != null) {
                         body()
                     } else {
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        ObservedLazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             lazyColumnItems(options) { option ->
                                 if (option.separator) {
                                     MenuPanelSeparator(label = option.label, width = trayWidth)

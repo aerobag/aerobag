@@ -20,7 +20,7 @@ class WeatherDetailLayoutPolicyTest {
 
         assertTrue(
             "The complete weather presentation should scroll as one modal.",
-            modalBody.contains(".verticalScroll(rememberScrollState())"),
+            modalBody.contains(".observedVerticalScroll(rememberScrollState())"),
         )
         assertTrue(
             "Core-projected weather text sections should expand naturally inside the modal scroll viewport.",

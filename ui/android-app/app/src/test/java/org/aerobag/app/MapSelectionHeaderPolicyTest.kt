@@ -63,13 +63,13 @@ class MapSelectionHeaderPolicyTest {
         assertTrue(indexed.contains(
             ").testTag(semanticTag).guidedTourAnchor(semanticTag)",
         ))
-        assertTrue(indexed.contains("return onGloballyPositioned { coordinates ->"))
-        assertTrue(indexed.contains("E2eProjectionRegistry.publish(semanticTag, publishedState, owner, encoded)"))
-        assertTrue(indexed.contains("E2eProjectionRegistry.remove(semanticTag, owner)"))
+        assertTrue(indexed.contains("return onGloballyPositioned { coordinates.set(it) }"))
+        assertTrue(indexed.contains("E2eProjectionRegistry.replaceFrame(previous, frame)"))
+        assertTrue(indexed.contains("E2eProjectionRegistry.remove(tag, owner)"))
         assertTrue(
             "The scroll probe must be attached to the scrollable node, not a prunable spacer.",
             Regex(
-                """\.testTag\("parity:airport-info-scroll:\$\{scrollState\.value\}"\)\s*\.verticalScroll\(scrollState\)""",
+                """\.e2eIndexedElement\("parity:airport-info-scroll:\$\{scrollState\.value\}"\)\s*\.observedVerticalScroll\(scrollState\)""",
             ).containsMatchIn(modalBody),
         )
         assertTrue(

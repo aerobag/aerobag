@@ -228,7 +228,7 @@ internal fun AltitudePlannerPage(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                        .observedHorizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(ThumbGap),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -323,13 +323,14 @@ internal fun AltitudePlannerPage(
                     interactionEnabled = interactionEnabled,
                     onAction = ::performAction,
                     onDisabledAction = { reason -> showDisabledActionToast(context, reason) },
-                    modifier = Modifier.testTag("parity:altitude-planner-forecast"),
+                    modifier = Modifier.e2eIndexedLabel("parity:altitude-planner-forecast",
+                        forecast.rows.joinToString("\n") { "${it.label} ${it.description}" }),
                 )
             }
             if (planner.unavailableReasons.isNotEmpty()) {
                 PlannerMessagePanel(
                     messages = planner.unavailableReasons.map { it.message },
-                    modifier = Modifier.testTag("parity:altitude-planner-status"),
+                    modifier = Modifier.e2eIndexedLabel("parity:altitude-planner-status", planner.unavailableReasons.joinToString("\n") { it.message }),
                     foreground = uiTheme.controls.panelFg,
                     background = uiTheme.controls.panelBg,
                 )
@@ -367,11 +368,13 @@ internal fun AltitudePlannerPage(
                                 )
                             }
                         }
-                        LazyColumn(
+                        ObservedLazyColumn(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .testTag("parity:altitude-comparison-panel").guidedTourAnchor("tour:altitude-table"),
+                                .e2eIndexedLabel("parity:altitude-comparison-panel",
+                                    panel.rows.joinToString("\n") { row -> row.cells.joinToString(" ") { it.value ?: "—" } })
+                                .guidedTourAnchor("tour:altitude-table"),
                             verticalArrangement = Arrangement.spacedBy(ThumbGap),
                         ) {
                             items(panel.rows) { row ->
@@ -432,7 +435,7 @@ internal fun AltitudePlannerPage(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(uiTheme.controls.chartSurfaceBg.copy(alpha = 0.72f))
-                            .testTag("parity:altitude-comparison-loading"),
+                            .e2eIndexedElement("parity:altitude-comparison-loading"),
                         horizontalArrangement = Arrangement.spacedBy(ThumbGap * 1.5f, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -568,6 +571,7 @@ private fun DepartureTextField(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val doneAction = rememberCurrentAction(onDone)
+    var observedFocused by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier
             .width(width)
@@ -584,8 +588,8 @@ private fun DepartureTextField(
             onValueChange = onValueChange,
             modifier = Modifier
                 .fillMaxSize()
-                .testTag(testTag)
-                .onFocusChanged { onFocusChange(it.isFocused) }
+                .e2eIndexedTextControl(testTag, value, enabled, observedFocused)
+                .onFocusChanged { observedFocused = it.isFocused; onFocusChange(it.isFocused) }
                 .padding(horizontal = ThumbSize * 0.1f),
             enabled = enabled,
             singleLine = true,
@@ -633,7 +637,7 @@ private fun PlannerWindModelPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(ThumbSize * 0.66f + 8.dp)
-                    .testTag("parity:altitude-planner-wind-row:${row.id}"),
+                    .e2eIndexedElement("parity:altitude-planner-wind-row:${row.id}"),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

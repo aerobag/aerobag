@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
@@ -49,7 +50,9 @@ class SettingsPageTest {
         val mounted = mutableStateOf(true)
         val actions = mutableListOf<Pair<String, String>>()
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        lateinit var renderView: android.view.View
         compose.setContent {
+            renderView = LocalView.current
             CompositionLocalProvider(
                 LocalAerobagUiTheme provides theme,
                 LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map),
@@ -64,6 +67,7 @@ class SettingsPageTest {
         val newTag = "parity:settings-slider:display_dim_timeout:10s"
         val helpTag = "parity:settings-help:display_dim_timeout"
         if (BuildConfig.AEROBAG_E2E_ENABLED) compose.runOnIdle {
+            renderView.viewTreeObserver.dispatchOnPreDraw()
             assertNotNull("Visible slider must be in the provider index", E2eProjectionRegistry.read(oldTag)?.bounds)
             assertNotNull("Help uses the same Settings index", E2eProjectionRegistry.read(helpTag)?.bounds)
         }
@@ -72,6 +76,7 @@ class SettingsPageTest {
         compose.runOnIdle {
             assertEquals(listOf("opaque-dim" to "10s"), actions)
             if (BuildConfig.AEROBAG_E2E_ENABLED) {
+                renderView.viewTreeObserver.dispatchOnPreDraw()
                 assertNull(E2eProjectionRegistry.read(oldTag))
                 assertNotNull(E2eProjectionRegistry.read(newTag)?.bounds)
             }

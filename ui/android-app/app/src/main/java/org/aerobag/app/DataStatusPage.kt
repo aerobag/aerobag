@@ -141,7 +141,7 @@ internal fun DataStatusBadge(
                     shadowElevation = 8.dp,
                     border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
                 ) {
-                    LazyColumn(
+                    ObservedLazyColumn(
                         modifier = Modifier.padding(ThumbSize * 0.14f),
                         verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.12f),
                     ) {
@@ -458,7 +458,7 @@ internal fun DataStatusPage(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            LazyVerticalGrid(
+            ObservedLazyVerticalGrid(
                 columns = GridCells.Adaptive(ThumbSize * 7f),
                 modifier = Modifier.fillMaxSize().e2eIndexedElement(
                     semanticTag = "parity:data-status:content",
@@ -491,7 +491,7 @@ private fun DataStatusPageRowCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("parity:data-status-row:${row.id}:severity:${row.severity.name.lowercase()}")
+            .e2eIndexedLabel("parity:data-status-row:${row.id}:severity:${row.severity.name.lowercase()}", row.label)
             .clip(RoundedCornerShape(ThumbRadius))
             .background(Color.White.copy(alpha = 0.90f))
             .border(

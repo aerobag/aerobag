@@ -344,7 +344,7 @@ internal fun OfflinePackagesErrorPanel(
     Surface(
         modifier = modifier
             .fillMaxSize()
-            .testTag("parity:offline-library-panel"),
+            .e2eIndexedElement("parity:offline-library-panel"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -417,7 +417,7 @@ internal fun OfflinePackagesLibraryPanel(
     Surface(
         modifier = modifier
             .fillMaxSize()
-            .testTag("parity:offline-library-panel"),
+            .e2eIndexedElement("parity:offline-library-panel"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -592,7 +592,7 @@ internal fun OfflinePackagesPanel(
     Surface(
         modifier = modifier
             .fillMaxSize()
-            .testTag("parity:offline-packages-panel"),
+            .e2eIndexedElement("parity:offline-packages-panel"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -608,7 +608,7 @@ internal fun OfflinePackagesPanel(
             Spacer(
                 modifier = Modifier
                     .size(1.dp)
-                    .testTag(preferenceStateTag),
+                    .e2eIndexedElement(preferenceStateTag),
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -754,7 +754,7 @@ internal fun OfflinePackagesPanel(
                     Text(text, modifier=Modifier.fillMaxWidth().guidedTourAnchor("tour:offline-help-panel").padding(8.dp), color=uiTheme.controls.panelFg)
                 }
             }
-            LazyColumn(
+            ObservedLazyColumn(
                 state = tourListState,
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(ThumbGap),
@@ -884,7 +884,7 @@ internal fun OfflinePackagePlanRow(
             .height(ThumbSize * 1.32f)
             .then(
                 testTag?.let {
-                    Modifier.testTag("$it:selection:${row.selection.name.lowercase()}").guidedTourAnchor(it)
+                    Modifier.e2eIndexedLabel("$it:selection:${row.selection.name.lowercase()}", label).guidedTourAnchor(it)
                 } ?: Modifier,
             )
             .clip(RoundedCornerShape(ThumbRadius))
@@ -910,7 +910,7 @@ internal fun OfflinePackagePlanRow(
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(CircleShape)
-                        .then(testTag?.let { Modifier.testTag("$it:toggle") } ?: Modifier)
+                        .then(testTag?.let { Modifier.e2eIndexedControl("$it:toggle", enabled = enabled) } ?: Modifier)
                         .then(
                             if (enabled) {
                                 Modifier.clickable(

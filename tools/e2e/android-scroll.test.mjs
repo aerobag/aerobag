@@ -3,43 +3,71 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { androidScrollGeometrySignature } from "./android-harness.mjs";
-import { observeChangedValueUntilStable, ObservationTimeoutError } from "./transition-contract.mjs";
+import { runInNewContext } from "node:vm";
+import { scrollAndroidAndAwait, readAndroidScrollSurface } from "./android-harness.mjs";
+import { observeUntil, TransientObservationError } from "./transition-contract.mjs";
 
-function frame(y, tick, row = "KSEA") {
-  return `<hierarchy>
-    <node semantic-path="0/1" bounds="[0,0][400,800]" class="list" scrollable="true">
-      <node semantic-path="0/1/0" bounds="[0,${y}][400,${y + 100}]" class="button" clickable="true" resource-id="row:${row}" text="${row}" />
-      <node semantic-path="0/1/0/0" bounds="[100,${y}][200,${y + 100}]" class="text" resource-id="eta:${tick}" text="${tick}" />
-    </node>
-    <node semantic-path="0/10" bounds="[0,800][400,900]" class="footer" resource-id="ownship:${tick}" text="${tick}" />
-  </hierarchy>`;
+const surface = { "resource-id": "parity:scroll:1", "semantic-path": "projection-provider:process:1",
+  incarnation: "process", position: "0", forward: "true", backward: "false", moving: "false",
+  bounds: "[0,0][100,200]", orientation: "vertical", visible: "true", "center-reachable": "true" };
+
+function harness(samples) {
+  let reads = 0, gestures = 0;
+  const scroll = runInNewContext(`(${scrollAndroidAndAwait})`, {
+    E2E_TIMING: { userTransitionDeadlineMs: 50, pollIntervalMs: 0 }, observeUntil,
+    queryAndroidExactProjection: () => {
+      const sample = samples[Math.min(reads++, samples.length - 1)];
+      if (sample instanceof Error) throw sample;
+      return sample ? [sample] : [];
+    },
+    scrollAndroidSemanticNode: () => { gestures++; },
+    dumpAndroid: () => { throw new Error("tree access forbidden"); },
+  });
+  return { scroll, counts: () => ({ reads, gestures }) };
 }
 
-test("scroll geometry ignores live text and unrelated UI but tracks row identity and motion", () => {
-  const key = xml => androidScrollGeometrySignature(xml, "0/1");
-  assert.equal(key(frame(100, 1)), key(frame(100, 2)));
-  assert.notEqual(key(frame(100, 1)), key(frame(90, 1)));
-  assert.notEqual(key(frame(100, 1)), key(frame(100, 1, "YKM")));
+test("scroll waits for real movement AND end-of-scroll, ignoring unrelated clock updates", async () => {
+  const h = harness([
+    { ...surface, text: "clock 1", moving: "true" },
+    { ...surface, position: "50", moving: "true" },
+    { ...surface, position: "80", moving: "false" },
+  ]);
+  assert.equal(await h.scroll("test", surface, "down"), true);
+  assert.deepEqual(h.counts(), { reads: 3, gestures: 1 });
 });
 
-test("scroll settles after real geometry changes even when every XML frame has a new clock", async () => {
-  const positions = [100, 90, 80, 80, 80];
-  let reads = 0;
-  const result = await observeChangedValueUntilStable("scroll", async () => frame(positions[reads], ++reads), {
-    initialValue: frame(100, 0),
-    valueKey: xml => androidScrollGeometrySignature(xml, "0/1"),
-    stableSamples: 3, intervalMs: 0, timeoutMs: 100,
+test("a genuine published boundary needs neither a gesture nor extra observations", async () => {
+  const h = harness([]);
+  assert.equal(await h.scroll("test", surface, "up"), false);
+  assert.deepEqual(h.counts(), { reads: 0, gestures: 0 });
+});
+
+test("transport errors, disappearance and replacement never masquerade as scroll boundaries", async () => {
+  for (const sample of [new Error("broken source"), null, { ...surface, incarnation: "new-process" }]) {
+    const h = harness([sample]);
+    await assert.rejects(h.scroll("test", surface, "down"));
+    assert.equal(h.counts().gestures, 1);
+  }
+});
+
+test("transient read recovery does not replay the physical gesture", async () => {
+  const h = harness([new TransientObservationError("busy"), { ...surface, position: "20" }]);
+  assert.equal(await h.scroll("test", surface, "down"), true);
+  assert.deepEqual(h.counts(), { reads: 2, gestures: 1 });
+});
+
+test("successful input delivery without scrolling is a failure, not an edge", async () => {
+  const h = harness([{ ...surface, text: "clock ticks forever" }]);
+  await assert.rejects(h.scroll("test", surface, "down"), /timed out/);
+  assert.equal(h.counts().gestures, 1);
+});
+
+test("scroll discovery cannot select an unfocused or clipped surface", () => {
+  const read = runInNewContext(`(${readAndroidScrollSurface})`, {
+    queryAndroidSemanticNodes: () => [
+      surface, { ...surface, "resource-id": "parity:scroll:2", "center-reachable": "false" },
+      { ...surface, "resource-id": "parity:scroll:3", visible: "false" },
+    ],
   });
-  assert.equal(reads, positions.length);
-  assert.equal(androidScrollGeometrySignature(result.value, "0/1"), androidScrollGeometrySignature(frame(80, 0), "0/1"));
-});
-
-test("clock ticks alone never prove that a scroll happened", async () => {
-  let reads = 0;
-  await assert.rejects(observeChangedValueUntilStable("scroll", async () => frame(100, ++reads), {
-    initialValue: frame(100, 0),
-    valueKey: xml => androidScrollGeometrySignature(xml, "0/1"),
-    stableSamples: 3, intervalMs: 1, timeoutMs: 40,
-  }), ObservationTimeoutError);
+  assert.equal(read("test")["resource-id"], surface["resource-id"]);
 });

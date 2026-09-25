@@ -230,7 +230,7 @@ internal fun BoxScope.AirwayRoutingOverlay(view: UiAirwayRouting, displayFrame: 
         view.dragLabel.ifEmpty { view.message }.takeIf { it.isNotEmpty() }?.let {
             Text(it,modifier=Modifier.padding(horizontal=5.dp),style=androidx.compose.material3.MaterialTheme.typography.bodySmall)
         }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Row(Modifier.fillMaxWidth().observedHorizontalScroll(rememberScrollState())) {
             view.controls.forEach { control ->
                 val button = control.button
                 SelectedControlHighlightFrame(selected=control.selected,modifier=Modifier.size(ThumbSize+8.dp)) {

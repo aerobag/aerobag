@@ -55,7 +55,6 @@ import {
   waitFor,
   waitForAndroidInteractiveRuntime,
   waitForAndroidOrientation,
-  waitForNode,
 } from "./android-harness.mjs";
 import { loadAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
 import { clampDragEndpoint } from "./gesture-geometry.mjs";
@@ -443,15 +442,9 @@ async function appendRoute(serial, result, route, assertionId = "flightPlan.rout
     },
     act: async (readyInput) => driver.submit("plan-append-route-input", readyInput),
     complete: async () => {
-      const xml = dumpAndroid(serial);
-      const planRows = findNodes(xml, (node) => androidTag(node).startsWith("parity:plan-row:"));
+      const planRows = queryAndroidSemanticNodes(serial, "parity:plan-row:", { prefix: true });
       return planRows.length >= 2 &&
-        (
-          hasAndroidText(xml, destination) ||
-          hasAndroidText(xml, shortDestination) ||
-          hasAndroidTextContaining(xml, destination) ||
-          hasAndroidTextContaining(xml, shortDestination)
-        );
+        planRows.some(node => node.text.includes(destination) || node.text.includes(shortDestination));
     },
   });
   if (assertionId) recordCheck(result, assertionId, true, route);
@@ -463,10 +456,9 @@ async function activateDestinationLeg(serial, result, route) {
   const shortDestination = destination.replace(/^K(?=[A-Z]{3}$)/, "");
   await nativeTransition(result, `destination row opened ${destination}`, {
     ready: async () => {
-      const readyXml = dumpAndroid(serial);
-      return findNodes(readyXml, (node) => androidTag(node).startsWith("parity:plan-row:"))
+      return queryAndroidSemanticNodes(serial, "parity:plan-row:", { prefix: true })
         .find((node) => {
-          const label = androidNodeLabel(readyXml, node);
+          const label = node.text;
           return label.includes(destination) || label.includes(shortDestination);
         }) ?? null;
     },
@@ -476,12 +468,8 @@ async function activateDestinationLeg(serial, result, route) {
   await nativeTransition(result, `destination leg activated ${destination}`, {
     ready: () => driver.readAction("activate_leg"),
     act: (readyAction) => driver.performAction("activate_leg", readyAction),
-    complete: async () => findNode(
-      dumpAndroid(serial),
-      (node) => androidTag(node).startsWith("parity:plan-state:") &&
-        !androidTag(node).includes(":from:none:to:") &&
-        !androidTag(node).endsWith(":to:none"),
-    ),
+    complete: async () => (await driver.readProjection("parity:plan-state:"))
+      .find(node => !node.id.includes(":from:none:to:") && !node.id.endsWith(":to:none")),
   });
 }
 
@@ -590,12 +578,9 @@ async function inspectRawTerrainSpot(serial, result) {
       return driver.activateMapInspection(candidate, surface);
     },
     complete: async () => {
-      const xml = dumpAndroid(serial);
-      return findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray")) !== null &&
-        findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-selected:SPOT")) !== null &&
-        findNode(xml, (node) => /(?:^| · )Elev -?\d+(?:$| · )/.test(node.text ?? "")) !== null
-        ? xml
-        : null;
+      const tray = await driver.readElement("map-selection-tray");
+      const spot = (await driver.readProjection("parity:map-selection-selected:SPOT"))[0];
+      return tray && spot && /(?:^| · )Elev -?\d+(?:$| · )/.test(spot.text) ? spot : null;
     },
     responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
@@ -618,16 +603,15 @@ function parseRouteOverlayTag(tag) {
 
 async function waitForRouteOverlay(serial, result) {
   let overlay = null;
-  await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    const node = findNode(xml, (candidate) => androidTag(candidate).startsWith(ROUTE_OVERLAY_PREFIX));
+  await waitFor(async () => {
+    const node = (await nativeSemanticDriver(serial).readProjection(ROUTE_OVERLAY_PREFIX))[0];
     if (!node) return false;
-    const parsed = parseRouteOverlayTag(androidTag(node));
+    const parsed = parseRouteOverlayTag(node.id);
     if (!parsed) return false;
     overlay = {
       ...parsed,
-      label: androidNodeLabel(xml, node),
-      tag: androidTag(node),
+      label: node.text,
+      tag: node.id,
     };
     return parsed.segments > 0 && parsed.visible > 0;
   }, E2E_TIMING.resourceMs, "visible flight-plan route overlay");
@@ -904,10 +888,7 @@ async function ensureMapFollowEngaged(serial, result) {
   );
   if (!probe.following) {
     probe = await nativeTransition(result, "CTR follow engaged", {
-      ready: async () => findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, "parity:center-here-button"),
-      ),
+      ready: async () => queryExactAndroidNode(serial, "parity:center-here-button"),
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
       complete: async () => {
         const nextProbe = queryMapFollowProbe(serial);
@@ -933,10 +914,7 @@ async function disengageMapFollowForRouteVisibility(serial, result) {
   const probe = initialProbe;
   if (!probe.following) return;
   await nativeTransition(result, "CTR follow disengaged", {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, "parity:center-here-button"),
-    ),
+    ready: async () => queryExactAndroidNode(serial, "parity:center-here-button"),
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
     complete: async () => {
       const nextProbe = queryMapFollowProbe(serial);
@@ -1224,13 +1202,9 @@ function planContentsEqual(left, right) {
 async function waitForPlanSignature(serial, expected = null, timeoutMs = E2E_TIMING.localReadyMs) {
   let signature = null;
   await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    assertNoAerobagAnr(xml);
-    try {
-      signature = renderedFlightPlanSignature(xml);
-    } catch (_error) {
-      return false;
-    }
+    const nodes = queryAndroidSemanticNodes(serial, "parity:plan-", { prefix: true });
+    if (!nodes.some(node => androidTag(node).startsWith("parity:plan-state:"))) return false;
+    signature = renderedFlightPlanSignature(nodes);
     return expected === null || signaturesEqual(signature, expected);
   }, timeoutMs, expected === null ? "rendered flight-plan signature" : "preserved flight-plan signature");
   return signature;
@@ -1301,40 +1275,34 @@ function logcatMarkerCount(serial, marker) {
 }
 
 async function verifyNotamsLoadedInUi(serial, result) {
-  await nativeSemanticDriver(serial).openPage("data_status");
+  const driver = nativeSemanticDriver(serial);
+  await driver.openPage("data_status");
   await waitFor(
-    () => findNodes(
-      dumpAndroid(serial),
-      (node) => androidTag(node).startsWith("parity:data-status-row:"),
-    ).length > 0,
+    async () => (await driver.readProjection("data-status-row:")).length > 0,
     E2E_TIMING.localReadyMs,
     "Data Status rows",
     E2E_TIMING.pollIntervalMs,
   );
 
-  const anyNotamNode = await findNodeByScrolling(
-    serial,
-    (node) => androidTag(node).startsWith("parity:data-status-row:live_feed:notams:"),
-    12,
-  );
+  const anyNotamNode = await findNodeByScrolling(serial,
+    node => androidTag(node).startsWith("parity:data-status-row:live_feed:notams:severity:") && node.visible === "true", 12);
   if (!anyNotamNode) {
     throwWithUi(serial, "persisted NOTAM row is absent from Data Status");
   }
 
   let loadedNode = null;
   try {
-    await waitFor(() => {
-      const xml = dumpAndroid(serial);
-      loadedNode = findNode(xml, (node) => {
-        const tag = androidTag(node);
-        return tag.startsWith("parity:data-status-row:live_feed:notams:") && !tag.endsWith(":MISSING");
-      });
-      return loadedNode !== null;
+    await waitFor(async () => {
+      const visibleCard = queryAndroidSemanticNodes(serial, "parity:data-status-row:live_feed:notams:severity:", { prefix: true })
+        .find(node => node.visible === "true");
+      loadedNode = visibleCard && (await driver.readProjection("data-status-row:"))
+        .find(node => node.id.startsWith("parity:data-status-row:live_feed:notams:") && !node.id.endsWith(":MISSING"));
+      return Boolean(loadedNode);
     }, E2E_TIMING.resourceMs, "persisted NOTAM loaded row", E2E_TIMING.resourcePollIntervalMs);
   } catch (_error) {
     throwWithUi(serial, "persisted NOTAM did not appear loaded in Data Status");
   }
-  recordStep(result, "persisted NOTAM visible in core status UI", androidTag(loadedNode));
+  recordStep(result, "persisted NOTAM visible in core status UI", loadedNode.id);
 }
 
 async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature) {
@@ -1656,7 +1624,7 @@ async function runOfflineColdStart(args) {
     await waitForRuntime(args.serial, result);
     recordCheck(result, "offline.select", result.steps.some((step) =>
       step.name === "offline package sync requested" || step.name === "offline packages ready"));
-    recordCheck(result, "offline.sync", runtimeUiVisible(dumpAndroid(args.serial)));
+    recordCheck(result, "offline.sync", queryAndroidRuntimeReadyForJourney(args.serial));
 
     const driver = new AndroidSemanticJourneyDriver(args.serial, {
       resetApp: () => launchInteractiveAndroidApp(
@@ -1691,7 +1659,7 @@ async function runOfflineColdStart(args) {
     try {
       await driver.reload();
       await waitFor(
-        () => runtimeUiVisible(dumpAndroid(args.serial)),
+        () => queryAndroidRuntimeReadyForJourney(args.serial),
         E2E_TIMING.startupMs,
         "offline cold-start runtime",
       );
@@ -1699,10 +1667,9 @@ async function runOfflineColdStart(args) {
 
       await driver.openPage("map");
       let raster = null;
-      await waitFor(() => {
-        const entry = findNode(dumpAndroid(args.serial), (node) =>
-          androidTag(node).startsWith("parity:raster-state:"));
-        raster = entry ? androidTag(entry) : null;
+      await waitFor(async () => {
+        const entry = (await driver.readProjection("parity:raster-state:"))[0];
+        raster = entry?.id ?? null;
         return raster && /planned:[1-9][0-9]*:loaded:[1-9][0-9]*/.test(raster);
       }, E2E_TIMING.resourceMs, "offline chart raster");
       recordCheck(result, "offline.chart", Boolean(raster), raster);
@@ -1750,13 +1717,12 @@ async function runOfflineColdStart(args) {
           return launcher?.text?.toUpperCase().includes(label.toUpperCase()) ? launcher : null;
         },
       });
-      const plate = await waitForNode(
-        args.serial,
-        (node) => androidTag(node).startsWith("parity:plate-viewport:chart:"),
-        E2E_TIMING.resourceMs,
-        "offline plate image",
-      );
-      recordCheck(result, "offline.plate", Boolean(plate), plate ? androidTag(plate) : undefined);
+      let plate = null;
+      await waitFor(async () => {
+        plate = (await driver.readProjection("parity:plate-viewport:"))[0];
+        return Boolean(plate);
+      }, E2E_TIMING.resourceMs, "offline plate image");
+      recordCheck(result, "offline.plate", Boolean(plate), plate?.id);
     } finally {
       adbBestEffort(args.serial, ["shell", "svc", "wifi", "enable"]);
       adbBestEffort(args.serial, ["shell", "svc", "data", "enable"]);

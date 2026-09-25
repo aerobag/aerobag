@@ -759,7 +759,7 @@ internal fun HomePage(
         }
 
         if (!offlinePackagesRouted) {
-            LazyVerticalGrid(
+            ObservedLazyVerticalGrid(
                 columns = GridCells.Fixed(HomeGridColumnCount),
                 modifier = Modifier
                     .align(Alignment.Center)

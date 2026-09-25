@@ -42,7 +42,7 @@ class FlightPlanWaypointLayoutTest {
         val widgets = sourceFile("src/main/java/org/aerobag/app/PlanWidgets.kt").readText()
         assertTrue(page.contains("val planDataScrollState = rememberScrollState()"))
         assertTrue(display.contains("dataScrollState = dataScrollState"))
-        assertTrue(widgets.contains(".horizontalScroll(dataScrollState)"))
+        assertTrue(widgets.contains(".observedHorizontalScroll(dataScrollState)"))
         assertTrue(widgets.contains(".width(dataColumnWidth)"))
     }
 

@@ -843,7 +843,7 @@ internal fun FlightPlanPage(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(start = PlanArrowLane)
-                        .testTag(planStateTestTag),
+                        .e2eIndexedElement(planStateTestTag),
                     verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                 ) {
                     PlanHeaderRow(
@@ -855,11 +855,11 @@ internal fun FlightPlanPage(
                             }
                         },
                     )
-                    LazyColumn(
+                    ObservedLazyColumn(
                         state = planListState,
                         modifier = Modifier
                             .weight(1f)
-                            .testTag("parity:plan-list").guidedTourAnchor("tour:flight-plan"),
+                            .e2eIndexedElement("parity:plan-list").guidedTourAnchor("tour:flight-plan"),
                         contentPadding = PaddingValues(bottom = planListBottomPadding),
                         verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                     ) {
@@ -1016,7 +1016,7 @@ internal fun FlightPlanPage(
                     Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .testTag("parity:plan-controls"),
+                        .e2eIndexedElement("parity:plan-controls"),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
@@ -1085,7 +1085,7 @@ internal fun FlightPlanPage(
         }
 
         if (selectedWaypointUid != null && selectedRow != null) {
-            Scrim(modifier = Modifier.testTag("parity:plan-row-tray-scrim")) {
+            Scrim(modifier = Modifier.e2eIndexedElement("parity:plan-row-tray-scrim")) {
                 closePanels()
             }
             if (airportInsert != null) {
@@ -1146,7 +1146,7 @@ internal fun FlightPlanPage(
                 val picker = procedurePicker!!
                 MenuPanel(
                     modifier = Modifier
-                        .testTag("parity:plan-procedure-picker")
+                        .e2eIndexedElement("parity:plan-procedure-picker")
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),
@@ -1246,7 +1246,7 @@ internal fun FlightPlanPage(
                     width = waypointTrayWidth,
                 ) {
                     MenuPanelRow(label = airwayRouting.title, active = false, enabled = false, onSelect = {})
-                    LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                    ObservedLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
                         items(airwayRouting.endpoints.size) { index ->
                             val button = airwayRouting.endpoints[index]
                             MenuPanelRow(label = button.label, active = false, enabled = button.enabled,
@@ -1265,7 +1265,7 @@ internal fun FlightPlanPage(
                     width = waypointTrayWidth,
                 ) {
                     MenuPanelRow(label = picker.title, active = false, enabled = false, onSelect = {})
-                    LazyColumn(
+                    ObservedLazyColumn(
                         modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(waypointActionGap),
                     ) {
@@ -1612,7 +1612,7 @@ internal fun FlightPlanRouteEntryRow(
         if (feedback != null) {
             Text(
                 text = feedback,
-                modifier = Modifier.testTag("parity:plan-append-route-feedback"),
+                modifier = Modifier.e2eIndexedLabel("parity:plan-append-route-feedback", feedback),
                 style = MaterialTheme.typography.labelSmall,
                 color = if (error != null || preview.issues.isNotEmpty()) invalidTextColor else uiTheme.controls.panelFg,
                 maxLines = 1,

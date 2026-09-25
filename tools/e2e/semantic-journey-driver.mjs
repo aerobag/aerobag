@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import {
   adb, androidImeShown, androidNodeLabel, androidTag, androidResumedActivityFromDumpsys, clickAndroidSemanticNode,
   displayBoundsFromXml, dumpAndroid, findNode, findNodes, focusAndroidSemanticNode,
-  findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
+  readAndroidScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
   setAndroidSemanticProgress,
   queryAndroidExactProjection, queryAndroidStartupProjection,
@@ -1389,18 +1389,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
     const accumulated = new Map();
     for (const direction of ["down", "up"]) {
-      let previousSignature = null;
-      let unchangedFrames = 0;
       for (let attempt = 0; attempt < 24; attempt += 1) {
         const visible = await this.readProjection(probe);
         for (const entry of visible) accumulated.set(entry.id, entry);
-        const signature = visible.map((entry) => `${entry.id}:${entry.bounds ?? ""}`).join("\n");
-        unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
-        previousSignature = signature;
-        if (unchangedFrames >= 2) break;
-        const scrollSurface = findVerticalScrollSurface(dumpAndroid(this.serial));
+        const scrollSurface = readAndroidScrollSurface(this.serial);
         if (!scrollSurface) break;
-        if (!await scrollAndroidAndAwait(this.serial, scrollSurface.bounds, direction)) break;
+        if (!await scrollAndroidAndAwait(this.serial, scrollSurface, direction)) break;
       }
     }
     return [...accumulated.values()];
@@ -1425,21 +1419,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const initialMatch = findMatch(initial);
     if (initialMatch) return initialMatch;
     for (const direction of ["down", "up"]) {
-      let previousSignature = null;
-      let unchangedFrames = 0;
       for (let attempt = 0; attempt < ANDROID_MAX_VIRTUALIZED_REVEAL_STEPS; attempt += 1) {
         const entries = await this.readProjection(probe);
         const match = findMatch(entries);
         if (match) return match;
-        const signature = entries
-          .map((entry) => `${entry.id}:${entry.bounds ?? ""}`)
-          .join("\n");
-        unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
-        previousSignature = signature;
-        if (unchangedFrames >= 2) break;
-        const scrollSurface = findVerticalScrollSurface(dumpAndroid(this.serial));
+        const scrollSurface = readAndroidScrollSurface(this.serial);
         if (!scrollSurface) break;
-        if (!await scrollAndroidAndAwait(this.serial, scrollSurface.bounds, direction)) break;
+        if (!await scrollAndroidAndAwait(this.serial, scrollSurface, direction)) break;
       }
     }
     return findMatch(await this.readProjection(probe));

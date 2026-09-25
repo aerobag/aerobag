@@ -7,9 +7,26 @@ package org.aerobag.app
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class E2eProjectionRegistryTest {
+    @Test
+    fun duplicateRenderedIdentitiesAreAnErrorNotLastWriterWins() {
+        val id = "parity:duplicate"
+        val first = Any()
+        val second = Any()
+        try {
+            E2eProjectionRegistry.publish(id, "first", first, "[0,0][10,10]")
+            E2eProjectionRegistry.publish(id, "second", second, "[10,0][20,10]")
+            assertThrows(IllegalStateException::class.java) { E2eProjectionRegistry.read(id) }
+            assertThrows(IllegalStateException::class.java) { E2eProjectionRegistry.readPrefix(id) }
+        } finally {
+            E2eProjectionRegistry.remove(id, first)
+            E2eProjectionRegistry.remove(id, second)
+        }
+    }
+
     @Test
     fun staleCompositionCannotRemoveReplacementProjection() {
         val resourceId = "org.aerobag.app:id/e2e_map_follow_projection"

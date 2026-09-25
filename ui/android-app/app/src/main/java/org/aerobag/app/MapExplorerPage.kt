@@ -4186,7 +4186,7 @@ private fun MapFeatureOverlayLayer(
                     )
                 }
                 .size(ThumbSize * 0.5f)
-                .testTag("parity:map-feature:${feature.kind}:$tagLabel:${feature.id}"),
+                .e2eIndexedElement("parity:map-feature:${feature.kind}:$tagLabel:${feature.id}"),
         )
     }
 }
@@ -4750,7 +4750,7 @@ private fun RouteOverlayLayer(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:flight-plan-route-overlay:$projectionState"),
+            .e2eIndexedElement("parity:flight-plan-route-overlay:$projectionState"),
     ) {
         val screenPaths = flightPlanRoute.map { segment ->
             segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
@@ -5124,11 +5124,11 @@ internal fun MapSelectionTray(
     ) {
         Column(modifier = Modifier.padding(ThumbGap * 0.7f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.55f)) {
             centerProbeTag?.let { tag ->
-                Box(modifier = Modifier.size(1.dp).testTag(tag))
+                Box(modifier = Modifier.size(1.dp).e2eIndexedElement(tag))
             }
             state.result.categories.forEach { category ->
                 Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    modifier = Modifier.observedHorizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
                 ) {
                     if (category.items.isEmpty()) {
@@ -5193,7 +5193,8 @@ internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
         modifier = Modifier
             .fillMaxWidth()
             .height(headerHeight)
-            .testTag("parity:map-selection-selected:${selectedItem?.label ?: "none"}")
+            .e2eIndexedLabel("parity:map-selection-selected:${selectedItem?.label ?: "none"}",
+                selectedItem?.let { "${it.label} · ${mapSelectionHeaderDetailText(it)}" } ?: "")
             .semantics { testTagsAsResourceId = true },
         verticalArrangement = Arrangement.Center,
     ) {
@@ -5296,7 +5297,7 @@ internal fun MapSelectionDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .testTag("parity:map-selection-detail-modal:$title")
+            .e2eIndexedElement("parity:map-selection-detail-modal:$title")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 9.5f)
             .heightIn(max = ThumbSize * 11.5f),
@@ -5360,7 +5361,9 @@ internal fun WeatherDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .testTag("parity:weather-detail-modal").guidedTourAnchor("tour:weather")
+            .e2eIndexedLabel("parity:weather-detail-modal", detail.title + "\n" +
+                detail.sections.joinToString("\n") { it.text ?: it.emptyText.orEmpty() })
+            .guidedTourAnchor("tour:weather")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),
@@ -5372,7 +5375,7 @@ internal fun WeatherDetailModal(
     ) {
         Column(
             modifier = Modifier
-                .verticalScroll(rememberScrollState())
+                .observedVerticalScroll(rememberScrollState())
                 .padding(ThumbSize * 0.18f),
             verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
         ) {
@@ -5453,8 +5456,8 @@ internal fun AirportInfoModal(
             )
             Column(
                 modifier = Modifier
-                    .testTag("parity:airport-info-scroll:${scrollState.value}")
-                    .verticalScroll(scrollState)
+                    .e2eIndexedElement("parity:airport-info-scroll:${scrollState.value}")
+                    .observedVerticalScroll(scrollState)
                     .padding(ThumbSize * 0.18f),
                 verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
             ) {
@@ -5479,7 +5482,7 @@ internal fun AirportInfoModal(
                 section.title?.let { AirportInfoSectionTitle(it) }
                 section.facts.forEach { fact ->
                     Box(
-                        modifier = Modifier.testTag(
+                        modifier = Modifier.e2eIndexedElement(
                             "parity:airport-info-fact:${fact.label}:${fact.value}",
                         ),
                     ) {
@@ -5528,14 +5531,14 @@ internal fun AirportInfoModal(
                 Box(
                     modifier = Modifier
                         .size(1.dp)
-                        .testTag(
+                        .e2eIndexedElement(
                             "parity:airport-info-runways:complex:${detail.runwayDiagramComplex}:count:${detail.runways.size}",
                         ),
                 )
                 detail.runways.forEachIndexed { index, runway ->
                     Row(
                         modifier = Modifier
-                            .testTag(
+                            .e2eIndexedElement(
                                 "parity:airport-info-runway:${runway.endALabel}:${runway.endBLabel}",
                             )
                             .fillMaxWidth()
@@ -5795,7 +5798,7 @@ private fun WeatherDetailSection(
                 .fillMaxWidth()
                 .then(
                     if (constrainHeight) {
-                        Modifier.verticalScroll(rememberScrollState())
+                        Modifier.observedVerticalScroll(rememberScrollState())
                     } else {
                         Modifier
                     },

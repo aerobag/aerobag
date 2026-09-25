@@ -377,7 +377,7 @@ internal fun PlaybackWidget(
         modifier =
             modifier
                 .widthIn(min = ThumbSize * 4.2f, max = ThumbSize * 7.8f)
-                .testTag("parity:playback-widget")
+                .e2eIndexedElement("parity:playback-widget")
                 .consumePointerGestures(),
         shape = panelShape,
         color = Color(0xF0FCF8F1),
@@ -438,7 +438,6 @@ internal fun PlaybackWidget(
                                 e2eSourceFocused = state.isFocused
                                 onSourceFocusChange(state.isFocused)
                             }
-                            .testTag("parity:playback-source-input")
                             .clip(RoundedCornerShape(ThumbRadius * 0.55f))
                             .background(Color.White)
                             .border(1.dp, Color(0x24132129), RoundedCornerShape(ThumbRadius * 0.55f))
@@ -716,7 +715,7 @@ internal fun PlaybackRateRail(
     Surface(
         modifier =
             modifier
-                .then(if (testTag == null) Modifier else Modifier.testTag(testTag))
+                .then(if (testTag == null) Modifier else Modifier.e2eIndexedControl(testTag, enabled = enabled))
                 .clip(shape)
                 .background(Color.White)
                 .border(1.dp, Color(0x24132129), shape)
@@ -813,7 +812,7 @@ internal fun PlaybackOverview(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .then(if (testTag == null) Modifier else Modifier.testTag(testTag))
+                .then(if (testTag == null) Modifier else Modifier.e2eIndexedControl(testTag, enabled = true))
                 .height(ThumbSize * 0.84f)
                 .clip(shape)
                 .background(Color(0xD1FFFFFF))

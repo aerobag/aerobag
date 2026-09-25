@@ -257,7 +257,7 @@ Current SDK state after tooling install:
   - `build-tools;34.0.0`
   - `cmdline-tools;13.0`
   - `platform-tools`
-  - `platforms;android-34`
+  - `platforms;android-35` (compile SDK; Compose 1.8 overscroll observation API)
 - selected emulator system image target:
   - `system-images;android-34;google_apis;x86_64`
 

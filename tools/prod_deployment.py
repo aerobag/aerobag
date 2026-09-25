@@ -1120,7 +1120,7 @@ fi
 mkdir -p "$ANDROID_HOME" /root/.android
 {{ yes || true; }} | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
 "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \\
-  "platforms;android-34" \\
+  "platforms;android-35" \\
   "build-tools;34.0.0" \\
   "platform-tools" \\
   "ndk;$REQUIRED_NDK"
@@ -1128,7 +1128,7 @@ mkdir -p "$ANDROID_HOME" /root/.android
 mkdir -p "$SOURCE_ROOT/ui/android-app"
 printf 'sdk.dir=%s\\n' "$ANDROID_HOME" > "$SOURCE_ROOT/ui/android-app/local.properties"
 
-test -d "$ANDROID_HOME/platforms/android-34"
+test -d "$ANDROID_HOME/platforms/android-35"
 test -d "$ANDROID_HOME/build-tools/34.0.0"
 test -x "$ANDROID_HOME/platform-tools/adb"
 test -x "$ANDROID_HOME/ndk/$REQUIRED_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"

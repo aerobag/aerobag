@@ -15,6 +15,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshots.SnapshotStateObserver
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -115,14 +116,22 @@ private object RenderedObservationWindows {
         ViewTreeObserver.OnWindowFocusChangeListener {
         val sources = mutableMapOf<Any, Pair<String, () -> E2eProjectionSnapshot?>>()
         private var previous = emptyMap<Any, String>()
+        private val reads = SnapshotStateObserver { callback -> view.post(callback) }
+        private val onReadChanged: (Window) -> Unit = { it.view.invalidate() }
         init {
+            reads.start()
             view.viewTreeObserver.addOnPreDrawListener(this)
             view.viewTreeObserver.addOnWindowFocusChangeListener(this)
         }
         override fun onPreDraw(): Boolean {
-            val frame = sources.mapNotNull { (owner, source) ->
-                source.second()?.let { owner to (source.first to it) }
-            }.toMap()
+            var frame = emptyMap<Any, Pair<String, E2eProjectionSnapshot>>()
+            // Some readiness transitions (e.g. drag cleanup) change state but
+            // not pixels. Subscribe so the last transition still gets a frame.
+            reads.observeReads(this, onReadChanged) {
+                frame = sources.mapNotNull { (owner, source) ->
+                    source.second()?.let { owner to (source.first to it) }
+                }.toMap()
+            }
             E2eProjectionRegistry.replaceFrame(previous, frame)
             previous = frame.mapValues { it.value.first }
             // Edge effects advance during drawing, including their final frame.
@@ -134,6 +143,8 @@ private object RenderedObservationWindows {
         }
         override fun onWindowFocusChanged(hasFocus: Boolean) { view.invalidate() }
         fun close() {
+            reads.stop()
+            reads.clear()
             E2eProjectionRegistry.replaceFrame(previous, emptyMap())
             if (view.viewTreeObserver.isAlive) {
                 view.viewTreeObserver.removeOnPreDrawListener(this)

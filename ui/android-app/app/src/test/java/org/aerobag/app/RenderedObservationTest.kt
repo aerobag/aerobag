@@ -38,6 +38,40 @@ import org.robolectric.annotation.Config
 class RenderedObservationTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun nonvisualReadinessChangesSchedulePublicationWithoutElementRecomposition() {
+        val drawingWindow = object : View(ApplicationProvider.getApplicationContext()) {
+            var invalidations = 0
+            override fun invalidate() { invalidations++; super.invalidate() }
+            override fun post(action: Runnable): Boolean = android.os.Handler(android.os.Looper.getMainLooper()).post(action)
+        }
+        val moving = mutableStateOf(true)
+        compose.setContent {
+            CompositionLocalProvider(LocalView provides drawingWindow) {
+                Box(Modifier.size(80.dp).e2eIndexedGeometry("parity:nonvisual-readiness") {
+                    "moving:${moving.value}"
+                })
+            }
+        }
+        compose.runOnIdle {
+            drawingWindow.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue(E2eProjectionRegistry.read("parity:nonvisual-readiness")!!.state.contains("moving:true"))
+        }
+        // Drain the publication's after-draw check before changing readiness.
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        var before = 0
+        compose.runOnIdle {
+            before = drawingWindow.invalidations
+            moving.value = false
+            androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications()
+        }
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        compose.runOnIdle {
+            assertTrue("state-only transition must schedule its own frame", drawingWindow.invalidations > before)
+            drawingWindow.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue(E2eProjectionRegistry.read("parity:nonvisual-readiness")!!.state.contains("moving:false"))
+        }
+    }
+
     @Test fun replacementIsPublishedAtLayoutBoundaryAndUnmountCannotLeaveGhosts() {
         assertTrue("JVM tests must exercise the journey publisher", BuildConfig.AEROBAG_E2E_ENABLED)
         val name = mutableStateOf("first")

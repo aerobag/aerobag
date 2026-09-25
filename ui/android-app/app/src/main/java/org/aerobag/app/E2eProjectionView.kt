@@ -5,6 +5,10 @@
 package org.aerobag.app
 
 import android.net.Uri
+import android.graphics.Canvas
+import android.graphics.ColorFilter
+import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
 import android.view.ViewTreeObserver
 import android.view.View
 import androidx.annotation.IdRes
@@ -83,7 +87,7 @@ internal fun Modifier.e2eIndexedGeometry(
     return onGloballyPositioned { coordinates.set(it) }
 }
 
-/** Data is sampled after layout by its real rendering window, not by the IPC reader. */
+/** Data is sampled after drawing by its real rendering window, not by the IPC reader. */
 @Composable
 private fun ObserveRenderedFrame(tag: String, sample: () -> E2eProjectionSnapshot?) {
     val view = LocalView.current
@@ -112,18 +116,27 @@ private object RenderedObservationWindows {
         } else view.invalidate()
     }
 
-    class Window(private val view: View) : ViewTreeObserver.OnPreDrawListener,
-        ViewTreeObserver.OnWindowFocusChangeListener {
+    class Window(private val view: View) : ViewTreeObserver.OnWindowFocusChangeListener {
         val sources = mutableMapOf<Any, Pair<String, () -> E2eProjectionSnapshot?>>()
         private var previous = emptyMap<Any, String>()
         private val reads = SnapshotStateObserver { callback -> view.post(callback) }
         private val onReadChanged: (Window) -> Unit = { it.view.invalidate() }
+        // Compose can measure/layout inside dispatchDraw, after Android pre-draw.
+        // The view overlay runs after dispatchDraw, including those late layouts.
+        // It paints nothing; ordinary builds never install this publisher.
+        private val afterContent = object : Drawable() {
+            override fun draw(canvas: Canvas) { publishFrame() }
+            override fun setAlpha(alpha: Int) {}
+            override fun setColorFilter(colorFilter: ColorFilter?) {}
+            @Deprecated("Required Drawable API")
+            override fun getOpacity(): Int = PixelFormat.TRANSPARENT
+        }.apply { setBounds(0, 0, 1, 1) }
         init {
             reads.start()
-            view.viewTreeObserver.addOnPreDrawListener(this)
+            view.overlay.add(afterContent)
             view.viewTreeObserver.addOnWindowFocusChangeListener(this)
         }
-        override fun onPreDraw(): Boolean {
+        private fun publishFrame() {
             var frame = emptyMap<Any, Pair<String, E2eProjectionSnapshot>>()
             // Some readiness transitions (e.g. drag cleanup) change state but
             // not pixels. Subscribe so the last transition still gets a frame.
@@ -139,15 +152,14 @@ private object RenderedObservationWindows {
             view.post {
                 if (sources.any { (owner, source) -> source.second() != frame[owner]?.second }) view.invalidate()
             }
-            return true
         }
         override fun onWindowFocusChanged(hasFocus: Boolean) { view.invalidate() }
         fun close() {
+            view.overlay.remove(afterContent)
             reads.stop()
             reads.clear()
             E2eProjectionRegistry.replaceFrame(previous, emptyMap())
             if (view.viewTreeObserver.isAlive) {
-                view.viewTreeObserver.removeOnPreDrawListener(this)
                 view.viewTreeObserver.removeOnWindowFocusChangeListener(this)
             }
         }

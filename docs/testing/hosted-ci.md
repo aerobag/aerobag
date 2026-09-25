@@ -215,14 +215,25 @@ busy, and permanently unavailable. They forbid accessibility requests for
 app targets. This catches backend drift without requiring a slow emulator to
 happen to stall. It does not replace focused physical-input journeys.
 
-Protocol 32 requires rebuilt driver APKs. Compose publishes a window's measured
-frame atomically from pre-draw, with clipped bounds, state, focus, revision and
+Protocol 32 requires rebuilt driver APKs. Compose publishes a window's rendered
+frame atomically after content drawing, with clipped bounds, state, focus, revision and
 process incarnation. Never-mounted/disposed targets give successful empty
 cursors; unavailable providers fail, and duplicate live owners are errors.
 The reader cannot repair an ambiguous identity by choosing the latest writer.
 `RenderedObservationTest` exercises the real modifiers, physical tap/swipe,
 replacement, unmount/remount, clipped geometry and retained frame snapshots.
 JVM CI enables this publisher so these tests cannot silently skip it.
+
+Android pre-draw is not Compose's completed-layout boundary: Compose can perform
+internal measurement in `dispatchDraw`. The September 25 `63c995ac` hosted run
+exposed this in three independent lanes: the expanded Debug Diagnostics header
+was published alongside the collapsed list's end-of-scroll boundary. Traversal
+then searched upward and missed the new controls. A non-painting view overlay
+publishes after the rendering window's content, including its late measurement;
+no per-journey wait or action retry repairs mixed-frame observations. The
+controlled expansion test holds drawing after composition/pre-draw and requires
+the last rendered frame to remain authoritative. Tests also exercise real list
+expansion, physical scrolling, disposal/remount, and state-only frame scheduling.
 
 An indexed geometry read must not contact the app through the IME. The September
 25 hosted map-readiness failures exposed an unconditional `getExtractedText`

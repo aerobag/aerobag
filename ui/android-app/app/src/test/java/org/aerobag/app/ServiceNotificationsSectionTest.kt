@@ -73,6 +73,7 @@ class ServiceNotificationsSectionTest {
         compose.onNodeWithTag("parity:service:body:notice").assertIsDisplayed()
         if (BuildConfig.AEROBAG_E2E_ENABLED) {
             compose.runOnIdle {
+                drawObservationWindows()
                 assertTrue(E2eProjectionRegistry.read("parity:service:body:notice")!!.state
                     .contains("text:Use%20caution."))
             }

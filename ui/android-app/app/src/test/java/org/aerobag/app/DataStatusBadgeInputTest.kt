@@ -49,6 +49,7 @@ class DataStatusBadgeInputTest {
                 .assertTextEquals("READ NOTIFICATIONS")
             if (BuildConfig.AEROBAG_E2E_ENABLED) {
                 compose.runOnIdle {
+                    drawObservationWindows()
                     assertTrue(E2eProjectionRegistry.read("parity:data-status-action-service:unread-service:inbox")!!.state
                         .contains("text:READ%20NOTIFICATIONS"))
                 }

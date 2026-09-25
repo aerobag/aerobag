@@ -543,6 +543,15 @@ controlled tests now cover both spacing forms. Results remain under
 `/tmp/aerobag-hosted-followthrough-{2,3,web-final}`. These local passes do not
 replace the next exact-commit hosted run.
 
+Hosted `63c995ac` passed ordinary, fixture, license, web p0/rollover, Chrome-on-
+Android, four native Android regressions and shared shards 0/1. Native CTR and
+shared shards 2/3 all failed at the same Settings expansion boundary. The header
+reported expanded while scroll extent still described the collapsed list.
+Android pre-draw precedes Compose's possible `dispatchDraw` layout work. The
+publisher now commits the whole window after content drawing; a controlled
+test fails the old pre-draw publication by withholding the draw step. First-
+attempt artifacts are retained under `/tmp/aerobag-hosted-63c995ac`.
+
 - Inspect first-attempt results from the next full exact-tag qualification.
   This patch's targeted checks cannot establish that the entire suite is flake-free.
 - The `find_route` manifest gap is closed by `72a11f50`; keep the real journey

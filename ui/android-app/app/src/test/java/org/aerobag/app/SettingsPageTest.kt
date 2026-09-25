@@ -67,7 +67,7 @@ class SettingsPageTest {
         val newTag = "parity:settings-slider:display_dim_timeout:10s"
         val helpTag = "parity:settings-help:display_dim_timeout"
         if (BuildConfig.AEROBAG_E2E_ENABLED) compose.runOnIdle {
-            renderView.viewTreeObserver.dispatchOnPreDraw()
+            renderView.drawObservationFrame()
             assertNotNull("Visible slider must be in the provider index", E2eProjectionRegistry.read(oldTag)?.bounds)
             assertNotNull("Help uses the same Settings index", E2eProjectionRegistry.read(helpTag)?.bounds)
         }
@@ -76,7 +76,7 @@ class SettingsPageTest {
         compose.runOnIdle {
             assertEquals(listOf("opaque-dim" to "10s"), actions)
             if (BuildConfig.AEROBAG_E2E_ENABLED) {
-                renderView.viewTreeObserver.dispatchOnPreDraw()
+                renderView.drawObservationFrame()
                 assertNull(E2eProjectionRegistry.read(oldTag))
                 assertNotNull(E2eProjectionRegistry.read(newTag)?.bounds)
             }

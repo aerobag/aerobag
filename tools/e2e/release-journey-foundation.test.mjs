@@ -3041,7 +3041,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.doesNotMatch(mapExplorer, /\.testTag\(mapFollowProbeTag/);
   assert.match(projectionView, /ObserveRenderedFrame\(resourceId\)/);
   assert.match(projectionView, /E2eProjectionRegistry\.remove\(tag, owner\)/);
-  assert.match(projectionView, /override fun onPreDraw\(\)/);
+  assert.match(projectionView, /override fun draw\(canvas: Canvas\) \{ publishFrame\(\) \}/);
+  assert.match(projectionView, /view\.overlay\.add\(afterContent\)/);
+  assert.match(projectionView, /view\.overlay\.remove\(afterContent\)/);
+  assert.doesNotMatch(projectionView, /OnPreDrawListener/);
   assert.match(projectionView, /E2eProjectionRegistry\.replaceFrame\(previous, frame\)/);
   assert.match(projectionProvider, /@Synchronized\s+fun replaceFrame/);
   assert.match(projectionProvider, /owners\.remove\(owner\)/);

@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -38,12 +39,88 @@ import org.robolectric.annotation.Config
 class RenderedObservationTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun aComposedExpansionIsNotPublishedBeforeTheRenderingWindowDrawsIt() {
+        val window = View(ApplicationProvider.getApplicationContext()).apply { layout(0, 0, 200, 400) }
+        val expanded = mutableStateOf(false)
+        compose.setContent {
+            CompositionLocalProvider(LocalView provides window) {
+                ObservedLazyColumn(Modifier.size(200.dp, 400.dp)) {
+                    item { Box(Modifier.height(350.dp)) }
+                    item {
+                        Column {
+                            Text("Expand", Modifier.height(50.dp)
+                                .clickable { expanded.value = !expanded.value }
+                                .e2eIndexedControl("parity:drawn-footer", true, selected = expanded.value))
+                            if (expanded.value) repeat(12) { index ->
+                                Text("Row $index", Modifier.height(50.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compose.runOnIdle { window.drawObservationFrame() }
+        val collapsed = E2eProjectionRegistry.read("parity:drawn-footer")!!
+        assertTrue(collapsed.state.contains(":selected:false"))
+        compose.onNodeWithTag("parity:drawn-footer").performTouchInput { click() }
+        compose.runOnIdle {
+            // Compose and Android's window traversal have distinct lifetimes.
+            // Hold drawing after composition/pre-draw; readers must still see
+            // the preceding frame, not new state combined with old geometry.
+            window.viewTreeObserver.dispatchOnPreDraw()
+            assertEquals(collapsed, E2eProjectionRegistry.read("parity:drawn-footer"))
+            window.drawObservationFrame()
+            assertTrue(E2eProjectionRegistry.read("parity:drawn-footer")!!.state.contains(":selected:true"))
+            assertTrue(E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state.contains(":forward:true"))
+        }
+    }
+
+    @Test fun expandedFooterAndItsScrollExtentArePublishedInTheSameRenderedFrame() {
+        val expanded = mutableStateOf(false)
+        val contradictions = mutableListOf<String>()
+        lateinit var view: View
+        compose.setContent {
+            view = LocalView.current
+            ObservedLazyColumn(Modifier.size(200.dp, 400.dp)
+                .e2eIndexedElement("parity:expanding-list")
+                .drawWithContent {
+                    val header = E2eProjectionRegistry.read("parity:expanding-footer")
+                    val scroll = E2eProjectionRegistry.readPrefix("parity:scroll:").singleOrNull()?.second
+                    if (header?.state?.contains(":selected:true") == true &&
+                        scroll?.state?.contains(":forward:false") == true) {
+                        contradictions.add("${header.state} / ${scroll.state}")
+                    }
+                    drawContent()
+                }) {
+                item { Box(Modifier.height(350.dp)) }
+                item {
+                    Column {
+                        Text("Expand", Modifier.height(50.dp)
+                            .clickable { expanded.value = !expanded.value }
+                            .e2eIndexedControl("parity:expanding-footer", true, selected = expanded.value))
+                        if (expanded.value) repeat(12) { index ->
+                            Text("Row $index", Modifier.height(50.dp)
+                                .e2eIndexedLabel("parity:expanded-row:$index", "Row $index"))
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("parity:expanding-footer").performTouchInput { click() }
+        compose.runOnIdle {
+            view.drawObservationFrame()
+            assertTrue(E2eProjectionRegistry.read("parity:expanding-footer")!!.state.contains(":selected:true"))
+            assertTrue(E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state.contains(":forward:true"))
+            assertTrue("never advertise expansion with the collapsed scroll boundary: $contradictions", contradictions.isEmpty())
+        }
+    }
+
     @Test fun nonvisualReadinessChangesSchedulePublicationWithoutElementRecomposition() {
         val drawingWindow = object : View(ApplicationProvider.getApplicationContext()) {
             var invalidations = 0
             override fun invalidate() { invalidations++; super.invalidate() }
             override fun post(action: Runnable): Boolean = android.os.Handler(android.os.Looper.getMainLooper()).post(action)
-        }
+        }.apply { layout(0, 0, 80, 80) }
         val moving = mutableStateOf(true)
         compose.setContent {
             CompositionLocalProvider(LocalView provides drawingWindow) {
@@ -53,11 +130,13 @@ class RenderedObservationTest {
             }
         }
         compose.runOnIdle {
-            drawingWindow.viewTreeObserver.dispatchOnPreDraw()
+            drawingWindow.drawObservationFrame()
             assertTrue(E2eProjectionRegistry.read("parity:nonvisual-readiness")!!.state.contains("moving:true"))
         }
+        val afterDraw = drawingWindow.invalidations
         // Drain the publication's after-draw check before changing readiness.
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals("publication must not cause an idle redraw loop", afterDraw, drawingWindow.invalidations)
         var before = 0
         compose.runOnIdle {
             before = drawingWindow.invalidations
@@ -67,7 +146,7 @@ class RenderedObservationTest {
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
         compose.runOnIdle {
             assertTrue("state-only transition must schedule its own frame", drawingWindow.invalidations > before)
-            drawingWindow.viewTreeObserver.dispatchOnPreDraw()
+            drawingWindow.drawObservationFrame()
             assertTrue(E2eProjectionRegistry.read("parity:nonvisual-readiness")!!.state.contains("moving:false"))
         }
     }
@@ -84,7 +163,7 @@ class RenderedObservationTest {
                 .e2eIndexedLabel("parity:lifecycle:${name.value}", name.value)
                 .clickable { clicks++ }) { Text(name.value) }
         }
-        fun frame() = compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        fun frame() = compose.runOnIdle { view.drawObservationFrame() }
         frame()
         val first = E2eProjectionRegistry.read("parity:lifecycle:first")!!
         assertNotNull(first.bounds)
@@ -114,13 +193,13 @@ class RenderedObservationTest {
                     .e2eIndexedLabel("parity:scroll-row:$index", "Row $index")) }
             }
         }
-        compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        compose.runOnIdle { view.drawObservationFrame() }
         val before = E2eProjectionRegistry.readPrefix("parity:scroll:").single().second
         assertTrue(before.state.contains("position:0:backward:false:forward:true:moving:false"))
         val clipped = E2eProjectionRegistry.read("parity:scroll-row:7")!!.bounds
         assertEquals("[0,0][0,0]", clipped)
         compose.onNodeWithTag("parity:scroller").performTouchInput { swipeUp() }
-        compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        compose.runOnIdle { view.drawObservationFrame() }
         val after = E2eProjectionRegistry.readPrefix("parity:scroll:").single().second
         assertNotEquals(before.state, after.state)
         assertTrue(after.state.contains("backward:true"))
@@ -145,7 +224,7 @@ class RenderedObservationTest {
                 advanceEventTime(150)
                 up()
             }
-            compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+            compose.runOnIdle { view.drawObservationFrame() }
             val state = E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state
             val index = state.substringAfter(":position:").substringBefore(',').toInt()
             assertTrue("each gesture advances", index > previousIndex)
@@ -183,7 +262,7 @@ class RenderedObservationTest {
         for (moving in listOf(false, true, false)) {
             compose.runOnIdle {
                 effect.isInProgress = moving
-                view.viewTreeObserver.dispatchOnPreDraw()
+                view.drawObservationFrame()
                 val state = E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state
                 assertTrue(state.contains("position:0,0"))
                 assertTrue("must sample live edge effect: $state", state.contains(":moving:$moving"))
@@ -204,10 +283,10 @@ class RenderedObservationTest {
                 CloudPanelView(panel.value, mutableMapOf(), "", {}, Modifier)
             }
         }
-        compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        compose.runOnIdle { view.drawObservationFrame() }
         assertTrue(E2eProjectionRegistry.read("parity:cloud-panel:receive_setup")!!.state.contains(":state:active:"))
         compose.runOnIdle { panel.value = panel.value.copy(state = UiCloudPanelState.Complete) }
-        compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        compose.runOnIdle { view.drawObservationFrame() }
         assertTrue(E2eProjectionRegistry.read("parity:cloud-panel:receive_setup")!!.state.contains(":state:complete:"))
     }
 
@@ -228,7 +307,7 @@ class RenderedObservationTest {
                 }
             }
         }
-        compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        compose.runOnIdle { view.drawObservationFrame() }
         assertEquals(2, E2eProjectionRegistry.readPrefix("parity:plan-procedure-transition:ARRIE:").size)
         for (runway in listOf("RW16R", "RW34L")) {
             compose.onNodeWithTag("parity:plan-procedure-transition:ARRIE:$runway").performTouchInput { click() }
@@ -248,7 +327,7 @@ class RenderedObservationTest {
         }
         for (text in listOf("1000 MSL (published)", "1032 MSL (derived)")) {
             compose.runOnIdle { value.value = text }
-            compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+            compose.runOnIdle { view.drawObservationFrame() }
             val (id, fact) = E2eProjectionRegistry.readPrefix("parity:airport-info-fact:").single()
             assertEquals("parity:airport-info-fact:Traffic pattern altitude:$text", id)
             val displayedText = android.net.Uri.decode(fact.state.substringAfter("text:").substringBefore(":"))
@@ -287,7 +366,7 @@ class RenderedObservationTest {
         )
         cases.forEachIndexed { index, (id, body) ->
             compose.runOnIdle { panel.value = index }
-            compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+            compose.runOnIdle { view.drawObservationFrame() }
             val snapshot = requireNotNull(E2eProjectionRegistry.read(id))
             val text = android.net.Uri.decode(snapshot.state.substringAfter("text:").substringBefore(":"))
             assertTrue("published text must include rendered body", text.contains(body))
@@ -319,7 +398,7 @@ class RenderedObservationTest {
                 }
             }
         }
-        fun frame() = compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        fun frame() = compose.runOnIdle { view.drawObservationFrame() }
         repeat(2) {
             frame()
             assertEquals("open:true", E2eProjectionRegistry.read(id)!!.state)

@@ -444,6 +444,8 @@ android {
     sourceSets.getByName("main").res.srcDir(generatedCanonicalResourcesDir)
     sourceSets.getByName("main").java.srcDir(generatedSymbolSourceDir)
     sourceSets.getByName("main").java.srcDir(generatedWireSourceDir)
+    // Exercise the real journey driver under Robolectric without shipping it in the app.
+    sourceSets.getByName("test").java.srcDir("src/androidTest/java")
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

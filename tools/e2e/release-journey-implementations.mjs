@@ -2572,12 +2572,15 @@ async function flightPlanAirwayEstimates(runtime) {
   await revealRequiredElement(
     runtime, `plan-airway-exit:${airway.exit}`, `${airway.exit} airway exit`,
   );
-  const beforeAirwayRevision = await runtime.driver.readSessionRevision();
   const airwayExit = await runtime.action(`select airway exit ${airway.exit}`, `plan-airway-exit:${airway.exit}`, {
     complete: async () => {
       const pickerOpen = (await runtime.driver.readProjection("parity:plan-airway-exit:")).length > 0;
-      const revision = await runtime.driver.readSessionRevision();
-      return !pickerOpen && revision > beforeAirwayRevision ? { revision } : null;
+      // Picker closure and model labels can both precede list layout. Wait for
+      // the inserted header's rendered geometry before traversing that list.
+      const rows = await planRows(runtime);
+      const header = await runtime.driver.findProjectionMatching("parity:plan-row:", airway.airway);
+      return !pickerOpen && rows.some(row => row.text.split(/\s+/).includes(airway.exit)) &&
+        header?.text.split(/\s+/).includes(airway.airway) ? header : null;
     },
   });
   const airwayDestination = await findPlanRow(runtime, airway.exit, E2E_TIMING.localReadyMs);
@@ -2723,7 +2726,11 @@ async function flightPlanFindRoute(runtime) {
   await runtime.openPage("map");
 
   // Select the other mode so this works regardless of the persisted preference.
-  const initial = await selected("gnss") ? "gnss" : "vor";
+  const initial = await runtime.eventually("rendered route navigation mode", async () => {
+    const gnss = await selected("gnss");
+    const vor = await selected("vor");
+    return gnss !== vor ? (gnss ? "gnss" : "vor") : null;
+  });
   const other = initial === "gnss" ? "vor" : "gnss";
   const changed = await runtime.action("change route navigation mode", control(other), {
     complete: () => selected(other),

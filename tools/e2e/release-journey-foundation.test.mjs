@@ -5764,6 +5764,65 @@ for (const [label, fixedEntry, expectedFailure] of [
   });
 }
 
+for (const platform of ["android", "web"]) {
+  test(`${platform} airway insertion waits for positioned rows, not just picker closure or model labels`, async () => {
+    let projectionReady = false;
+    let layoutReady = false;
+    let exitClicks = 0;
+    const reachedAssertion = new Error("airway insertion completed; stop focused test");
+    const row = label => ({ id: `parity:plan-row:${label}`, text: label });
+    const runtime = {
+      platform,
+      capability: path => path === "airway" ? { airway: "V4", entry: "MEDEA", exit: "YKM" } : {},
+      result: { diagnostics: {} },
+      reset: async () => {}, openPage: async () => {}, editText: async () => {},
+      transition: async () => {},
+      eventually: async (_description, probe) => probe(),
+      revealElement: async id => ({ enabled: id !== "plan-airway-exit:MEDEA" }),
+      revealProjectionMatching: async (_prefix, label) => {
+        if (label === "YKM") assert.ok(layoutReady, "must not traverse the pre-insertion list");
+        return row(label);
+      },
+      driver: {
+        readElement: async () => null,
+        readSessionRevision: async () => 100 + exitClicks,
+        findProjectionMatching: async (_prefix, label) => label === "V4" && !layoutReady ? null : row(label),
+        readProjection: async prefix => {
+          if (prefix === "parity:startup-state:") return [{ id: `${prefix}ready:true:disclaimer_required:false` }];
+          if (prefix === "parity:flight-plan-rows:") {
+            return [{ id: `${prefix}KSEA\u001fMEDEA${projectionReady ? "\u001fV4\u001fYKM" : ""}` }];
+          }
+          if (prefix === "parity:plan-row:") {
+            return (projectionReady ? ["KSEA", "MEDEA", "V4", "YKM"] : ["KSEA", "MEDEA"]).map(row);
+          }
+          if (prefix === "parity:plan-airway-exit:") return exitClicks ? [] : [{ id: `${prefix}YKM` }];
+          return [{ id: `${prefix}V4` }];
+        },
+      },
+      action: async (_description, id, options) => {
+        if (id !== "plan-airway-exit:YKM") return;
+        exitClicks++;
+        assert.equal(Boolean(await options.complete()), false,
+          "a closed picker and newer session revision do not prove the flight plan has rendered");
+        projectionReady = true;
+        assert.equal(Boolean(await options.complete()), false,
+          "updated model labels do not prove the newly inserted rows have been laid out");
+        layoutReady = true;
+        const completed = await options.complete();
+        assert.ok(completed, "the projected destination and positioned header must complete the one action");
+        return completed;
+      },
+      check: (id, pass) => {
+        assert.ok(pass, id);
+        if (id === "plan.airway-scroll") throw reachedAssertion;
+      },
+    };
+    await assert.rejects(releaseJourneyImplementation("shared.flight-plan-airway-estimates")(runtime),
+      error => error === reachedAssertion);
+    assert.equal(exitClicks, 1);
+  });
+}
+
 test("route append journeys reject an editor that traversal did not reveal", () => {
   const source = readFileSync(
     new URL("./release-journey-implementations.mjs", import.meta.url),

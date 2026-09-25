@@ -609,13 +609,14 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean avoidNavigation
     ) {
         ProviderSnapshot snapshot = providerSnapshot(tag);
-        return providerProjection(snapshot, verifyCenterReachable, avoidNavigation);
+        return providerProjection(snapshot, verifyCenterReachable, avoidNavigation, true);
     }
 
     private ProviderProjection providerProjection(
         ProviderSnapshot snapshot,
         boolean verifyCenterReachable,
-        boolean avoidNavigation
+        boolean avoidNavigation,
+        boolean includeInputReadiness
     ) {
         JSONArray output = new JSONArray();
         if (!snapshot.present) return new ProviderProjection(output);
@@ -637,7 +638,15 @@ public final class SemanticDriverService extends AccessibilityService {
             ));
             value.put(
                 "input-connection-ready",
-                Boolean.toString(SemanticDriverInputMethodService.focusedInputConnectionReady())
+                // IME inspection crosses back onto the app's main thread. It
+                // belongs only to readiness for this focused editor, never to
+                // geometry collections or unrelated controls.
+                Boolean.toString(includeInputReadiness &&
+                    "text".equals(fields.get("kind")) &&
+                    "true".equals(fields.get("enabled")) &&
+                    "true".equals(fields.get("focused")) &&
+                    "true".equals(fields.get("window-focus")) &&
+                    SemanticDriverInputMethodService.focusedInputConnectionReady())
             );
             value.put("state-description", snapshot.state);
             value.put("bounds", hasBounds ? snapshot.bounds : "[0,0][1,1]");
@@ -666,7 +675,7 @@ public final class SemanticDriverService extends AccessibilityService {
         ProviderSnapshotBatch batch = providerSnapshots("resource_id_prefix", prefix);
         JSONArray output = new JSONArray();
         for (ProviderSnapshot snapshot : batch.snapshots) {
-            ProviderProjection projection = providerProjection(snapshot, true, false);
+            ProviderProjection projection = providerProjection(snapshot, true, false, false);
             for (int index = 0; index < projection.values.length(); index++) {
                 try {
                     output.put(projection.values.getJSONObject(index));

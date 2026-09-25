@@ -444,6 +444,70 @@ The next real Settings failure still needs this evidence before choosing a
 production fix. Further investigation is deferred at the operator's request;
 resume only if the stall reappears.
 
+### September 25 hosted follow-up (`26168937`)
+
+[E2E main 36154993946](https://github.com/aerobag/aerobag/actions/runs/36154993946)
+failed three lanes; ordinary CI, Fixture CI and REUSE passed. Evidence is retained
+under `/tmp/aerobag-hosted-26168937`.
+
+- `web.nav-db-rollover` still requested the old single-transition button ID.
+  The earlier identity cleanup changed the renderer and shared journeys but
+  missed this separate script. This is a deterministic missed consumer, not a
+  timing flake. The auxiliary lane had not been run in the prior local shared/
+  native workload. It now selects the rendered `from ECEPO` choice. The old
+  journey reproduced locally; both adoption and visible rejection scenarios
+  then passed under `/tmp/aerobag-rollover-26168937-confirmed`.
+- Native CTR and shard 2's inspector journey failed whole-map observation
+  readiness **before** sending their gesture. Settings actions passed. Thread
+  dumps captured rendering work, including the app UI thread waiting for
+  `syncAndDrawFrame` and RenderThread waiting in the emulator graphics pipe.
+  Local and hosted emulator logs both identify version 37.1.11.0 and the same
+  software renderer selection; this is not evidence of an emulator-version
+  mismatch or a session-lock deadlock.
+- Inspection found that the driver called the IME's synchronous
+  `getExtractedText` for every indexed result, not just text editors. A real
+  driver Robolectric regression proves a 101-entry collection made 101 such
+  calls before the fix. Collections now make zero; inactive/non-text exact
+  reads make zero; an exact active editor still verifies its input connection.
+  The old driver fails two of the four tests; the fixed driver passes all four.
+  This removes a demonstrated main-thread dependency and multiplicative cost.
+  It does not prove that every rendering stall has been eliminated or that
+  hosted E2E has passed without a new hosted run.
+- The local full shard passed the formerly failing inspector, then exposed a
+  second ordering bug in airway insertion. The journey accepted picker closure
+  plus an unrelated session revision before the new flight-plan projection.
+  The captured scroll observation was still the old two-row list (revision
+  121, `forward:false`); the new scrollable list arrived on the next read
+  (revision 4869, `forward:true`). The test had already decided it could not
+  scroll down. Waiting for projected model labels alone passed a focused run
+  but failed a later full run: those labels can arrive before list layout.
+  Completion therefore requires both the projected exit and the inserted
+  header's rendered geometry. The regression controls picker closure, model
+  arrival and positioned-row arrival separately; both earlier completion rules
+  fail it on both platforms. Do not treat the intermediate 72-second focused
+  pass under `/tmp/aerobag-airway-completion-fixed` as proof of the final fix.
+- Two independent cold-emulator native CTR runs passed in 56.4 and 56.1 seconds
+  under `/tmp/aerobag-hosted-hardening-fix/ctr-{0,1}`. These and the rollover run
+  are targeted diagnostic checks, not a full qualification receipt.
+- The following full shard passed airway insertion, then Find Route treated
+  its temporarily absent GNSS control after map reentry as VOR selected. By
+  action readiness, GNSS was visibly selected, so the guard rejected an already
+  satisfied postcondition. The journey now observes an explicit selected mode,
+  not an assumed alternative when the first control is absent. Controlled
+  delayed-rendering tests fail under the old decision on both platforms and
+  pass with one action request under the new decision.
+
+Final targeted validation: the complete hosted-shaped Android shard 2 passed
+all 14 implemented journeys in 325.7 seconds under
+`/tmp/aerobag-hosted-positioned-journeys`. The revised web airway-insertion
+journey passed in 4.0 seconds there; web Find Route passed in 3.2 seconds under
+`/tmp/aerobag-hosted-verified-journeys`. Fresh app/driver bundles were built for
+these diagnostic runs. Unrelated hosted lanes were not rerun locally; this is
+not a complete qualification receipt or a claim of hosted success.
+
+No action retries, extended deadlines, disabled rendering or speculative
+Settings behavior changes are part of these fixes.
+
 ### Follow-up work
 
 - Inspect first-attempt results from the next full exact-tag qualification.

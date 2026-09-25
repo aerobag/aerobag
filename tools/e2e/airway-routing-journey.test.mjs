@@ -14,6 +14,7 @@ const journeyId = "shared.flight-plan-find-route";
 function modelRuntime(platform, defect = null) {
   let rows = [], original = [], input = "", page = "flight_plan", tray = false;
   let draft = false, mode = "gnss", previous = null, future = null;
+  let pendingModeReads = 0;
   const checks = [], actions = [];
   const row = (label) => rows.includes(label) ? { id: `parity:plan-row:${label}`, text: label } : null;
   const driver = {
@@ -28,6 +29,10 @@ function modelRuntime(platform, defect = null) {
       if (id.startsWith("airway-routing-control-")) {
         if (!draft || page !== "map") return null;
         const name = id.slice("airway-routing-control-".length);
+        if (["gnss", "vor"].includes(name) && pendingModeReads > 0) {
+          pendingModeReads--;
+          return null;
+        }
         const selected = name === mode;
         return { enabled: name === "undo" ? previous !== null : name === "redo" ? future !== null : true,
           ...(platform === "web" ? { pressed: String(selected) } : { selected }) };
@@ -50,14 +55,19 @@ function modelRuntime(platform, defect = null) {
     platform, driver, checks, actions,
     capability: () => ({ entry: "MEDEA", exit: "YKM", airway: "V4" }),
     async reset() {},
-    async openPage(id) { page = id; },
+    async openPage(id) {
+      page = id;
+      if (id === "map" && defect === "delayed-mode-controls") pendingModeReads = 2;
+    },
     async editText(_description, _id, value) { input = value; },
     async revealElement(id) { return driver.readElement(id); },
     async revealProjectionMatching(_prefix, label) { return row(label); },
     async eventually(description, observe) {
-      const value = await observe();
-      assert.ok(value, `${description} did not complete`);
-      return value;
+      for (let sample = 0; sample < 3; sample++) {
+        const value = await observe();
+        if (value) return value;
+      }
+      assert.fail(`${description} did not complete`);
     },
     async transition(description, contract) {
       const ready = await contract.ready();
@@ -100,6 +110,13 @@ for (const platform of ["web", "android"]) {
     await releaseJourneyImplementation(journeyId)(runtime);
     assert.deepEqual(runtime.checks, journeyById(journeyId).assertions);
     assert.equal(runtime.actions.filter((id) => id === "plan-row-action:find_route").length, 2);
+  });
+  test(`Find Route waits for its rendered mode after map reentry on ${platform}`, async () => {
+    const runtime = modelRuntime(platform, "delayed-mode-controls");
+    await releaseJourneyImplementation(journeyId)(runtime);
+    assert.equal(runtime.actions.filter(id => id === "airway-routing-control-vor").length, 1);
+    assert.equal(runtime.actions.filter(id => id === "airway-routing-control-gnss").length, 0);
+    assert.deepEqual(runtime.checks, journeyById(journeyId).assertions);
   });
 }
 

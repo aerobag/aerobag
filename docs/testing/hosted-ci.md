@@ -171,6 +171,20 @@ active browser: old VIEW intents survive navigation. Cheap activity/journey
 models retain that history and readable background state, and reject a lost
 Back action instead of accepting the unchanged startup projection.
 
+Closing an airway picker plus a newer session revision is not evidence that
+the flight-plan list has rendered the inserted airway. Wait for the selected
+exit in the projected plan AND the inserted header's rendered geometry before
+trying to reveal it. Model labels alone can precede list layout. Otherwise the
+scroll reader can correctly report the old short list's boundary just before its
+new content arrives. The controlled insertion tests separate picker closure,
+session revision, plan projection and positioned rows, and forbid premature
+traversal on both platforms.
+
+Likewise, absence of the GNSS routing control during map reentry does not mean
+VOR mode is selected. Observe an explicitly selected mode before choosing the
+other one. The Find Route model can delay both controls without delaying the
+page root, so page navigation cannot accidentally serve as mode readiness.
+
 Restoring user choices must advance live dependency revisions; only an
 unpublished transaction rollback may rewind them. Tour restoration once reused
 the situation revision from its welcome step, so Close restored core's CTR state
@@ -209,6 +223,16 @@ The reader cannot repair an ambiguous identity by choosing the latest writer.
 `RenderedObservationTest` exercises the real modifiers, physical tap/swipe,
 replacement, unmount/remount, clipped geometry and retained frame snapshots.
 JVM CI enables this publisher so these tests cannot silently skip it.
+
+An indexed geometry read must not contact the app through the IME. The September
+25 hosted map-readiness failures exposed an unconditional `getExtractedText`
+probe per result, including every entry in a whole-map query. That reintroduced
+main-thread IPC behind the supposedly independent publisher and multiplied its
+cost by the number of controls. Only an exact read of an enabled, focused text
+editor in the focused window may inspect its input connection; collections
+report geometry/state without probing editor readiness. Robolectric compiles
+the actual driver sources and exercises these boundaries with a controlled IME,
+including a focused editor in the collection and an unready exact editor.
 
 Procedure transition controls identify both the enroute and runway transition;
 several runway choices can share one enroute transition. The strict publisher

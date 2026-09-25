@@ -301,7 +301,7 @@ async function buildRichFlightPlan(page) {
     E2E_TIMING.resourceMs,
   );
   await clickButtonByTextOnce(page, ".pageLayer.isActive .procedureChoiceButton", "VOR-A");
-  await clickOnce(page, '.pageLayer.isActive [data-testid="plan-procedure-transition-ECEPO"]');
+  await clickButtonByTextOnce(page, '.pageLayer.isActive [data-testid^="plan-procedure-transition-"]', "from ECEPO");
   await waitForProbe(
     page,
     (probe) => probe.plan_ui_state?.display_rows?.some((row) => row.procedure_id?.includes("VOR-A")),

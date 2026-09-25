@@ -67,12 +67,53 @@ test("successful input delivery without scrolling is a failure, not an edge", as
   assert.equal(h.counts().gestures, 1);
 });
 
-test("scroll discovery cannot select an unfocused or clipped surface", () => {
+test("scroll discovery cannot select a clipped surface", async () => {
   const read = runInNewContext(`(${readAndroidScrollSurface})`, {
+    observeUntil, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
     queryAndroidSemanticNodes: () => [
-      surface, { ...surface, "resource-id": "parity:scroll:2", "center-reachable": "false" },
-      { ...surface, "resource-id": "parity:scroll:3", visible: "false" },
+      surface, { ...surface, "resource-id": "parity:scroll:3", visible: "false" },
     ],
   });
-  assert.equal(read("test")["resource-id"], surface["resource-id"]);
+  assert.equal((await read("test"))["resource-id"], surface["resource-id"]);
+});
+
+test("a newly drawn popup must gain input focus before discovery can choose its scroll owner", async () => {
+  for (const olderPage of [[], [surface]]) {
+    let reads = 0;
+    const popup = { ...surface, "resource-id": "parity:scroll:2" };
+    const read = runInNewContext(`(${readAndroidScrollSurface})`, {
+      observeUntil, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
+      queryAndroidSemanticNodes: () => [...olderPage,
+        { ...popup, "center-reachable": ++reads >= 3 ? "true" : "false" }],
+    });
+    assert.equal((await read("test"))?.["resource-id"], popup["resource-id"],
+      "pending popup focus is neither an absent list nor permission to scroll the covered page");
+    assert.equal(reads, 3);
+  }
+});
+
+test("a popup that never becomes actionable fails with its actual state, not end-of-list", async () => {
+  const blocked = { ...surface, "center-reachable": "false" };
+  const read = runInNewContext(`(${readAndroidScrollSurface})`, {
+    observeUntil, E2E_TIMING: { localReadyMs: 20, pollIntervalMs: 0 },
+    queryAndroidSemanticNodes: () => [blocked],
+  });
+  await assert.rejects(async () => read("test"), error => {
+    assert.equal(error.diagnostics.last_value["resource-id"], surface["resource-id"]);
+    assert.equal(error.diagnostics.last_value["center-reachable"], "false");
+    return true;
+  });
+});
+
+test("scroll discovery preserves genuine absence and transport failure as distinct outcomes", async () => {
+  for (const failure of [false, true]) {
+    let reads = 0;
+    const read = runInNewContext(`(${readAndroidScrollSurface})`, {
+      observeUntil, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
+      queryAndroidSemanticNodes: () => { reads++; if (failure) throw new Error("broken provider"); return []; },
+    });
+    if (failure) await assert.rejects(read("test"), /broken provider/);
+    else assert.equal(await read("test"), null);
+    assert.equal(reads, 1);
+  }
 });

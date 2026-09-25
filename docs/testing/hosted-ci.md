@@ -48,6 +48,16 @@ Replay mutations use the retained session work queue, not main-thread calls
 which can block behind live-feed installation. Raw replay operations require
 the same explicit opt-in as other scheduled session work.
 
+Scroll-owner discovery must distinguish absence from pending input readiness.
+On the next September 25 run, the plate picker had drawn its first rows but its
+popup window had not gained focus yet. Filtering that owner out reported an
+immediate false end-of-list, without scrolling to AIRPORT DIAGRAM. Discovery now
+chooses the frontmost visible owner, then waits for its published input readiness
+and settled motion. It cannot select the covered page while a popup is pending.
+`android-scroll.test.mjs` controls that ordering, including never-ready failure
+diagnostics, actual absence, and transport errors. No sleeps, repeated gestures,
+or longer deadlines are used.
+
 Before committing, run `/usr/bin/python3 tools/ci/cheap_preflight.py`. It works
 with uncommitted changes and always runs the complete inexpensive suites:
 fixture-free Rust tests/doctests and the hermetic service workload, Python tool

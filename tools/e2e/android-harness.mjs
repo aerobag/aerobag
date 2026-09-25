@@ -1250,11 +1250,20 @@ export function verticalScrollTargetIsReachable(xml, tag, { prefix = false } = {
     centerY >= surfaceBounds.top && centerY <= surfaceBounds.bottom;
 }
 
-export function readAndroidScrollSurface(serial, orientation = "vertical") {
-  return queryAndroidSemanticNodes(serial, "parity:scroll:", { prefix: true })
-    .filter(node => node.orientation === orientation && node.visible === "true" && node["center-reachable"] === "true")
-    // A newly mounted modal/list is above the page's older scroll surfaces.
-    .sort((a, b) => Number(b["resource-id"].split(":").at(-1)) - Number(a["resource-id"].split(":").at(-1)))[0] ?? null;
+export async function readAndroidScrollSurface(serial, orientation = "vertical") {
+  const observed = await observeUntil("Android scroll owner ready for input", () =>
+    queryAndroidSemanticNodes(serial, "parity:scroll:", { prefix: true })
+      .filter(node => node.orientation === orientation && node.visible === "true")
+      // Select the frontmost mounted list BEFORE checking input readiness.
+      // A popup can draw before gaining focus; that is not absence or permission
+      // to scroll the covered page. Keep the pending owner in timeout diagnostics.
+      .sort((a, b) => Number(b["resource-id"].split(":").at(-1)) - Number(a["resource-id"].split(":").at(-1)))[0] ?? null,
+  {
+    accept: surface => surface === null ||
+      (surface["center-reachable"] === "true" && surface.moving === "false"),
+    timeoutMs: E2E_TIMING.localReadyMs, intervalMs: E2E_TIMING.pollIntervalMs,
+  });
+  return observed.value;
 }
 
 export async function scrollAndroidAndAwait(serial, surface, direction) {
@@ -1279,7 +1288,7 @@ export async function scrollAndroidAndAwait(serial, surface, direction) {
 }
 
 async function scrollAndroidSemanticSurfaceAndAwait(serial, orientation, direction) {
-  return scrollAndroidAndAwait(serial, readAndroidScrollSurface(serial, orientation), direction);
+  return scrollAndroidAndAwait(serial, await readAndroidScrollSurface(serial, orientation), direction);
 }
 
 export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {

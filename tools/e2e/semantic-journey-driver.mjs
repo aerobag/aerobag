@@ -1392,7 +1392,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       for (let attempt = 0; attempt < 24; attempt += 1) {
         const visible = await this.readProjection(probe);
         for (const entry of visible) accumulated.set(entry.id, entry);
-        const scrollSurface = readAndroidScrollSurface(this.serial);
+        const scrollSurface = await readAndroidScrollSurface(this.serial);
         if (!scrollSurface) break;
         if (!await scrollAndroidAndAwait(this.serial, scrollSurface, direction)) break;
       }
@@ -1423,7 +1423,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         const entries = await this.readProjection(probe);
         const match = findMatch(entries);
         if (match) return match;
-        const scrollSurface = readAndroidScrollSurface(this.serial);
+        const scrollSurface = await readAndroidScrollSurface(this.serial);
         if (!scrollSurface) break;
         if (!await scrollAndroidAndAwait(this.serial, scrollSurface, direction)) break;
       }

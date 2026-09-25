@@ -2950,33 +2950,19 @@ test("persistent Android semantic requests separate probes from bounded actions"
   );
 });
 
-test("persistent Android progress actions resolve exact readiness evidence before bounded fallbacks", () => {
+test("Android progress input uses the rendered publisher and a physical gesture, never a tree fallback", () => {
   const source = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
-  assert.match(source, /"projection-provider:" \+ snapshot\.incarnation \+ ":" \+ snapshot\.revision/);
-  assert.match(source, /private AccessibilityNodeInfo nodeAtPath\(String semanticPath\)/);
-  assert.match(source, /private AccessibilityNodeInfo resolveRenderedNode\(/);
-  assert.match(source, /private static AccessibilityNodeInfo findRenderedNodeAtPoint\(/);
-  assert.match(
-    source,
-    /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/,
-  );
-  assert.match(source, /tag\.equals\(node\.getViewIdResourceName\(\)\)/);
-  assert.match(source, /for \(int attempt = 0; attempt < 3; attempt\+\+\)/);
-  assert.match(source, /if \(setMatchingNodeProgress\(node, tag, value, expectedBounds\)\) return true/);
-  assert.match(source, /ProviderProjection projection = providerProjection\(tag, true\)/);
-  const actionResolution = source.slice(
-    source.indexOf("private AccessibilityNodeInfo resolveRenderedNode("),
-    source.indexOf("private static boolean matchesRenderedTarget("),
-  );
-  assert.ok(
-    actionResolution.indexOf("findIndexedRenderedNode(tag, expectedBounds)") <
-      actionResolution.indexOf("nodeAtPath(semanticPath)"),
-    "indexed exact action lookup must precede path and point fallbacks",
-  );
-  assert.doesNotMatch(actionResolution, /collectMatchingNodes/);
+  const progress = source.slice(source.indexOf("private boolean setRenderedProgress("), source.indexOf("private List<AccessibilityNodeInfo> roots("));
+  assert.match(progress, /ProviderSnapshot snapshot = providerSnapshot\(tag\)/);
+  assert.match(progress, /snapshot\.incarnation.*snapshot\.revision/);
+  assert.match(progress, /expectedBounds\.equals/);
+  assert.match(progress, /horizontal-progress/);
+  assert.match(progress, /dispatchTapGesture\(x, y\)/);
+  assert.doesNotMatch(progress, /AccessibilityNodeInfo|awaitAccessibilityEventAfter|attempt/);
+  assert.doesNotMatch(source, /resolveRenderedNode|setMatchingNodeProgress|ACTION_SET_PROGRESS/);
 });
 
 test("rapid Android scalar projections use stable IDs instead of full-tree prefix scans", () => {
@@ -5136,14 +5122,14 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/32/);
-  assert.match(service, /aerobag-semantic-driver\/32/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/32/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/32/);
+  assert.match(harness, /aerobag-semantic-driver\/33/);
+  assert.match(service, /aerobag-semantic-driver\/33/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/33/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/33/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
-test("Android replay sliders use accessible progress actions instead of timed swipes", () => {
+test("Android replay sliders retain accessibility and share publisher-driven physical progress input", () => {
   const playbackWidget = readFileSync(
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/PlaybackWidget.kt", import.meta.url),
     "utf8",
@@ -5273,17 +5259,15 @@ test("Android terrain tile failures terminate the current render pass", () => {
   assert.match(batch, /if \(batchFailed\) break/);
 });
 
-test("Android progress delivery locates the real OS widget without using accessibility for observation", () => {
+test("Android progress delivery does not enter the serialized accessibility queue", () => {
   const service = readFileSync(new URL(
     "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
     import.meta.url,
   ), "utf8");
   assert.doesNotMatch(service, /appendIndexedNodeQuery|renderNodeQuery/);
-  assert.match(service, /findAccessibilityNodeInfosByViewId\(tag\)/);
-  assert.match(
-    service,
-    /AccessibilityNodeInfo indexed = findIndexedRenderedNode\([\s\S]*tag,[\s\S]*expectedBounds,[\s\S]*projectedGeometry/,
-  );
+  const queue = service.slice(service.indexOf("private static boolean requiresSerializedAccessibility"), service.indexOf("private void handleSetText"));
+  assert.match(queue, /"\/set-progress"\.equals\(endpoint\)\) \{\s*return false/);
+  assert.doesNotMatch(service, /findAccessibilityNodeInfosByViewId/);
 });
 
 test("Android semantic actions preserve the separator between readiness bounds", () => {

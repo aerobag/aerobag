@@ -12,6 +12,24 @@ import org.junit.Test
 
 class NativeUiSessionBoundaryTest {
     @Test
+    fun replayInputCannotInvokeRawSessionWorkFromTheUi() {
+        val adapter = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        val runner = sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
+        val widget = sourceFile("src/main/java/org/aerobag/app/PlaybackWidget.kt").readText()
+        for (method in listOf("loadPlaybackTrace", "playPlayback", "pausePlayback", "seekPlayback", "setPlaybackRate")) {
+            assertTrue(adapter.contains("@RawUiSessionWorkApi\n    fun $method("))
+            assertTrue(runner.contains("suspend fun $method("))
+            assertTrue(runner.contains("awaitMutation(\"$method\")"))
+            assertTrue(widget.contains("sessionWorkRunner.$method("))
+            assertFalse(widget.contains("uiSession.$method("))
+        }
+        val await = balancedBlockAfterMarker(runner, "private suspend fun awaitMutation(")
+        assertTrue(await.contains("submitMutation(name"))
+        assertTrue(await.contains("result.ensureActive()"))
+        assertTrue(await.contains("finally { result.cancel() }"))
+    }
+
+    @Test
     fun existingSessionRefreshSamplesOsTimeZoneAndIsRequestedOnResumeAndZoneChange() {
         val adapter = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
         for (method in listOf("fun refreshSnapshot()", "private fun refreshSnapshotAfterRejectedCommand(")) {

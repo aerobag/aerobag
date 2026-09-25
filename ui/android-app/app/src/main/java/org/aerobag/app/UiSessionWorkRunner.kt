@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -199,6 +200,34 @@ class UiSessionWorkRunner(
         val result = CompletableDeferred<UiSessionSnapshot>()
         submitFlightDataCommand(observation, { result.complete(it) }, { result.completeExceptionally(it) })
         return result.await()
+    }
+
+    suspend fun loadPlaybackTrace(sourcePath: String, traceJson: String): UiSessionSnapshot =
+        awaitMutation("loadPlaybackTrace") { it.loadPlaybackTrace(sourcePath, traceJson) }
+
+    suspend fun playPlayback(): UiSessionSnapshot =
+        awaitMutation("playPlayback") { it.playPlayback(System.currentTimeMillis().toDouble()) }
+
+    suspend fun pausePlayback(): UiSessionSnapshot =
+        awaitMutation("pausePlayback") { it.pausePlayback(System.currentTimeMillis().toDouble()) }
+
+    suspend fun setPlaybackRate(rate: Double): UiSessionSnapshot =
+        awaitMutation("setPlaybackRate") { it.setPlaybackRate(rate, System.currentTimeMillis().toDouble()) }
+
+    suspend fun seekPlayback(cursorSeconds: Double): UiSessionSnapshot =
+        awaitMutation("seekPlayback") { it.seekPlayback(cursorSeconds, System.currentTimeMillis().toDouble()) }
+
+    private suspend fun awaitMutation(
+        name: String,
+        operation: (NativeUiSession) -> UiSessionSnapshot,
+    ): UiSessionSnapshot {
+        val result = CompletableDeferred<UiSessionSnapshot>()
+        submitMutation(name, {
+            // A superseded scrub waiting in the queue must not move the cursor later.
+            result.ensureActive()
+            operation(it)
+        }, { result.complete(it) }, { result.completeExceptionally(it) })
+        return try { result.await() } finally { result.cancel() }
     }
 
     fun submitAircraftLibraryAction(

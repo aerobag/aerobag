@@ -329,7 +329,7 @@ import kotlin.math.sin
 
 @Composable
 internal fun PlaybackWidget(
-    uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
     playbackUiState: PlaybackUiState,
     sourcePath: String,
     onSourcePathChange: (String) -> Unit,
@@ -347,7 +347,7 @@ internal fun PlaybackWidget(
     var e2eSourceFocused by remember { mutableStateOf(false) }
     var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }
     var seekJob by remember { mutableStateOf<Job?>(null) }
-    fun applyPlaybackCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
+    suspend fun applyPlaybackCommand(commandName: String, operation: suspend () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {
             operation().also(onSnapshotChange)
         } catch (error: CancellationException) {
@@ -463,7 +463,7 @@ internal fun PlaybackWidget(
                                         fetchResourceBytes(traceUrl).decodeToString()
                                     }
                                 applyPlaybackCommand("loadPlaybackTrace") {
-                                    uiSession.loadPlaybackTrace(sourcePath, traceJson)
+                                    sessionWorkRunner.loadPlaybackTrace(sourcePath, traceJson)
                                 }
                             } catch (error: Throwable) {
                                 if (error is NativeSessionCommandRejectedException) {
@@ -495,9 +495,9 @@ internal fun PlaybackWidget(
                         scope.launch {
                             applyPlaybackCommand("playPausePlayback") {
                                 if (playbackUiState.status == PlaybackStatus.Playing) {
-                                    uiSession.pausePlayback(System.currentTimeMillis().toDouble())
+                                    sessionWorkRunner.pausePlayback()
                                 } else {
-                                    uiSession.playPlayback(System.currentTimeMillis().toDouble())
+                                    sessionWorkRunner.playPlayback()
                                 }
                             }
                         }
@@ -520,7 +520,7 @@ internal fun PlaybackWidget(
                     onValueChange = { nextRate ->
                         scope.launch {
                             applyPlaybackCommand("setPlaybackRate") {
-                                uiSession.setPlaybackRate(nextRate.toDouble(), System.currentTimeMillis().toDouble())
+                                sessionWorkRunner.setPlaybackRate(nextRate.toDouble())
                             }
                         }
                     },
@@ -536,7 +536,7 @@ internal fun PlaybackWidget(
                     seekJob?.cancel()
                     seekJob = scope.launch {
                         applyPlaybackCommand("seekPlayback") {
-                            uiSession.seekPlayback(nextCursorSeconds, System.currentTimeMillis().toDouble())
+                            sessionWorkRunner.seekPlayback(nextCursorSeconds)
                         }?.let {
                             if (finished) {
                                 scrubCursorSeconds = null
@@ -715,7 +715,7 @@ internal fun PlaybackRateRail(
     Surface(
         modifier =
             modifier
-                .then(if (testTag == null) Modifier else Modifier.e2eIndexedControl(testTag, enabled = enabled))
+                .then(if (testTag == null) Modifier else Modifier.e2eIndexedHorizontalProgress(testTag, enabled, 0.25f, 11f))
                 .clip(shape)
                 .background(Color.White)
                 .border(1.dp, Color(0x24132129), shape)
@@ -812,7 +812,7 @@ internal fun PlaybackOverview(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .then(if (testTag == null) Modifier else Modifier.e2eIndexedControl(testTag, enabled = true))
+                .then(if (testTag == null) Modifier else Modifier.e2eIndexedHorizontalProgress(testTag, durationSeconds > 0, 0f, durationSeconds.toFloat()))
                 .height(ThumbSize * 0.84f)
                 .clip(shape)
                 .background(Color(0xD1FFFFFF))

@@ -50,7 +50,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/32";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/33";
     private static final long PROVIDER_QUERY_TIMEOUT_MS = 500;
     private static final long SLOW_PROVIDER_QUERY_MS = 100;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -264,7 +264,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static boolean requiresSerializedAccessibility(String endpoint, String path) {
         if (!isSemanticEndpoint(endpoint)) return false;
         Map<String, String> query = queryOf(path);
-        if ("/exact-projection".equals(endpoint) || "/query".equals(endpoint) || "/scroll".equals(endpoint)) {
+        if ("/exact-projection".equals(endpoint) || "/query".equals(endpoint) || "/scroll".equals(endpoint) || "/set-progress".equals(endpoint)) {
             return false;
         }
         if ("/tap".equals(endpoint) &&
@@ -398,15 +398,19 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private boolean dispatchTapGesture(Rect bounds) {
+        return dispatchTapGesture(bounds.exactCenterX(), bounds.exactCenterY());
+    }
+
+    private boolean dispatchTapGesture(float x, float y) {
         Path path = new Path();
-        path.moveTo(bounds.exactCenterX(), bounds.exactCenterY());
+        path.moveTo(x, y);
         GestureDescription gesture = new GestureDescription.Builder()
             .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
             .build();
         GestureDelivery delivery = new GestureDelivery();
-        Log.i(LOG_TAG, "physical tap requested bounds=" + bounds);
+        Log.i(LOG_TAG, "physical tap requested x=" + x + " y=" + y);
         delivery.await(dispatchGesture(gesture, delivery, new android.os.Handler(android.os.Looper.getMainLooper())));
-        Log.i(LOG_TAG, "physical tap delivered bounds=" + bounds);
+        Log.i(LOG_TAG, "physical tap delivered x=" + x + " y=" + y);
         return true;
     }
 
@@ -891,185 +895,31 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect expectedBounds,
         String semanticPath
     ) {
-        for (int attempt = 0; attempt < 3; attempt++) {
-            if (!semanticPath.startsWith("projection-provider:") ||
-                !currentProviderTargetMatches(tag, expectedBounds, semanticPath, false, false)) return false;
-            long sequence = accessibilityEventSequence.get();
-            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-            if (node != null) {
-                try {
-                    if (setMatchingNodeProgress(node, tag, value, expectedBounds)) return true;
-                } finally {
-                    node.recycle();
-                }
-            }
-            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
-        }
-        return false;
-    }
-
-    @SuppressWarnings("deprecation")
-    private AccessibilityNodeInfo resolveRenderedNode(
-        String tag,
-        Rect expectedBounds,
-        String semanticPath
-    ) {
-        boolean projectedGeometry = semanticPath.startsWith("projection-provider:");
-        AccessibilityNodeInfo indexed = findIndexedRenderedNode(
-            tag,
-            expectedBounds,
-            projectedGeometry
-        );
-        if (indexed != null) return indexed;
-
-        AccessibilityNodeInfo node = nodeAtPath(semanticPath);
-        if (node != null) {
-            node.refresh();
-            if (matchesRenderedTarget(node, tag, expectedBounds)) return node;
-            node.recycle();
-        }
-
-        // Compose may renumber semantics children during an unrelated
-        // recomposition. Resolve that case like a real tap: descend only
-        // through nodes covering the readiness point, then require the same
-        // semantic tag and exact bounds before delivering the action.
-        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        ProviderSnapshot snapshot = providerSnapshot(tag);
+        Map<String, String> fields = projectionStateFields(snapshot.state);
+        // A single published frame owns both identity and pointer mapping. Never
+        // resolve a second, independently updated accessibility tree for input.
+        if (!semanticPath.equals("projection-provider:" + snapshot.incarnation + ":" + snapshot.revision) ||
+            !expectedBounds.equals(parseBounds(snapshot.bounds == null ? "" : snapshot.bounds)) ||
+            !"horizontal-progress".equals(fields.get("kind")) ||
+            !"true".equals(fields.get("enabled")) || !"true".equals(fields.get("window-focus"))) return false;
+        float minimum, maximum;
         try {
-            for (AccessibilityNodeInfo root : roots) {
-                AccessibilityNodeInfo match = findRenderedNodeAtPoint(
-                    root,
-                    tag,
-                    expectedBounds,
-                    projectedGeometry
-                );
-                if (match != null) return match;
-            }
-            return null;
-        } finally {
-            recycleAll(roots);
-        }
+            minimum = Float.parseFloat(fields.getOrDefault("min", ""));
+            maximum = Float.parseFloat(fields.getOrDefault("max", ""));
+        } catch (NumberFormatException error) { return false; }
+        if (!Float.isFinite(value) || !Float.isFinite(minimum) || !Float.isFinite(maximum) ||
+            maximum <= minimum || value < minimum || value > maximum || expectedBounds.isEmpty()) return false;
+        float x = expectedBounds.left + (value - minimum) / (maximum - minimum) * expectedBounds.width();
+        // Endpoints belong inside the hit area, not to the adjacent control.
+        x = Math.max(expectedBounds.left + 0.5f, Math.min(expectedBounds.right - 0.5f, x));
+        float y = expectedBounds.exactCenterY();
+        Rect dock = indexedBounds("parity:primary-navigation");
+        if (!physicalDisplayBounds().contains((int) x, (int) y) ||
+            (dock != null && dock.contains((int) x, (int) y))) return false;
+        return dispatchTapGesture(x, y);
     }
 
-    private AccessibilityNodeInfo findIndexedRenderedNode(
-        String tag,
-        Rect expectedBounds,
-        boolean acceptProjectedGeometry
-    ) {
-        List<AccessibilityNodeInfo> roots = targetRoots(true);
-        try {
-            for (AccessibilityNodeInfo root : roots) {
-                List<AccessibilityNodeInfo> indexed = root.findAccessibilityNodeInfosByViewId(tag);
-                if (indexed == null) continue;
-                try {
-                    for (AccessibilityNodeInfo match : indexed) {
-                        match.refresh();
-                        if (matchesRenderedTarget(match, tag, expectedBounds) ||
-                            (acceptProjectedGeometry &&
-                                matchesProjectedTarget(match, tag, expectedBounds))) {
-                            return AccessibilityNodeInfo.obtain(match);
-                        }
-                    }
-                } finally {
-                    recycleAll(indexed);
-                }
-            }
-            return null;
-        } finally {
-            recycleAll(roots);
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    private static AccessibilityNodeInfo findRenderedNodeAtPoint(
-        AccessibilityNodeInfo node,
-        String tag,
-        Rect expectedBounds,
-        boolean acceptProjectedGeometry
-    ) {
-        node.refresh();
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        boolean geometryMatches = acceptProjectedGeometry
-            ? Rect.intersects(bounds, expectedBounds)
-            : bounds.contains(expectedBounds.centerX(), expectedBounds.centerY());
-        if (!geometryMatches) return null;
-        if (matchesRenderedTarget(node, tag, expectedBounds) ||
-            (acceptProjectedGeometry && tag.equals(node.getViewIdResourceName()))) {
-            return AccessibilityNodeInfo.obtain(node);
-        }
-        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
-            if (child == null) continue;
-            try {
-                AccessibilityNodeInfo match = findRenderedNodeAtPoint(
-                    child,
-                    tag,
-                    expectedBounds,
-                    acceptProjectedGeometry
-                );
-                if (match != null) return match;
-            } finally {
-                child.recycle();
-            }
-        }
-        return null;
-    }
-
-    private static boolean matchesRenderedTarget(
-        AccessibilityNodeInfo node,
-        String tag,
-        Rect expectedBounds
-    ) {
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        return bounds.equals(expectedBounds);
-    }
-
-    private static boolean matchesProjectedTarget(
-        AccessibilityNodeInfo node,
-        String tag,
-        Rect expectedBounds
-    ) {
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        return Rect.intersects(bounds, expectedBounds);
-    }
-
-    @SuppressWarnings("deprecation")
-    private AccessibilityNodeInfo nodeAtPath(String semanticPath) {
-        if (!semanticPath.matches("[0-9]+(?:/[0-9]+)*")) return null;
-        String[] components = semanticPath.split("/");
-        int rootIndex;
-        try {
-            rootIndex = Integer.parseInt(components[0]);
-        } catch (NumberFormatException error) {
-            return null;
-        }
-        List<AccessibilityNodeInfo> roots = targetRoots(true);
-        AccessibilityNodeInfo current = null;
-        try {
-            if (rootIndex < 0 || rootIndex >= roots.size()) return null;
-            current = AccessibilityNodeInfo.obtain(roots.get(rootIndex));
-        } finally {
-            recycleAll(roots);
-        }
-        for (int componentIndex = 1; componentIndex < components.length; componentIndex++) {
-            int childIndex;
-            try {
-                childIndex = Integer.parseInt(components[componentIndex]);
-            } catch (NumberFormatException error) {
-                current.recycle();
-                return null;
-            }
-            AccessibilityNodeInfo child = childAtOrNull(current, childIndex);
-            current.recycle();
-            if (child == null) return null;
-            current = child;
-        }
-        return current;
-    }
 
 
     private List<AccessibilityNodeInfo> roots(boolean topFirst) {
@@ -1151,27 +1001,6 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    @SuppressWarnings("deprecation")
-    private static boolean setMatchingNodeProgress(
-        AccessibilityNodeInfo node,
-        String tag,
-        float value,
-        Rect expectedBounds
-    ) {
-        node.refresh();
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        if (!bounds.equals(expectedBounds) || !node.isVisibleToUser() || !node.isEnabled()) {
-            return false;
-        }
-        Bundle arguments = new Bundle();
-        arguments.putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value);
-        return node.performAction(
-            AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(),
-            arguments
-        );
-    }
 
     private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {
         if (!semanticPath.startsWith("projection-provider:") || !currentProviderTargetMatches(

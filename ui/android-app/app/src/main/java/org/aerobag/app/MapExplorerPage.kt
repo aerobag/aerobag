@@ -3775,7 +3775,7 @@ internal fun MapExplorerPage(
                 )
                 MapPlaybackWidgetOverlay(
                     surfaceWidthDp = surfaceWidthDp,
-                    uiSession = uiSession,
+                    sessionWorkRunner = sessionWorkRunner,
                     playbackUiState = playbackUiState,
                     sourcePath = playbackSourcePath,
                     onSourcePathChange = actions.onPlaybackSourcePathChange,
@@ -3911,7 +3911,7 @@ internal fun MapExplorerPage(
 @Composable
 private fun MapPlaybackWidgetOverlay(
     surfaceWidthDp: Float,
-    uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
     playbackUiState: PlaybackUiState,
     sourcePath: String,
     onSourcePathChange: (String) -> Unit,
@@ -3943,7 +3943,7 @@ private fun MapPlaybackWidgetOverlay(
         maxOf(playbackBottomPadding, playbackKeyboardPadding + ThumbGap)
 
     PlaybackWidget(
-        uiSession = uiSession,
+        sessionWorkRunner = sessionWorkRunner,
         playbackUiState = playbackUiState,
         sourcePath = sourcePath,
         onSourcePathChange = onSourcePathChange,

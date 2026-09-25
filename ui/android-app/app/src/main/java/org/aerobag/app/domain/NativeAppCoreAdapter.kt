@@ -1565,6 +1565,7 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
     fun loadPlaybackTrace(sourcePath: String, traceJson: String): UiSessionSnapshot {
         return runPagedSnapshot("loadPlaybackTrace") {
             bridge.loadPlaybackTraceInSessionPagedJson(
@@ -1575,24 +1576,28 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
     fun playPlayback(nowEpochMs: Double): UiSessionSnapshot {
         return runPagedSnapshot("playPlayback") {
             bridge.playPlaybackInSessionPagedJson(handle, nowEpochMs)
         }
     }
 
+    @RawUiSessionWorkApi
     fun pausePlayback(nowEpochMs: Double): UiSessionSnapshot {
         return runPagedSnapshot("pausePlayback") {
             bridge.pausePlaybackInSessionPagedJson(handle, nowEpochMs)
         }
     }
 
+    @RawUiSessionWorkApi
     fun seekPlayback(cursorSeconds: Double, nowEpochMs: Double): UiSessionSnapshot {
         return runPagedSnapshot("seekPlayback") {
             bridge.seekPlaybackInSessionPagedJson(handle, cursorSeconds, nowEpochMs)
         }
     }
 
+    @RawUiSessionWorkApi
     fun setPlaybackRate(rate: Double, nowEpochMs: Double): UiSessionSnapshot {
         return runPagedSnapshot("setPlaybackRate") {
             bridge.setPlaybackRateInSessionPagedJson(handle, rate, nowEpochMs)

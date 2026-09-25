@@ -6,6 +6,11 @@ package org.aerobag.app.e2e
 
 import org.aerobag.app.E2eProjectionProvider
 import org.aerobag.app.E2eProjectionRegistry
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Rect
+import android.os.Handler
+import android.view.accessibility.AccessibilityWindowInfo
 import org.json.JSONArray
 import org.junit.After
 import org.junit.Assert.*
@@ -23,7 +28,7 @@ import org.robolectric.util.ReflectionHelpers.ClassParameter
 import java.util.concurrent.Executors
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], shadows = [SemanticDriverObservationTest.ImeProbe::class])
+@Config(sdk = [34], shadows = [SemanticDriverObservationTest.ImeProbe::class, SemanticDriverObservationTest.GestureProbe::class])
 class SemanticDriverObservationTest {
     private val owner = Any()
     private val tags = mutableListOf<String>()
@@ -33,6 +38,7 @@ class SemanticDriverObservationTest {
     @Before fun setUp() {
         ImeProbe.reads = 0
         ImeProbe.ready = true
+        GestureProbe.gestures.clear()
         driver = Robolectric.buildService(SemanticDriverService::class.java).create().get()
         ReflectionHelpers.setField(driver, "providerQueryTimeoutExecutor", timer)
         val provider = Robolectric.buildContentProvider(E2eProjectionProvider::class.java).create().get()
@@ -95,6 +101,55 @@ class SemanticDriverObservationTest {
     @Test fun absentControlsDoNotProbeTheInputConnection() {
         assertEquals(0, read("parity:test-absent").length())
         assertEquals(0, ImeProbe.reads)
+    }
+
+    private fun progress(tag: String, value: Float, evidence: String): Boolean =
+        ReflectionHelpers.callInstanceMethod(driver, "setRenderedProgress",
+            ClassParameter.from(String::class.java, tag),
+            ClassParameter.from(Float::class.javaPrimitiveType, value),
+            ClassParameter.from(Rect::class.java, Rect(20, 20, 60, 60)),
+            ClassParameter.from(String::class.java, evidence))
+
+    @Test fun progressUsesOnePhysicalGestureWithoutReadingTheAccessibilityTree() {
+        val tag = "parity:test-slider"
+        publish(tag, "kind:horizontal-progress:min:0.25:max:11.0:enabled:true:window-focus:true")
+        val evidence = read(tag).getJSONObject(0).getString("semantic-path")
+        assertTrue(progress(tag, 5.625f, evidence))
+        assertEquals(1, GestureProbe.gestures.size)
+        val bounds = android.graphics.RectF()
+        GestureProbe.gestures.single().getStroke(0).path.computeBounds(bounds, true)
+        assertEquals(40f, bounds.left, 0.01f)
+        assertEquals(40f, bounds.top, 0.01f)
+        assertEquals(0, ImeProbe.reads)
+    }
+
+    @Test fun progressRejectsDisabledChangedAndUnmountedControlsWithoutInput() {
+        val tag = "parity:test-slider"
+        val state = "kind:horizontal-progress:min:0:max:10:enabled:true:window-focus:true"
+        publish(tag, state)
+        val evidence = read(tag).getJSONObject(0).getString("semantic-path")
+        assertFalse(progress(tag, -1f, evidence))
+        assertFalse(progress(tag, Float.NaN, evidence))
+        publish(tag, state.replace("enabled:true", "enabled:false"))
+        assertFalse(progress(tag, 5f, evidence))
+        E2eProjectionRegistry.remove(tag, owner)
+        assertFalse(progress(tag, 5f, evidence))
+        publish(tag, state)
+        assertFalse(progress(tag, 5f, evidence))
+        assertTrue(GestureProbe.gestures.isEmpty())
+    }
+
+    @Implements(AccessibilityService::class)
+    class GestureProbe {
+        companion object { val gestures = mutableListOf<GestureDescription>() }
+        @Implementation fun getWindows(): List<AccessibilityWindowInfo> =
+            error("Progress input must not wait for an accessibility-tree round trip")
+        @Implementation fun dispatchGesture(gesture: GestureDescription,
+            callback: AccessibilityService.GestureResultCallback?, handler: Handler?): Boolean {
+            gestures.add(gesture)
+            callback?.onCompleted(gesture)
+            return true
+        }
     }
 
     @Implements(SemanticDriverInputMethodService::class)

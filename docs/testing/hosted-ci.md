@@ -35,6 +35,19 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+Android progress input follows the same publisher-to-physical-input contract as
+taps and scrolling. Protocol 33 reads a slider's current linear pointer range
+and bounds in one published frame, validates the original process/revision,
+then sends one physical tap. It never resolves an accessibility node or retries
+an action. The September 25 run reached the replay slider but timed out in the
+old synchronous tree/action round trip. `SemanticDriverObservationTest` forbids
+tree access while exercising the real driver; `PlaybackInputTest` checks the
+published mapping against physical input on the production controls, including
+trace replacement and remount. Journeys still require the resulting rate/cursor.
+Replay mutations use the retained session work queue, not main-thread calls
+which can block behind live-feed installation. Raw replay operations require
+the same explicit opt-in as other scheduled session work.
+
 Before committing, run `/usr/bin/python3 tools/ci/cheap_preflight.py`. It works
 with uncommitted changes and always runs the complete inexpensive suites:
 fixture-free Rust tests/doctests and the hermetic service workload, Python tool

@@ -200,6 +200,18 @@ internal fun Modifier.e2eIndexedControl(
     },
 )
 
+/** Linear pointer mapping across this control's full width, published with its frame. */
+@Composable
+internal fun Modifier.e2eIndexedHorizontalProgress(
+    semanticTag: String,
+    enabled: Boolean,
+    minimum: Float,
+    maximum: Float,
+): Modifier = e2eIndexedElement(
+    semanticTag,
+    "kind:horizontal-progress:min:$minimum:max:$maximum:enabled:$enabled",
+)
+
 /** Indexed editable state used by the release-journey IME boundary. */
 @Composable
 internal fun Modifier.e2eIndexedTextControl(

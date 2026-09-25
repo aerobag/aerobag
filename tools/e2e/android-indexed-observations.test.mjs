@@ -287,7 +287,7 @@ test("map gesture geometry bypasses the tree without ignoring controls or stale 
 test("provider-only batch requests bypass the server's accessibility queue and fallback", () => {
   const service = readFileSync(new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url), "utf8");
   const lock = service.slice(service.indexOf("private static boolean requiresSerializedAccessibility"), service.indexOf("private void handleSetText"));
-  assert.match(lock, /"\/exact-projection"\.equals\(endpoint\) \|\| "\/query"\.equals\(endpoint\) \|\| "\/scroll"\.equals\(endpoint\)\) \{\s*return false/);
+  assert.match(lock, /"\/exact-projection"\.equals\(endpoint\) \|\| "\/query"\.equals\(endpoint\) \|\| "\/scroll"\.equals\(endpoint\) \|\| "\/set-progress"\.equals\(endpoint\)\) \{\s*return false/);
   const handler = service.slice(service.indexOf("private void handleQuery"), service.indexOf("private void handleExactProjection"));
   assert.match(handler, /providerProjectionPrefix\(tag\)/);
   assert.match(handler, /providerProjection\(tag, false\)/);

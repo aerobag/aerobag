@@ -1019,6 +1019,9 @@ test("native plate opening does not click an already-selected exact airport twic
   );
   assert.doesNotMatch(body, /selected in inspector|map-selection-item:airport/);
   assert.match(body, /plate folder opened for \$\{airportId\}/);
+  assert.match(body, /complete: async \(\) => queryAndroidSemanticNodes\(serial, PLATE_FOLDER_TILE_PREFIX, \{ prefix: true \}\)/);
+  assert.match(body, /completionSatisfied: nodes => nodes\.some\(node => node\.visible === "true"\)/);
+  assert.doesNotMatch(body, /complete:.*plate-folder-button/);
 });
 
 test("native map selection dismissal observes the fixed projection", () => {
@@ -3597,8 +3600,11 @@ test("Android plate first-open journey uses exact projections for semantic rende
   );
   for (const implementation of [firstPaint, plateOpen]) {
     assert.match(implementation, /queryExactAndroidNode/);
-    assert.doesNotMatch(implementation, /dumpAndroid|queryAndroidSemanticNodes/);
+    assert.doesNotMatch(implementation, /dumpAndroid/);
   }
+  // Folder population is asynchronous; its rendered indexed tiles, not its
+  // toolbar button or a hierarchy dump, are the destination readiness.
+  assert.match(plateOpen, /queryAndroidSemanticNodes\(serial, PLATE_FOLDER_TILE_PREFIX, \{ prefix: true \}\)/);
 });
 
 test("Android plate raster qualification isolates the Google ATD image from GNSS", () => {

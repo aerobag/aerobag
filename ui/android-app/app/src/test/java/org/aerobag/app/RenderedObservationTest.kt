@@ -268,7 +268,14 @@ class RenderedObservationTest {
                         "Procedure NOTAMs", "Check briefing", "None", listOf(
                             org.aerobag.app.domain.AirportNotamUiView("one", "IAP", "Approach unavailable"))))
                     1 -> MapSelectionDetailModal("TFR", "Temporary flight restrictions")
-                    else -> OfflinePackagesErrorPanel("Unsupported publication", false, {})
+                    2 -> OfflinePackagesErrorPanel("Unsupported publication", false, {})
+                    else -> OfflinePackagesLibraryPanel(
+                        message = "No manifest supported by this app",
+                        storageCapacityLabel = null, packageSourceBaseUrl = "http://fixture/",
+                        onPackageSourceBaseUrlChange = {}, refreshInFlight = false, sourceEditable = false,
+                        refreshEnabled = true, refreshCancelEnabled = false, cancelRequested = false,
+                        onRefresh = {}, onCancelRefresh = {}, closeEnabled = false, onClose = {},
+                    )
                 }
             }
         }
@@ -276,6 +283,7 @@ class RenderedObservationTest {
             "parity:procedure-notam-modal" to "Approach unavailable",
             "parity:map-selection-detail-modal:TFR" to "Temporary flight restrictions",
             "parity:offline-library-panel" to "Unsupported publication",
+            "parity:offline-library-panel" to "No manifest supported by this app",
         )
         cases.forEachIndexed { index, (id, body) ->
             compose.runOnIdle { panel.value = index }
@@ -283,7 +291,7 @@ class RenderedObservationTest {
             val snapshot = requireNotNull(E2eProjectionRegistry.read(id))
             val text = android.net.Uri.decode(snapshot.state.substringAfter("text:").substringBefore(":"))
             assertTrue("published text must include rendered body", text.contains(body))
-            if (index > 0) assertNull(E2eProjectionRegistry.read(cases[index - 1].first))
+            if (index > 0 && cases[index - 1].first != id) assertNull(E2eProjectionRegistry.read(cases[index - 1].first))
         }
     }
 

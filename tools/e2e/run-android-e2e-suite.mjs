@@ -855,7 +855,8 @@ async function openPlateFromAirportInspector(serial, result, airportId, expected
       return action?.enabled === "true" ? action : null;
     },
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => queryExactAndroidNode(serial, "parity:plate-folder-button"),
+    complete: async () => queryAndroidSemanticNodes(serial, PLATE_FOLDER_TILE_PREFIX, { prefix: true }),
+    completionSatisfied: nodes => nodes.some(node => node.visible === "true"),
   });
   recordStep(result, "plate folder opened", airportId);
 

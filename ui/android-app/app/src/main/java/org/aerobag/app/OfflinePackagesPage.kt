@@ -417,7 +417,7 @@ internal fun OfflinePackagesLibraryPanel(
     Surface(
         modifier = modifier
             .fillMaxSize()
-            .e2eIndexedElement("parity:offline-library-panel"),
+            .e2eIndexedLabel("parity:offline-library-panel", "OFFLINE PACKAGES\n$message"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,

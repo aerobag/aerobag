@@ -1756,12 +1756,13 @@ async function contractFailures(runtime) {
   await setFixtureControl(runtime, { publication: "unsupported", artifact_fault: "none" });
   try {
     await runtime.resetApplicationDataExpectingStartupFailure("app.reset-unsupported-contract");
-    const failure = await runtime.eventually("unsupported publication failure", async () => {
-      const panel = await runtime.driver.readElement(
+    const failure = await runtime.observe("unsupported publication failure", () =>
+      runtime.driver.readElement(
         runtime.platform === "web" ? "startup-fatal-error" : "offline-library-panel",
-      );
-      return panel?.text && /unsupported|no manifest supported/i.test(panel.text) ? panel : null;
-    }, E2E_TIMING.startupMs);
+      ),
+      panel => Boolean(panel?.text && /unsupported|no manifest supported/i.test(panel.text)),
+      E2E_TIMING.startupMs,
+    );
     runtime.check(
       "startup.unsupported-contract",
       Boolean(failure?.text && /unsupported|no manifest supported/i.test(failure.text)),

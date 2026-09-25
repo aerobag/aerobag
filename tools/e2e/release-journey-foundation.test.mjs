@@ -1046,8 +1046,8 @@ test("Android map-selection state uses one fixed bounded projection", () => {
   assert.match(map, /viewId = R\.id\.e2e_map_selection_projection/);
   assert.equal(
     [...map.matchAll(/viewId = R\.id\.e2e_map_selection_projection/g)].length,
-    2,
-    "the map and its separate popup accessibility window must expose the same projection",
+    1,
+    "the map owns one selection projection; an overlay must not duplicate its publisher",
   );
   assert.match(ids, /name="e2e_map_selection_projection"/);
   assert.match(

@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Text
@@ -119,6 +120,32 @@ class RenderedObservationTest {
         }
         assertThrows(IllegalArgumentException::class.java) { E2eProjectionRegistry.query(null, null) }
         assertThrows(IllegalArgumentException::class.java) { E2eProjectionRegistry.query("typo", null) }
+    }
+
+    @Test fun mapSelectionOwnerRemainsReadableAcrossOverlayMountAndPhysicalDismissal() {
+        val open = mutableStateOf(true)
+        lateinit var view: View
+        val id = "org.aerobag.app:id/e2e_map_selection_projection"
+        compose.setContent {
+            view = LocalView.current
+            Box(Modifier.fillMaxSize()) {
+                E2eProjectionView(R.id.e2e_map_selection_projection, "open:${open.value}")
+                if (open.value) MapInspectionOverlay(false, { open.value = false }) {
+                    Box(Modifier.size(80.dp).e2eIndexedLabel("parity:overlay-close", "Close")
+                        .clickable { open.value = false }) { Text("Close") }
+                }
+            }
+        }
+        fun frame() = compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        repeat(2) {
+            frame()
+            assertEquals("open:true", E2eProjectionRegistry.read(id)!!.state)
+            compose.onNodeWithTag("parity:overlay-close").performTouchInput { click() }
+            frame()
+            assertEquals("open:false", E2eProjectionRegistry.read(id)!!.state)
+            assertNull(E2eProjectionRegistry.read("parity:overlay-close"))
+            compose.runOnIdle { open.value = true }
+        }
     }
 
     @Test fun readerSeesWholeFrameEvenWhenTheNextFrameReplacesEveryRow() {

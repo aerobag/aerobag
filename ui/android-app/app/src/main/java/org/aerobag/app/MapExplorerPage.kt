@@ -3808,13 +3808,6 @@ internal fun MapExplorerPage(
                     onDismiss = { inspectionCommand(MapInspectionCommand.Dismiss) },
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        E2eProjectionView(
-                            viewId = R.id.e2e_map_selection_projection,
-                            state = mapSelectionProjectionState,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .size(1.dp),
-                        )
                         if (selection.detailModal != null) {
                             selection.detailModal.airportInfo?.let { airportInfo ->
                                 AirportInfoModal(
@@ -5491,7 +5484,7 @@ internal fun AirportInfoModal(
                             value = fact.value,
                             nextInLabel = fact.nextInLabel,
                             semanticTag = fact.actionId?.let {
-                                "parity:airport-info-time-toggle"
+                                "parity:airport-info-time-toggle:${fact.label}"
                             },
                             onClick = when {
                             fact.actionId != null -> {

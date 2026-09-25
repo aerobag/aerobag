@@ -2384,7 +2384,7 @@ async function airportInfo(runtime) {
   const beforeTime = projectionId(
     (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0],
   );
-  const afterTime = await runtime.action("change airport time mode", "airport-info-time-toggle", {
+  const afterTime = await runtime.action("change airport time mode", "airport-info-time-toggle:Time at airport", {
     complete: async () => {
       const fact = (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0];
       return projectionId(fact) && projectionId(fact) !== beforeTime ? fact : null;

@@ -11813,7 +11813,7 @@ function AirportInfoFact(props: {
       <div className="airportInfoFactLabel">{props.label}</div>
       <div
         className={`airportInfoFactValue${props.onClick ? " isActionable" : ""}`}
-        data-testid={props.onClick ? "airport-info-time-toggle" : undefined}
+        data-testid={props.onClick ? `airport-info-time-toggle:${props.label}` : undefined}
         role={props.onClick ? "button" : undefined}
         tabIndex={props.onClick ? 0 : undefined}
         onClick={props.onClick}

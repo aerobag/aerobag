@@ -37,14 +37,20 @@ private fun Modifier.observeScroll(
 }
 
 @Composable
-internal fun Modifier.observedVerticalScroll(state: ScrollState): Modifier =
-    observeScroll("vertical", state.value.toString(), state.canScrollBackward, state.canScrollForward, state.isScrollInProgress)
-        .verticalScroll(state)
+internal fun Modifier.observedVerticalScroll(state: ScrollState): Modifier {
+    val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
+        observeScroll("vertical", state.value.toString(), state.canScrollBackward, state.canScrollForward, state.isScrollInProgress)
+    } else this
+    return observed.verticalScroll(state)
+}
 
 @Composable
-internal fun Modifier.observedHorizontalScroll(state: ScrollState): Modifier =
-    observeScroll("horizontal", state.value.toString(), state.canScrollBackward, state.canScrollForward, state.isScrollInProgress)
-        .horizontalScroll(state)
+internal fun Modifier.observedHorizontalScroll(state: ScrollState): Modifier {
+    val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
+        observeScroll("horizontal", state.value.toString(), state.canScrollBackward, state.canScrollForward, state.isScrollInProgress)
+    } else this
+    return observed.horizontalScroll(state)
+}
 
 @Composable
 internal fun ObservedLazyColumn(
@@ -57,11 +63,14 @@ internal fun ObservedLazyColumn(
     userScrollEnabled: Boolean = true,
     content: LazyListScope.() -> Unit,
 ) {
-    LazyColumn(
-        modifier = modifier.observeScroll("vertical",
+    val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
+        modifier.observeScroll("vertical",
             "${state.firstVisibleItemIndex},${state.firstVisibleItemScrollOffset}",
             userScrollEnabled && state.canScrollBackward, userScrollEnabled && state.canScrollForward,
-            state.isScrollInProgress),
+            state.isScrollInProgress)
+    } else modifier
+    LazyColumn(
+        modifier = observed,
         state = state, contentPadding = contentPadding, reverseLayout = reverseLayout,
         verticalArrangement = verticalArrangement, horizontalAlignment = horizontalAlignment,
         userScrollEnabled = userScrollEnabled, content = content,
@@ -78,12 +87,15 @@ internal fun ObservedLazyVerticalGrid(
     userScrollEnabled: Boolean = true,
     content: LazyGridScope.() -> Unit,
 ) {
-    LazyVerticalGrid(
-        columns = columns,
-        modifier = modifier.observeScroll("vertical",
+    val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
+        modifier.observeScroll("vertical",
             "${state.firstVisibleItemIndex},${state.firstVisibleItemScrollOffset}",
             userScrollEnabled && state.canScrollBackward, userScrollEnabled && state.canScrollForward,
-            state.isScrollInProgress),
+            state.isScrollInProgress)
+    } else modifier
+    LazyVerticalGrid(
+        columns = columns,
+        modifier = observed,
         state = state, horizontalArrangement = horizontalArrangement,
         verticalArrangement = verticalArrangement, userScrollEnabled = userScrollEnabled, content = content,
     )

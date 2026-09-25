@@ -29,7 +29,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.SerialName
@@ -469,10 +468,16 @@ class AndroidLiveFeedClient(
         ignoreUnknownKeys = true
     },
 ) {
-    private val pumpMutex = Mutex()
+    private val acquisitionWakeups = Channel<Unit>(Channel.CONFLATED)
     private val resourceRetryWakeups = Channel<Long>(Channel.CONFLATED)
     private val eventsUrl = cache.liveFeedEventsUrl()
     private val statusUrl = cache.liveFeedStatusUrl()
+
+    // The stream, policy changes, and retry timer only signal work. One worker
+    // owns acquisition; a slow product cannot block later SSE messages.
+    fun requestAcquisition() {
+        acquisitionWakeups.trySend(Unit)
+    }
 
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
@@ -480,6 +485,9 @@ class AndroidLiveFeedClient(
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit = {},
         onSessionEvents: suspend (List<LiveFeedSseEvent>) -> Unit,
     ) = coroutineScope {
+        val acquisitionPump = launch {
+            for (ignored in acquisitionWakeups) pumpUntilSettled(promote, onChanged)
+        }
         val startDecision = handleRuntimeEvent(
             kind = "start",
             promote = promote,
@@ -511,7 +519,7 @@ class AndroidLiveFeedClient(
         val resourceRetryPump = launch {
             for (delayMs in resourceRetryWakeups) {
                 delay(delayMs)
-                pumpUntilSettled(promote, onChanged)
+                requestAcquisition()
             }
         }
         try {
@@ -551,6 +559,7 @@ class AndroidLiveFeedClient(
             networkChanges.close()
             networkPump.cancel()
             resourceRetryPump.cancel()
+            acquisitionPump.cancel()
         }
     }
 
@@ -586,10 +595,10 @@ class AndroidLiveFeedClient(
         retryResourcesDelayMs(decision)?.let(resourceRetryWakeups::trySend)
     }
 
-    suspend fun pumpUntilSettled(
+    private suspend fun pumpUntilSettled(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
-    ): Int = pumpMutex.withLock {
+    ): Int {
         beforePump()
         var installs = 0
         while (kotlin.coroutines.coroutineContext.isActive) {
@@ -794,7 +803,7 @@ class AndroidLiveFeedClient(
                     if (outcome.sessionEvents.isNotEmpty()) onSessionEvents(outcome.sessionEvents)
                     if (!outcome.cacheChanged) return
                     onChanged()
-                    pumpUntilSettled(promote, onChanged)
+                    requestAcquisition()
                 }
                 while (kotlin.coroutines.coroutineContext.isActive) {
                     val line = reader.readLine() ?: break

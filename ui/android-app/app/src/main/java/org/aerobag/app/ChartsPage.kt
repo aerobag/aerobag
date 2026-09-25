@@ -546,12 +546,6 @@ internal fun ChartsPage(
             ))
         }
     }
-    LaunchedEffect(selectedChart?.id, trayOpen, folderOpen) {
-        if (!trayOpen && !folderOpen) {
-            withFrameNanos { }
-            focusRequester.requestFocus()
-        }
-    }
     DisposableEffect(activity, selectedChart?.id, surfaceSize, bitmap, viewportState.value, trayOpen, folderOpen) {
         if (activity != null) {
             activity.onHardwareZoomDelta = { delta ->
@@ -589,8 +583,7 @@ internal fun ChartsPage(
             .e2ePageRoot("parity:page:plate")
             .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
-            .focusRequester(focusRequester)
-            .focusable()
+            .surfaceKeyboardFocus(selectedChart?.id, !trayOpen && !folderOpen, focusRequester)
             .onPreviewKeyEvent { event ->
                 if (bitmap == null || viewportState.value == null || trayOpen || folderOpen || event.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN) {
                     return@onPreviewKeyEvent false

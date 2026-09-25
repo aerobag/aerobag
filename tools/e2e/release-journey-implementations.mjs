@@ -2382,20 +2382,7 @@ async function airportInfo(runtime) {
   await acceptDisclaimer(runtime);
 
   await openAirportInfo(runtime, complexAirport);
-  const beforeTime = projectionId(
-    (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0],
-  );
-  const afterTime = await runtime.action("change airport time mode", "airport-info-time-toggle:Time at airport", {
-    complete: async () => {
-      const fact = (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0];
-      return projectionId(fact) && projectionId(fact) !== beforeTime ? fact : null;
-    },
-  });
-  runtime.check(
-    "airport-info.time-toggle",
-    Boolean(afterTime),
-    `${beforeTime} -> ${projectionId(afterTime)}`,
-  );
+  await toggleAirportTimeMode(runtime);
   const initialScroll = await runtime.stable("settled airport-info scroll position", async () =>
     projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]));
   const scrolled = await runtime.transition("scroll airport info", {
@@ -2428,6 +2415,26 @@ async function airportInfo(runtime) {
   await openAirportInfo(runtime, fallbackAirport);
   const fallback = (await runtime.driver.readProjection("airport-info-runways:complex:false:"))[0];
   runtime.check("airport-info.runway-fallback", Boolean(fallback), projectionId(fallback));
+}
+
+export async function toggleAirportTimeMode(runtime) {
+  const readTime = async () =>
+    (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0] ?? null;
+  const basis = (fact) => {
+    const suffix = fact?.text?.trim().match(/\d{2}:?\d{2}(Z| [A-Za-z+\d:-]+)$/)?.[1];
+    return suffix ? (suffix === "Z" ? "utc" : "local") : null;
+  };
+  const beforeTime = await runtime.observe("rendered airport time", readTime, (fact) => basis(fact) !== null);
+  const targetBasis = basis(beforeTime) === "utc" ? "local" : "utc";
+  const afterTime = await runtime.action("change airport time mode", "airport-info-time-toggle:Time at airport", {
+    complete: readTime,
+    completionSatisfied: (fact) => basis(fact) === targetBasis,
+  });
+  runtime.check(
+    "airport-info.time-toggle",
+    Boolean(afterTime),
+    `${projectionId(beforeTime)} -> ${projectionId(afterTime)}`,
+  );
 }
 
 export async function selectInspectorSpot(runtime) {
@@ -2644,6 +2651,16 @@ async function flightPlanAirwayEstimates(runtime) {
   runtime.check("plan.estimates-vectors", Boolean(estimates), `${estimates?.length ?? 0} populated cells`);
 }
 
+export function guidedTourStepCompletion(runtime, title) {
+  return {
+    complete: async () => ({
+      panel: await readGuidedTourPanel(runtime),
+      next: await runtime.driver.readElement("guided-tour-next"),
+    }),
+    completionSatisfied: ({ panel, next }) => Boolean(panel?.text.includes(title) && next?.enabled),
+  };
+}
+
 async function guidedTour(runtime) {
   // Android bootstrap has already cleared user settings, installed the nav
   // packages and accepted its startup disclaimer. Observe that first welcome
@@ -2669,21 +2686,13 @@ async function guidedTour(runtime) {
   if (!originalMap) throw new Error("The original base map control is missing.");
   await runtime.openPage("home");
   const panel = () => readGuidedTourPanel(runtime);
-  const at = async (text) => { const value = await panel(); return value?.text.includes(text) ? value : null; };
-  const start = (title = "Three pages for most of your flying") => runtime.action("start guided tour", runtime.platform === "web" ? "home-button-guided_tour" : "home-button:GuidedTour", {
-    complete: () => at(title),
-  });
+  const at = (title) => guidedTourStepCompletion(runtime, title);
+  const start = (title = "Three pages for most of your flying") => runtime.action("start guided tour", runtime.platform === "web" ? "home-button-guided_tour" : "home-button:GuidedTour", at(title));
   runtime.check("home.guided-tour", Boolean(await start()));
-  runtime.check("tour.next", Boolean(await runtime.action("next tour step", "guided-tour-next", { complete: () => at("The Chart page") })));
-  runtime.check("tour.back", Boolean(await runtime.action("previous tour step", "guided-tour-back", { complete: () => at("Three pages for most of your flying") })));
-  await runtime.action("return to chart lesson", "guided-tour-next", { complete: () => at("The Chart page") });
-  runtime.check("tour.menu", Boolean(await runtime.action("open base map lesson", "guided-tour-next", {
-    complete: async () => {
-      const step = await at("Select the base map");
-      const next = await runtime.driver.readElement("guided-tour-next");
-      return step && next?.enabled ? step : null;
-    },
-  })));
+  runtime.check("tour.next", Boolean(await runtime.action("next tour step", "guided-tour-next", at("The Chart page"))));
+  runtime.check("tour.back", Boolean(await runtime.action("previous tour step", "guided-tour-back", at("Three pages for most of your flying"))));
+  await runtime.action("return to chart lesson", "guided-tour-next", at("The Chart page"));
+  runtime.check("tour.menu", Boolean(await runtime.action("open base map lesson", "guided-tour-next", at("Select the base map"))));
   await runtime.action("close guided tour", "guided-tour-close", { complete: async () => !(await panel()) && await runtime.driver.readPage("home") });
   await runtime.openPage("flight_plan");
   const restoredPlan = JSON.stringify(await labels()) === JSON.stringify(original);
@@ -2691,7 +2700,7 @@ async function guidedTour(runtime) {
   runtime.check("tour.close-restores", restoredPlan && (await runtime.driver.readElement("chart-family-button"))?.text === originalMap);
   await runtime.openPage("home");
   runtime.check("tour.reopen", Boolean(await start("Select the base map")));
-  runtime.check("tour.restart", Boolean(await runtime.action("restart guided tour", "guided-tour-restart", { complete: () => at("Three pages for most of your flying") })));
+  runtime.check("tour.restart", Boolean(await runtime.action("restart guided tour", "guided-tour-restart", at("Three pages for most of your flying"))));
   await runtime.action("close reopened tour", "guided-tour-close", { complete: async () => !(await panel()) });
 }
 

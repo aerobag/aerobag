@@ -2039,7 +2039,6 @@ internal fun MapExplorerPage(
             actions.onSessionCommandFailure(error)
             null
         }
-    val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
     var openStatusControlId by remember { mutableStateOf<UiSurfaceStatusControlId?>(null) }
@@ -2863,12 +2862,6 @@ internal fun MapExplorerPage(
             Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }
-    LaunchedEffect(selectedMapId, menuTrayOpen) {
-        if (!menuTrayOpen) {
-            withFrameNanos { }
-            focusRequester.requestFocus()
-        }
-    }
     LaunchedEffect(uiSession, mapFollowUiState.following, mapFollowTargetViewport, viewport) {
         if (mapFollowUiState.following && mapFollowTargetViewport == null) {
             applySessionCommand("engageMapFollow") { uiSession.engageMapFollow(viewport) }
@@ -3300,7 +3293,6 @@ internal fun MapExplorerPage(
             .then(startupAttributionModifier)
             .onSizeChanged { surfaceSize = it }
             .onGloballyPositioned { coordinates -> mapSurfaceBounds = coordinates.boundsInWindow() }
-            .focusRequester(focusRequester)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action != AndroidKeyEvent.ACTION_DOWN ||
                     menuTrayOpen || mapSelection?.detailModal != null ||
@@ -3334,7 +3326,7 @@ internal fun MapExplorerPage(
                 updateViewport(nextViewport, MapViewportUpdateSource.UserInput)
                 true
             }
-            .focusable()
+            .surfaceKeyboardFocus(selectedMapId, !menuTrayOpen)
             .mapGestureInput(
                 enabled = surfaceWidthPx > 0f && surfaceHeightPx > 0f &&
                     !menuTrayOpen && mapSelection?.detailModal == null,

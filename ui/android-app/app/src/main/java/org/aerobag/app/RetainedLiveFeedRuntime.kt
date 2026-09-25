@@ -145,16 +145,7 @@ internal class RetainedLiveFeedRuntime(
     ) {
         val shouldPump = synchronized(lock) { started && policyPumpsEnabled && !closed }
         if (shouldPump) {
-            scope.launch {
-                client.pumpUntilSettled(
-                    promote = { summary ->
-                        check(promote(summary)) {
-                            "failed to promote ${summary.product}/${summary.version}"
-                        }
-                    },
-                    onChanged = ::syncCatalog,
-                )
-            }
+            client.requestAcquisition()
         }
     }
     fun start() {

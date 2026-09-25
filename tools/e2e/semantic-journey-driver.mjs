@@ -232,9 +232,9 @@ export async function editSemanticText(
       },
       act: (readyElement) => driver.focusText(controlId, readyElement),
       complete: async () => {
-        const element = await readTextElement(controlId);
-        return element?.focused ? element : null;
+        return readTextElement(controlId);
       },
+      completionSatisfied: (element) => element?.focused === true,
     });
   }
   return transition(description, {
@@ -1496,16 +1496,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return projected.focused && (!projected.supports_set_text || !projected.input_ready)
       ? { ...projected, actionable: false }
       : projected;
-  }
-
-  async readModal(modalId) {
-    for (const projection of ["parity:map-selection-state:", "parity:flight-plan-overlay-state:"]) {
-      const queried = this.readScalarProjection(projection);
-      const state = queried[0]?.["state-description"] ?? "";
-      const detailId = decodeURIComponent(semanticProjectionFields(state).detail ?? "none");
-      if (detailId === modalId) return { test_id: modalId, state };
-    }
-    return null;
   }
 
   async revealElement(elementId) {

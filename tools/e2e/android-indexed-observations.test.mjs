@@ -106,6 +106,32 @@ test("indexed controls own absence without caller hints, for exact and collectio
   }
 });
 
+test("modal observations follow rendering, never the model's intent to open or close", async () => {
+  const { driver, snapshots, respondWith } = device();
+  for (const host of ["parity:map-selection-state:", "parity:flight-plan-overlay-state:"]) {
+    for (const id of ["airport-info-modal:KSEA", "weather-detail-modal", "map-selection-detail-modal:TFR"]) {
+      const hostId = projections.get(host);
+      snapshots.set(hostId, {
+        "resource-id": hostId, "state-description": `detail:${encodeURIComponent(id)}`,
+      });
+      assert.equal(await driver.readModal(id), null, "open intent precedes modal layout");
+      const tag = `parity:${id}`;
+      snapshots.set(tag, { "resource-id": tag, visible: "true", text: "Rendered modal", bounds: "[0,0][90,120]" });
+      assert.equal((await driver.readModal(id)).text, "Rendered modal");
+      snapshots.set(hostId, { "resource-id": hostId, "state-description": "detail:none" });
+      assert.ok(await driver.readModal(id), "close intent precedes modal removal");
+      snapshots.delete(tag);
+      assert.equal(await driver.readModal(id), null);
+      snapshots.set(hostId, { "resource-id": hostId, "state-description": `detail:${encodeURIComponent(id)}` });
+      assert.equal(await driver.readModal(id), null, "retained model on remount is not rendered");
+      respondWith({ status: 28, stderr: "provider busy", stdout: "" });
+      await assert.rejects(() => driver.readModal(id), TransientObservationError);
+      respondWith(null);
+      snapshots.delete(hostId);
+    }
+  }
+});
+
 test("collection scanning shares the target observation instead of traversing another backend", async () => {
   const { driver, snapshots } = device();
   assert.equal((await driver.scanProjection("parity:plan-row:")).length, 0);

@@ -240,6 +240,41 @@ exposed six simultaneous `ARRIE` owners that the old last-writer-wins index hid.
 Physical-touch component tests select each distinct choice, and shared journeys
 match the transition identity rather than guessing from substrings in labels.
 
+Background surface focus must not override a user's intervening editor focus.
+The September 25 airport-info journey delivered its Search tap, but the map's
+deferred keyboard-focus effect took focus back on the following frame. Map and
+plate surfaces now share `surfaceKeyboardFocus`, which checks descendant focus
+at the time it acts. `SurfaceKeyboardFocusTest` physically taps the production
+Search field between frames, including while a menu closes and after remount;
+the old unconditional request fails these cases. Text-focus observations retain the unfocused control
+in failure diagnostics instead of reducing every mismatch to null.
+
+The same run exposed product acquisition blocking Android's SSE reader. A catalog
+could require a long NOTAM delta chain; awaiting that chain before reading the
+next event delayed service bulletins and heartbeats too. Acquisition has one
+coalescing worker; stream delivery, policy changes and retry timers only wake it.
+Core still owns resource selection, retry policy and installation decisions.
+`AndroidLiveFeedClientTest` uses the real HTTP/SSE client with a held product
+response and fifty subsequent catalog events. It requires bulletin delivery
+before releasing the response, then checks that only one pending acquisition
+pass remains. No sleeps, deadline inflation or action retries establish readiness.
+
+Modal presence is rendered presence on both platforms, not a core-model request
+to open a detail view. Android's former `readModal` shortcut could finish before
+any facts rendered and report a closed dialog before its input surface vanished.
+The shared reader now uses the positioned modal index. Controlled tests hold
+open/close intent ahead of rendering, including retained state during remount.
+The airport-time journey also waits for a rendered value and requires its timezone
+basis to change; a minute tick or first paint cannot satisfy a toggle. Its tests
+delay the first label, advance the clock around the click, and drop the toggle.
+
+A reopened tour lesson is not ready just because its saved title appears. Its
+scene still has to mount and place the callout around the target. Every tour-step
+transition now waits for both the requested title and the existing enabled Next
+control, which the rendering owner disables during preparation. The controlled
+test covers initial and retained-step entry with delayed geometry. Do not click
+Start over at the temporary pre-scene panel position or add settling sleeps.
+
 Traversal gestures drag less than one viewport and hold before lifting to avoid
 a fling skipping unobserved rows. An airway picker trace showed eleven rows of
 movement in an eight-row viewport, missing YKM in both directions. This is an

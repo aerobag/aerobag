@@ -510,6 +510,39 @@ Settings behavior changes are part of these fixes.
 
 ### Follow-up work
 
+September 25 follow-through: hosted `d1f488ce` passed ordinary/fixture/license CI,
+web p0, rollover, native Android regressions and Android shards 0/1, but failed
+`shared.airport-info` (Search focus) and `shared.service-notifications` (SSE
+bulletin fetch). Evidence is retained under `/tmp/aerobag-hosted-d1f488ce`.
+These exposed two product-side ordering faults, not a reason to raise deadlines:
+deferred map focus stole an intervening text-field tap, and synchronous product
+catch-up blocked further SSE delivery. Controlled physical-touch and real-socket
+tests reproduce both old behaviors; fixes share surface-focus ownership and give
+acquisition one coalescing worker independent of the stream reader. Local and
+hosted integration validation is required before calling this follow-up complete.
+
+The first fresh local shard run passed all of s2, including SSE-announced bulletin
+fetch in 145ms, but caught another airport-info harness fault: Android's modal
+reader returned model intent before rendering, and the timezone assertion accepted
+any changed time text. Removed the platform-specific modal shortcut and made the
+assertion require an observed timezone change. Controlled tests fail the old
+reader and all six delayed-label/clock-tick/lost-toggle scenarios. These are not
+reasons to retry the same candidate or extend the deadline.
+
+The next s3 run passed airport-info and exposed tour reopen readiness: the saved
+title rendered before its target anchors, so the callout moved between observing
+Restart and tapping it. The journey already required the scene's enabled Next
+control for one menu step but not for reopen. All step transitions now share that
+producer-owned readiness predicate; a controlled retained-step test rejects the
+old title-only completion. This changes no UI deadlines or physical input rules.
+
+Follow-through local integration: s2 passed in 322.4s, s3 in 244.9s, web p0 in
+51.1s and web p1 in 76.3s, using freshly built release apps and fresh shard AVDs.
+The strict timezone assertion also caught web's joined label/value text; its
+controlled tests now cover both spacing forms. Results remain under
+`/tmp/aerobag-hosted-followthrough-{2,3,web-final}`. These local passes do not
+replace the next exact-commit hosted run.
+
 - Inspect first-attempt results from the next full exact-tag qualification.
   This patch's targeted checks cannot establish that the entire suite is flake-free.
 - The `find_route` manifest gap is closed by `72a11f50`; keep the real journey

@@ -42,6 +42,8 @@ import {
   selectProcedure,
   selectTfrFromPreparedMap,
   setNexradAnimationHeld,
+  toggleAirportTimeMode,
+  guidedTourStepCompletion,
 } from "./release-journey-implementations.mjs";
 import {
   decodeReleaseJourneyFixturePath,
@@ -3384,6 +3386,25 @@ test("semantic text editing acts on the exact readiness evidence", async () => {
   assert.equal(result.value, "KSEA KPAE");
 });
 
+test("text focus failure retains the unfocused editor instead of erasing it", async () => {
+  const editor = { test_id: "route-input", enabled: true, focused: false, text: "", input_ready: false };
+  let taps = 0;
+  await assert.rejects(editSemanticText({
+    async readTextElement() { return editor; },
+    async focusText() { taps += 1; },
+  }, "edit route", "route-input", "KSEA", {}, {
+    transition: async (description, contract) => {
+      const ready = await contract.ready();
+      await contract.act(ready);
+      const observed = await contract.complete();
+      assert.equal(observed, editor);
+      assert.equal(contract.completionSatisfied(observed), false);
+      throw new Error("focus did not transfer");
+    },
+  }), /focus did not transfer/);
+  assert.equal(taps, 1);
+});
+
 test("semantic text editing uses action-ready reads before every mutation", async () => {
   const readyElement = { test_id: "route-input", enabled: true, value: "" };
   let focused = false;
@@ -3429,7 +3450,7 @@ test("Android text completion reacquires an exact input moved by the keyboard", 
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const method = source.slice(
     source.lastIndexOf("  async readTextElement(elementId)"),
-    source.lastIndexOf("  async readModal(modalId)"),
+    source.lastIndexOf("  async revealElement(elementId)"),
   );
   assert.match(method, /queryAndroidExactProjection/);
   assert.match(method, /verifyReachable: true/);
@@ -3862,6 +3883,70 @@ test("airport-info time mode observes one unique fact instead of duplicate toggl
     /readElement\("airport-info-time-toggle"\)\)\?\.text/,
   );
 });
+
+test("tour step completion waits for scene preparation, including reopening a retained lesson", async () => {
+  let panel = null, next = null;
+  const runtime = { driver: { async readElement(id) {
+    return id === "guided-tour-panel" ? panel : next;
+  } } };
+  const contract = guidedTourStepCompletion(runtime, "Select the base map");
+  const accepts = async () => contract.completionSatisfied(await contract.complete());
+  assert.equal(await accepts(), false);
+  panel = { text: "Select the base map" };
+  assert.equal(await accepts(), false, "panel text is not scene readiness");
+  next = { enabled: false, text: "Loading" };
+  assert.equal(await accepts(), false);
+  next = { enabled: true, text: "Next" };
+  assert.equal(await accepts(), true);
+  panel = { text: "The Chart page" };
+  assert.equal(await accepts(), false, "ready controls for the wrong lesson do not complete navigation");
+  panel = { text: "Select the base map" };
+  next = { enabled: false, text: "Loading" };
+  assert.equal(await accepts(), false, "reopening a retained lesson requires new scene geometry");
+  next = { enabled: true, text: "Next" };
+  assert.equal(await accepts(), true);
+});
+
+for (const [initiallyUtc, separator] of [[false, ""], [false, " "], [true, ""], [true, " "]]) {
+  for (const scenario of ["delayed-label", "clock-tick-before-action", "lost-toggle"]) {
+    test(`airport time toggle observes the timezone (${initiallyUtc ? "UTC" : "local"}, separator=${JSON.stringify(separator)}, ${scenario})`, async () => {
+      let utc = initiallyUtc, minute = 53, reads = 0, clicks = 0;
+      const read = async () => {
+        if (++reads <= (scenario === "delayed-label" ? 2 : 0)) return [];
+        const value = utc ? `19${minute}Z` : `12:${minute} PDT`;
+        return [{ id: `airport-info-fact:Time at airport:${value}`, text: `Time at airport${separator}${value}` }];
+      };
+      const observe = async (description, probe, accept = Boolean) => {
+        for (let i = 0; i < 4; i++) {
+          const value = await probe();
+          if (accept(value)) return value;
+        }
+        throw Error(`${description} did not complete`);
+      };
+      const runtime = {
+        driver: { readProjection: read }, observe,
+        async action(description, id, contract) {
+          assert.equal(id, "airport-info-time-toggle:Time at airport");
+          assert.ok(reads > (scenario === "delayed-label" ? 2 : 0), "must observe rendered time first");
+          if (scenario === "clock-tick-before-action") minute++;
+          const accept = contract.completionSatisfied ?? Boolean;
+          assert.equal(accept(await contract.complete()), false, "clock tick is not a timezone toggle");
+          clicks++;
+          minute++;
+          if (scenario !== "lost-toggle") utc = !utc;
+          return observe(description, contract.complete, accept);
+        },
+        check(_id, pass) { assert.ok(pass); },
+      };
+      if (scenario === "lost-toggle") {
+        await assert.rejects(toggleAirportTimeMode(runtime), /change airport time mode did not complete/);
+      } else {
+        await toggleAirportTimeMode(runtime);
+      }
+      assert.equal(clicks, 1);
+    });
+  }
+}
 
 test("Android status popups export their semantic identity", () => {
   const source = readFileSync(
@@ -4422,22 +4507,9 @@ test("Android observes a named map selection through its bounded scalar projecti
   assert.doesNotMatch(selectionBranch, /queryAndroidExactProjection\(this\.serial, prefix/);
 });
 
-test("Android modal presence and absence use fixed scalar projections for both modal hosts", () => {
-  const source = readFileSync(
-    new URL("./semantic-journey-driver.mjs", import.meta.url),
-    "utf8",
-  );
-  const method = source.slice(
-    source.lastIndexOf("  async readModal(modalId)"),
-    source.lastIndexOf("  async revealElement(elementId)"),
-  );
-  assert.match(
-    method,
-    /\["parity:map-selection-state:", "parity:flight-plan-overlay-state:"\]/,
-  );
-  assert.match(method, /this\.readScalarProjection\(projection\)/);
-  assert.match(method, /detailId === modalId/);
-  assert.doesNotMatch(method, /queryFirstAndroidSemanticNode|dumpAndroid/);
+test("both platforms share rendered modal presence and absence", () => {
+  assert.equal(AndroidSemanticJourneyDriver.prototype.readModal, SemanticJourneyDriver.prototype.readModal);
+  assert.equal(WebSemanticJourneyDriver.prototype.readModal, SemanticJourneyDriver.prototype.readModal);
 });
 
 test("fixed E2E scalar projections stay above transient Compose overlays", () => {

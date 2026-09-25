@@ -65,6 +65,9 @@ class UiSessionWorkRunner(
     init {
         mutationScope.launch {
             for (mutation in mutationQueue) {
+                if (BuildConfig.AEROBAG_E2E_ENABLED) {
+                    Log.i(UiSessionWorkLogTag, "event=mutation_started command=${mutation.commandName}")
+                }
                 val startedAtMs = SystemClock.elapsedRealtime()
                 val outcome = runCatching {
                     mutation.operation(uiSession)
@@ -248,6 +251,9 @@ class UiSessionWorkRunner(
         onError: (Throwable) -> Unit,
     ) {
         val mutation = SessionMutation(commandName, operation, onResult, onError)
+        if (BuildConfig.AEROBAG_E2E_ENABLED) {
+            Log.i(UiSessionWorkLogTag, "event=mutation_submitted command=$commandName")
+        }
         if (closed || mutationQueue.trySend(mutation).isFailure) {
             onError(CancellationException("session work runner is closed"))
         }

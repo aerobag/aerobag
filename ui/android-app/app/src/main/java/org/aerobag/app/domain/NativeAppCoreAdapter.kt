@@ -1213,8 +1213,10 @@ class NativeUiSession internal constructor(
         listeners.forEach { it(publication) }
     }
 
-    private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? =
-        synchronized(sessionMutationLock) {
+    private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? {
+        traceSessionCommand("waiting", commandName)
+        return synchronized(sessionMutationLock) {
+            traceSessionCommand("entered", commandName)
             try {
                 operation()
             } catch (error: RuntimeException) {
@@ -1223,8 +1225,19 @@ class NativeUiSession internal constructor(
                 }
                 val refreshedSnapshot = refreshSnapshotAfterRejectedCommand(commandName, error)
                 throw NativeSessionCommandRejectedException(commandName, refreshedSnapshot, error)
+            } finally {
+                traceSessionCommand("exited", commandName)
             }
         }
+    }
+
+    // A completion-only log cannot distinguish a missing click from a command
+    // queued behind a stalled owner. Keep phases local to diagnostic builds.
+    private fun traceSessionCommand(phase: String, commandName: String) {
+        if (org.aerobag.app.BuildConfig.AEROBAG_E2E_ENABLED) {
+            Log.i("AerobagSessionCommand", "event=command_$phase command=$commandName")
+        }
+    }
 
     private fun refreshSnapshotAfterRejectedCommand(commandName: String, error: RuntimeException): UiSessionSnapshot {
         Log.w("AerobagSessionCommand", "session command failed; refreshing snapshot command=$commandName", error)

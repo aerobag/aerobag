@@ -368,6 +368,42 @@ production state, weaken assertions, or erase failure artifacts.
 
 ## Continuing hardening, not release prerequisites
 
+### September 25 observation-boundary verification
+
+Reader checkpoint `760c7fab` and publisher hardening beginning at `42f86be0`
+replace ambiguous app observation backends and last-writer-wins ownership with
+one frame-coherent index. Controlled regressions fail against the old duplicate
+owner behavior and against `8e4f405a`'s missing state-only publication, then pass
+with the fixes. Physical Compose tests cover clipping, lifecycle, scrolling,
+distinct procedure choices and rendered text. Real runs also exposed and fixed
+folder readiness, unsupported-catalog text ownership, and cloud linking's
+conflation of immediate UI feedback with completed provider verification.
+
+The full local shared/native workload at `04e864e5` passed all 32 web and 30
+shared Android cases, plus native route entry, plates and rotation. Native CTR
+and layer-toggle both failed to observe the Bad Autopilot toggle's state change.
+Bounds stayed unchanged and Android received DOWN/UP; that alone does not prove
+the click reached core. Normal mutation completions also stopped during the
+failure. Neither swallowed input nor stalled session work is established yet.
+Retained evidence: `/tmp/aerobag-observation-verified`; earlier failed rounds
+remain under `/tmp/aerobag-observation-*` and are not qualification receipts.
+
+Focused diagnostics without action retries or longer deadlines did not reproduce
+that Settings failure. A separate diagnostic that aligned the click just after a
+minute boundary also passed; its temporary wait was removed. Pointer observers
+were removed because they could perturb hit testing. E2E-only command submission,
+execution and lock-entry logs remain to distinguish the failure phases next time.
+Passing these diagnostic reruns is not a fix or permission to call the original
+failure resolved. One diagnostic run also retained a provider transport timeout
+while navigating Home (`/tmp/aerobag-pointer-capture-2`). The eight-second ACS
+root-read latency seen in the earlier cloud run remains unexplained separately.
+
+The local workload here is the shared web/Android matrix plus five native cases,
+not complete hosted qualification: auxiliary NAVDB rollover, Chrome-on-Android
+and external fixture-CI lanes were not included. Keep those scopes distinct.
+
+### Follow-up work
+
 - Inspect first-attempt results from the next full exact-tag qualification.
   This patch's targeted checks cannot establish that the entire suite is flake-free.
 - The `find_route` manifest gap is closed by `72a11f50`; keep the real journey

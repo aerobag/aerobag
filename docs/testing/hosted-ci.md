@@ -172,6 +172,27 @@ recovery was timely. A watchdog timeout on an action is still terminal: it may
 already have reached the app and must not be replayed. Missing executables and
 other permanent transport errors must not enter the observation retry path.
 
+Android observation ownership is centralized in
+`tools/e2e/android-observation-contract.mjs`. Shared indexed modifiers own app
+controls, page roots, and scalar projections, including never-mounted and
+disposed states. Legacy accessibility-only targets are explicitly listed with
+their producer, not discovered by trying a second backend. Journey readers no
+longer accept `indexed` flags, and low-level exact/prefix requests reject
+caller-selected backend options. Collection scans and reveal helpers reuse
+those readers; accessibility still locates scroll containers and observes
+scroll completion, rather than reinterpreting whether an indexed target exists.
+Mixed-backend collection prefixes are rejected instead of returning a silently
+partial collection. The empty-prefix request is the deliberate whole-index
+snapshot used for map gesture geometry.
+
+The observation tests run the real HTTP encoders and semantic readers with
+controlled device I/O: absent, mounted, changed, hidden, disposed, temporarily
+busy, and permanently unavailable. They forbid accessibility requests for
+indexed targets. This catches backend drift without requiring a slow emulator
+to happen to stall. It does not replace focused physical-input journeys or
+eliminate the remaining legacy accessibility projections. Protocol 31 also
+requires rebuilt driver APKs for explicit accessibility collection reads.
+
 Scroll completion observes geometry and interactive row identities within the
 scrolled surface, not equality of the entire accessibility XML. Live ETA/clock
 updates once prevented a successfully scrolled flight-plan list from settling,

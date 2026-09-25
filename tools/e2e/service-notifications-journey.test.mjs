@@ -59,8 +59,8 @@ function modelRuntime(t, platform, fixtureOrigin, defect = null, { unrelatedStat
     page: { async send() { assert.fail("web popup must close through its exposed scrim, not keyboard fallback"); } },
   });
   const driver = {
-    async readElement(id, { indexed = false } = {}) {
-      if (platform === "android") assert.equal(indexed, true, `${id} must not search a tree to prove presence or absence`);
+    async readElement(id, ...options) {
+      assert.equal(options.length, 0, "journeys cannot select an observation backend");
       if (id === `page:${page}`) return element(id);
       if (id === "data-status-launcher") {
         if (page !== "map" || !hasStatus() || (statusEntries > 0 && defect === "offscreen-launcher")) return null;
@@ -96,9 +96,9 @@ function modelRuntime(t, platform, fixtureOrigin, defect = null, { unrelatedStat
       }
       return null;
     },
-    async readProjection(prefix, { indexed = false } = {}) {
+    async readProjection(prefix, ...options) {
+      assert.equal(options.length, 0, "journeys cannot select an observation backend");
       if (prefix === "parity:startup-state:") return [element(`${prefix}ready:true:disclaimer_required:false`)];
-      if (platform === "android") assert.equal(indexed, true, `${prefix} must not search a tree for folded/absent content`);
       if (prefix === "data-status-launcher") return page === "map" && hasStatus()
         ? [element(platform === "android" ? `parity:${prefix}` : prefix)] : [];
       const result = [];
@@ -149,10 +149,10 @@ function modelRuntime(t, platform, fixtureOrigin, defect = null, { unrelatedStat
     async revealElement(id) {
       const notice = document.notices.find((notice) => bodyTag(notice) === id);
       if (notice && defect !== "invisible-body") revealedBody = notice.id;
-      return driver.readElement(id, { indexed: true });
+      return driver.readElement(id);
     },
     async revealProjectionMatching(prefix, title) {
-      const rows = await driver.readProjection(prefix, { indexed: true });
+      const rows = await driver.readProjection(prefix);
       const row = rows.find((row) => row.text === title);
       assert.ok(row, `missing rendered notice ${title}`);
       return row;
@@ -179,7 +179,7 @@ function modelRuntime(t, platform, fixtureOrigin, defect = null, { unrelatedStat
       return this.eventually(description, contract.complete);
     },
     async action(description, id, contract) {
-      const ready = await driver.readElement(id, { indexed: true });
+      const ready = await driver.readElement(id);
       assert.ok(ready?.enabled && ready.actionable !== false, `action ${id} is not visibly ready`);
       assert.ok(!await contract.complete(), `${description} completed before its action`);
       actions.push(id);

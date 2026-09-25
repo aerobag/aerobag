@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 import { acceptDisclaimer, readGuidedTourPanel, readStartupState } from "./first-use-startup.mjs";
 import { AndroidSemanticJourneyDriver, androidElementSemanticTag } from "./semantic-journey-driver.mjs";
-import { acceptDisclaimerIfPresent, queryAndroidExactProjection } from "./android-harness.mjs";
+import { acceptDisclaimerIfPresent, androidIndexedControlIsActionReady, queryAndroidExactProjection } from "./android-harness.mjs";
 import {
   E2E_TIMING, ObservationTimeoutError, TerminalObservationError,
   TransientObservationError, observeUntil, performTransition,
@@ -26,7 +27,7 @@ function startupModel({ disclaimer = true, tour = false, pending = true, missing
       },
       async readElement(id, options) {
         if (id === "guided-tour-panel") {
-          assert.equal(options?.indexed, true, "absence must not trigger a hierarchy search");
+          assert.equal(options, undefined, "observation ownership does not belong to the journey");
           return tour ? { id } : null;
         }
         return null;
@@ -125,6 +126,7 @@ test("Android shared startup reads the indexed state even with no visible hierar
 // flag (the bug that passed locally and stalled four hosted jobs).
 function indexedDeviceContext(probe) {
   const context = {
+    androidObservationBackend, rejectObservationOverrides,
     URLSearchParams, TransientObservationError, androidElementSemanticTag,
     requiredSemanticDriver: () => ({ port: 19191 }),
     semanticDriverObservationUnavailable: response => response.status === 28,
@@ -171,8 +173,10 @@ test("indexed panel observation proves never-mounted and unmounted absence witho
   unavailable = true;
   await assert.rejects(readGuidedTourPanel(runtime), TransientObservationError);
   assert.equal(reads, 4, "one request per observation; no hidden retries or fallback");
-  // Prove this device model rejects the old, unindexed lookup.
-  await assert.rejects(context.readElement("guided-tour-panel"), /accessibility traversal is unavailable/);
+  // Direct readers and startup helpers must use the same indexed path.
+  unavailable = false;
+  assert.equal(await context.readElement("guided-tour-panel"), null);
+  assert.equal(reads, 5);
 });
 
 for (const initiallyPresent of [false, true]) {
@@ -216,16 +220,15 @@ test("native bootstrap observes a physically closed tour without any accessibili
   const state = () => ({ disclaimer_required: String(disclaimer), tour_pending: "false", page });
   const context = indexedDeviceContext(tag => {
     const present = tag !== "parity:guided-tour-panel" || tour;
-    return { status: 0, stdout: JSON.stringify(present ? [{ "resource-id": tag, visible: "true" }] : []) };
+    return { status: 0, stdout: JSON.stringify(present ? [{
+      "resource-id": tag, visible: "true", enabled: "true", bounds: "[10,20][30,40]",
+      "center-reachable": "true", "semantic-path": "projection-provider:12",
+    }] : []) };
   });
   Object.assign(context, {
     E2E_TIMING, observeUntil, performTransition,
     queryAndroidStartupProjection: state, queryAndroidStartupState: state,
-    queryAndroidSemanticNodes(_serial, tag) {
-      assert.equal(tag, "parity:disclaimer-accept-button", "tour observations must never use /query");
-      return [{ "resource-id": tag }];
-    },
-    androidSemanticNodeIsActionable: () => true,
+    androidIndexedControlIsActionReady,
     activateAndroidNode(_serial, node) {
       const tag = node["resource-id"];
       taps.push(tag);

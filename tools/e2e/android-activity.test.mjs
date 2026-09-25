@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { rejectObservationOverrides } from "./android-observation-contract.mjs";
 import { androidResumedActivityFromDumpsys } from "./android-harness.mjs";
 import { AndroidSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
 import { releaseJourneyImplementation } from "./release-journey-implementations.mjs";
@@ -29,7 +30,7 @@ test("external About observation uses the resumed activity, not a URL anywhere i
   let dump;
   const readElement = runInNewContext(
     `({ ${AndroidSemanticJourneyDriver.prototype.readElement} }).readElement`,
-    { adb: () => dump, androidResumedActivityFromDumpsys },
+    { adb: () => dump, androidResumedActivityFromDumpsys, rejectObservationOverrides },
   );
   for (const [resumed, expected] of [["browser", true], ["app", false], ["other", false]]) {
     dump = activities(resumed);

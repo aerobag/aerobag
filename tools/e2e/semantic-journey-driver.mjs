@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { androidMapLayerName } from "./core-map-layer-ids.mjs";
+import { rejectObservationOverrides } from "./android-observation-contract.mjs";
 
 import { readFileSync, writeFileSync } from "node:fs";
 import {
@@ -145,10 +146,7 @@ export class SemanticJourneyDriver {
   async zoom(_surfaceId, _amount) { throw new Error(`${this.platform} driver does not implement zoom`); }
   async hover(_elementId) { throw new Error(`${this.platform} driver does not implement hover`); }
   async copyText(_elementId) { throw new Error(`${this.platform} driver does not implement copyText`); }
-  // { indexed: true } declares that the app's rendered-element index owns
-  // this element, including absence. It forbids Android hierarchy fallback;
-  // web already observes elements through its DOM index.
-  async readElement(_elementId, _options) { throw new Error(`${this.platform} driver does not implement readElement`); }
+  async readElement(_elementId) { throw new Error(`${this.platform} driver does not implement readElement`); }
   async readTextElement(elementId) { return this.readElement(elementId); }
   async readModal(modalId) { return this.readElement(modalId); }
   async revealElement(_elementId) { throw new Error(`${this.platform} driver does not implement revealElement`); }
@@ -533,7 +531,8 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     return this.transport.copyTextTestId(elementId);
   }
 
-  async readProjection(probe) {
+  async readProjection(probe, options = {}) {
+    rejectObservationOverrides(options);
     const translated = probe === "parity:plan-row:"
       ? "plan-row-"
       : probe === "parity:plan-row-action:"
@@ -589,7 +588,8 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     return entry;
   }
 
-  async readElement(elementId) {
+  async readElement(elementId, options = {}) {
+    rejectObservationOverrides(options);
     const exact = await this.transport.readElement(webTestIdSelector(elementId));
     if (exact?.visible) return normalizeWebSemanticElement(exact);
     const parity = await this.transport.readElement(webTestIdSelector(`parity:${elementId}`));
@@ -870,9 +870,7 @@ function queryFirstAndroidSemanticNode(
     requireVisible = false,
     requireReachable = false,
     includeDescendantText = true,
-    renderedOnly = false,
     avoidNavigation = false,
-    providerOnly = false,
   } = {},
 ) {
   const choose = (nodes) => nodes?.find((node) =>
@@ -883,8 +881,6 @@ function queryFirstAndroidSemanticNode(
     tag,
     {
       includeDescendantText,
-      renderedOnly,
-      providerOnly,
       verifyReachable: requireReachable,
       avoidNavigation,
     },
@@ -1032,7 +1028,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { providerOnly: true },
     );
   }
 
@@ -1089,7 +1084,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       {
         requireVisible: true,
         includeDescendantText: false,
-        providerOnly: true,
       },
     );
   }
@@ -1128,7 +1122,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const node = queryAndroidExactProjection(
       this.serial,
       androidOptionTag(launcherId, optionId),
-      { providerOnly: true },
     ).find((candidate) =>
       candidate.visible === "true" && candidate["center-reachable"] === "true",
     ) ?? null;
@@ -1157,7 +1150,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const indexed = queryAndroidSemanticNodes(this.serial, "", {
       prefix: true,
       includeDescendantText: false,
-      providerOnly: true,
     });
     return androidMapInspectionPoint(readyElement, indexed);
   }
@@ -1166,7 +1158,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     // Native gesture readiness needs follow state, map bounds and obstacles.
     // Fetch them together, not three device round trips per readiness sample.
     const indexed = queryAndroidSemanticNodes(this.serial, "", {
-      prefix: true, includeDescendantText: false, providerOnly: true,
+      prefix: true, includeDescendantText: false,
     });
     const map = indexed.find((node) => androidTag(node) === "parity:map-surface" && node.visible === "true");
     const surface = map ? androidProjectedElement(map, "map-surface") : null;
@@ -1230,7 +1222,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         {
           requireVisible: true,
           requireReachable: true,
-          providerOnly: true,
         },
       );
       if (!node || !androidElementEnabled(node)) continue;
@@ -1340,7 +1331,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     ]);
   }
 
-  async readProjection(probe, { indexed = false } = {}) {
+  async readProjection(probe, options = {}) {
+    rejectObservationOverrides(options);
     const prefix = androidSemanticTag(probe);
     if (prefix === "parity:startup-state:") {
       // Startup is process state, not a visible control. A modal can hide the
@@ -1382,53 +1374,31 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       const state = stateNode?.["state-description"] ?? "";
       return androidDataStatusRowsFromStateTag(`parity:data-status-state:${state}`);
     }
-    const queried = queryAndroidSemanticNodes(this.serial, prefix, { prefix: true, providerOnly: indexed });
-    if (queried) {
-      return queried.map((node) => ({
-        id: androidTag(node),
-        text: node.text || "",
-        enabled: androidElementEnabled(node),
-        pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
-        state: node["state-description"] || null,
-      }));
-    }
-    const xml = dumpAndroid(this.serial);
-    const collect = (xml) => findNodes(xml, (node) => androidTag(node).startsWith(prefix))
-      .map((node) => ({
-        id: androidTag(node),
-        text: androidNodeLabel(xml, node) || node.text || "",
-        enabled: androidElementEnabled(node),
-        pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
-        state: node["state-description"] || null,
-      }));
-    return collect(xml);
+    return queryAndroidSemanticNodes(this.serial, prefix, { prefix: true }).map((node) => ({
+      id: androidTag(node),
+      text: node.text || "",
+      enabled: androidElementEnabled(node),
+      pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+      state: node["state-description"] || null,
+      bounds: node.bounds ?? null,
+    }));
   }
 
   async scanProjection(probe) {
-    const prefix = androidSemanticTag(probe);
-    const collect = (xml) => findNodes(xml, (node) => androidTag(node).startsWith(prefix))
-      .map((node) => ({
-        id: androidTag(node),
-        text: androidNodeLabel(xml, node) || node.text || "",
-        enabled: androidElementEnabled(node),
-        pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
-        bounds: node.bounds ?? null,
-      }));
-    if (!androidProjectionMayRequireVerticalScan(probe)) return collect(dumpAndroid(this.serial));
+    if (!androidProjectionMayRequireVerticalScan(probe)) return this.readProjection(probe);
 
     const accumulated = new Map();
     for (const direction of ["down", "up"]) {
       let previousSignature = null;
       let unchangedFrames = 0;
       for (let attempt = 0; attempt < 24; attempt += 1) {
-        const xml = dumpAndroid(this.serial);
-        const visible = collect(xml);
+        const visible = await this.readProjection(probe);
         for (const entry of visible) accumulated.set(entry.id, entry);
         const signature = visible.map((entry) => `${entry.id}:${entry.bounds ?? ""}`).join("\n");
         unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
         previousSignature = signature;
         if (unchangedFrames >= 2) break;
-        const scrollSurface = findVerticalScrollSurface(xml);
+        const scrollSurface = findVerticalScrollSurface(dumpAndroid(this.serial));
         if (!scrollSurface) break;
         if (!await scrollAndroidAndAwait(this.serial, scrollSurface.bounds, direction)) break;
       }
@@ -1443,60 +1413,40 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async revealProjectionMatching(probe, needle) {
-    const prefix = androidSemanticTag(probe);
     const normalizedNeedle = needle.toUpperCase();
-    const projectionEntries = (xml) => findNodes(
-      xml,
-      (node) => androidTag(node).startsWith(prefix),
-    ).map((node) => ({
-        id: androidTag(node),
-        text: androidNodeLabel(xml, node) || node.text || "",
-        enabled: androidElementEnabled(node),
-        pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
-        bounds: node.bounds ?? null,
-      }));
-    const findMatch = (xml) => projectionEntries(xml)
+    const findMatch = entries => entries
       .find((entry) => entry.text.toUpperCase().includes(normalizedNeedle)) ?? null;
-    let initialXml;
-    try {
-      initialXml = (await observeUntil(
-        `${probe} rendered collection`,
-        () => {
-          const xml = dumpAndroid(this.serial);
-          return projectionEntries(xml).length > 0 ? xml : null;
-        },
-        {
-          timeoutMs: E2E_TIMING.localReadyMs,
-          intervalMs: E2E_TIMING.pollIntervalMs,
-        },
-      )).value;
-    } catch (_error) {
-      return null;
-    }
-    const initialMatch = findMatch(initialXml);
+    // Wait for an authoritative observation, not for a nonempty collection.
+    // Empty is a valid result; transport failures must remain failures.
+    const initial = (await observeUntil(`${probe} collection observation`,
+      async () => ({ entries: await this.readProjection(probe) }),
+      { timeoutMs: E2E_TIMING.localReadyMs, intervalMs: E2E_TIMING.pollIntervalMs },
+    )).value.entries;
+    const initialMatch = findMatch(initial);
     if (initialMatch) return initialMatch;
     for (const direction of ["down", "up"]) {
       let previousSignature = null;
       let unchangedFrames = 0;
       for (let attempt = 0; attempt < ANDROID_MAX_VIRTUALIZED_REVEAL_STEPS; attempt += 1) {
-        const xml = dumpAndroid(this.serial);
-        const match = findMatch(xml);
+        const entries = await this.readProjection(probe);
+        const match = findMatch(entries);
         if (match) return match;
-        const signature = projectionEntries(xml)
+        const signature = entries
           .map((entry) => `${entry.id}:${entry.bounds ?? ""}`)
           .join("\n");
         unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
         previousSignature = signature;
         if (unchangedFrames >= 2) break;
-        const scrollSurface = findVerticalScrollSurface(xml);
+        const scrollSurface = findVerticalScrollSurface(dumpAndroid(this.serial));
         if (!scrollSurface) break;
         if (!await scrollAndroidAndAwait(this.serial, scrollSurface.bounds, direction)) break;
       }
     }
-    return findMatch(dumpAndroid(this.serial));
+    return findMatch(await this.readProjection(probe));
   }
 
-  async readElement(elementId, { indexed = false } = {}) {
+  async readElement(elementId, options = {}) {
+    rejectObservationOverrides(options);
     if (elementId === "software-keyboard") {
       return androidImeShown(this.serial) ? {
         test_id: elementId,
@@ -1540,11 +1490,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       {
         requireVisible: true,
         includeDescendantText: elementId !== "map-surface",
-        // App-owned indexes are authoritative for absence too. Never search
-        // the accessibility tree after an indexed control has unmounted (or
-        // has not been mounted in this process at all).
-        providerOnly: indexed || semanticTag.startsWith("parity:settings-") ||
-          semanticTag === "parity:map-selection-tray",
       },
     );
     if (!queried) return null;
@@ -1556,7 +1501,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { verifyReachable: true, providerOnly: true },
+      { verifyReachable: true },
     ).find((candidate) =>
       candidate.visible === "true" && candidate["center-reachable"] === "true",
     ) ?? null;
@@ -1579,11 +1524,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async revealElement(elementId) {
     const semanticTag = androidElementSemanticTag(elementId);
-    const renderedOnly = androidElementMayRequireHorizontalScroll(elementId);
     const avoidNavigation = androidElementMayRequireVerticalScroll(elementId);
-    // Settings rows/section headers use e2eIndexedControl, including absence
-    // while a lazy item has not been composed yet.
-    const providerOnly = semanticTag.startsWith("parity:settings-");
     const reachable = () => {
       const node = queryFirstAndroidSemanticNode(
         this.serial,
@@ -1591,9 +1532,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         {
           requireVisible: true,
           requireReachable: true,
-          renderedOnly,
           avoidNavigation,
-          providerOnly,
         },
       );
       return androidProjectedElement(node, elementId);
@@ -1616,7 +1555,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return establishRevealedElement({
       description: semanticTag,
       readReachable: reachable,
-      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true, true, { providerOnly }),
+      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true, true),
     });
   }
 

@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { journeyById } from "./release-journey-registry.mjs";
+import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 import {
   E2E_TIMING, observeChangedValueUntilStable, observeUntil, performTransition,
   TransientObservationError,
@@ -33,7 +34,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/30";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/31";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -305,7 +306,7 @@ export function deliverAndroidSemanticText(
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (attempt > 0) {
       waitForEvent(serial, 250);
-      const refreshed = queryProjection(serial, tag, { providerOnly: true })[0] ?? null;
+      const refreshed = queryProjection(serial, tag)[0] ?? null;
       if (!androidSemanticTextTargetIsReady(tag, refreshed)) continue;
       currentBounds = refreshed.bounds;
       currentPath = refreshed["semantic-path"];
@@ -370,7 +371,7 @@ export function clickAndroidSemanticNode(
     target = androidPhysicalTapTarget(state.port, tag, currentBounds, currentPath);
     if (target) break;
     const refreshed = queryAndroidExactProjection(
-      serial, tag, { providerOnly: true },
+      serial, tag,
     )[0] ?? null;
     if (!refreshed) continue;
     if (!androidSemanticTargetStateMatches(tag, refreshed, expectedState)) {
@@ -480,25 +481,28 @@ export function waitForAndroidSemanticEvent(serial, timeoutMs) {
 export function queryAndroidSemanticNodes(
   serial,
   tag,
-  { prefix = false, first = false, includeDescendantText = true, providerOnly = false } = {},
+  { prefix = false, first = false, includeDescendantText = true, ...unsupported } = {},
 ) {
+  rejectObservationOverrides(unsupported);
+  const backend = androidObservationBackend(tag, { prefix });
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({
     tag,
     prefix: String(prefix),
     first: String(first),
     descendant_text: String(includeDescendantText),
-    provider_only: String(providerOnly),
+    provider_only: String(backend === "indexed"),
+    rendered_only: String(backend === "accessibility"),
   });
   const response = semanticDriverObservationRequest(state.port, `/query?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverObservationUnavailable(response)) {
     throw new TransientObservationError(
-      `Android semantic tree was busy while querying ${tag}: ${detail}`,
+      `Android ${backend} query was busy while querying ${tag}: ${detail}`,
     );
   }
-  throw new Error(`persistent Android semantic query failed for ${tag}: ${detail}`);
+  throw new Error(`persistent Android ${backend} query failed for ${tag}: ${detail}`);
 }
 
 export function queryAndroidExactProjection(
@@ -506,22 +510,19 @@ export function queryAndroidExactProjection(
   tag,
   {
     includeDescendantText = false,
-    indexedOnly = false,
-    boundedOnly = false,
-    providerOnly = false,
-    renderedOnly = false,
     verifyReachable = false,
     avoidNavigation = false,
+    ...unsupported
   } = {},
 ) {
+  rejectObservationOverrides(unsupported);
+  const backend = androidObservationBackend(tag);
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({
     tag,
     descendant_text: String(includeDescendantText),
-    indexed_only: String(indexedOnly),
-    bounded_only: String(boundedOnly),
-    provider_only: String(providerOnly),
-    rendered_only: String(renderedOnly),
+    provider_only: String(backend === "indexed"),
+    rendered_only: String(backend === "accessibility"),
     verify_reachable: String(verifyReachable),
     avoid_navigation: String(avoidNavigation),
   });
@@ -530,10 +531,10 @@ export function queryAndroidExactProjection(
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverObservationUnavailable(response)) {
     throw new TransientObservationError(
-      `Android exact semantic projection was busy while querying ${tag}: ${detail}`,
+      `Android ${backend} exact query was busy while querying ${tag}: ${detail}`,
     );
   }
-  throw new Error(`persistent Android exact semantic projection failed for ${tag}: ${detail}`);
+  throw new Error(`persistent Android ${backend} exact query failed for ${tag}: ${detail}`);
 }
 
 function semanticDriverDump(serial) {
@@ -823,7 +824,7 @@ export function queryAndroidStartupState(serial) {
 
 export function queryAndroidStartupProjection(serial) {
   return startupProjectionFromExactNode(
-    queryAndroidExactProjection(serial, STARTUP_PROJECTION_ID, { providerOnly: true })?.[0] ?? null,
+    queryAndroidExactProjection(serial, STARTUP_PROJECTION_ID)?.[0] ?? null,
   );
 }
 
@@ -860,7 +861,7 @@ export async function waitForAndroidInteractiveRuntime(
     const home = queryAndroidExactProjection(
       serial,
       "parity:button:HOME",
-      { providerOnly: true, verifyReachable: true },
+      { verifyReachable: true },
     )[0] ?? null;
     return androidInteractiveRuntime(state, home);
   }, {
@@ -1191,28 +1192,20 @@ export async function activateAndroidNode(serial, node) {
   return node;
 }
 
-export function androidSemanticNodeIsActionable(node) {
-  return node?.enabled === "true" &&
-    node?.clickable === "true" &&
-    node?.visible === "true" &&
-    node?.["center-reachable"] === "true";
-}
-
 export async function scrollUntilTag(
   serial,
   tag,
   maxSwipes = 8,
   requireReachable = false,
   avoidNavigation = false,
-  { providerOnly = false } = {},
 ) {
   if (await scrollUntilTagInDirection(
-    serial, tag, "down", maxSwipes, requireReachable, avoidNavigation, providerOnly,
+    serial, tag, "down", maxSwipes, requireReachable, avoidNavigation,
   )) {
     return true;
   }
   return scrollUntilTagInDirection(
-    serial, tag, "up", maxSwipes, requireReachable, avoidNavigation, providerOnly,
+    serial, tag, "up", maxSwipes, requireReachable, avoidNavigation,
   );
 }
 
@@ -1326,33 +1319,33 @@ export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
 async function scrollUntilTagPrefixInDirection(
   serial, tagPrefix, direction, maxSwipes, requireReachable,
 ) {
+  const found = () => queryAndroidSemanticNodes(serial, tagPrefix, { prefix: true })
+    .some(node => node.visible === "true" &&
+      (!requireReachable || node["center-reachable"] === "true"));
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+    if (found()) return true;
     const xml = dumpAndroid(serial);
-    if (requireReachable
-      ? verticalScrollTargetIsReachable(xml, tagPrefix, { prefix: true })
-      : findNode(xml, (node) => androidTag(node).startsWith(tagPrefix))) return true;
     const scrollSurface =
       findVerticalScrollSurface(xml) ??
       findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
     if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
   }
-  const xml = dumpAndroid(serial);
-  return requireReachable
-    ? verticalScrollTargetIsReachable(xml, tagPrefix, { prefix: true })
-    : findNode(xml, (node) => androidTag(node).startsWith(tagPrefix)) !== null;
+  return found();
 }
 
 export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
+  const found = () => queryAndroidExactProjection(serial, tag, { verifyReachable: true })
+    .some(node => node.visible === "true" && node["center-reachable"] === "true");
   for (const direction of ["forward", "backward"]) {
     for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+      if (found()) return true;
       const xml = dumpAndroid(serial);
-      if (findNode(xml, (node) => hasAndroidTag(node, tag))) return true;
       const horizontalSurface = findHorizontalScrollSurface(xml);
       if (!horizontalSurface) return false;
       if (!await scrollAndroidAndAwait(serial, horizontalSurface.bounds, direction)) break;
     }
   }
-  return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
+  return found();
 }
 
 async function scrollUntilTagInDirection(
@@ -1362,7 +1355,6 @@ async function scrollUntilTagInDirection(
   maxSwipes,
   requireReachable,
   avoidNavigation,
-  providerOnly,
 ) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
     const target = queryAndroidExactProjection(
@@ -1372,7 +1364,6 @@ async function scrollUntilTagInDirection(
         includeDescendantText: false,
         verifyReachable: requireReachable,
         avoidNavigation,
-        providerOnly,
       },
     )[0];
     if (target && (!requireReachable || target["center-reachable"] === "true")) {
@@ -1389,7 +1380,6 @@ async function scrollUntilTagInDirection(
       includeDescendantText: false,
       verifyReachable: requireReachable,
       avoidNavigation,
-      providerOnly,
     },
   )[0];
   return Boolean(target && (!requireReachable || target["center-reachable"] === "true"));
@@ -1537,11 +1527,12 @@ export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = fal
     ready: async () => {
       const readyState = queryAndroidStartupProjection(serial);
       if (readyState?.disclaimer_required !== "true") return null;
-      const button = queryAndroidSemanticNodes(
+      const button = queryAndroidExactProjection(
         serial,
         "parity:disclaimer-accept-button",
+        { verifyReachable: true },
       )?.[0] ?? null;
-      return androidSemanticNodeIsActionable(button) ? button : null;
+      return androidIndexedControlIsActionReady(button) ? button : null;
     },
     act: async (readyButton) => activateAndroidNode(serial, readyButton),
     complete: async () => {
@@ -1560,10 +1551,8 @@ export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = fal
     consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
   });
   if (!keepIntroduction) {
-    // These are app-owned indexed controls. /query falls back to a serialized
-    // full-tree scan when the panel disappears, stalling an otherwise complete
-    // transition. Indexed absence must remain a cheap, authoritative read.
-    const node = (tag) => queryAndroidExactProjection(serial, tag, { providerOnly: true })?.[0] ?? null;
+    // Observations use the same target-owned backend before and after disposal.
+    const node = (tag) => queryAndroidExactProjection(serial, tag)?.[0] ?? null;
     const { panel } = (await observeUntil("first-use introduction visibility", () => ({
       panel: node("parity:guided-tour-panel"),
     }))).value;

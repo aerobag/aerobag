@@ -51,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/30";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/31";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
     private static final long EXACT_PROJECTION_TIME_LIMIT_NANOS = TimeUnit.MILLISECONDS.toNanos(750);
     private static final long PROVIDER_QUERY_TIMEOUT_MS = 500;
@@ -313,12 +313,13 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean prefix = "true".equals(query.getOrDefault("prefix", "false"));
         boolean first = "true".equals(query.getOrDefault("first", "false"));
         boolean providerOnly = "true".equals(query.getOrDefault("provider_only", "false"));
+        boolean renderedOnly = "true".equals(query.getOrDefault("rendered_only", "false"));
         boolean includeDescendantText = !"false".equals(
             query.getOrDefault("descendant_text", "true")
         );
-        ProviderProjection providerProjection = prefix
-            ? providerProjectionPrefix(tag)
-            : (providerOnly ? providerProjection(tag, false) : ProviderProjection.unhandled());
+        ProviderProjection providerProjection = renderedOnly ? ProviderProjection.unhandled()
+            : (prefix ? providerProjectionPrefix(tag)
+                : (providerOnly ? providerProjection(tag, false) : ProviderProjection.unhandled()));
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
@@ -961,7 +962,7 @@ public final class SemanticDriverService extends AccessibilityService {
             output.put(value);
             return new ProviderProjection(true, output);
         } catch (JSONException error) {
-            return ProviderProjection.unhandled();
+            throw new IllegalStateException("failed to encode projection provider snapshot", error);
         }
     }
 
@@ -1032,7 +1033,7 @@ public final class SemanticDriverService extends AccessibilityService {
             // or falling back to an accessibility-tree traversal.
             throw new ProjectionProviderBusyException(value);
         } catch (IllegalArgumentException | SecurityException error) {
-            return ProviderSnapshotBatch.unhandled();
+            throw new IllegalStateException("projection provider unavailable for " + value, error);
         } finally {
             cancellation.cancel(false);
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);

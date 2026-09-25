@@ -18,7 +18,6 @@ import {
   androidStartupProjection,
   androidStartupState,
   androidJourneyEpochMs,
-  androidSemanticNodeIsActionable,
   classifyAndroidRendererFailure,
   classifyAerobagLogcat,
   displayBoundsFromXml,
@@ -237,12 +236,13 @@ test("Android physical taps dispatch once and defer success to semantic completi
 test("Android semantic actions wait for their rendered surface to reach the screen", () => {
   const button = {
     enabled: "true",
-    clickable: "true",
+    bounds: "[10,20][30,40]",
+    "semantic-path": "projection-provider:12",
     visible: "true",
     "center-reachable": "false",
   };
-  assert.equal(androidSemanticNodeIsActionable(button), false);
-  assert.equal(androidSemanticNodeIsActionable({
+  assert.equal(androidIndexedControlIsActionReady(button), false);
+  assert.equal(androidIndexedControlIsActionReady({
     ...button,
     "center-reachable": "true",
   }), true);

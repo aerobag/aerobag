@@ -11,10 +11,12 @@ import {
   androidSemanticTag, androidDataStatusRowsFromStateTag, androidMapInspectionPoint,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll, establishRevealedElement,
   androidPageTag,
+  androidProjectionMayRequireVerticalScan,
 } from "./semantic-journey-driver.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 import { performTransition, TransientObservationError } from "./transition-contract.mjs";
+import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 
 const source = readFileSync(new URL("semantic-journey-driver.mjs", import.meta.url), "utf8");
 const projections = runInNewContext(source.match(
@@ -30,10 +32,14 @@ function device() {
   const requests = [];
   let responseOverride = null;
   const context = {
+    androidObservationBackend, rejectObservationOverrides,
     URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag, androidPageTag,
     androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
     chooseUnobscuredMapPoint, androidMapInspectionPoint,
     androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
+    androidProjectionMayRequireVerticalScan,
+    observeUntil: async (_description, probe) => ({ value: await probe() }),
+    E2E_TIMING: {},
     establishRevealedElement: options => establishRevealedElement({
       ...options,
       // Controlled observation completion; no wall-clock wait in these tests.
@@ -70,7 +76,7 @@ function device() {
   context.queryFirstAndroidSemanticNode = helper("queryFirstAndroidSemanticNode", "readinessEvidenceMatchesTag");
   context.androidProjectedElement = helper("androidProjectedElement", "queryFirstAndroidSemanticNode");
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readScalarProjection", "readProjection", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
+  for (const name of ["readScalarProjection", "readProjection", "scanProjection", "revealProjectionMatching", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
   return {
@@ -79,6 +85,39 @@ function device() {
     onTraversal(callback) { context.scrollUntilTag = callback; },
   };
 }
+
+test("indexed controls own absence without caller hints, for exact and collection observations", async () => {
+  const { driver, snapshots, respondWith } = device();
+  for (const tag of ["parity:service:notice:test", "parity:data-status-panel", "parity:airport-info-modal:KSEA", "parity:plan-row:1", "parity:tray-option:Vectors"]) {
+    for (const read of [() => driver.readElement(tag), () => driver.readProjection(tag)]) {
+      const absent = value => assert.ok(value === null || value.length === 0);
+      absent(await read());
+      snapshots.set(tag, { "resource-id": tag, visible: "true", text: "Rendered", bounds: "[0,0][90,120]" });
+      const present = await read();
+      assert.equal((Array.isArray(present) ? present[0] : present).text, "Rendered");
+      snapshots.delete(tag);
+      absent(await read());
+      respondWith({ status: 28, stderr: "provider busy", stdout: "" });
+      await assert.rejects(read(), TransientObservationError);
+      respondWith({ status: 7, stderr: "connection refused", stdout: "" });
+      await assert.rejects(read(), /persistent Android/);
+      respondWith(null);
+    }
+  }
+});
+
+test("collection scanning shares the target observation instead of traversing another backend", async () => {
+  const { driver, snapshots } = device();
+  assert.equal((await driver.scanProjection("parity:plan-row:")).length, 0);
+  snapshots.set("parity:plan-row:1", { "resource-id": "parity:plan-row:1", text: "KSEA", visible: "true" });
+  assert.equal((await driver.scanProjection("parity:plan-row:"))[0].text, "KSEA");
+});
+
+test("collection reveal cannot turn observation failure into target absence", async () => {
+  const { driver, respondWith } = device();
+  respondWith({ status: 7, stderr: "connection refused", stdout: "" });
+  await assert.rejects(driver.revealProjectionMatching("parity:plan-row:", "KSEA"), /persistent Android/);
+});
 
 test("both page readers use the positioned page index throughout navigation", async () => {
   const { driver, snapshots, requests, respondWith } = device();
@@ -169,7 +208,7 @@ test("data-status rows treat an absent indexed snapshot as absence, not permissi
 test("airport scroll readiness uses positioned bounds, not the modal's changing descendant text", async () => {
   const { driver, snapshots } = device();
   const tag = "parity:airport-info-modal:KSEA";
-  const read = () => driver.readElement("airport-info-modal:KSEA", { indexed: true });
+  const read = () => driver.readElement("airport-info-modal:KSEA");
   assert.equal(await read(), null);
   snapshots.set(tag, {
     "resource-id": tag, "semantic-path": "projection-provider:4", "state-description": "enabled:true",
@@ -179,14 +218,14 @@ test("airport scroll readiness uses positioned bounds, not the modal's changing 
   snapshots.delete(tag);
   assert.equal(await read(), null);
   const implementation = readFileSync(new URL("release-journey-implementations.mjs", import.meta.url), "utf8");
-  assert.match(implementation, /"scroll airport info", \{\s*ready: \(\) => runtime\.driver\.readElement\(`airport-info-modal:\$\{complexAirport\}`, \{ indexed: true \}\)/);
+  assert.match(implementation, /"scroll airport info", \{\s*ready: \(\) => runtime\.driver\.readElement\(`airport-info-modal:\$\{complexAirport\}`\)/);
 });
 
 test("provider unavailability and permanent failures stay errors, never absence or a fallback", async () => {
   const modeled = device();
   modeled.respondWith({ status: 28, stdout: "", stderr: "provider busy" });
   assert.throws(() => modeled.driver.readScalarProjection("parity:airport-info-scroll:"), TransientObservationError);
-  await assert.rejects(modeled.driver.readElement("airport-info-modal:KSEA", { indexed: true }), TransientObservationError);
+  await assert.rejects(modeled.driver.readElement("airport-info-modal:KSEA"), TransientObservationError);
   modeled.respondWith({ status: 7, stdout: "", stderr: "connection refused" });
   assert.throws(() => modeled.driver.readScalarProjection("parity:airport-info-scroll:"), /persistent Android/);
   assert.equal(modeled.requests.length, 3);
@@ -224,6 +263,7 @@ test("provider-only batch requests bypass the server's accessibility queue and f
   const lock = service.slice(service.indexOf("private static boolean requiresSerializedAccessibility"), service.indexOf("private void handleSetText"));
   assert.match(lock, /\("\/exact-projection"\.equals\(endpoint\) \|\| "\/query"\.equals\(endpoint\)\) &&\s*"true"\.equals\(query\.getOrDefault\("provider_only", "false"\)\)\) \{\s*return false/);
   const handler = service.slice(service.indexOf("private void handleQuery"), service.indexOf("private void handleExactProjection"));
+  assert.match(handler, /renderedOnly \? ProviderProjection\.unhandled\(\)/);
   assert.match(handler, /prefix\s*\? providerProjectionPrefix\(tag\)/);
   assert.match(handler, /providerOnly \? new JSONArray\(\)\s*: renderNodeQuery/);
 });
@@ -298,13 +338,13 @@ test("native map-follow state uses the shared scalar reader for presence and abs
 test("status popup and service collections prove absence without tree access", async () => {
   const { driver, snapshots, respondWith } = device();
   const panelTag = "parity:data-status-panel";
-  const panel = () => driver.readElement("data-status-panel", { indexed: true });
+  const panel = () => driver.readElement("data-status-panel");
   assert.equal(await panel(), null, "never-mounted popup");
   snapshots.set(panelTag, { "resource-id": panelTag, visible: "true", bounds: "[10,10][400,600]" });
   assert.equal((await panel()).bounds, "[10,10][400,600]");
   snapshots.delete(panelTag);
   assert.equal(await panel(), null, "dismissed popup");
-  const bodies = () => driver.readProjection("parity:service:body:", { indexed: true });
+  const bodies = () => driver.readProjection("parity:service:body:");
   assert.equal((await bodies()).length, 0, "folded history");
   const bodyTag = `parity:service:body:${"a".repeat(64)}`;
   snapshots.set(bodyTag, { "resource-id": bodyTag, text: "notice body", enabled: "true" });
@@ -313,7 +353,7 @@ test("status popup and service collections prove absence without tree access", a
   assert.equal((await bodies()).length, 0, "folded again");
   const rowTag = "parity:data-status-box-plate:procedure_geometry:0";
   snapshots.set(rowTag, { "resource-id": rowTag, text: "This publication reports a warning", enabled: "true" });
-  const rows = await driver.readProjection("data-status-box-plate:procedure_geometry:", { indexed: true });
+  const rows = await driver.readProjection("data-status-box-plate:procedure_geometry:");
   assert.equal(rows[0].text, "This publication reports a warning");
   respondWith({ status: 28, stdout: "", stderr: "provider busy" });
   await assert.rejects(panel(), TransientObservationError);
@@ -344,11 +384,12 @@ test("Settings reveal uses the control index before and after lazy-list traversa
     bounds: "[0,100][900,200]",
   };
   let traversals = 0;
-  onTraversal(async (_serial, target, _count, reachable, avoidNavigation, options) => {
+  onTraversal(async (_serial, target, _count, reachable, avoidNavigation, ...options) => {
     assert.equal(target, tag);
     assert.equal(reachable, true);
     assert.equal(avoidNavigation, true);
-    assert.equal(options.providerOnly, true, "absence during traversal must also bypass the tree");
+    assert.equal(options.length, 0, "traversal cannot override the target's backend");
+    assert.equal(androidObservationBackend(target), "indexed");
     traversals += 1;
     snapshots.set(tag, node);
   });

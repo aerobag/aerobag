@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import assert from "node:assert/strict";
+import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1130,10 +1131,10 @@ test("Android inspector presence uses its rendered index without accessibility f
   const readElement = runInNewContext(
     `({ ${AndroidSemanticJourneyDriver.prototype.readElement.toString()} }).readElement`,
     {
-      androidElementSemanticTag,
+      androidElementSemanticTag, rejectObservationOverrides,
       queryFirstAndroidSemanticNode(_serial, tag, options) {
         assert.equal(tag, "parity:map-selection-tray");
-        assert.equal(options.providerOnly, true);
+        assert.equal(androidObservationBackend(tag), "indexed");
         assert.equal(options.requireVisible, true);
         calls += 1;
         if (result instanceof Error) throw result;
@@ -1213,12 +1214,12 @@ for (const missing of [null, "panel", "text"]) {
       driver: {
         async readElement(id, options) {
           assert.equal(id, "procedure-status-panel");
-          assert.equal(options.indexed, true);
+          assert.equal(options, undefined);
           return opened && missing !== "panel" ? { text: "", enabled: true } : null;
         },
         async readProjection(prefix, options) {
           assert.equal(prefix, "data-status-box-plate:procedure_geometry:");
-          assert.equal(options.indexed, true);
+          assert.equal(options, undefined);
           reads += 1;
           return reads < 2 ? [] : [{ text: missing === "text" ? "" : "This publication reports a warning" }];
         },
@@ -3639,7 +3640,9 @@ test("Android disclaimer bootstrap observes startup before querying its popup ac
     harness.indexOf("export function assertRuntimeIsAvailable"),
   );
   assert.match(disclaimer, /observeUntil\("initial mandatory disclaimer state"/);
-  assert.match(disclaimer, /queryAndroidSemanticNodes/);
+  assert.match(disclaimer, /queryAndroidExactProjection\([\s\S]*"parity:disclaimer-accept-button",\s*\{ verifyReachable: true \}/);
+  assert.match(disclaimer, /androidIndexedControlIsActionReady\(button\)/);
+  assert.equal(androidObservationBackend("parity:disclaimer-accept-button"), "indexed");
   assert.doesNotMatch(disclaimer, /dumpAndroid/);
 });
 
@@ -3938,7 +3941,7 @@ test("Android semantic discovery scrolls horizontally for clipped control strips
   assert.equal(androidElementMayRequireHorizontalScroll("settings-toggle-debug_internet_adsb"), false);
 });
 
-test("Android horizontal reveals use rendered geometry before indexed action readiness", () => {
+test("Android horizontal reveals and actions share target ownership and require rendered reachability", () => {
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const service = readFileSync(
@@ -3953,11 +3956,11 @@ test("Android horizontal reveals use rendered geometry before indexed action rea
     driver.lastIndexOf("  async revealElement(elementId)"),
     driver.lastIndexOf("  async reload()"),
   );
-  assert.match(readAction, /providerOnly: true/);
-  assert.doesNotMatch(readAction, /renderedOnly/);
-  assert.match(reveal, /renderedOnly = androidElementMayRequireHorizontalScroll\(elementId\)/);
-  assert.match(reveal, /requireReachable: true,[\s\S]*renderedOnly,[\s\S]*avoidNavigation/);
-  assert.match(harness, /rendered_only: String\(renderedOnly\)/);
+  assert.match(readAction, /queryFirstAndroidSemanticNode/);
+  assert.doesNotMatch(readAction, /renderedOnly|providerOnly/);
+  assert.equal(androidObservationBackend("parity:plan-control:Undo"), "indexed");
+  assert.match(reveal, /requireReachable: true,[\s\S]*avoidNavigation/);
+  assert.match(harness, /rendered_only: String\(backend === "accessibility"\)/);
   assert.match(harness, /verify_reachable: String\(verifyReachable\)/);
   assert.match(harness, /avoid_navigation: String\(avoidNavigation\)/);
   assert.match(
@@ -4007,7 +4010,7 @@ test("Android page navigation requires visible semantic pages", () => {
   assert.doesNotMatch(readPage, /visibleAndroidPage/);
   assert.match(readPage, /queryFirstAndroidSemanticNode/);
   assert.match(readPage, /includeDescendantText: false/);
-  assert.match(readPage, /providerOnly: true/);
+  assert.equal(androidObservationBackend(androidPageTag("charts")), "indexed");
   const provider = readFileSync(
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionProvider.kt", import.meta.url),
     "utf8",
@@ -4043,7 +4046,7 @@ test("Android first-node probes stop semantic traversal at the first match", () 
   assert.match(queryFirst, /queryAndroidExactProjection/);
   assert.match(
     queryFirst,
-    /includeDescendantText,[\s\S]*renderedOnly,[\s\S]*verifyReachable: requireReachable,[\s\S]*avoidNavigation/,
+    /includeDescendantText,[\s\S]*verifyReachable: requireReachable,[\s\S]*avoidNavigation/,
   );
   assert.doesNotMatch(queryFirst, /indexedOnly: true/);
   assert.match(queryFirst, /\{ prefix: true, first: true, includeDescendantText \}/);
@@ -4193,13 +4196,13 @@ test("Android chooser options use the authoritative app-owned control index", ()
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /provider_only: String\(providerOnly\)/);
+  assert.match(harness, /provider_only: String\(backend === "indexed"\)/);
   const option = driver.slice(
     driver.lastIndexOf("  async readOption(launcherId, optionId)"),
     driver.lastIndexOf("  async selectOption(launcherId, optionId, readyElement)"),
   );
   assert.match(option, /queryAndroidExactProjection/);
-  assert.match(option, /providerOnly: true/);
+  assert.equal(androidObservationBackend("parity:tray-option:Vectors"), "indexed");
   assert.doesNotMatch(option, /queryFirstAndroidSemanticNode/);
   assert.match(service, /if \(tag\.isEmpty\(\) \|\| providerOnly\) return output/);
 });
@@ -4262,7 +4265,8 @@ test("Android semantic taps validate current controls before one timed input ges
   assert.match(service, /node\.getBoundsInScreen\(renderedBounds\)[\s\S]*return renderedBounds/);
   assert.doesNotMatch(click, /"shell", "input", "tap"/);
   assert.equal((click.match(/target = androidPhysicalTapTarget/g) ?? []).length, 1);
-  assert.match(click, /queryAndroidExactProjection\([\s\S]*providerOnly: true/);
+  assert.match(click, /queryAndroidExactProjection\(/);
+  assert.equal(androidObservationBackend("parity:plan-row-action:direct_to"), "indexed");
   assert.match(click, /for \(let attempt = 0; attempt < 4; attempt \+= 1\)/);
   assert.match(click, /waitForAndroidSemanticEvent\(serial, 250\)/);
   assert.match(click, /if \(!refreshed\) continue/);
@@ -4513,7 +4517,8 @@ test("Android scalar projections use only the app-owned provider, including abse
     source.indexOf("  readScalarProjection(prefix)"),
     source.indexOf("  async waitForObservation(intervalMs)"),
   );
-  assert.match(method, /\{ providerOnly: true \}/);
+  assert.match(method, /queryAndroidExactProjection\(/);
+  assert.equal(androidObservationBackend("org.aerobag.app:id/e2e_viewport_projection"), "indexed");
   assert.doesNotMatch(method, /seededScalarProjections|boundedOnly/);
 });
 
@@ -5002,6 +5007,7 @@ test("Android process watchdog timeouts remain bounded observation errors, not m
   let requests = 0;
   const query = runInNewContext(`(${queryAndroidExactProjection})`, {
     URLSearchParams, TransientObservationError, semanticDriverObservationUnavailable,
+    androidObservationBackend, rejectObservationOverrides,
     requiredSemanticDriver: () => ({ port: 19191 }),
     semanticDriverObservationRequest() {
       requests++;
@@ -5009,10 +5015,10 @@ test("Android process watchdog timeouts remain bounded observation errors, not m
         error: Object.assign(new Error(`spawnSync curl ${code}`), { code }) };
     },
   });
-  assert.throws(() => query("test", "parity:page:home", { providerOnly: true }), TransientObservationError);
+  assert.throws(() => query("test", "parity:page:home"), TransientObservationError);
   assert.equal(requests, 1, "indexed observation recovery belongs to the outer deadline");
   code = "ENOENT";
-  assert.throws(() => query("test", "parity:page:home", { providerOnly: true }), error =>
+  assert.throws(() => query("test", "parity:page:home"), error =>
     !(error instanceof TransientObservationError) && /ENOENT/.test(error.message));
 });
 
@@ -5089,10 +5095,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/30/);
-  assert.match(service, /aerobag-semantic-driver\/30/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/30/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/30/);
+  assert.match(harness, /aerobag-semantic-driver\/31/);
+  assert.match(service, /aerobag-semantic-driver\/31/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/31/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/31/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -5288,7 +5294,7 @@ test("Android semantic text delivery revalidates the focused projection before u
   assert.match(inputMethod, /int start = current\.startOffset/);
   assert.match(inputMethod, /setSelection\(start, start \+ current\.text\.length\(\)\)/);
   assert.match(inputMethod, /commitText\(value, 1\)/);
-  assert.match(driver, /providerOnly: true/);
+  assert.equal(androidObservationBackend("parity:playback-source-input"), "indexed");
   assert.match(service, /"text"\.equals\(fields\.getOrDefault\("kind", ""\)\)/);
   assert.match(driver, /projected\.focused && \(!projected\.supports_set_text \|\| !projected\.input_ready\)/);
   assert.match(driver, /readyElement\.focused !== true \|\|[\s\S]*readyElement\.input_ready !== true/);
@@ -5330,7 +5336,8 @@ test("Android text delivery retries only explicit non-delivery against the refre
       },
       queryProjection(_serial, tag, options) {
         assert.equal(tag, "parity:playback-source-input");
-        assert.deepEqual(options, { providerOnly: true });
+        assert.equal(options, undefined);
+        assert.equal(androidObservationBackend(tag), "indexed");
         return [refreshed];
       },
       waitForEvent(serial, timeoutMs) {
@@ -5501,7 +5508,7 @@ test("Android action readiness requires app-indexed geometry", () => {
     driver.indexOf("async readSessionRevision()", methodStart),
   );
   assert.match(method, /queryFirstAndroidSemanticNode/);
-  assert.match(method, /providerOnly: true/);
+  assert.equal(androidObservationBackend("parity:map-selection-action:wx"), "indexed");
 });
 
 test("Android semantic lookup prefers an exact action over an earlier prefix match", () => {
@@ -5569,11 +5576,11 @@ test("Android reveal requires reachability and traverses only known scroll colle
     source.indexOf("\n  async reload()", source.lastIndexOf("  async revealElement(elementId)")),
   );
   assert.match(revealMethod, /establishRevealedElement/);
-  assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true, true, \{ providerOnly \}\)/);
+  assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true, true\)/);
   assert.match(revealMethod, /!androidElementMayRequireVerticalScroll\(elementId\)/);
   assert.match(revealMethod, /traverse: async \(\) => false/);
   const readElementMethod = source.slice(
-    source.lastIndexOf("  async readElement(elementId, { indexed = false } = {})"),
+    source.lastIndexOf("  async readElement(elementId, options = {})"),
     source.lastIndexOf("  async revealElement(elementId)"),
   );
   assert.match(readElementMethod, /requireVisible: true/);

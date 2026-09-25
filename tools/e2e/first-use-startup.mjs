@@ -28,7 +28,7 @@ export async function startupState(runtime, timeoutMs = E2E_TIMING.startupMs) {
 export function readGuidedTourPanel(runtime) {
   // Both platforms index the rendered panel. Absence is an ordinary result,
   // not a reason to walk Android's entire accessibility hierarchy.
-  return runtime.driver.readElement("guided-tour-panel", { indexed: true });
+  return runtime.driver.readElement("guided-tour-panel");
 }
 
 export async function acceptDisclaimer(runtime, { required = false, keepIntroduction = false } = {}) {

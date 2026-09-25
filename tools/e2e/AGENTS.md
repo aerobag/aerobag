@@ -21,6 +21,13 @@ shared drivers, and the platform code that supplies their readiness evidence.
 
 ## Readiness belongs to the rendered resource
 
+- Android targets, not journey call sites, choose their observation backend in
+  [the observation contract](android-observation-contract.mjs). Ordinary app
+  controls use the shared indexed modifiers. The explicitly named legacy
+  accessibility projections never fall back to/from the index. Do not add
+  `indexed`/`providerOnly` flags to a journey; exact, prefix, and scrolling reads
+  must agree for absent as well as present targets. Exercise both lifecycle and
+  transport errors in the cheap observation tests when changing a reader.
 - A selected ID, launcher label, or retained viewport does not prove that its
   image and input geometry are ready. Publish readiness from the rendering
   owner, for the current resource, only when its handler can accept the action.

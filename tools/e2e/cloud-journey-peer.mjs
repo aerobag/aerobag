@@ -9,7 +9,7 @@ import {
   connectToBrowser, launchChrome, stopProcess,
 } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { editSemanticText, WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
-import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
+import { E2E_TIMING, observeUntil, performTransition, TerminalObservationError } from "./transition-contract.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 import { acceptDisclaimer } from "./first-use-startup.mjs";
@@ -19,6 +19,33 @@ export function rewriteRequestOrigin(url, sourceOrigin, targetOrigin) {
   const original = new URL(url);
   if (original.origin !== new URL(sourceOrigin).origin) return original.toString();
   return `${new URL(targetOrigin).origin}${original.pathname}${original.search}${original.hash}`;
+}
+
+export async function linkCloudJourneyPeer(driver, { scheduler, onTiming } = {}) {
+  const read = async () => ({
+    linked: await driver.readElement("cloud-panel-linked"),
+    linking: await driver.readElement("cloud-panel-link_account"),
+  });
+  const feedback = (state) => {
+    if (state.linking?.state === "error") {
+      throw new TerminalObservationError("cloud account link", state.linking.text);
+    }
+    return Boolean(state.linked || state.linking?.state === "working");
+  };
+  // UI feedback and the provider's network completion have separate owners.
+  // Neither a working panel alone nor a silently stalled UI is success.
+  await performTransition("cloud journey peer link", {
+    ready: () => driver.readElement("cloud-action-accept_setup_code"),
+    act: (readyElement) => driver.performAction("accept_setup_code", readyElement),
+    complete: read,
+    completionSatisfied: feedback,
+    scheduler, onTiming,
+  });
+  return observeUntil("cloud journey peer provider verification", read, {
+    timeoutMs: E2E_TIMING.cloudConsistencyMs,
+    scheduler,
+    accept: (state) => feedback(state) && Boolean(state.linked),
+  });
 }
 
 export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOriginRoutes = [], netLogPath = null }) {
@@ -84,10 +111,9 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
       },
 
       async waitForState(predicate, description, timeoutMs = E2E_TIMING.cloudConsistencyMs) {
-        const result = await observeUntil(description, async () => {
-          const state = await page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
-          return state && predicate(state) ? state : null;
-        }, { timeoutMs });
+        const result = await observeUntil(description,
+          () => page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null"),
+          { timeoutMs, accept: state => Boolean(state && predicate(state)) });
         return result.value;
       },
 
@@ -104,11 +130,7 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
           "cloud-setup-code-input",
           setupCode,
         );
-        await performTransition("cloud journey peer link", {
-          ready: () => driver.readElement("cloud-action-accept_setup_code"),
-          act: (readyElement) => driver.performAction("accept_setup_code", readyElement),
-          complete: () => driver.readElement("cloud-panel-linked"),
-        });
+        await linkCloudJourneyPeer(driver);
         await this.waitForState(
           (state) => Boolean(state.event_stream_id),
           "cloud journey peer event stream",

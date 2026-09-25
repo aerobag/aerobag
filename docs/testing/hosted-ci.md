@@ -79,6 +79,16 @@ or journey timeouts to conceal leaks. Separate Chrome peers must also use
 separate netlogs, never overwrite the main browser's inherited netlog. The
 account-upgrade journey retains peer network errors and individual netlogs.
 
+Cloud linking has two independently required outcomes: prompt rendered
+"Linking Sync Account" feedback (or an already linked account), and completed
+provider verification. Keep the former under the normal UI response deadline
+and the latter under the existing cloud consistency deadline. A local ACS root
+read once took eight seconds while the UI correctly reported pending work;
+that does not justify a longer UI deadline or treating pending work as success.
+The controlled peer tests delay verification, withhold visible feedback, keep
+verification pending forever, and inject a provider rejection. Each path sends
+one action, and failures retain the actual rendered state.
+
 Main journeys and independent cloud browser peers share `first-use-startup.mjs`.
 Accepting the disclaimer is not the end of startup: wait for the introduction
 decision, dismiss its rendered Close control unless the journey tests the tour,

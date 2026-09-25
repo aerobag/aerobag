@@ -812,8 +812,6 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-
-    @SuppressWarnings("deprecation")
     private boolean centerReachable(AccessibilityNodeInfo node) {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);

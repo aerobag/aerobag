@@ -2642,7 +2642,11 @@ test("procedure replacement waits for the picker transaction before reopening it
           return [{ id: "parity:plan-procedure:I16R" }];
         }
         if (prefix === "parity:plan-procedure-transition:") {
-          return [{ id: "parity:plan-procedure-transition:VECTORS", enabled: true }];
+          return [
+            { id: "parity:plan-procedure-transition:OTHER:RW16R", text: "Not VECTORS", enabled: true },
+            { id: "parity:plan-procedure-transition:VECTORS:RW16R", enabled: true },
+            { id: "parity:plan-procedure-transition:VECTORS:RW34L", enabled: true },
+          ];
         }
         if (prefix === "parity:plan-procedure-row:I16R:uid:") {
           return [transitionSelected && pickerReadCount >= 2 ? currentRow : staleRow];
@@ -2652,7 +2656,7 @@ test("procedure replacement waits for the picker transaction before reopening it
       async performAction(id) {
         if (id.startsWith("plan-row:")) rowOpen = true;
         else if (id !== "plan-row-tray-scrim") rowOpen = false;
-        if (id === "plan-procedure-transition:VECTORS") transitionSelected = true;
+        if (id === "plan-procedure-transition:VECTORS:RW16R") transitionSelected = true;
       },
     },
     async step(_label, action) {
@@ -2671,6 +2675,7 @@ test("procedure replacement waits for the picker transaction before reopening it
     airportId: "KPAE",
     actionId: "select_approach",
     procedureId: "I16R",
+    transition: "VECTORS",
   });
   assert.equal(selected, currentRow);
   assert.equal(transitionSelected, true);

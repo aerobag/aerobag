@@ -10809,7 +10809,7 @@ function FlightPlanPage(props: {
                         key={`${procedurePicker.selectedProcedureId}:${choice.runway_transition ?? "none"}:${choice.enroute_transition ?? "none"}:${index}`}
                         type="button"
                         className="trayButton airwayChoiceButton"
-                        data-testid={`plan-procedure-transition-${choice.enroute_transition ?? "none"}`}
+                        data-testid={`plan-procedure-transition-${choice.enroute_transition ?? "none"}:${choice.runway_transition ?? "none"}`}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {

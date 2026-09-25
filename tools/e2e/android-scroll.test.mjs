@@ -58,7 +58,12 @@ test("transient read recovery does not replay the physical gesture", async () =>
 
 test("successful input delivery without scrolling is a failure, not an edge", async () => {
   const h = harness([{ ...surface, text: "clock ticks forever" }]);
-  await assert.rejects(h.scroll("test", surface, "down"), /timed out/);
+  await assert.rejects(h.scroll("test", surface, "down"), error => {
+    assert.match(error.message, /timed out/);
+    assert.equal(error.diagnostics.last_value.position, surface.position);
+    assert.equal(error.diagnostics.last_value.moving, "false");
+    return true;
+  });
   assert.equal(h.counts().gestures, 1);
 });
 

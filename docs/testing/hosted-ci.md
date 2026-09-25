@@ -194,6 +194,19 @@ The reader cannot repair an ambiguous identity by choosing the latest writer.
 replacement, unmount/remount, clipped geometry and retained frame snapshots.
 JVM CI enables this publisher so these tests cannot silently skip it.
 
+Procedure transition controls identify both the enroute and runway transition;
+several runway choices can share one enroute transition. The strict publisher
+exposed six simultaneous `ARRIE` owners that the old last-writer-wins index hid.
+Physical-touch component tests select each distinct choice, and shared journeys
+match the transition identity rather than guessing from substrings in labels.
+
+Traversal gestures drag less than one viewport and hold before lifting to avoid
+a fling skipping unobserved rows. An airway picker trace showed eleven rows of
+movement in an eight-row viewport, missing YKM in both directions. This is an
+input gesture shape, not a post-input sleep: completion still requires the
+published scroll position to change and motion to end. Preserve the raw last
+observation on timeout and log each traversed position.
+
 Scroll widgets publish position, direction availability and motion state. A
 physical gesture completes only when that owner moves and stops; reaching an
 edge is determined by its published direction flag. A stall, disappearing

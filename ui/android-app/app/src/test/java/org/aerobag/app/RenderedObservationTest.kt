@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -92,6 +93,34 @@ class RenderedObservationTest {
         assertTrue(after.state.contains("moving:false"))
     }
 
+    @Test fun traversalDragAndHoldDoesNotFlingPastUnobservedRows() {
+        lateinit var view: View
+        compose.setContent {
+            view = LocalView.current
+            ObservedLazyColumn(Modifier.size(200.dp, 400.dp).e2eIndexedElement("parity:traversal")) {
+                items(120) { index ->
+                    Text("Row $index", Modifier.height(50.dp).e2eIndexedLabel("parity:traversal-row:$index", "Row $index"))
+                }
+            }
+        }
+        var previousIndex = 0
+        repeat(4) {
+            compose.onNodeWithTag("parity:traversal").performTouchInput {
+                down(Offset(center.x, height * 0.85f))
+                repeat(10) { step -> moveTo(Offset(center.x, height * (0.85f - 0.07f * (step + 1))), delayMillis = 25) }
+                advanceEventTime(150)
+                up()
+            }
+            compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+            val state = E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state
+            val index = state.substringAfter(":position:").substringBefore(',').toInt()
+            assertTrue("each gesture advances", index > previousIndex)
+            assertTrue("adjacent observed viewports must overlap: $previousIndex -> $index", index - previousIndex < 8)
+            assertTrue(state.contains(":moving:false"))
+            previousIndex = index
+        }
+    }
+
     @Test fun cloudPanelPublishesTheStateThatItActuallyRenders() {
         val panel = mutableStateOf(UiCloudPanel(
             id = "receive_setup", title = "Set up from another device",
@@ -110,6 +139,31 @@ class RenderedObservationTest {
         compose.runOnIdle { panel.value = panel.value.copy(state = UiCloudPanelState.Complete) }
         compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
         assertTrue(E2eProjectionRegistry.read("parity:cloud-panel:receive_setup")!!.state.contains(":state:complete:"))
+    }
+
+    @Test fun procedureChoicesWithTheSameEnrouteTransitionRemainIndividuallyClickable() {
+        val choices = listOf("RW16R", "RW34L").map { runway ->
+            org.aerobag.app.domain.ProcedureSpecChoice(runway, "ARRIE", "ARRIE from $runway")
+        }
+        val selected = mutableListOf<String?>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        lateinit var view: View
+        compose.setContent {
+            view = LocalView.current
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                Column {
+                    choices.forEach { choice ->
+                        ProcedureTransitionRow(choice) { selected.add(choice.runwayTransition) }
+                    }
+                }
+            }
+        }
+        compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+        assertEquals(2, E2eProjectionRegistry.readPrefix("parity:plan-procedure-transition:ARRIE:").size)
+        for (runway in listOf("RW16R", "RW34L")) {
+            compose.onNodeWithTag("parity:plan-procedure-transition:ARRIE:$runway").performTouchInput { click() }
+        }
+        compose.runOnIdle { assertEquals(listOf("RW16R", "RW34L"), selected) }
     }
 
     @Test fun successfulEmptySnapshotsAndInvalidRequestsAreDifferentOutcomes() {

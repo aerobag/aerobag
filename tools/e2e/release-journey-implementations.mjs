@@ -1203,7 +1203,7 @@ export async function selectProcedure(runtime, {
         const entries = await runtime.driver.readProjection("parity:plan-procedure-transition:");
         if (transition) {
           return entries.find((entry) =>
-            procedureTransitionId(entry) === transition || entry.text?.includes(transition)) ?? null;
+            procedureTransitionId(entry).split(":")[0] === transition && entry.enabled !== false) ?? null;
         }
         return entries.find((entry) => entry.enabled !== false) ?? null;
       },

@@ -1236,13 +1236,17 @@ export async function scrollAndroidAndAwait(serial, surface, direction) {
     throw new Error("Invalid rendered scroll observation");
   }
   scrollAndroidSemanticNode(serial, surface, direction);
-  await observeUntil("Android rendered scroll completed", () => {
+  const observed = await observeUntil("Android rendered scroll completed", () => {
     const current = queryAndroidExactProjection(serial, surface["resource-id"])[0];
     if (!current || current.incarnation !== surface.incarnation) {
       throw new Error("Scroll surface disappeared or process restarted during gesture");
     }
-    return current.position !== surface.position && current.moving === "false" ? current : null;
-  }, { timeoutMs: E2E_TIMING.userTransitionDeadlineMs, intervalMs: E2E_TIMING.pollIntervalMs });
+    return current;
+  }, {
+    accept: current => current.position !== surface.position && current.moving === "false",
+    timeoutMs: E2E_TIMING.userTransitionDeadlineMs, intervalMs: E2E_TIMING.pollIntervalMs,
+  });
+  console.log(`[android scroll] ${surface["resource-id"]} ${direction} ${surface.position} -> ${observed.value.position}`);
   return true;
 }
 

@@ -1205,11 +1205,8 @@ internal fun FlightPlanPage(
                             MenuPanelRow(label = requireNotNull(picker.options).emptyMessage, active = false, enabled = false, onSelect = {})
                         }
                         choices.forEach { choice ->
-                            MenuPanelRow(
-                                label = choice.label,
-                                active = false,
-                                enabled = true,
-                                testTag = "parity:plan-procedure-transition:${choice.enrouteTransition ?: "none"}",
+                            ProcedureTransitionRow(
+                                choice = choice,
                                 onSelect = {
                                     procedurePicker = picker.copy(loading = true, error = null)
                                     val snapshot = applySessionCommand("selectProcedureAtFlightPlanRow") {
@@ -1456,6 +1453,19 @@ internal fun FlightPlanPage(
         }
     }
 }
+
+}
+
+@Composable
+internal fun ProcedureTransitionRow(
+    choice: org.aerobag.app.domain.ProcedureSpecChoice,
+    onSelect: () -> Unit,
+) {
+    MenuPanelRow(
+        label = choice.label, active = false, enabled = true,
+        testTag = "parity:plan-procedure-transition:${choice.enrouteTransition ?: "none"}:${choice.runwayTransition ?: "none"}",
+        onSelect = onSelect,
+    )
 }
 
 internal fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =

@@ -439,14 +439,28 @@ public final class SemanticDriverService extends AccessibilityService {
         Path gesturePath = new Path();
         gesturePath.moveTo(cx + (horizontal ? distance * sign : 0), cy + (horizontal ? 0 : distance * sign));
         gesturePath.lineTo(cx - (horizontal ? distance * sign : 0), cy - (horizontal ? 0 : distance * sign));
-        GestureDescription gesture = new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(gesturePath, 0, 250)).build();
+        // Drag less than a viewport, then hold before lifting. Releasing a fast
+        // swipe immediately flings past unseen rows and makes traversal lossy.
+        GestureDescription.StrokeDescription drag =
+            new GestureDescription.StrokeDescription(gesturePath, 0, 250, true);
+        Path heldPath = new Path();
+        heldPath.moveTo(cx - (horizontal ? distance * sign : 0), cy - (horizontal ? 0 : distance * sign));
+        GestureDescription release = new GestureDescription.Builder()
+            .addStroke(drag.continueStroke(heldPath, 0, 150, false)).build();
+        GestureDescription gesture = new GestureDescription.Builder().addStroke(drag).build();
         java.util.concurrent.CountDownLatch completed = new java.util.concurrent.CountDownLatch(1);
         AtomicBoolean delivered = new AtomicBoolean(false);
-        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        GestureResultCallback releaseCallback = new GestureResultCallback() {
             @Override public void onCompleted(GestureDescription description) { delivered.set(true); completed.countDown(); }
             @Override public void onCancelled(GestureDescription description) { completed.countDown(); }
-        }, new android.os.Handler(android.os.Looper.getMainLooper()));
+        };
+        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+            @Override public void onCompleted(GestureDescription description) {
+                if (!dispatchGesture(release, releaseCallback, handler)) completed.countDown();
+            }
+            @Override public void onCancelled(GestureDescription description) { completed.countDown(); }
+        }, handler);
         try {
             if (!accepted || !completed.await(1500, TimeUnit.MILLISECONDS) || !delivered.get()) {
                 throw new IllegalStateException("Physical scroll delivery failed");

@@ -4,6 +4,7 @@
 package org.aerobag.app
 
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberOverscrollEffect
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -28,28 +29,37 @@ private val nextScrollIdentity = AtomicLong()
 
 @Composable
 private fun Modifier.observeScroll(
-    orientation: String, position: String, backward: Boolean, forward: Boolean, moving: Boolean,
+    orientation: String, sample: () -> String,
 ): Modifier {
     if (!BuildConfig.AEROBAG_E2E_ENABLED) return this
     val id = remember { nextScrollIdentity.incrementAndGet() }
-    return e2eIndexedGeometry("parity:scroll:$id", "kind:scroll:orientation:$orientation" +
-        ":position:$position:backward:$backward:forward:$forward:moving:$moving:enabled:true")
+    return e2eIndexedGeometry("parity:scroll:$id") {
+        "kind:scroll:orientation:$orientation:${sample()}:enabled:true"
+    }
 }
 
 @Composable
 internal fun Modifier.observedVerticalScroll(state: ScrollState): Modifier {
+    val overscroll = rememberOverscrollEffect()
     val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
-        observeScroll("vertical", state.value.toString(), state.canScrollBackward, state.canScrollForward, state.isScrollInProgress)
+        observeScroll("vertical") {
+            "position:${state.value}:backward:${state.canScrollBackward}:forward:${state.canScrollForward}" +
+                ":moving:${state.isScrollInProgress || overscroll?.isInProgress == true}"
+        }
     } else this
-    return observed.verticalScroll(state)
+    return observed.verticalScroll(state, overscrollEffect = overscroll)
 }
 
 @Composable
 internal fun Modifier.observedHorizontalScroll(state: ScrollState): Modifier {
+    val overscroll = rememberOverscrollEffect()
     val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
-        observeScroll("horizontal", state.value.toString(), state.canScrollBackward, state.canScrollForward, state.isScrollInProgress)
+        observeScroll("horizontal") {
+            "position:${state.value}:backward:${state.canScrollBackward}:forward:${state.canScrollForward}" +
+                ":moving:${state.isScrollInProgress || overscroll?.isInProgress == true}"
+        }
     } else this
-    return observed.horizontalScroll(state)
+    return observed.horizontalScroll(state, overscrollEffect = overscroll)
 }
 
 @Composable
@@ -63,14 +73,17 @@ internal fun ObservedLazyColumn(
     userScrollEnabled: Boolean = true,
     content: LazyListScope.() -> Unit,
 ) {
+    val overscroll = rememberOverscrollEffect()
     val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
-        modifier.observeScroll("vertical",
-            "${state.firstVisibleItemIndex},${state.firstVisibleItemScrollOffset}",
-            userScrollEnabled && state.canScrollBackward, userScrollEnabled && state.canScrollForward,
-            state.isScrollInProgress)
+        modifier.observeScroll("vertical") {
+            "position:${state.firstVisibleItemIndex},${state.firstVisibleItemScrollOffset}" +
+                ":backward:${userScrollEnabled && state.canScrollBackward}:forward:${userScrollEnabled && state.canScrollForward}" +
+                ":moving:${state.isScrollInProgress || overscroll?.isInProgress == true}"
+        }
     } else modifier
     LazyColumn(
         modifier = observed,
+        overscrollEffect = overscroll,
         state = state, contentPadding = contentPadding, reverseLayout = reverseLayout,
         verticalArrangement = verticalArrangement, horizontalAlignment = horizontalAlignment,
         userScrollEnabled = userScrollEnabled, content = content,
@@ -87,15 +100,18 @@ internal fun ObservedLazyVerticalGrid(
     userScrollEnabled: Boolean = true,
     content: LazyGridScope.() -> Unit,
 ) {
+    val overscroll = rememberOverscrollEffect()
     val observed = if (BuildConfig.AEROBAG_E2E_ENABLED) {
-        modifier.observeScroll("vertical",
-            "${state.firstVisibleItemIndex},${state.firstVisibleItemScrollOffset}",
-            userScrollEnabled && state.canScrollBackward, userScrollEnabled && state.canScrollForward,
-            state.isScrollInProgress)
+        modifier.observeScroll("vertical") {
+            "position:${state.firstVisibleItemIndex},${state.firstVisibleItemScrollOffset}" +
+                ":backward:${userScrollEnabled && state.canScrollBackward}:forward:${userScrollEnabled && state.canScrollForward}" +
+                ":moving:${state.isScrollInProgress || overscroll?.isInProgress == true}"
+        }
     } else modifier
     LazyVerticalGrid(
         columns = columns,
         modifier = observed,
+        overscrollEffect = overscroll,
         state = state, horizontalArrangement = horizontalArrangement,
         verticalArrangement = verticalArrangement, userScrollEnabled = userScrollEnabled, content = content,
     )

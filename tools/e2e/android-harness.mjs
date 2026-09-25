@@ -1046,18 +1046,32 @@ export function restoreAndroidRotationState(serial, state) {
   ]);
 }
 
+export function androidDisplayRotationState(displays) {
+  const primary = displays.split(/Display: mDisplayId=0\s/)[1]?.split(/Display: mDisplayId=/)[0];
+  const frame = primary?.match(/DisplayFrames w=(\d+) h=(\d+) r=(\d+)/);
+  const layout = primary?.match(/mLayoutNeeded=(true|false)/);
+  if (!frame || !layout) throw new Error("Missing WindowManager display rotation evidence");
+  return {
+    width: Number(frame[1]), height: Number(frame[2]), rotation: Number(frame[3]),
+    layoutPending: layout[1] === "true",
+    rotationComplete: primary.includes("no ScreenRotationAnimation"),
+  };
+}
+
 export async function waitForAndroidOrientation(serial, orientation, timeoutMs = 15000) {
-  let observed = null;
-  await waitFor(() => {
+  const result = await observeUntil(`Android ${orientation} layout and rotation complete`, () => {
     const page = queryAndroidSemanticNodes(serial, "parity:page:", { prefix: true })
       .find(node => node.visible === "true");
-    if (!page) return false;
-    observed = rectOfBounds(page.bounds);
-    return orientation === "portrait"
-      ? observed.height > observed.width
-      : observed.width > observed.height;
-  }, timeoutMs, `actual Android ${orientation} display bounds`);
-  return observed;
+    const display = androidDisplayRotationState(adb(serial, ["shell", "dumpsys", "window", "displays"]));
+    return { bounds: page ? rectOfBounds(page.bounds) : null, display };
+  }, {
+    accept: ({ bounds, display }) => Boolean(bounds) && display.rotationComplete && !display.layoutPending &&
+      (orientation === "portrait"
+        ? display.rotation === 0 && bounds.height > bounds.width
+        : display.rotation === 1 && bounds.width > bounds.height),
+    timeoutMs, intervalMs: E2E_TIMING.pollIntervalMs,
+  });
+  return result.value.bounds;
 }
 
 export function scanAerobagLogcat(serial) {

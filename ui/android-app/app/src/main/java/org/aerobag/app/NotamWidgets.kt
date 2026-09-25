@@ -246,7 +246,11 @@ internal fun NotamModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .e2eIndexedElement("parity:procedure-notam-modal")
+            .e2eIndexedLabel("parity:procedure-notam-modal", if (BuildConfig.AEROBAG_E2E_ENABLED) {
+                listOf(detail.title.uppercase(), detail.advisoryText,
+                    detail.notams.joinToString("\n") { "${it.label}\n${it.text}" }
+                        .ifEmpty { detail.emptyText }).joinToString("\n")
+            } else "")
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),

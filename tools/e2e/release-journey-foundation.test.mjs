@@ -3832,8 +3832,10 @@ test("Android airport-info popups export their semantic identity", () => {
   const notamModal = notamWidgets.slice(notamWidgets.indexOf("internal fun NotamModal("));
   assert.match(
     notamModal,
-    /\.e2eIndexedElement\("parity:procedure-notam-modal"\)\s*\.semantics \{ testTagsAsResourceId = true \}/,
+    /\.e2eIndexedLabel\("parity:procedure-notam-modal",/,
   );
+  assert.match(notamModal, /detail\.notams\.joinToString/);
+  assert.match(notamModal, /\.semantics \{ testTagsAsResourceId = true \}/);
 });
 
 test("airport-info time mode observes one unique fact instead of duplicate toggles", () => {
@@ -4226,8 +4228,12 @@ test("Android semantic taps validate current controls before one timed input ges
   assert.match(click, /if \(!refreshed\) continue/);
   assert.match(service, /new GestureDescription\.StrokeDescription\(path, 0, 80\)/);
   assert.match(service, /dispatchGesture/);
-  assert.doesNotMatch(service.slice(service.indexOf("private boolean dispatchTapGesture"), service.indexOf("private void handleScroll")), /GestureResultCallback/);
-  assert.match(service, /surrounding journey transition requires the app-visible result/);
+  const delivery = service.slice(service.indexOf("private boolean dispatchTapGesture"), service.indexOf("private void handleScroll"));
+  assert.match(delivery, /delivery\.await\(dispatchGesture/);
+  assert.match(delivery, /GestureDelivery extends GestureResultCallback/);
+  assert.match(delivery, /onCompleted[\s\S]*delivered = true/);
+  assert.match(delivery, /!completed\.await\(1500, TimeUnit\.MILLISECONDS\) \|\| !delivered/);
+  assert.equal(delivery.match(/dispatchGesture\(/g)?.length, 1);
   assert.doesNotMatch(service, /ACTION_UP receipt|global_touch_sequence|TouchReceipt/);
   assert.doesNotMatch(service, /ACTION_CLICK/);
 });

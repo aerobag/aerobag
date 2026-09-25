@@ -157,7 +157,7 @@ ensure_android_system_image() {
   "$SDKMANAGER_BIN" \
     "platform-tools" \
     "emulator" \
-    "platforms;android-34" \
+    "platforms;android-35" \
     "$AVD_PACKAGE_PATH" >/dev/null
 }
 

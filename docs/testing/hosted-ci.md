@@ -207,6 +207,12 @@ input gesture shape, not a post-input sleep: completion still requires the
 published scroll position to change and motion to end. Preserve the raw last
 observation on timeout and log each traversed position.
 
+Indexed containers do not synthesize descendant text by walking accessibility.
+When a journey checks displayed content, its rendering owner must publish that
+content with the shared label/control modifier. Airport facts, NOTAM/TFR
+readers and startup errors have component tests for this contract, including
+replacement and disposal. Publishing an ID alone only proves geometry/presence.
+
 Scroll widgets publish position, direction availability and motion state. A
 physical gesture completes only when that owner moves and stops; reaching an
 edge is determined by its published direction flag. A stall, disappearing
@@ -672,6 +678,20 @@ retains its browser context, so saved-state and offline-persistence assertions
 still exercise the same storage. Permissions are scoped to that context.
 
 ### Complete workload
+
+Scroll completion includes the platform overscroll effect, not only the content
+position. Compose can consume the next tap to stop an edge-stretch animation
+after `isScrollInProgress` becomes false. The observed wrappers pass the normal
+platform effect explicitly and sample `isInProgress` at the frame boundary.
+This requires Compose 1.8's public overscroll API (compile SDK 35; the pinned
+journey emulator remains API 34). Do not replace this with sleeps, disabled
+overscroll, or private Compose reflection. Physical gesture delivery callbacks
+are input receipts, not substitutes for the semantic postcondition.
+
+Rotation likewise requires both the rendered app orientation and WindowManager's
+completed rotation/layout. A landscape-shaped app frame may exist before the
+OS stops transforming/canceling physical input. The bounded OS observation is
+separate from the app's indexed UI observations.
 
 The normal low-latency release path is `tools/prod_manage.py --stage`: run the
 cheap emulator-free ordinary-CI preflight, then start deployment and hosted

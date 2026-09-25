@@ -64,13 +64,19 @@ internal fun E2eProjectionView(
 internal fun Modifier.e2eIndexedGeometry(
     semanticTag: String,
     state: String,
+): Modifier = e2eIndexedGeometry(semanticTag) { state }
+
+@Composable
+internal fun Modifier.e2eIndexedGeometry(
+    semanticTag: String,
+    sampleState: () -> String,
 ): Modifier {
     if (!BuildConfig.AEROBAG_E2E_ENABLED) return this
     val coordinates = remember(semanticTag) { AtomicReference<LayoutCoordinates?>(null) }
     val view = LocalView.current
     ObserveRenderedFrame(semanticTag) {
         coordinates.get()?.takeIf { it.isAttached }?.let {
-            E2eProjectionSnapshot("$state:window-focus:${view.hasWindowFocus()}", it.toE2eBounds(), 0)
+            E2eProjectionSnapshot("${sampleState()}:window-focus:${view.hasWindowFocus()}", it.toE2eBounds(), 0)
         }
     }
     return onGloballyPositioned { coordinates.set(it) }
@@ -119,6 +125,11 @@ private object RenderedObservationWindows {
             }.toMap()
             E2eProjectionRegistry.replaceFrame(previous, frame)
             previous = frame.mapValues { it.value.first }
+            // Edge effects advance during drawing, including their final frame.
+            // Request a final publication if drawing changed sampled readiness.
+            view.post {
+                if (sources.any { (owner, source) -> source.second() != frame[owner]?.second }) view.invalidate()
+            }
             return true
         }
         override fun onWindowFocusChanged(hasFocus: Boolean) { view.invalidate() }

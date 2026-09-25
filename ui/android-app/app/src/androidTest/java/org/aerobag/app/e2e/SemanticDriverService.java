@@ -403,10 +403,28 @@ public final class SemanticDriverService extends AccessibilityService {
         GestureDescription gesture = new GestureDescription.Builder()
             .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
             .build();
-        // The surrounding journey transition requires the app-visible result;
-        // this method is responsible only for validating and dispatching the
-        // user's one physical gesture.
-        return dispatchGesture(gesture, null, null);
+        GestureDelivery delivery = new GestureDelivery();
+        Log.i(LOG_TAG, "physical tap requested bounds=" + bounds);
+        delivery.await(dispatchGesture(gesture, delivery, new android.os.Handler(android.os.Looper.getMainLooper())));
+        Log.i(LOG_TAG, "physical tap delivered bounds=" + bounds);
+        return true;
+    }
+
+    private static final class GestureDelivery extends GestureResultCallback {
+        private final java.util.concurrent.CountDownLatch completed = new java.util.concurrent.CountDownLatch(1);
+        private volatile boolean delivered;
+        @Override public void onCompleted(GestureDescription description) { delivered = true; completed.countDown(); }
+        @Override public void onCancelled(GestureDescription description) { completed.countDown(); }
+        void await(boolean accepted) {
+            try {
+                if (!accepted || !completed.await(1500, TimeUnit.MILLISECONDS) || !delivered) {
+                    throw new IllegalStateException("Physical gesture was rejected, canceled, or not delivered");
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Physical gesture delivery interrupted", error);
+            }
+        }
     }
 
     private void handleScroll(Socket socket, String path) throws IOException {
@@ -448,27 +466,15 @@ public final class SemanticDriverService extends AccessibilityService {
         GestureDescription release = new GestureDescription.Builder()
             .addStroke(drag.continueStroke(heldPath, 0, 150, false)).build();
         GestureDescription gesture = new GestureDescription.Builder().addStroke(drag).build();
-        java.util.concurrent.CountDownLatch completed = new java.util.concurrent.CountDownLatch(1);
-        AtomicBoolean delivered = new AtomicBoolean(false);
         android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
-        GestureResultCallback releaseCallback = new GestureResultCallback() {
-            @Override public void onCompleted(GestureDescription description) { delivered.set(true); completed.countDown(); }
-            @Override public void onCancelled(GestureDescription description) { completed.countDown(); }
-        };
+        GestureDelivery delivery = new GestureDelivery();
         boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
             @Override public void onCompleted(GestureDescription description) {
-                if (!dispatchGesture(release, releaseCallback, handler)) completed.countDown();
+                if (!dispatchGesture(release, delivery, handler)) delivery.onCancelled(release);
             }
-            @Override public void onCancelled(GestureDescription description) { completed.countDown(); }
+            @Override public void onCancelled(GestureDescription description) { delivery.onCancelled(description); }
         }, handler);
-        try {
-            if (!accepted || !completed.await(1500, TimeUnit.MILLISECONDS) || !delivered.get()) {
-                throw new IllegalStateException("Physical scroll delivery failed");
-            }
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Physical scroll interrupted", error);
-        }
+        delivery.await(accepted);
         respondAction(socket, true, "physical scroll rejected\n");
     }
 

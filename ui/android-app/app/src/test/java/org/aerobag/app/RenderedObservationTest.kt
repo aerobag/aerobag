@@ -121,6 +121,42 @@ class RenderedObservationTest {
         }
     }
 
+    @Test fun scrollReadinessIncludesEdgeEffectEvenWhenPositionHasStopped() {
+        // Control the effect's lifetime independently of ScrollState and Compose
+        // recomposition: Android's stretch animation has exactly this lifetime.
+        val effect = object : androidx.compose.foundation.OverscrollEffect {
+            override var isInProgress = false
+            override val node = object : Modifier.Node() {}
+            override fun applyToScroll(delta: Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
+                performScroll: (Offset) -> Offset) = performScroll(delta)
+            override suspend fun applyToFling(velocity: androidx.compose.ui.unit.Velocity,
+                performFling: suspend (androidx.compose.ui.unit.Velocity) -> androidx.compose.ui.unit.Velocity) { performFling(velocity) }
+        }
+        val factory = object : androidx.compose.foundation.OverscrollFactory {
+            override fun createOverscrollEffect() = effect
+            override fun equals(other: Any?) = this === other
+            override fun hashCode() = System.identityHashCode(this)
+        }
+        lateinit var view: View
+        compose.setContent {
+            view = LocalView.current
+            CompositionLocalProvider(androidx.compose.foundation.LocalOverscrollFactory provides factory) {
+                ObservedLazyColumn(Modifier.size(200.dp)) {
+                    items(8) { Text("Row $it", Modifier.height(80.dp)) }
+                }
+            }
+        }
+        for (moving in listOf(false, true, false)) {
+            compose.runOnIdle {
+                effect.isInProgress = moving
+                view.viewTreeObserver.dispatchOnPreDraw()
+                val state = E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state
+                assertTrue(state.contains("position:0,0"))
+                assertTrue("must sample live edge effect: $state", state.contains(":moving:$moving"))
+            }
+        }
+    }
+
     @Test fun cloudPanelPublishesTheStateThatItActuallyRenders() {
         val panel = mutableStateOf(UiCloudPanel(
             id = "receive_setup", title = "Set up from another device",
@@ -164,6 +200,57 @@ class RenderedObservationTest {
             compose.onNodeWithTag("parity:plan-procedure-transition:ARRIE:$runway").performTouchInput { click() }
         }
         compose.runOnIdle { assertEquals(listOf("RW16R", "RW34L"), selected) }
+    }
+
+    @Test fun airportFactsPublishRenderedTextNotJustTheirIdentity() {
+        val value = mutableStateOf("1000 MSL (published)")
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        lateinit var view: View
+        compose.setContent {
+            view = LocalView.current
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                AirportInfoFact("Traffic pattern altitude", value.value)
+            }
+        }
+        for (text in listOf("1000 MSL (published)", "1032 MSL (derived)")) {
+            compose.runOnIdle { value.value = text }
+            compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+            val (id, fact) = E2eProjectionRegistry.readPrefix("parity:airport-info-fact:").single()
+            assertEquals("parity:airport-info-fact:Traffic pattern altitude:$text", id)
+            val displayedText = android.net.Uri.decode(fact.state.substringAfter("text:").substringBefore(":"))
+            assertEquals("Traffic pattern altitude $text", displayedText)
+        }
+    }
+
+    @Test fun detailsAndStartupErrorsPublishTheirRenderedBody() {
+        val panel = mutableStateOf(0)
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        lateinit var view: View
+        compose.setContent {
+            view = LocalView.current
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                when (panel.value) {
+                    0 -> NotamModal(org.aerobag.app.domain.NotamDetailUiView(
+                        "Procedure NOTAMs", "Check briefing", "None", listOf(
+                            org.aerobag.app.domain.AirportNotamUiView("one", "IAP", "Approach unavailable"))))
+                    1 -> MapSelectionDetailModal("TFR", "Temporary flight restrictions")
+                    else -> OfflinePackagesErrorPanel("Unsupported publication", false, {})
+                }
+            }
+        }
+        val cases = listOf(
+            "parity:procedure-notam-modal" to "Approach unavailable",
+            "parity:map-selection-detail-modal:TFR" to "Temporary flight restrictions",
+            "parity:offline-library-panel" to "Unsupported publication",
+        )
+        cases.forEachIndexed { index, (id, body) ->
+            compose.runOnIdle { panel.value = index }
+            compose.runOnIdle { view.viewTreeObserver.dispatchOnPreDraw() }
+            val snapshot = requireNotNull(E2eProjectionRegistry.read(id))
+            val text = android.net.Uri.decode(snapshot.state.substringAfter("text:").substringBefore(":"))
+            assertTrue("published text must include rendered body", text.contains(body))
+            if (index > 0) assertNull(E2eProjectionRegistry.read(cases[index - 1].first))
+        }
     }
 
     @Test fun successfulEmptySnapshotsAndInvalidRequestsAreDifferentOutcomes() {

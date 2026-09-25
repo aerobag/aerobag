@@ -667,10 +667,8 @@ async function ensureBadAutopilotDebugFlag(serial, result) {
     await nativeTransition(result, "Debug Diagnostics section opened", {
       ready: () => driver.readElement(sectionId),
       act: (readySection) => driver.performAction(sectionId, readySection),
-      complete: async () => {
-        section = await driver.readElement(sectionId);
-        return section?.expanded === true ? section : null;
-      },
+      complete: () => driver.readElement(sectionId),
+      completionSatisfied: section => section?.expanded === true,
     });
   }
   const toggleId = "settings-toggle-debug_bad_autopilot";
@@ -682,10 +680,8 @@ async function ensureBadAutopilotDebugFlag(serial, result) {
     await nativeTransition(result, "Bad Autopilot debug flag enabled", {
       ready: () => driver.readElement(toggleId),
       act: (readyToggle) => driver.performAction(toggleId, readyToggle),
-      complete: async () => {
-        checkbox = await driver.readElement(toggleId);
-        return checkbox?.checked === true ? checkbox : null;
-      },
+      complete: () => driver.readElement(toggleId),
+      completionSatisfied: checkbox => checkbox?.checked === true,
     });
   }
   await driver.openPage("map");

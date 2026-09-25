@@ -5290,7 +5290,8 @@ internal fun MapSelectionDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .e2eIndexedElement("parity:map-selection-detail-modal:$title")
+            .e2eIndexedLabel("parity:map-selection-detail-modal:$title",
+                listOfNotNull(title.uppercase(), status?.text, text).joinToString("\n"))
             .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 9.5f)
             .heightIn(max = ThumbSize * 11.5f),
@@ -5474,11 +5475,6 @@ internal fun AirportInfoModal(
                 detail.factSections.forEach { section ->
                 section.title?.let { AirportInfoSectionTitle(it) }
                 section.facts.forEach { fact ->
-                    Box(
-                        modifier = Modifier.e2eIndexedElement(
-                            "parity:airport-info-fact:${fact.label}:${fact.value}",
-                        ),
-                    ) {
                         AirportInfoFact(
                             label = fact.label,
                             value = fact.value,
@@ -5516,7 +5512,6 @@ internal fun AirportInfoModal(
                             else -> null
                             },
                         )
-                    }
                 }
             }
             if (detail.runways.isNotEmpty()) {
@@ -5575,7 +5570,7 @@ private fun AirportInfoSectionTitle(label: String) {
 }
 
 @Composable
-private fun AirportInfoFact(
+internal fun AirportInfoFact(
     label: String,
     value: String,
     nextInLabel: String? = null,
@@ -5584,7 +5579,10 @@ private fun AirportInfoFact(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().e2eIndexedLabel(
+            "parity:airport-info-fact:$label:$value",
+            listOfNotNull(label, value, nextInLabel?.let { "◷ $it" }).joinToString(" "),
+        ),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.7f),
         verticalAlignment = Alignment.Top,
     ) {

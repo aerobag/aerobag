@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   assertNoAerobagAnr,
+  androidDisplayRotationState,
   androidImeShownFromDumpsys,
   androidImeVisible,
   androidIndexedControlIsActionReady,
@@ -33,6 +34,19 @@ import {
   restartAndroidAppAcrossSemanticLifecycle,
   verticalScrollTargetIsReachable,
 } from "./android-harness.mjs";
+
+test("app layout alone does not prove the OS has finished rotating the display", () => {
+  const display = (rotation, layout, animation) => `Display: mDisplayId=0
+    mLayoutNeeded=${layout}
+    DisplayFrames w=2400 h=1080 r=${rotation}
+    ${animation}`;
+  assert.deepEqual(androidDisplayRotationState(display(1, false, "no ScreenRotationAnimation")), {
+    width: 2400, height: 1080, rotation: 1, layoutPending: false, rotationComplete: true,
+  });
+  assert.equal(androidDisplayRotationState(display(1, false, "ScreenRotationAnimation: mStarted=true")).rotationComplete, false);
+  assert.equal(androidDisplayRotationState(display(0, true, "no ScreenRotationAnimation")).layoutPending, true);
+  assert.throws(() => androidDisplayRotationState("transport error"), /Missing WindowManager/);
+});
 
 test("Android semantic tags preserve platform-neutral flight-data cell ids", () => {
   assert.equal(
@@ -218,7 +232,7 @@ test("Android physical taps dispatch once and defer success to semantic completi
     import.meta.url,
   ), "utf8");
   const airportInfoFact = mapExplorer.slice(
-    mapExplorer.indexOf("private fun AirportInfoFact("),
+    mapExplorer.indexOf("internal fun AirportInfoFact("),
     mapExplorer.indexOf("private fun AirportRunwayDiagram("),
   );
   const mapSelectionItemButton = mapExplorer.slice(

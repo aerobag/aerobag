@@ -2362,6 +2362,9 @@ class MainActivity : ComponentActivity() {
             noteDisplayUserActivity()
         }
         val handled = super.dispatchTouchEvent(event)
+        if (BuildConfig.AEROBAG_E2E_ENABLED && event.actionMasked != MotionEvent.ACTION_MOVE) {
+            Log.i("E2eInput", "touch action=${event.actionMasked} x=${event.rawX} y=${event.rawY} handled=$handled")
+        }
         return handled
     }
 

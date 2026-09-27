@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { scrollAndroidAndAwait, readAndroidScrollSurface } from "./android-harness.mjs";
+import { scrollAndroidAndAwait, readAndroidScrollSurface, findNodeByScrolling } from "./android-harness.mjs";
 import { observeUntil, TransientObservationError } from "./transition-contract.mjs";
 
 const surface = { "resource-id": "parity:scroll:1", "semantic-path": "projection-provider:process:1",
@@ -65,6 +65,47 @@ test("successful input delivery without scrolling is a failure, not an edge", as
     return true;
   });
   assert.equal(h.counts().gestures, 1);
+});
+
+test("a shrinking list can move, clamp back to its starting offset, then settle at the boundary", async () => {
+  // September 27 hosted trace: startup warnings cleared during traversal.
+  const initial = { ...surface, position: "0,0" };
+  const boundary = { ...initial, forward: "false", bounds: "[0,0][100,100]" };
+  const h = harness([
+    { ...initial, position: "0,164", backward: "true", moving: "true" },
+    { ...boundary, moving: "true" },
+    boundary,
+  ]);
+  assert.equal(await h.scroll("test", initial, "down"), true);
+  assert.deepEqual(h.counts(), { reads: 3, gestures: 1 });
+});
+
+test("a newly reached boundary does not require sampling an intermediate offset", async () => {
+  for (const [direction, boundaryKey] of [["down", "forward"], ["up", "backward"]]) {
+    const initial = { ...surface, backward: "true", forward: "true" };
+    const h = harness([{ ...initial, [boundaryKey]: "false" }]);
+    assert.equal(await h.scroll("test", initial, direction), true);
+    assert.deepEqual(h.counts(), { reads: 1, gestures: 1 });
+  }
+});
+
+test("movement that returns to its starting offset without reaching a boundary is not completion", async () => {
+  const h = harness([{ ...surface, position: "40", moving: "true" }, surface]);
+  await assert.rejects(h.scroll("test", surface, "down"), /timed out/);
+  assert.equal(h.counts().gestures, 1);
+});
+
+test("traversal rechecks the target after a shrinking list reaches its boundary", async () => {
+  const boundary = { ...surface, forward: "false" };
+  const h = harness([boundary]);
+  const target = { "resource-id": "parity:notification-action" };
+  const find = runInNewContext(`(${findNodeByScrolling})`, {
+    queryAndroidSemanticNodes: () => h.counts().reads > 0 ? [target] : [],
+    scrollAndroidSemanticSurfaceAndAwait: (serial, _orientation, direction) =>
+      h.scroll(serial, h.counts().reads > 0 ? boundary : surface, direction),
+  });
+  assert.equal(await find("test", node => node["resource-id"] === target["resource-id"]), target);
+  assert.deepEqual(h.counts(), { reads: 1, gestures: 1 });
 });
 
 test("scroll discovery cannot select a clipped surface", async () => {

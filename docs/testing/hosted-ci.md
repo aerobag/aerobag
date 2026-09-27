@@ -58,6 +58,21 @@ and settled motion. It cannot select the covered page while a popup is pending.
 diagnostics, actual absence, and transport errors. No sleeps, repeated gestures,
 or longer deadlines are used.
 
+Scroll traversal also permits a newly published boundary after input. The
+September 27 scheduled run of `ce437082` received its service notices, but startup
+warnings cleared while the /!\ popup was being scrolled. Its offset moved from
+`0,0` to `0,164`, then the shorter list clamped to `0,0`. Requiring a different
+final offset timed out even though the inbox button was visible and clickable.
+Completion requires settled movement OR the owner's explicit boundary in the
+requested direction. A dispatched gesture returns control to the caller to
+re-read targets; it does not assert that the requested target was found. An
+unchanged, still-scrollable surface remains a failure, as do disappearance and
+transport errors. `android-scroll.test.mjs` replays this ordering (also when no
+intermediate offset is sampled), and `DataStatusBadgeInputTest` clears warnings
+during a physical drag on the production popup and clicks the resulting inbox.
+Do not delay notification tests until unrelated live feeds finish loading, or
+freeze the list to hide this legitimate dynamic-content behavior.
+
 Before committing, run `/usr/bin/python3 tools/ci/cheap_preflight.py`. It works
 with uncommitted changes and always runs the complete inexpensive suites:
 fixture-free Rust tests/doctests and the hermetic service workload, Python tool

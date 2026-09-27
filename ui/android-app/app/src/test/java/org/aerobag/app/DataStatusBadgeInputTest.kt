@@ -6,10 +6,12 @@ package org.aerobag.app
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
@@ -77,7 +79,43 @@ class DataStatusBadgeInputTest {
         compose.runOnIdle { assertEquals(listOf("status:hush"), actions) }
     }
 
-    private fun mountBadge(actions: MutableList<String>) {
+    @Test
+    fun clearingWarningsDuringPhysicalScrollClampsTheListAndLeavesInboxClickable() {
+        val service = box("service:unread", "Service", listOf(
+            UiStatusAction("service:inbox", "Read notifications", true, UiStatusActionStyle.Normal),
+        ))
+        val boxes = mutableStateOf((0..5).map { box("loading:$it", "Loading $it", emptyList()) } + service)
+        val actions = mutableListOf<String>()
+        mountBadge(actions, boxes)
+        tap("parity:data-status-launcher")
+        fun scrollState(): String {
+            drawObservationWindows()
+            return E2eProjectionRegistry.readPrefix("parity:scroll:").single().second.state
+        }
+        compose.runOnIdle { assertTrue(scrollState().contains("position:0,0:backward:false:forward:true")) }
+        compose.onNodeWithTag("parity:data-status-panel").performTouchInput {
+            down(Offset(center.x, height * 0.8f))
+            moveTo(Offset(center.x, height * 0.3f), delayMillis = 100)
+        }
+        compose.runOnIdle {
+            val state = scrollState()
+            assertTrue("physical gesture actually moved: $state", state.contains(":backward:true"))
+            assertTrue(state.contains(":moving:true"))
+            boxes.value = listOf(service)
+        }
+        compose.onNodeWithTag("parity:data-status-panel").performTouchInput { up() }
+        compose.runOnIdle {
+            val state = scrollState()
+            assertTrue("offset legitimately returns to zero: $state",
+                state.contains("position:0,0:backward:false:forward:false:moving:false"))
+        }
+        compose.onNodeWithTag("parity:data-status-action-service:unread-service:inbox").assertIsDisplayed()
+        tap("parity:data-status-action-service:unread-service:inbox")
+        compose.runOnIdle { assertEquals(listOf("service:inbox"), actions) }
+        compose.onNodeWithTag("parity:data-status-panel").assertDoesNotExist()
+    }
+
+    private fun mountBadge(actions: MutableList<String>, boxes: State<List<UiDataStatusBox>>? = null) {
         val mounted = mutableStateOf(true)
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {
@@ -88,7 +126,7 @@ class DataStatusBadgeInputTest {
                         DataStatusBadge(
                             modifier = Modifier.align(Alignment.TopEnd),
                             dataStatusState = UiDataStatusState(
-                                boxes = listOf(
+                                boxes = boxes?.value ?: listOf(
                                     box("service:unread", "Service", listOf(
                                         UiStatusAction("service:inbox", "Read notifications", true, UiStatusActionStyle.Normal),
                                     )),

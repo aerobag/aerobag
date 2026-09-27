@@ -1280,10 +1280,16 @@ export async function scrollAndroidAndAwait(serial, surface, direction) {
     }
     return current;
   }, {
-    accept: current => current.position !== surface.position && current.moving === "false",
+    // Live lists can shrink during a gesture and clamp back to the old offset.
+    // Completion is settled progress OR exhaustion in the requested direction,
+    // not proof that two offsets from different list layouts must differ.
+    accept: current => current.moving === "false" &&
+      (current.position !== surface.position || current[forward ? "forward" : "backward"] === "false"),
     timeoutMs: E2E_TIMING.userTransitionDeadlineMs, intervalMs: E2E_TIMING.pollIntervalMs,
   });
   console.log(`[android scroll] ${surface["resource-id"]} ${direction} ${surface.position} -> ${observed.value.position}`);
+  // A gesture was issued: callers must re-read targets, even at a new boundary.
+  // Only an already-known boundary (above) skips traversal entirely.
   return true;
 }
 

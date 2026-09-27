@@ -5618,7 +5618,7 @@ test("Android vertical reveals settle semantic scrolling before exposing a targe
   assert.match(settleHelper, /readAndroidScrollSurface\(serial, orientation\)/);
   assert.match(settleHelper, /scrollAndroidAndAwait/);
   const scroll = harness.slice(harness.indexOf("export async function scrollAndroidAndAwait"), harness.indexOf("async function scrollAndroidSemanticSurfaceAndAwait"));
-  assert.match(scroll, /current\.position !== surface\.position && current\.moving === "false"/);
+  assert.match(scroll, /current\.moving === "false" &&\s*\(current\.position !== surface\.position \|\| current\[forward \? "forward" : "backward"\] === "false"\)/);
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",

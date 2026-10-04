@@ -58,6 +58,11 @@ shared drivers, and the platform code that supplies their readiness evidence.
 - Use [runtime transitions](release-journey-runtime.mjs): read readiness,
   perform one action with that evidence, then observe its specific result.
   Observation readers and acceptance predicates must remain read-only.
+- Distinguish value convergence from interaction completion. Navigation or sync
+  can select a value independently of a pending click. For closing pickers, use
+  `selectClosingTrayOption`: require the picker to close AND the requested value
+  to appear. Do not branch on an earlier label to skip or substitute the click,
+  accept a preexisting postcondition, or accept merely any changed value.
 - Browser protocol acknowledgement does not prove browser event delivery;
   delivery does not prove application behavior. Reuse
   [browser input observation](browser-input-observation.mjs) for gestures: check
@@ -89,11 +94,19 @@ shared drivers, and the platform code that supplies their readiness evidence.
   [gesture contracts](plate-gestures.test.mjs) and
   [browser event observation](browser-input-observation.test.mjs). Model tests
   and source audits do not establish that real platform input/rendering works.
+- Helper ordering tests must run the real `createJourneyRuntime`/transition
+  runner, modeling only the driver boundary. A stub `runtime.action` that applies
+  the change before checking completion bypasses the precondition and cannot
+  expose check-then-act races. See [picker ordering tests](tray-selection.test.mjs):
+  advance selection during readiness, separate label and menu closure, and prove
+  that lost clicks and wrong results fail without retrying input.
 - Run each changed journey on every claimed platform with matching built app
   bytes. Report unrun checks explicitly. Follow the root cheap-preflight policy
   before committing; cheap preflight alone does not establish hosted E2E success.
 
-These rules came from two flakes: wheel input authorized before a plate image
-loaded, and a SPOT-fallback assertion at a map point that correctly selected a
-nearby heliport. Investigation also exposed retained pixels during Android
-resource replacement. Do not assume a flaky test means the product is correct.
+These rules came from flakes including wheel input authorized before a plate
+image loaded, a SPOT-fallback assertion at a map point that correctly selected a
+nearby heliport, and a picker confusing navigation's selected value with its own
+interaction completing. Investigation also exposed retained pixels during
+Android resource replacement. Do not assume a flaky test means the product is
+correct.

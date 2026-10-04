@@ -432,6 +432,36 @@ folder controls/tiles are not positive evidence that the viewer is ready;
 conversely, web can prepare the correct viewport behind an open folder. Require
 both the grid closing and the requested viewport, including after a tile click.
 
+Selection itself also has an interaction contract. On October 4, 2026, scheduled
+run `37210651272` failed `shared.plate-advisories-and-references` on Android s3
+after six successful daily runs on the identical commit. Navigation was still
+selecting the TAC collection when the helper opened its chart picker. The helper
+read the old launcher title, but input readiness then observed the requested
+Seattle TAC already selected. The transition correctly rejected a postcondition
+that was true before its click; the picker remained open. This was not a resource
+timeout or evidence that the app was unresponsive.
+
+The conceptual error was treating a selected value as proof of a completed
+interaction. Rechecking the value before calling `runtime.action` only narrows
+the race; it cannot remove it. `selectClosingTrayOption` now owns the completion
+contract for plate/airport and aircraft/profile pickers: deliver one choice click,
+require the menu to close, and require the chosen value (not just any changed
+label). Selection can precede or follow the click. Do not weaken the transition's
+preexisting-completion check or replace selection with a Back action. Toggle menus
+that intentionally remain open have a different contract and do not use this
+helper.
+
+`tray-selection.test.mjs` drives the real journey runtime and transition runner
+with controlled driver observations. The original implementation failed all four
+platform/plate-picker variants when selection arrived during input readiness,
+with the exact hosted precondition failure. Coverage also separates label updates
+from menu closure, checks selected/open pickers, and rejects lost clicks, menus
+left open, and wrong selections sharing a label prefix. Logical observation time
+makes negative cases immediate, without changing production deadlines. Earlier
+helper tests stubbed `runtime.action` by applying the result first; those tests
+could never exercise the failing precondition. Keep cheap owner tests on the
+production transition path as well as real-platform journeys.
+
 Readiness must belong to the resource actually rendered. A selected chart ID
 plus a retained viewport once authorized wheel input before the new image loaded;
 the handler correctly ignored it, and no amount of completion polling could

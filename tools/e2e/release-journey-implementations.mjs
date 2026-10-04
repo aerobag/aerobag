@@ -1103,49 +1103,43 @@ async function dismissTrayOptions(runtime, description) {
   });
 }
 
+async function selectClosingTrayOption(runtime, description, actionId, {
+  launcherId, optionsProjection, selectionSatisfied,
+}) {
+  // A value may change independently while input readiness is being observed.
+  // Prove the interaction too: one choice click must close the picker AND
+  // display the requested value. Never skip the click based on an earlier read.
+  const result = await runtime.action(description, actionId, {
+    complete: async () => ({
+      options: await runtime.driver.readProjection(optionsProjection),
+      launcher: await runtime.driver.readElement(launcherId),
+    }),
+    completionSatisfied: ({ options, launcher }) =>
+      options.length === 0 && Boolean(launcher) && selectionSatisfied(launcher),
+  });
+  return result.launcher;
+}
+
 export async function selectTrayOptionMatching(runtime, launcherId, needle) {
   const projection = runtime.platform === "web" ? "tray-option-" : "parity:tray-option:";
-  const revealMatchingOption = async () => {
-    const entry = await runtime.revealProjectionMatching(
-      projection, needle, `${launcherId} option ${needle}`,
-    );
-    if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
-    return entry;
-  };
-  const finishSelection = async (entry) => {
-    if (launcherId === "plate-chart-button") await ensurePlateDocumentOpen(runtime, entry);
-    return entry;
-  };
-  const selected = await runtime.driver.readElement(launcherId);
-  if (selected?.text?.toUpperCase().includes(needle.toUpperCase())) {
-    let entry = (await visibleTrayOptions(runtime))
-      .find((option) => option.text?.toUpperCase().includes(needle.toUpperCase())) ?? null;
-    if (!entry) {
-      await runtime.action(`open ${launcherId} options`, launcherId, {
-        complete: async () => (await runtime.driver.readProjection(projection))[0] ?? null,
-      });
-      entry = await revealMatchingOption();
-    }
-    await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
-    return finishSelection(entry);
+  if ((await visibleTrayOptions(runtime)).length === 0) {
+    await runtime.action(`open ${launcherId} options`, launcherId, {
+      complete: async () => (await visibleTrayOptions(runtime))[0] ?? null,
+    });
   }
-
-  await runtime.action(`open ${launcherId} options`, launcherId, {
-    complete: async () => (await runtime.driver.readProjection(projection))[0] ?? null,
-  });
-  const entry = await revealMatchingOption();
-  const refreshed = await runtime.driver.readElement(launcherId);
-  if (refreshed?.text?.toUpperCase().includes(needle.toUpperCase())) {
-    await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
-    return finishSelection(entry);
-  }
-  await runtime.action(`select ${needle} from ${launcherId}`, `tray-option:${trayOptionId(entry)}`, {
-    complete: async () => {
-      const launcher = await runtime.driver.readElement(launcherId);
-      return launcher?.text?.toUpperCase().includes(needle.toUpperCase()) ? launcher : null;
-    },
-  });
-  return finishSelection(entry);
+  const entry = await runtime.revealProjectionMatching(
+    projection, needle, `${launcherId} option ${needle}`,
+  );
+  if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
+  const label = (text) => semanticTextSignature(text).toUpperCase();
+  await selectClosingTrayOption(runtime,
+    `select ${needle} from ${launcherId}`, `tray-option:${trayOptionId(entry)}`, {
+      launcherId,
+      optionsProjection: projection,
+      selectionSatisfied: (launcher) => label(launcher.text) === label(entry.text),
+    });
+  if (launcherId === "plate-chart-button") await ensurePlateDocumentOpen(runtime, entry);
+  return entry;
 }
 
 async function ensurePlateDocumentOpen(runtime, entry) {
@@ -2785,40 +2779,26 @@ function semanticTextSignature(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
-async function chooseDifferentAltitudeOption(runtime, controlId) {
+export async function chooseDifferentAltitudeOption(runtime, controlId) {
   const launcherId = altitudeControlId(runtime, controlId);
   const before = await revealRequiredElement(runtime, launcherId, `${controlId} altitude control`);
-  const opened = await runtime.action(`open ${controlId} choices`, launcherId, {
-    complete: async () => {
-      const directAfter = await runtime.driver.readElement(launcherId);
-      if (directAfter?.text &&
-          semanticTextSignature(directAfter.text) !== semanticTextSignature(before?.text)) {
-        return { directAfter, option: null };
-      }
-      const options = await runtime.driver.readProjection(runtime.platform === "web"
-        ? "tray-option-"
-        : `parity:altitude-planner-option:${controlId}:`);
-      const option = options.find((entry) => entry.enabled !== false && entry.pressed !== "true")
-        ?? options.find((entry) => entry.enabled !== false)
-        ?? null;
-      return option ? { directAfter: null, option } : null;
-    },
+  const optionsProjection = runtime.platform === "web"
+    ? "tray-option-"
+    : `parity:altitude-planner-option:${controlId}:`;
+  const options = await runtime.action(`open ${controlId} choices`, launcherId, {
+    complete: () => runtime.driver.readProjection(optionsProjection),
+    completionSatisfied: (entries) => entries.length > 0,
   });
-  if (opened.directAfter) {
-    return { before, option: null, after: opened.directAfter };
-  }
-  const option = opened.option;
-  const after = await runtime.action(`${controlId} selection changed`, runtime.platform === "web"
-    ? `tray-option:${trayOptionId(option)}`
-    : projectionId(option), {
-    complete: async () => {
-      const value = await runtime.driver.readElement(launcherId);
-      return value?.text &&
-          semanticTextSignature(value.text) !== semanticTextSignature(before?.text)
-        ? value
-        : null;
-    },
-  });
+  const option = options.find((entry) => entry.enabled !== false && !semanticOptionSelected(entry));
+  if (!option) throw new Error(`${controlId} has no enabled alternate choice`);
+  const after = await selectClosingTrayOption(runtime,
+    `${controlId} selection changed`, runtime.platform === "web"
+      ? `tray-option:${trayOptionId(option)}` : projectionId(option), {
+      launcherId,
+      optionsProjection,
+      selectionSatisfied: (launcher) => semanticTextSignature(launcher.text) ===
+        `${controlId === "aircraft" ? "AIRCRAFT" : "PROFILE"} ${semanticTextSignature(option.text)}`,
+    });
   return { before, option, after };
 }
 

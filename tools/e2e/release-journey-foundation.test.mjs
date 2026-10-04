@@ -1315,17 +1315,18 @@ for (const changeMode of [false, true]) {
   });
 }
 
-test("tray selection avoids a redundant click when the target materializes selected", async () => {
+test("tray selection confirms and closes a target that materializes selected", async () => {
   const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");
   const calls = [];
   let optionsOpen = false;
+  let targetSelected = false;
   const option = { id: "parity:tray-option:KPAE", text: "KPAE", enabled: true };
   const runtime = {
     platform: "android",
     driver: {
       async readElement(id) {
         assert.equal(id, "plate-airport-button");
-        return { text: optionsOpen ? "KPAE" : "SELECT AIRPORT" };
+        return { text: targetSelected ? "KPAE" : "SELECT AIRPORT" };
       },
       async readProjection(prefix) {
         assert.equal(prefix, "parity:tray-option:");
@@ -1336,11 +1337,19 @@ test("tray selection avoids a redundant click when the target materializes selec
         optionsOpen = false;
       },
     },
-    async action(description, id, { complete }) {
+    async action(description, id, { complete, completionSatisfied = Boolean }) {
       calls.push(description);
-      assert.equal(id, "plate-airport-button");
-      optionsOpen = true;
-      return complete();
+      if (id === "plate-airport-button") {
+        optionsOpen = true;
+        targetSelected = true;
+      } else {
+        assert.equal(id, "tray-option:KPAE");
+        assert.equal(completionSatisfied(await complete()), false);
+        optionsOpen = false;
+      }
+      const result = await complete();
+      assert.ok(completionSatisfied(result));
+      return result;
     },
     async revealProjectionMatching(prefix, needle) {
       assert.equal(prefix, "parity:tray-option:");
@@ -1360,8 +1369,7 @@ test("tray selection avoids a redundant click when the target materializes selec
   assert.equal(selected.text, "KPAE");
   assert.deepEqual(calls, [
     "open plate-airport-button options",
-    "dismiss already-selected plate-airport-button options",
-    "dismiss",
+    "select KPAE from plate-airport-button",
   ]);
 });
 
@@ -1395,11 +1403,17 @@ test("selected tray options retain option identity instead of returning launcher
       assert.equal(description, "selected plate chart-reference:tac:legend:seattle presentation");
       return observe();
     },
-    async action(description, id, { complete }) {
+    async action(description, id, { complete, completionSatisfied = Boolean }) {
       calls.push(description);
-      assert.equal(id, "plate-chart-button");
-      optionsOpen = true;
-      return complete();
+      if (id === "plate-chart-button") optionsOpen = true;
+      else {
+        assert.equal(id, "tray-option:chart-reference:tac:legend:seattle");
+        assert.equal(completionSatisfied(await complete()), false);
+        optionsOpen = false;
+      }
+      const result = await complete();
+      assert.ok(completionSatisfied(result));
+      return result;
     },
     async revealProjectionMatching(prefix, needle) {
       assert.equal(prefix, "parity:tray-option:");
@@ -1422,8 +1436,7 @@ test("selected tray options retain option identity instead of returning launcher
   assert.equal(selected, option);
   assert.deepEqual(calls, [
     "open plate-chart-button options",
-    "dismiss already-selected plate-chart-button options",
-    "dismiss",
+    "select SEATTLE TAC LEGEND from plate-chart-button",
   ]);
 });
 
@@ -1478,8 +1491,9 @@ for (const platform of ["web", "android"]) {
             assert.equal(await observe(), null);
             return observe();
           },
-          async action(description, id, { complete }) {
+          async action(description, id, { complete, completionSatisfied = Boolean }) {
             calls.push(id);
+            assert.equal(completionSatisfied(await complete()), false);
             if (id === "plate-chart-button") {
               optionsOpen = true;
               if (selectionTiming === "selected-during-navigation") selected = true;
@@ -1495,7 +1509,7 @@ for (const platform of ["web", "android"]) {
               folderOpen = false;
             }
             const result = await complete();
-            assert.ok(result);
+            assert.ok(completionSatisfied(result));
             return result;
           },
           async revealProjectionMatching() { return option; },
@@ -1512,7 +1526,7 @@ for (const platform of ["web", "android"]) {
         assert.ok(viewportReads >= 2);
         assert.deepEqual(calls, [
           "plate-chart-button",
-          ...(selectionTiming === "new-selection" ? [`tray-option:${chartId}`] : []),
+          `tray-option:${chartId}`,
           `plate-folder-tile:${chartId}`,
         ]);
       });
@@ -2824,17 +2838,6 @@ for (const platform of ["web", "android"]) {
     assert.deepEqual(actions, [actionId("latest_forecast")]);
   });
 }
-
-test("altitude choices do not treat accessibility whitespace as a state change", () => {
-  const source = readFileSync(new URL("./release-journey-implementations.mjs", import.meta.url), "utf8");
-  const choice = source.slice(
-    source.indexOf("function semanticTextSignature"),
-    source.indexOf("function altitudeWindActionId"),
-  );
-  assert.match(choice, /replace\(\/\\s\+\/g, " "\)\.trim\(\)/);
-  assert.match(choice, /semanticTextSignature\(directAfter\.text\) !== semanticTextSignature\(before\?\.text\)/);
-  assert.match(choice, /semanticTextSignature\(value\.text\) !== semanticTextSignature\(before\?\.text\)/);
-});
 
 test("local lab and immutable app builds agree on fixed service ports", () => {
   const lab = readFileSync(

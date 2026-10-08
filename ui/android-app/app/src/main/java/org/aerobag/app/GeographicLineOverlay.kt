@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.zIndex
 import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.generated.GeographicLineAnnotation
@@ -30,7 +31,7 @@ internal fun GeographicLineOverlay(annotation: GeographicLineAnnotation?, frame:
         textAlign = android.graphics.Paint.Align.CENTER
         typeface = android.graphics.Typeface.DEFAULT_BOLD
     } }
-    Canvas(Modifier.fillMaxSize().testTag("altitude-intercept-arc")) {
+    Canvas(Modifier.fillMaxSize().zIndex(1f).testTag("altitude-intercept-arc")) {
         val current = frame.value
         val path = Path()
         annotation.points.forEachIndexed { index, point ->

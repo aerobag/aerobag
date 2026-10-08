@@ -2086,6 +2086,7 @@ button {
 .geographicLineOverlay {
   position: absolute;
   inset: 0;
+  z-index: 9;
   pointer-events: none;
   overflow: visible;
 }

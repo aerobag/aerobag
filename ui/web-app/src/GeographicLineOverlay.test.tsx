@@ -3,11 +3,54 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { act, useRef } from "react";
+import { readFileSync } from "node:fs";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { GeographicLineOverlay } from "./GeographicLineOverlay";
+import { GlideRingGeometry } from "./GlideRingOverlay";
 import { useMapGeometryBinding } from "./MapGeometryLayer";
+import type { MapGeometryBinding } from "./MapGeometryLayer";
 import { latLonToWorld, type MapViewportState } from "./domain/mapViewport";
+
+it("keeps the intercept arc above glide reach even when glide geometry arrives later", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const style = document.createElement("style");
+  style.textContent = readFileSync("src/styles.css", "utf8");
+  document.head.append(style);
+  const host = document.createElement("div"), content = document.createElement("div");
+  document.body.append(host, content);
+  const root = createRoot(host);
+  const binding = {
+    host: content, frame: {width: 320, height: 320},
+    screen: ({lat, lon}: {lat: number; lon: number}) => ({x: lon, y: lat}),
+  } as MapGeometryBinding;
+  const points = [{lat: 160, lon: 40}, {lat: 160, lon: 280}];
+  try {
+    for (const visible of [false, true, false, true]) {
+      await act(async () => root.render(<>
+        <GeographicLineOverlay binding={binding} annotation={{
+          points, label_position: points[1], label: "1500 GPS", label_bearing_deg: 0,
+        }} />
+        {visible ? <GlideRingGeometry geometry={binding} ring={{
+          paths: [points], label_position: null, wind_label: "", wind_direction_deg_true: null,
+          speed_label: "", message: null, recheck_after_ms: 1000,
+        }} /> : null}
+      </>));
+      const arc = content.querySelector('[data-testid="altitude-intercept-arc"]')!;
+      expect(getComputedStyle(arc).pointerEvents).toBe("none");
+      if (visible) {
+        const glide = content.querySelector('[data-testid="glide-ring"]')!;
+        const arcLayer = Number(getComputedStyle(arc).zIndex) || 0;
+        const glideLayer = Number(getComputedStyle(glide).zIndex) || 0;
+        expect(arcLayer).toBeGreaterThan(glideLayer);
+        expect(getComputedStyle(glide).pointerEvents).toBe("none");
+      }
+    }
+  } finally {
+    await act(async () => root.unmount());
+    host.remove(); content.remove(); style.remove(); vi.unstubAllGlobals();
+  }
+});
 
 it("keeps arc geometry inside the map's immediate transform and reprojects on zoom", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

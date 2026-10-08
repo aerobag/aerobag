@@ -1224,7 +1224,7 @@ button {
 
 .mapSelectionRow {
   display: flex;
-  gap: calc(var(--thumb-gap) * 0.8);
+  gap: var(--thumb-gap);
   min-height: calc(var(--thumb) + 8px);
   min-width: 0;
   overflow-x: auto;
@@ -5080,6 +5080,26 @@ button {
   width: calc(var(--thumb) * 0.6);
   height: calc(var(--thumb) * 0.6);
   font-size: calc(var(--thumb) * 0.192);
+}
+
+.plateProcedureNotamBadge-action {
+  width: var(--thumb);
+  height: var(--thumb);
+  font-size: calc(var(--thumb) * 0.32);
+  flex: none;
+}
+
+.mapSelectionNotamIndicator {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 3;
+  width: calc(var(--thumb) * 0.45);
+  height: calc(var(--thumb) * 0.45);
+  padding: 0;
+  gap: 0;
+  font-size: calc(var(--thumb) * 0.144);
+  pointer-events: none;
 }
 
 .notamReaderOverlay {

@@ -10,7 +10,8 @@ export function NotamBadgedControl(props: {
   badge?: NotamBadgeUiView | null;
   active: boolean;
   overlayBadge?: boolean;
-  children: React.ReactNode;
+  badgePlacement?: "inline" | "action";
+  children?: React.ReactNode;
   onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -29,6 +30,9 @@ export function NotamBadgedControl(props: {
   useEffect(() => {
     if (!props.active || !badge) setOpen(false);
   }, [props.active, badge]);
+  useEffect(() => () => {
+    if (previousOpen.current) onOpenChange.current?.(false);
+  }, []);
   useEffect(() => {
     if (!open) return;
     const close = (event: KeyboardEvent) => {
@@ -39,7 +43,7 @@ export function NotamBadgedControl(props: {
   }, [open]);
   return <div className={`notamBadgedControl${props.overlayBadge ? " isOverlayBadge" : ""}`} ref={controlRef}>
     {props.children}
-    {badge ? <NotamBadgeButton badge={badge} placement="inline" onOpen={() => setOpen(true)} /> : null}
+    {badge ? <NotamBadgeButton badge={badge} placement={props.badgePlacement ?? "inline"} onOpen={() => setOpen(true)} /> : null}
     {open && props.active && badge ? createPortal(
       <div className="notamReaderOverlay">
         <TrayScrim ariaLabel="Close NOTAMs" onClose={() => setOpen(false)} />
@@ -110,7 +114,7 @@ export function NotamModal(props: {
 
 export function NotamBadgeButton(props: {
   badge: NotamBadgeUiView;
-  placement: "folder" | "dock" | "inline";
+  placement: "folder" | "dock" | "inline" | "action";
   onOpen: () => void;
 }) {
   return (
@@ -133,4 +137,10 @@ export function NotamBadgeButton(props: {
       <span>{props.badge.count}</span>
     </button>
   );
+}
+
+export function NotamBadgeIndicator({ badge }: { badge: NotamBadgeUiView }) {
+  return <span className="plateProcedureNotamBadge mapSelectionNotamIndicator" aria-label={badge.accessibility_label}>
+    <span>{badge.label}</span><span>{badge.count}</span>
+  </span>;
 }

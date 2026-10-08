@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertWidthIsEqualTo
+import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import org.aerobag.app.domain.*
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,8 +36,9 @@ class MapSelectionTrayInputTest {
 
     @Test fun unbadgedInspectorItemsRemainVisibleAndReceivePhysicalTaps() = inspect(false)
     @Test fun badgedInspectorItemsAndNotamButtonsReceiveSeparatePhysicalTaps() = inspect(true)
+    @Test fun notamActionCanUseAnUnpaddedActionList() = inspect(true, false)
 
-    private fun inspect(withBadge: Boolean) {
+    private fun inspect(withBadge: Boolean, padded: Boolean = true) {
         val action = MapSelectionAction("tfr_text", "TEXT", true, false, null, false, null, null)
         val badge = NotamBadgeUiView("N", 1, "test-tfr", "TFR: 1 NOTAM",
             NotamDetailUiView("TFR NOTAMs", "Check official sources.", "None",
@@ -46,13 +49,17 @@ class MapSelectionTrayInputTest {
                 distance = null, distanceTarget = null, secondaryDescription = null, detailText = null,
                 highlight = MapSelectionHighlight.FeatureRef("tfr-$index"), navRef = null,
                 symbolFeature = null, metarFeature = null, weatherDetail = null, automaticActionUid = null,
-                pirepFeature = null, airspaceIcon = null, actions = listOf(action),
+                pirepFeature = null, airspaceIcon = null,
+                actions = listOf(action) + if (padded) (1..5).map {
+                    action.copy(id = "placeholder-$it", label = "", enabled = false, placeholder = true)
+                } else emptyList(),
                 notamBadge = badge.takeIf { withBadge && index == 0 },
             )
         }
         val selected = mutableStateOf<MapSelectionItem?>(null)
         val selections = mutableListOf<String>()
         val actions = mutableListOf<String>()
+        val readerChanges = mutableListOf<Boolean>()
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {
             CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
@@ -62,6 +69,7 @@ class MapSelectionTrayInputTest {
                             MapSelectionQueryResult(0.0, 0.0, null,
                                 listOf(MapSelectionCategory("airspace", "Airspace", items))), selected.value),
                         modifier = Modifier,
+                        onNotamOpenChange = { readerChanges.add(it) },
                         onSelectItem = { selected.value = it; selections.add(it.id) },
                         onSelectAction = { item, choice -> actions.add("${item.id}:${choice.id}") },
                     )
@@ -76,9 +84,25 @@ class MapSelectionTrayInputTest {
             assertEquals(listOf("tfr-0:tfr_text"), actions)
         }
         if (withBadge) {
-            compose.onNodeWithTag("parity:plate-notam:${badge.actionId}").performTouchInput { click() }
+            val indicator = compose.onNodeWithTag("map-selection-notam-indicator:${items[0].id}", useUnmergedTree = true)
+                .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val itemBounds = first.fetchSemanticsNode().boundsInRoot
+            assertTrue("badge belongs inside the selected icon", itemBounds.contains(indicator.center))
+            first.performTouchInput { click(indicator.center - itemBounds.topLeft) }
+            compose.onNodeWithTag("parity:procedure-notam-modal").assertDoesNotExist()
+            val notamAction = compose.onNodeWithTag("parity:plate-notam:${badge.actionId}")
+                .assertWidthIsEqualTo(ThumbSize).assertHeightIsEqualTo(ThumbSize).assertIsDisplayed()
+            assertTrue("NOTAM action belongs below the item row",
+                notamAction.fetchSemanticsNode().boundsInRoot.top >= itemBounds.bottom)
+            notamAction.performTouchInput { click() }
             compose.onNodeWithText("Temporary restriction").assertIsDisplayed()
-            compose.runOnIdle { assertEquals(listOf("tfr-0"), selections) }
+            compose.runOnIdle {
+                assertEquals(listOf("tfr-0", "tfr-0"), selections)
+                assertEquals(listOf(true), readerChanges)
+                selected.value = items[1]
+            }
+            compose.onNodeWithTag("parity:procedure-notam-modal").assertDoesNotExist()
+            compose.runOnIdle { assertEquals(listOf(true, false), readerChanges) }
         } else {
             // The real tray owns horizontal scrolling; an offscreen item keeps
             // its size and can still be selected after it is brought into view.

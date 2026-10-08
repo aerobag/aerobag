@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { NotamSection, NotamModal, NotamBadgeButton, NotamBadgedControl } from "./NotamUi";
+import { NotamSection, NotamModal, NotamBadgeButton, NotamBadgeIndicator, NotamBadgedControl } from "./NotamUi";
 import { TrayScrim } from "./TrayScrim";
 import { BrowserGeolocationWatch } from "./domain/browserGeolocationWatch";
 import { GuidedTourContext, GuidedTourFeedback, GuidedTourOverlay, GuidedTourPageBoundary, useGuidedTour } from "./GuidedTour";
@@ -2249,7 +2249,7 @@ function requireMapViewport(viewport: MapViewportState | null): MapViewportState
   return viewport;
 }
 
-function SubjectNotamControl(props: { badge?: import("./domain/types").NotamBadgeUiView | null; overlayBadge?: boolean; children: React.ReactNode; onOpenChange?: (open: boolean) => void }) {
+function SubjectNotamControl(props: { badge?: import("./domain/types").NotamBadgeUiView | null; overlayBadge?: boolean; badgePlacement?: "inline" | "action"; children?: React.ReactNode; onOpenChange?: (open: boolean) => void }) {
   return <NotamBadgedControl {...props} active={useContext(PageVisibilityContext)} />;
 }
 
@@ -11458,7 +11458,7 @@ function ChartSearchBox(props: {
   );
 }
 
-function MapSelectionTray(props: {
+export function MapSelectionTray(props: {
   onNotamOpenChange: (open: boolean) => void;
   point: ScreenPoint;
   result: MapSelectionQueryResult;
@@ -11485,6 +11485,11 @@ function MapSelectionTray(props: {
   const verticalStyle = point.y < window.innerHeight / 2
     ? { bottom: `${edgePad}px` }
     : { top: `${edgePad}px` };
+  const notamActionSlot = selectedItem?.notam_badge ? actionSlots.findIndex((action) => action.placeholder) : -1;
+  const notamAction = selectedItem?.notam_badge ? (
+    <SubjectNotamControl key={selectedItem.notam_badge.action_id} badge={selectedItem.notam_badge}
+      badgePlacement="action" onOpenChange={props.onNotamOpenChange} />
+  ) : null;
 
   return (
     <section
@@ -11508,22 +11513,22 @@ function MapSelectionTray(props: {
                 no {category.label.toLowerCase()}s
               </div>
             ) : category.items.map((item) => (
-              <SubjectNotamControl key={item.id} badge={item.notam_badge} onOpenChange={props.onNotamOpenChange}>
-                <button
-                  type="button"
-                  className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}`}
-                  data-testid={`map-selection-item-${category.id}-${item.label}`}
-                  data-tour-anchor={item.highlight.kind === "spot" ? "inspector-spot" : undefined}
-                  onPointerDown={stopPointer}
-                  onPointerUp={stopPointer}
-                  onDoubleClick={stopDoubleClick}
-                  onClick={() => onSelectItem(item)}
-                  title={item.sublabel}
-                >
-                  <MapSelectionItemIcon item={item} />
-                  <span className="mapSelectionItemLabel">{item.label}</span>
-                </button>
-              </SubjectNotamControl>
+              <button
+                key={item.id}
+                type="button"
+                className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}`}
+                data-testid={`map-selection-item-${category.id}-${item.label}`}
+                data-tour-anchor={item.highlight.kind === "spot" ? "inspector-spot" : undefined}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+                onClick={() => onSelectItem(item)}
+                title={item.sublabel}
+              >
+                <MapSelectionItemIcon item={item} />
+                <span className="mapSelectionItemLabel">{item.label}</span>
+                {item.notam_badge ? <NotamBadgeIndicator badge={item.notam_badge} /> : null}
+              </button>
             ))}
           </div>
         </div>
@@ -11550,7 +11555,8 @@ function MapSelectionTray(props: {
           </div>
         </div>
         <div className="mapSelectionActionGrid">
-          {actionSlots.map((action) => {
+          {actionSlots.map((action, index) => {
+            if (index === notamActionSlot) return notamAction;
             const disabledReason = action.disabled_reason?.trim() || null;
             const symbol = actionSymbol(action.id);
             const inert = Boolean(
@@ -11597,6 +11603,7 @@ function MapSelectionTray(props: {
               </button>
             );
           })}
+          {notamActionSlot < 0 ? notamAction : null}
           {selectedItem?.detail_text ? (
             <div className="mapSelectionDetailText mapSelectionInlineDetailText">{selectedItem.detail_text}</div>
           ) : null}

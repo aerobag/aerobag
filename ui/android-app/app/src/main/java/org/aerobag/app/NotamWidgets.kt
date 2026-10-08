@@ -26,6 +26,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,13 +58,17 @@ internal fun NotamBadgedControl(
     badge: NotamBadgeUiView?,
     modifier: Modifier = Modifier,
     overlayBadge: Boolean = false,
+    badgeSize: Dp = ThumbSize * 0.6f,
     onOpenChange: (Boolean) -> Unit = {},
-    content: @Composable () -> Unit,
+    content: @Composable () -> Unit = {},
 ) {
     var open by remember(badge?.actionId) { mutableStateOf(false) }
     val currentOnOpenChange by rememberUpdatedState(onOpenChange)
     val readerOpen = open && badge != null
     var previousOpen by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        onDispose { if (previousOpen) currentOnOpenChange(false) }
+    }
     LaunchedEffect(readerOpen) {
         if (previousOpen != readerOpen) {
             previousOpen = readerOpen
@@ -74,7 +79,7 @@ internal fun NotamBadgedControl(
         Box(modifier) {
             content()
             badge?.let {
-                NotamBadgeButton(it, ThumbSize * 0.6f,
+                NotamBadgeButton(it, badgeSize,
                     Modifier.align(Alignment.BottomEnd).padding(2.dp)) { open = true }
             }
         }
@@ -88,7 +93,7 @@ internal fun NotamBadgedControl(
                     content()
                 }
                 badge?.let {
-                    NotamBadgeButton(it, ThumbSize * 0.6f) { open = true }
+                    NotamBadgeButton(it, badgeSize) { open = true }
                 }
             }
         }
@@ -107,10 +112,10 @@ internal fun NotamBadgeButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val uiTheme = LocalAerobagUiTheme.current
-    Surface(
+    NotamBadge(
+        badge = badge,
+        badgeSize = badgeSize,
         modifier = modifier
-            .size(badgeSize)
             .e2eIndexedControl(
                 semanticTag = "parity:plate-notam:${badge.actionId}",
                 enabled = true,
@@ -118,6 +123,18 @@ internal fun NotamBadgeButton(
             )
             .semantics { contentDescription = badge.accessibilityLabel }
             .clickable(onClick = onClick),
+    )
+}
+
+@Composable
+internal fun NotamBadge(
+    badge: NotamBadgeUiView,
+    badgeSize: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier.size(badgeSize),
         shape = RectangleShape,
         color = uiTheme.plateFolder.notamBadgeBg,
         contentColor = uiTheme.plateFolder.notamBadgeFg,

@@ -22,24 +22,42 @@ const badge = {
   detail: { title: "Airway V23 NOTAMs", advisory_text: "Review affected segments; check official sources.", empty_text: "None",
     notams: Array.from({length:20}, (_, i) => ({id:String(i),label:`Notice ${i+1}`,text:`V23 MALAY TO MCKEN MEA 5400 NORTHBOUND. Notice ${i+1}.`})) },
 };
-const bundle = await build({write:false, bundle:true, format:"iife", jsx:"automatic", nodePaths:[resolve(webWorkspaceDirectory(),"node_modules")],
+const bundle = await build({write:false, bundle:true, format:"esm", outfile:"app.js", jsx:"automatic", nodePaths:[resolve(webWorkspaceDirectory(),"node_modules")],
+  alias:{"@shared-ui-theme":resolve(root,"ui/shared-fixtures/ui-theme.json")},
+  external:["@generated/*"], define:{"import.meta.env":"{}"},
+  plugins:[{name:"shared-html",setup(build){
+    build.onResolve({filter:/^@shared\/.*\?raw$/},args=>({path:resolve(root,"ui/shared",args.path.slice(8,-4)),namespace:"raw"}));
+    build.onLoad({filter:/.*/,namespace:"raw"},async args=>({contents:await readFile(args.path,"utf8"),loader:"text"}));
+  }}],
   stdin:{resolveDir:web, loader:"tsx", contents:`
     import React, {useState} from "react"; import {createRoot} from "react-dom/client";
     import {NotamBadgedControl} from "./src/NotamUi";
+    import {MapSelectionTray} from "./src/App";
     function Fixture() { const [badge,setBadge] = useState(${JSON.stringify(badge)});
+      const [inspector,setInspector] = useState(false), [selected,setSelected] = useState(0);
+      const items = ["UBG","KONAH","AYURU","SPOT","PAE","SEA"].map((label,i)=>({
+        id:label,label,sublabel:"",highlight:{kind:"spot",lat:45,lon:-123},
+        notam_badge:i===0?badge:null,
+        actions:Array.from({length:6},(_,j)=>({id:"placeholder-"+j,label:"",enabled:false,placeholder:true,display_only:true})),
+      }));
+      window.showInspector = () => {setBadge(${JSON.stringify(badge)});setInspector(true)};
       window.cancelNotice = () => setBadge(null);
       return <div className="appShell" style={${JSON.stringify(Object.fromEntries(variables))}}>
+        {inspector ? <MapSelectionTray point={{x:0,y:0}} selectedItem={items[selected]}
+          result={{click_lat:45,click_lon:-123,categories:[{id:"points",label:"Points",items}]}}
+          onSelectItem={item=>setSelected(items.indexOf(item))} onSelectAction={()=>{}} onDisabledAction={()=>{}}
+          onNotamOpenChange={open=>{window.readerOpen=open}} /> :
         <div className="planTable" style={{width:600}}>
           <NotamBadgedControl active overlayBadge badge={badge}><button className="planWaypointCell planWaypointButton planStructuredWaypointCell" onClick={()=>{window.rowClicks=(window.rowClicks||0)+1}}><span className="planStructuredLabel isFullWidth">V23</span></button></NotamBadgedControl>
           {[1,2,3,4,5].map(i=><div className="planCell" key={i}>12:34</div>)}
-        </div>
+        </div>}
       </div>;
     } createRoot(document.getElementById("root")).render(<Fixture/>);
   `}});
 const css = await readFile(resolve(web,"src/styles.css"));
 const server = createServer((req,res) => {
   res.setHeader("Content-Type", req.url === "/app.js" ? "text/javascript" : req.url === "/app.css" ? "text/css" : "text/html");
-  res.end(req.url === "/app.js" ? bundle.outputFiles[0].contents : req.url === "/app.css" ? css : '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/app.js"></script>');
+  res.end(req.url === "/app.js" ? bundle.outputFiles.find(file=>file.path.endsWith(".js")).contents : req.url === "/app.css" ? css : '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script type="module" src="/app.js"></script>');
 });
 await new Promise(done => server.listen(0,"127.0.0.1",done));
 const profile = await mkdtemp(resolve(tmpdir(),"notam-widget-"));
@@ -66,8 +84,47 @@ try {
     await writeFile(resolve(tmpdir(),`notam-reader-${width}.png`),Buffer.from(shot.data,"base64"));
     await page.evaluate('window.cancelNotice()');
     await waitFor(() => page.evaluate('!document.querySelector(".notamReaderOverlay") && !document.querySelector("[data-action-id]")'),5000,"cancelled notice remains visible");
+
+    await page.evaluate('window.showInspector()');
+    await waitFor(() => page.evaluate('!!document.querySelector(".mapSelectionRow")'),5000,"inspector missing");
+    const inspector = await page.evaluate(`(() => {
+      const row=document.querySelector('.mapSelectionRow'), buttons=[...row.querySelectorAll('.mapSelectionItem')];
+      const bounds=buttons.map(b=>b.getBoundingClientRect().toJSON());
+      const indicator=row.querySelector('.mapSelectionNotamIndicator').getBoundingClientRect().toJSON();
+      const action=document.querySelector('.plateProcedureNotamBadge-action').getBoundingClientRect().toJSON();
+      return {bounds,indicator,action,gap:parseFloat(getComputedStyle(row).gap),
+        thumb:parseFloat(getComputedStyle(buttons[0]).flexBasis),scrollable:row.scrollWidth>row.clientWidth};
+    })()`);
+    for (let i=0;i<inspector.bounds.length;i++) {
+      const b=inspector.bounds[i];
+      assert(Math.abs(b.width-inspector.thumb)<1 && Math.abs(b.height-inspector.thumb)<1, JSON.stringify(inspector));
+      if(i>0) assert(Math.abs(b.left-inspector.bounds[i-1].right-inspector.gap)<1, JSON.stringify(inspector));
+    }
+    assert(inspector.scrollable);
+    assert(inspector.indicator.left>=inspector.bounds[0].left && inspector.indicator.right<=inspector.bounds[0].right);
+    assert(inspector.indicator.top>=inspector.bounds[0].top && inspector.indicator.bottom<=inspector.bounds[0].bottom);
+    assert(Math.abs(inspector.action.width-inspector.thumb)<1 && Math.abs(inspector.action.height-inspector.thumb)<1);
+    assert(inspector.action.top>=inspector.bounds[0].bottom);
+    await writeFile(resolve(tmpdir(),`notam-inspector-${width}.png`),Buffer.from((await page.send("Page.captureScreenshot",{format:"png"})).data,"base64"));
+    for (const r of [inspector.indicator,inspector.action]) {
+      const point={x:r.x+r.width/2,y:r.y+r.height/2};
+      await page.send("Input.dispatchMouseEvent",{type:"mousePressed",...point,button:"left",clickCount:1});
+      await page.send("Input.dispatchMouseEvent",{type:"mouseReleased",...point,button:"left",clickCount:1});
+      if(r===inspector.indicator) assert.equal(await page.evaluate('!!document.querySelector(".notamReaderOverlay")'),false);
+    }
+    await waitFor(() => page.evaluate('window.readerOpen === true && !!document.querySelector(".notamReaderOverlay")'),5000,"inspector reader did not open");
+    await page.evaluate('window.cancelNotice()');
+    await waitFor(() => page.evaluate('window.readerOpen === false && !document.querySelector(".notamReaderOverlay") && !document.querySelector(".mapSelectionNotamIndicator")'),5000,"inspector retained cancelled notice");
+    const rowBounds=await page.evaluate('document.querySelector(".mapSelectionRow").getBoundingClientRect().toJSON()');
+    await page.send("Input.dispatchMouseEvent",{type:"mouseWheel",x:rowBounds.x+rowBounds.width/2,y:rowBounds.y+rowBounds.height/2,deltaX:10000,deltaY:0});
+    await waitFor(() => page.evaluate('document.querySelector(".mapSelectionRow").scrollLeft>0'),5000,"inspector cannot scroll");
+    const last=await page.evaluate('document.querySelector(".mapSelectionRow button:last-child").getBoundingClientRect().toJSON()');
+    assert(last.left>=rowBounds.left && last.right<=rowBounds.right);
+    await page.send("Input.dispatchMouseEvent",{type:"mousePressed",x:last.x+last.width/2,y:last.y+last.height/2,button:"left",clickCount:1});
+    await page.send("Input.dispatchMouseEvent",{type:"mouseReleased",x:last.x+last.width/2,y:last.y+last.height/2,button:"left",clickCount:1});
+    await waitFor(() => page.evaluate('document.querySelector(".mapSelectionItem.isSelected")?.textContent==="SEA"'),5000,"scrolled item could not be selected");
   }
-  console.log("NOTAM widget smoke passed: physical click, scroll, cancellation; desktop and mobile.");
+  console.log("NOTAM widget smoke passed: physical click, scroll, cancellation, inspector spacing and badge placement; desktop and mobile.");
 } finally {
   await browser?.close(); await stopProcess(chrome?.process); server.close();
   await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});

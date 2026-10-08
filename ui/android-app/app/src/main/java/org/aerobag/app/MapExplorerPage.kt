@@ -5103,6 +5103,14 @@ internal fun MapSelectionTray(
     val uiTheme = LocalAerobagUiTheme.current
     val selectedItem = state.selectedItem
     val actionSlots = selectedItem?.actions.orEmpty()
+    val notamSlot = if (selectedItem?.notamBadge != null) actionSlots.indexOfFirst { it.placeholder } else -1
+    val notamAction: (@Composable () -> Unit)? = selectedItem?.notamBadge?.let { badge ->
+        {
+            Box(Modifier.width(ThumbSize * 1.2f).height(ThumbSize), contentAlignment = Alignment.Center) {
+                NotamBadgedControl(badge = badge, badgeSize = ThumbSize, onOpenChange = onNotamOpenChange)
+            }
+        }
+    }
     val actionRows = actionSlots.chunked(3)
     Surface(
         modifier = modifier
@@ -5128,7 +5136,7 @@ internal fun MapSelectionTray(
             state.result.categories.forEach { category ->
                 Row(
                     modifier = Modifier.observedHorizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
+                    horizontalArrangement = Arrangement.spacedBy(ThumbGap),
                 ) {
                     if (category.items.isEmpty()) {
                         Text(
@@ -5140,14 +5148,12 @@ internal fun MapSelectionTray(
                         )
                     } else {
                         category.items.forEach { item ->
-                            NotamBadgedControl(badge = item.notamBadge, onOpenChange = onNotamOpenChange) {
-                                MapSelectionItemButton(
-                                    item = item,
-                                    selected = item.id == selectedItem?.id,
-                                    testTag = "parity:map-selection-item:${category.id}-${item.label}",
-                                    onClick = { onSelectItem(item) },
-                                )
-                            }
+                            MapSelectionItemButton(
+                                item = item,
+                                selected = item.id == selectedItem?.id,
+                                testTag = "parity:map-selection-item:${category.id}-${item.label}",
+                                onClick = { onSelectItem(item) },
+                            )
                         }
                     }
                 }
@@ -5163,19 +5169,24 @@ internal fun MapSelectionTray(
                             actions = actions,
                             selectedItem = selectedItem,
                             onSelectAction = onSelectAction,
+                            notamIndex = notamSlot,
+                            notamAction = notamAction,
                         )
                     }
                     if (selectedItem?.detailText != null) {
                         MapSelectionInlineDetailText(selectedItem.detailText)
                     } else {
-                        actionRows.drop(1).forEach { actions ->
+                        actionRows.drop(1).forEachIndexed { row, actions ->
                             MapSelectionActionRow(
                                 actions = actions,
                                 selectedItem = selectedItem,
                                 onSelectAction = onSelectAction,
+                                notamIndex = notamSlot - (row + 1) * 3,
+                                notamAction = notamAction,
                             )
                         }
                     }
+                    if (notamSlot < 0 && notamAction != null) notamAction()
                 }
             }
         }
@@ -5232,6 +5243,8 @@ internal fun MapSelectionActionRow(
     actions: List<MapSelectionAction>,
     selectedItem: MapSelectionItem?,
     onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
+    notamIndex: Int = -1,
+    notamAction: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier.height(ThumbSize),
@@ -5239,7 +5252,9 @@ internal fun MapSelectionActionRow(
     ) {
         repeat(3) { index ->
             val action = actions.getOrNull(index)
-            if (action == null || action.placeholder) {
+            if (index == notamIndex && notamAction != null) {
+                notamAction()
+            } else if (action == null || action.placeholder) {
                 Spacer(modifier = Modifier.width(ThumbSize * 1.2f).height(ThumbSize))
             } else {
                 val actionEnabled = action.enabled && !action.displayOnly
@@ -5844,22 +5859,31 @@ internal fun MapSelectionItemButton(
             contentColor = uiTheme.controls.buttonFg,
             border = BorderStroke(1.dp, lerp(containerColor, Color.Black, 0.22f)),
         ) {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(3.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                MapSelectionItemIcon(item, Modifier.weight(1f).fillMaxWidth())
-                Text(
-                    text = item.label,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = IconButtonLabelFontSize,
-                        fontWeight = FontWeight.Bold,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                )
+            Box(Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(3.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    MapSelectionItemIcon(item, Modifier.weight(1f).fillMaxWidth())
+                    Text(
+                        text = item.label,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = IconButtonLabelFontSize,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                item.notamBadge?.let { badge ->
+                    NotamBadge(
+                        badge, ThumbSize * 0.45f,
+                        Modifier.align(Alignment.TopEnd).padding(2.dp)
+                            .testTag("map-selection-notam-indicator:${item.id}"),
+                    )
+                }
             }
         }
     }

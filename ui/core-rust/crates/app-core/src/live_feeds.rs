@@ -744,12 +744,18 @@ impl LiveFeedsState {
     }
 
     pub fn record_resource_failure(&mut self, resource_id: &str, epoch_ms: i64) {
-        if Self::handles_resource(resource_id) {
-            self.resource_failure_retry_after_epoch_ms.insert(
-                resource_id.to_string(),
-                epoch_ms + LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS,
-            );
-        }
+        // Callers already route live-feed failures here. handles_resource selects
+        // JIT ingestion, not retry eligibility: full offline packages use a
+        // separate installer but must obey the same cooldown (notably winds).
+        self.resource_failure_retry_after_epoch_ms.insert(
+            resource_id.to_string(),
+            epoch_ms.saturating_add(LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS),
+        );
+    }
+
+    pub(crate) fn clear_resource_failure(&mut self, resource_id: &str) {
+        self.resource_failure_retry_after_epoch_ms
+            .remove(resource_id);
     }
 
     pub fn next_resource_retry_delay_ms(&self, now_ms: i64) -> Option<i64> {

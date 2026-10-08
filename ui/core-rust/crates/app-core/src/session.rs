@@ -23983,6 +23983,150 @@ mod tests {
     }
 
     #[test]
+    fn offline_forecast_download_does_not_thrash_the_planner() {
+        let (manifest, _, _, state_sha256) =
+            crate::forecast_atmosphere::tests::test_forecast_payload();
+        let version = &manifest.version_label;
+        let state_url = format!("states/winds-aloft/{version}/manifest.json");
+        let mut cache = crate::LiveFeedCache::default();
+        cache
+            .set_source_root_url("https://feeds.example.test")
+            .unwrap();
+        cache
+            .ingest_catalog(&live_feed_catalog_for_test(BTreeMap::from([(
+                "winds-aloft".to_string(),
+                live_current_product_for_test(
+                    "winds-aloft",
+                    version,
+                    &state_url,
+                    &state_sha256,
+                    Vec::new(),
+                ),
+            )])))
+            .unwrap();
+        let mut version_manifest: product_contracts::live_feeds::v3::VersionManifest =
+            serde_json::from_slice(&live_version_manifest_for_test(
+                "winds-aloft",
+                version,
+                "nav_kv",
+                &state_url,
+                &state_sha256,
+            ))
+            .unwrap();
+        version_manifest.temporal_coverage =
+            Some(product_contracts::live_feeds::v3::TemporalCoverage {
+                reference_time_epoch_ms: manifest.cycle_time_epoch_ms,
+                valid_from_epoch_ms: manifest.valid_times_epoch_ms[0],
+                valid_through_epoch_ms: *manifest.valid_times_epoch_ms.last().unwrap(),
+            });
+        version_manifest.install_state = Some(product_contracts::live_feeds::v3::PayloadRef {
+            kind: Some("nav_kv_package".to_string()),
+            url: format!("packages/winds-aloft/{version}.zip"),
+            bytes: 12_800_000,
+            blob_sha256: "unfetched-package".to_string(),
+            state_sha256,
+        });
+        cache
+            .ingest_version_manifest(
+                "winds-aloft",
+                version,
+                &serde_json::to_vec(&version_manifest).unwrap(),
+            )
+            .unwrap();
+
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
+        let available =
+            sync_live_feed_catalog_in_session(init.handle, cache.live_feeds_state()).unwrap();
+        let action = planner_wind_row(
+            available.app_ui_state.active_plan.as_ref().unwrap(),
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        )
+        .action
+        .as_ref()
+        .unwrap();
+        assert!(
+            action.enabled,
+            "cached metadata offers a forecast before going offline"
+        );
+        report_live_feed_connection_event_in_session(
+            init.handle,
+            crate::LiveFeedConnectionEvent {
+                kind: crate::LiveFeedConnectionEventKind::NetworkStatus,
+                network_status: Some(crate::LiveFeedNetworkStatus::NoActiveNetwork),
+                message: None,
+                source_url: None,
+                status_url: None,
+            },
+            manifest.cycle_time_epoch_ms,
+        )
+        .unwrap();
+        perform_altitude_planner_action_in_session(init.handle, action.action_uid.clone().unwrap())
+            .unwrap();
+
+        // Exercise the session and durable cache together, using emitted requests
+        // rather than hard-coded resource IDs. Android wakes acquisition on plan
+        // updates, including its own downloading/failure status reports. Inject
+        // immediate network failure at the transport boundary; no sleeping or
+        // real network is needed to prove those wakeups respect the cooldown.
+        let mut attempts = 0;
+        let mut labels = Vec::new();
+        for now_ms in (1_000..2_000).step_by(10) {
+            cache.apply_acquisition_directive(
+                live_feed_cache_acquisition_directive_in_session(init.handle).unwrap(),
+            );
+            for request in cache.missing_requests_at_epoch_ms(now_ms) {
+                assert!(
+                    matches!(&request.kind, crate::LiveFeedCacheRequestKind::Full { product, .. }
+                    if product == "winds-aloft")
+                );
+                attempts += 1;
+                for phase in [
+                    WindsAloftAcquisitionPhase::Downloading,
+                    WindsAloftAcquisitionPhase::Requested,
+                ] {
+                    report_live_feed_acquisition_phase_in_session(
+                        init.handle,
+                        "winds-aloft",
+                        phase,
+                    )
+                    .unwrap();
+                    let snapshot = get_session_snapshot(init.handle).unwrap();
+                    labels.push(
+                        planner_wind_row(
+                            snapshot.app_ui_state.active_plan.as_ref().unwrap(),
+                            crate::AltitudePlannerForecastRowId::LatestForecast,
+                        )
+                        .action
+                        .as_ref()
+                        .unwrap()
+                        .label
+                        .clone(),
+                    );
+                }
+                cache.record_request_failure(&request.id, now_ms);
+            }
+        }
+        destroy_session(init.handle);
+        assert_eq!(attempts, 1,
+            "one offline fetch must settle, not retry on each UI update; {} button transitions, first six: {:?}",
+            labels.len(), &labels[..labels.len().min(6)]);
+        assert_eq!(labels, ["FETCHING MODEL", "FETCH REQUESTED"]);
+        assert_eq!(
+            cache
+                .missing_requests_at_epoch_ms(
+                    1_000 + product_contracts::LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS
+                )
+                .len(),
+            1,
+            "a failed download remains retryable after the core cooldown",
+        );
+    }
+
+    #[test]
     fn durable_winds_are_downloaded_only_by_the_core_planner_action() {
         let (manifest, root, pages, state_sha256) =
             crate::forecast_atmosphere::tests::test_forecast_payload();

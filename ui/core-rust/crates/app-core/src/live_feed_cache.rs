@@ -942,6 +942,7 @@ impl LiveFeedCache {
                     self.prepare_notam_delta_candidate(&installed, &bytes)?;
                 }
                 self.stage_fetched_installed_state(installed.clone());
+                self.live_feeds.clear_resource_failure(&request.id);
                 Ok(Some(installed))
             }
         }
@@ -1016,6 +1017,7 @@ impl LiveFeedCache {
             self.prepare_full_notam_candidate(&installed)?;
         }
         self.stage_fetched_installed_state(installed);
+        self.live_feeds.clear_resource_failure(&request.id);
         Ok(())
     }
 
@@ -4462,6 +4464,80 @@ mod tests {
     }
 
     #[test]
+    fn durable_full_download_cools_down_until_retry_and_clears_failure_on_success() {
+        let registry = live_feed_product_registry();
+        let state = metar_state("v1", &[("KSEA", "METAR KSEA")]);
+        let (manifest, bytes, sha) = json_version_manifest("metars", "v1", &state, None);
+        let mut cache = live_feed_cache();
+        cache
+            .ingest_catalog(&catalog_manifest("metars", "v1", &sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("metars", "v1", &manifest)
+            .unwrap();
+        let request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
+        assert!(matches!(
+            request.kind,
+            LiveFeedCacheRequestKind::Full { .. }
+        ));
+
+        let retry_commands = |cache: &mut LiveFeedCache, now_ms| {
+            cache
+                .runtime_decision(crate::LiveFeedRuntimeInput {
+                    kind: crate::LiveFeedRuntimeEventKind::Start,
+                    now_ms,
+                    message: None,
+                    source_url: None,
+                    status_url: None,
+                    network_status: None,
+                })
+                .commands
+        };
+        let cooldown = product_contracts::LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS;
+        cache.record_request_failure(&request.id, 1_000);
+        assert_eq!(
+            retry_commands(&mut cache, 1_000),
+            vec![crate::LiveFeedRuntimeCommand::RetryResources { delay_ms: cooldown }]
+        );
+        assert!(cache
+            .missing_requests_at_epoch_ms(1_000 + cooldown - 1)
+            .is_empty());
+        assert_eq!(
+            cache.missing_requests_at_epoch_ms(1_000 + cooldown),
+            [request.clone()]
+        );
+
+        // Another failure renews the cooldown; invalid bytes must not clear it.
+        cache.record_request_failure(&request.id, 1_000 + cooldown);
+        assert!(cache
+            .install_fetched_payload(
+                &registry,
+                &request,
+                LiveFeedFetchedPayload::Bytes(b"truncated download".to_vec()),
+            )
+            .is_err());
+        assert!(cache.missing_requests_at_epoch_ms(2 * cooldown).is_empty());
+        assert_eq!(
+            retry_commands(&mut cache, 2 * cooldown),
+            vec![crate::LiveFeedRuntimeCommand::RetryResources { delay_ms: 1_000 }]
+        );
+
+        let retry = cache
+            .missing_requests_at_epoch_ms(1_000 + 2 * cooldown)
+            .remove(0);
+        cache
+            .install_fetched_payload(&registry, &retry, LiveFeedFetchedPayload::Bytes(bytes))
+            .unwrap();
+        assert!(cache
+            .missing_requests_at_epoch_ms(1_001 + 2 * cooldown)
+            .is_empty());
+        assert!(
+            retry_commands(&mut cache, 1_001 + 2 * cooldown).is_empty(),
+            "successful acquisition must not leave a zero-delay retry timer behind"
+        );
+    }
+
+    #[test]
     fn cache_registry_covers_exactly_the_shared_product_roster() {
         let registry = live_feed_product_registry();
         let expected = product_contracts::LIVE_FEED_PRODUCT_POLICIES
@@ -4579,6 +4655,13 @@ mod tests {
                 payload_kind: Some("record_json_delta_xz".to_string())
             }
         );
+        cache.record_request_failure(&request.id, 1_000);
+        assert!(cache.missing_requests_at_epoch_ms(1_001).is_empty());
+        let retry_at = 1_000 + product_contracts::LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS;
+        assert_eq!(
+            cache.missing_requests_at_epoch_ms(retry_at),
+            [request.clone()]
+        );
         let installed = cache
             .install_fetched_payload(
                 &registry,
@@ -4589,6 +4672,11 @@ mod tests {
             .unwrap();
         assert_eq!(installed.version, "v2");
         assert_eq!(installed.state_sha256, v2_sha);
+        assert_eq!(
+            cache.live_feeds.next_resource_retry_delay_ms(retry_at + 1),
+            None,
+            "a successful delta retry must clear its expired cooldown too"
+        );
     }
 
     #[test]

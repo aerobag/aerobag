@@ -2660,6 +2660,7 @@ pub fn query_map_overlay_for_surface(
             needed_features: Vec::new(),
             paths: Vec::new(),
             labels: Vec::new(),
+            label_alternatives: HashMap::new(),
             data_status_records: Vec::new(),
         }
     };
@@ -2718,6 +2719,7 @@ pub fn query_map_overlay_for_surface(
     suppress_overlapping_vector_labels_for_surface(
         &mut visible_features,
         &mut airspace_labels,
+        &airspace.label_alternatives,
         protected_point_features,
         metrics,
     );
@@ -6009,6 +6011,7 @@ struct LabelCandidate {
 fn suppress_overlapping_vector_labels_for_surface(
     visible_features: &mut [VisibleMapFeature],
     airspace_labels: &mut Vec<AirspaceDisplayLabel>,
+    airspace_label_alternatives: &HashMap<String, Vec<AirspaceDisplayLabel>>,
     protected_point_features: &[VisibleMapFeature],
     metrics: &MapSurfaceMetrics,
 ) {
@@ -6066,18 +6069,51 @@ fn suppress_overlapping_vector_labels_for_surface(
     let mut occupied = Vec::<LabelRect>::new();
     let mut keep_airspace = vec![true; airspace_labels.len()];
     let mut keep_point = vec![true; visible_features.len()];
+    let mut suppressed_airspace = Vec::new();
 
     for candidate in candidates.into_iter().rev() {
         let label_ref = candidate.label_ref;
         let rect = candidate.rect;
         if occupied.iter().any(|kept| rect.overlaps(*kept)) {
             match label_ref {
-                LabelRef::Airspace(index) => keep_airspace[index] = false,
+                LabelRef::Airspace(index) => {
+                    keep_airspace[index] = false;
+                    suppressed_airspace.push(index);
+                }
                 LabelRef::Point(index) => keep_point[index] = false,
                 LabelRef::ProtectedPoint => {}
             }
         } else {
             occupied.push(rect);
+        }
+    }
+
+    // Preserve every preferred label that already fits before filling gaps.
+    // Otherwise a fallback for one shelf can displace another shelf's label.
+    for index in suppressed_airspace {
+        let Some(alternatives) =
+            airspace_label_alternatives.get(&airspace_labels[index].feature_id)
+        else {
+            continue;
+        };
+        for alternative in alternatives {
+            let Some(rect) = airspace_label_rect(alternative, point_display_scale) else {
+                continue;
+            };
+            let rect = upright_label_rect_for_surface(
+                rect,
+                alternative.screen_x,
+                alternative.screen_y,
+                metrics,
+            )
+            .padded(LABEL_COLLISION_PADDING_PX);
+            if occupied.iter().any(|kept| rect.overlaps(*kept)) {
+                continue;
+            }
+            airspace_labels[index] = alternative.clone();
+            keep_airspace[index] = true;
+            occupied.push(rect);
+            break;
         }
     }
 
@@ -6134,6 +6170,7 @@ fn suppress_overlapping_vector_labels(
     suppress_overlapping_vector_labels_for_surface(
         visible_features,
         airspace_labels,
+        &HashMap::new(),
         protected_point_features,
         &MapSurfaceMetrics::new(
             MapViewport {
@@ -6758,6 +6795,7 @@ struct AirspaceOverlayProjection {
     needed_features: Vec<AirspaceFeatureRequest>,
     paths: Vec<AirspaceDisplayPath>,
     labels: Vec<AirspaceDisplayLabel>,
+    label_alternatives: HashMap<String, Vec<AirspaceDisplayLabel>>,
     data_status_records: Vec<DataStatusRecord>,
 }
 
@@ -6856,13 +6894,6 @@ struct AirspaceLabelCandidate {
     label: AirspaceDisplayLabel,
 }
 
-fn airspace_label_candidate_is_better(
-    candidate: &AirspaceLabelCandidate,
-    current: &AirspaceLabelCandidate,
-) -> bool {
-    candidate.rank < current.rank
-}
-
 #[derive(Debug, Default)]
 struct AirspaceDecorationBudget {
     used: usize,
@@ -6920,11 +6951,12 @@ fn query_airspace_overlay(
             needed_features: Vec::new(),
             paths: Vec::new(),
             labels: Vec::new(),
+            label_alternatives: HashMap::new(),
             data_status_records: Vec::new(),
         };
     }
 
-    let mut label_by_feature = HashMap::<String, AirspaceLabelCandidate>::new();
+    let mut label_by_feature = HashMap::<String, Vec<AirspaceLabelCandidate>>::new();
     let scan = scan_airspace_inputs(
         viewport,
         width_px,
@@ -6961,12 +6993,10 @@ fn query_airspace_overlay(
                         screen_y: point.y,
                     },
                 };
-                let entry = label_by_feature
+                label_by_feature
                     .entry(candidate.label.feature_id.clone())
-                    .or_insert_with(|| candidate.clone());
-                if airspace_label_candidate_is_better(&candidate, entry) {
-                    *entry = candidate;
-                }
+                    .or_default()
+                    .push(candidate);
             }
         },
     );
@@ -7009,10 +7039,25 @@ fn query_airspace_overlay(
         }
     }
 
-    let mut labels = label_by_feature
-        .into_values()
-        .map(|candidate| candidate.label)
-        .collect::<Vec<_>>();
+    let mut labels = Vec::with_capacity(label_by_feature.len());
+    let mut label_alternatives = HashMap::new();
+    for (feature_id, mut candidates) in label_by_feature {
+        candidates.sort_by(|a, b| {
+            a.rank
+                .cmp(&b.rank)
+                .then_with(|| a.label.screen_x.total_cmp(&b.label.screen_x))
+                .then_with(|| a.label.screen_y.total_cmp(&b.label.screen_y))
+        });
+        candidates.dedup_by(|a, b| a.rank == b.rank && a.label == b.label);
+        let mut candidates = candidates.into_iter().map(|candidate| candidate.label);
+        if let Some(preferred) = candidates.next() {
+            labels.push(preferred);
+            let alternatives = candidates.collect::<Vec<_>>();
+            if !alternatives.is_empty() {
+                label_alternatives.insert(feature_id, alternatives);
+            }
+        }
+    }
     labels.sort_by(|left, right| {
         left.feature_id
             .cmp(&right.feature_id)
@@ -7066,6 +7111,7 @@ fn query_airspace_overlay(
         needed_features,
         paths,
         labels,
+        label_alternatives,
         data_status_records,
     }
 }
@@ -9387,6 +9433,117 @@ mod tests {
             .expect("weather display cap status");
         assert_eq!(status.severity, UiStatusSeverity::Warning);
         assert!(status.drives_caution);
+    }
+
+    #[test]
+    fn airspace_labels_try_ranked_alternatives_after_preserving_visible_labels() {
+        for display_scale in [1.0_f64, 2.625] {
+            for rotation_deg in [0.0, 40.0, 90.0] {
+                for reserved_alternatives in 0..=2 {
+                    let metrics = MapSurfaceMetrics::new(
+                        MapViewport {
+                            center: LatLon { lat: 0.0, lon: 0.0 },
+                            zoom: 10.0 + display_scale.log2(),
+                            rotation_deg,
+                            pitch_deg: 0.0,
+                        },
+                        800.0 * display_scale,
+                        1100.0 * display_scale,
+                        display_scale,
+                    );
+                    let config = test_map_overlay_config();
+                    let mut tiles = HashMap::new();
+                    let empty = HashMap::new();
+                    let metars = HashMap::new();
+                    let features = HashMap::new();
+                    let query = |tiles: &HashMap<String, VectorAggregateTilePayload>| {
+                        let mut query =
+                            MapOverlayQuery::new(&config, tiles, &empty, &metars, &features);
+                        query.display_vectors = true;
+                        query_map_overlay_for_surface(&metrics, query)
+                    };
+                    for t in query(&tiles).needed_vector_tiles {
+                        tiles.insert(
+                            aggregate_vector_tile_cache_key(t.z, t.x, t.y),
+                            empty_test_vector_tile(t.z, t.x, t.y),
+                        );
+                    }
+                    let mut fix = test_point_record("fix:WAALP".into(), "ywaypoint", "fix");
+                    fix.lat = 0.0;
+                    fix.lon = 0.0;
+                    fix.label = "WAALP".into();
+                    tiles
+                        .values_mut()
+                        .find(|t| t.z == 9)
+                        .unwrap()
+                        .fixes
+                        .push(fix);
+                    let label = |id: &str, lon, rank| AirspaceLabelRecord {
+                        feature_id: id.into(),
+                        text: "70/60".into(),
+                        lon,
+                        lat: 0.0,
+                        rank,
+                        score: Some(1.0),
+                        style_hint: "class_b".into(),
+                    };
+                    let label_tile = tiles.values_mut().find(|t| t.z == 10).unwrap();
+                    // Deliberately unordered; placement must follow rank, not tile arrival.
+                    // "reroute" sorts after "existing", so its blocked primary is
+                    // processed first. Trying its fallbacks immediately would steal
+                    // an existing shelf's preferred position later in the pass.
+                    label_tile.airspace_labels = vec![
+                        label("shelf:reroute", 0.2, 2),
+                        label("shelf:reroute", 0.0, 0),
+                        label("shelf:reroute", 0.1, 1),
+                    ];
+                    if reserved_alternatives >= 1 {
+                        label_tile
+                            .airspace_labels
+                            .push(label("shelf:existing-1", 0.1, 0));
+                    }
+                    if reserved_alternatives == 2 {
+                        label_tile
+                            .airspace_labels
+                            .push(label("shelf:existing-2", 0.2, 0));
+                    }
+                    let result = query(&tiles);
+                    assert_eq!(
+                        result.airspace_labels.len(),
+                        (reserved_alternatives + 1).min(2)
+                    );
+                    let placed = result
+                        .airspace_labels
+                        .iter()
+                        .find(|l| l.feature_id == "shelf:reroute");
+                    if reserved_alternatives == 2 {
+                        // Exhausted fallbacks must still respect collisions.
+                        assert!(placed.is_none());
+                    } else {
+                        let placed = placed.unwrap();
+                        let expected = metrics.project_position(LatLon {
+                            lat: 0.0,
+                            lon: if reserved_alternatives == 1 { 0.2 } else { 0.1 },
+                        });
+                        assert!((placed.screen_x - expected.0).abs() < 1e-6);
+                        assert!((placed.screen_y - expected.1).abs() < 1e-6);
+                    }
+                    assert_eq!(
+                        result
+                            .visible_features
+                            .iter()
+                            .find(|f| f.id == "fix:WAALP")
+                            .unwrap()
+                            .label,
+                        "WAALP"
+                    );
+                    tiles
+                        .values_mut()
+                        .for_each(|tile| tile.airspace_labels.reverse());
+                    assert_eq!(query(&tiles).airspace_labels, result.airspace_labels);
+                }
+            }
+        }
     }
 
     #[test]

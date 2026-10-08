@@ -75,6 +75,11 @@ const AIRSPACE_LABEL_MAX_ZOOM: u8 = 12;
 const AIRSPACE_LABEL_MIN_PIXEL_SPAN: f64 = 50.0;
 const AIRSPACE_LABEL_MIN_EDGE_CLEARANCE_PX: f64 = 25.0;
 const AIRSPACE_LABEL_SAMPLE_GRID: usize = 10;
+const AIRSPACE_LABEL_FALLBACK_SAMPLE_GRID: usize = 20;
+// Preserve the preferred anchor plus spatially useful collision fallbacks.
+// Four recovers nearly as many labels as publishing the entire sample grid;
+// see docs/testing/airspace-label-placement.md for the coverage/cost audit.
+const AIRSPACE_LABEL_CANDIDATES_PER_FEATURE_TILE: usize = 4;
 const AIRSPACE_LABEL_CONTAINMENT_RATIO: f64 = 0.98;
 
 #[derive(Debug, Clone)]
@@ -1218,9 +1223,10 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                         continue;
                     }
                     let (label_x, label_y) = slippy_tile(candidate.lat, candidate.lon, zoom);
-                    insert_airspace_tile_label(
-                        label_tiles.entry((zoom, label_x, label_y)).or_default(),
-                        AirspaceTileLabel {
+                    label_tiles
+                        .entry((zoom, label_x, label_y))
+                        .or_default()
+                        .push(AirspaceTileLabel {
                             feature_id: feature.id.clone(),
                             text: feature.label.text.clone(),
                             lon: candidate.lon,
@@ -1228,8 +1234,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
                             rank: candidate.rank,
                             score: candidate.score,
                             style_hint: feature.style_hint.clone(),
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -1274,6 +1279,7 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
         let mut max_labels_in_tile = 0usize;
         let label_tile_count = label_tiles.len();
         for ((z, x, y), labels) in label_tiles {
+            let labels = select_airspace_tile_labels(labels, z);
             max_labels_in_tile = max_labels_in_tile.max(labels.len());
             aggregate_tiles
                 .entry((z, x, y))
@@ -3151,17 +3157,55 @@ fn point_layer_counts(points: &[PointRecord]) -> BTreeMap<String, usize> {
     counts
 }
 
-fn insert_airspace_tile_label(labels: &mut Vec<AirspaceTileLabel>, candidate: AirspaceTileLabel) {
-    if let Some(existing) = labels
-        .iter_mut()
-        .find(|label| label.feature_id == candidate.feature_id)
-    {
-        if candidate.rank < existing.rank {
-            *existing = candidate;
-        }
-    } else {
-        labels.push(candidate);
+fn select_airspace_tile_labels(labels: Vec<AirspaceTileLabel>, zoom: u8) -> Vec<AirspaceTileLabel> {
+    let mut by_feature = BTreeMap::<String, Vec<AirspaceTileLabel>>::new();
+    for label in labels {
+        by_feature
+            .entry(label.feature_id.clone())
+            .or_default()
+            .push(label);
     }
+    let mut selected = Vec::new();
+    for mut candidates in by_feature.into_values() {
+        candidates.sort_by_key(|label| label.rank);
+        if candidates.len() <= AIRSPACE_LABEL_CANDIDATES_PER_FEATURE_TILE {
+            selected.extend(candidates);
+            continue;
+        }
+        // Keep the best-ranked point. Then maximize the distance to the nearest
+        // chosen point, so alternatives don't all collide with the same obstacle.
+        let mut remaining = candidates
+            .into_iter()
+            .map(|label| {
+                let (x, y) = slippy_pixel(label.lat, label.lon, zoom);
+                (label, [x, y])
+            })
+            .collect::<Vec<_>>();
+        let mut chosen = vec![remaining.remove(0)];
+        while chosen.len() < AIRSPACE_LABEL_CANDIDATES_PER_FEATURE_TILE {
+            let distance = |point: [f64; 2]| {
+                chosen
+                    .iter()
+                    .map(|(_, other)| squared_distance(point, *other))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let index = remaining
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    distance(a.1)
+                        .total_cmp(&distance(b.1))
+                        .then_with(|| b.0.rank.cmp(&a.0.rank))
+                })
+                .unwrap()
+                .0;
+            chosen.push(remaining.remove(index));
+        }
+        // Rank remains the placement preference; spread only selects the set.
+        chosen.sort_by_key(|(label, _)| label.rank);
+        selected.extend(chosen.into_iter().map(|(label, _)| label));
+    }
+    selected
 }
 
 fn tiles_for_bbox(bbox: [f64; 4], zoom: u8) -> Vec<(u8, u32, u32)> {
@@ -3390,7 +3434,37 @@ fn ranked_label_candidates(
     inner_parts: &[Vec<Vec<[f64; 2]>>],
     airport_points: &[[f64; 2]],
 ) -> Vec<AirspaceLabelCandidate> {
-    let mut candidates = sampled_label_points(parts)
+    let mut candidates = ranked_label_candidates_for_grid(
+        parts,
+        inner_parts,
+        airport_points,
+        AIRSPACE_LABEL_SAMPLE_GRID,
+    );
+    let mut additional = ranked_label_candidates_for_grid(
+        parts,
+        inner_parts,
+        airport_points,
+        AIRSPACE_LABEL_FALLBACK_SAMPLE_GRID,
+    );
+    // Keep established anchors and their preference order. Denser samples fill
+    // gaps in narrow shelves without changing polygon-containment sampling.
+    additional.retain(|extra| {
+        !candidates.iter().any(|existing| {
+            (existing.lon - extra.lon).abs() < 1.0e-10 && (existing.lat - extra.lat).abs() < 1.0e-10
+        })
+    });
+    candidates.extend(additional);
+    rerank_label_candidates(&mut candidates);
+    candidates
+}
+
+fn ranked_label_candidates_for_grid(
+    parts: &[Vec<[f64; 2]>],
+    inner_parts: &[Vec<Vec<[f64; 2]>>],
+    airport_points: &[[f64; 2]],
+    grid_size: usize,
+) -> Vec<AirspaceLabelCandidate> {
+    let mut candidates = sampled_label_points_for_grid(parts, grid_size)
         .into_iter()
         .filter(|candidate| {
             !inner_parts
@@ -3425,18 +3499,22 @@ fn rerank_label_candidates(candidates: &mut [AirspaceLabelCandidate]) {
 }
 
 fn sampled_label_points(parts: &[Vec<[f64; 2]>]) -> Vec<[f64; 2]> {
+    sampled_label_points_for_grid(parts, AIRSPACE_LABEL_SAMPLE_GRID)
+}
+
+fn sampled_label_points_for_grid(parts: &[Vec<[f64; 2]>], grid_size: usize) -> Vec<[f64; 2]> {
     let Some(bbox) = parts_bbox(parts) else {
         return Vec::new();
     };
-    let lon_step = (bbox[2] - bbox[0]) / AIRSPACE_LABEL_SAMPLE_GRID as f64;
-    let lat_step = (bbox[3] - bbox[1]) / AIRSPACE_LABEL_SAMPLE_GRID as f64;
+    let lon_step = (bbox[2] - bbox[0]) / grid_size as f64;
+    let lat_step = (bbox[3] - bbox[1]) / grid_size as f64;
     if lon_step <= 0.0 || lat_step <= 0.0 {
         return Vec::new();
     }
 
     let mut points = Vec::new();
-    for x_index in 0..AIRSPACE_LABEL_SAMPLE_GRID {
-        for y_index in 0..AIRSPACE_LABEL_SAMPLE_GRID {
+    for x_index in 0..grid_size {
+        for y_index in 0..grid_size {
             let candidate = [
                 bbox[0] + (x_index as f64 + 0.5) * lon_step,
                 bbox[1] + (y_index as f64 + 0.5) * lat_step,
@@ -5076,6 +5154,92 @@ fn write_vector_had_pairs(path: &Path, pairs: &[VectorHadPairLine]) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn denser_airspace_candidates_preserve_preferences_and_respect_nested_shelves() {
+        let parts = vec![vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
+            [0.0, 0.0],
+        ]];
+        let inner = vec![vec![
+            [0.4, 0.4],
+            [0.6, 0.4],
+            [0.6, 0.6],
+            [0.4, 0.6],
+            [0.4, 0.4],
+        ]];
+        let nested = vec![inner.clone()];
+        let coarse = ranked_label_candidates_for_grid(&parts, &nested, &[], 10);
+        let candidates = ranked_label_candidates(&parts, &nested, &[]);
+        assert!(candidates.len() > coarse.len());
+        for (before, after) in coarse.iter().zip(&candidates) {
+            assert_eq!(
+                (before.rank, before.lon, before.lat),
+                (after.rank, after.lon, after.lat)
+            );
+        }
+        assert!(candidates
+            .iter()
+            .any(|c| (c.lon - 0.025).abs() < 1e-10 && (c.lat - 0.025).abs() < 1e-10));
+        for (rank, candidate) in candidates.iter().enumerate() {
+            assert_eq!(candidate.rank as usize, rank);
+            assert!(point_in_polygon_parts(
+                [candidate.lon, candidate.lat],
+                &parts
+            ));
+            assert!(!point_in_polygon_parts(
+                [candidate.lon, candidate.lat],
+                &inner
+            ));
+            assert!(!candidates[..rank]
+                .iter()
+                .any(|other| (candidate.lon - other.lon).abs() < 1e-10
+                    && (candidate.lat - other.lat).abs() < 1e-10));
+        }
+    }
+
+    #[test]
+    fn airspace_tile_labels_preserve_preferred_anchor_and_spread_bounded_alternatives() {
+        let label = |feature_id: &str, rank, lon| AirspaceTileLabel {
+            feature_id: feature_id.into(),
+            text: "70/60".into(),
+            lon,
+            lat: 0.0,
+            rank,
+            score: 1.0,
+            style_hint: "class_b".into(),
+        };
+        let mut candidates = [0.0, 0.001, 0.002, 0.003, 0.04, 0.08, 0.12]
+            .into_iter()
+            .enumerate()
+            .map(|(rank, lon)| label("shelf:a", rank as u32, lon))
+            .collect::<Vec<_>>();
+        // The cap is per feature, and a feature with few choices keeps them all.
+        candidates.extend([label("shelf:b", 9, 0.02), label("shelf:b", 3, 0.01)]);
+        let selected = |candidates| {
+            select_airspace_tile_labels(candidates, 10)
+                .into_iter()
+                .map(|label| (label.feature_id, label.rank))
+                .collect::<Vec<_>>()
+        };
+        let expected = [
+            ("shelf:a", 0),
+            ("shelf:a", 4),
+            ("shelf:a", 5),
+            ("shelf:a", 6),
+            ("shelf:b", 3),
+            ("shelf:b", 9),
+        ]
+        .map(|(id, rank)| (id.to_string(), rank))
+        .to_vec();
+        assert_eq!(selected(candidates.clone()), expected);
+        candidates.reverse();
+        assert_eq!(selected(candidates), expected);
+        assert!(select_airspace_tile_labels(Vec::new(), 10).is_empty());
+    }
 
     #[test]
     fn vector_had_pairs_encode_logical_keys_and_json_values() {

@@ -109,6 +109,27 @@ pub fn ui_world_to_screen(
     }
 }
 
+/// Change bearing without moving the anchor's screen position (including its nearest world wrap).
+pub fn ui_rotate_viewport_around_world_point(
+    viewport: UiMapViewportGeometry,
+    rotation_deg: f64,
+    anchor_world: UiGeometryPoint,
+) -> UiMapViewportGeometry {
+    if viewport.rotation_deg == rotation_deg {
+        return viewport;
+    }
+    let anchor_screen = ui_world_to_screen(viewport, anchor_world, 0.0, 0.0);
+    let wrapped_anchor = ui_screen_to_world(viewport, anchor_screen, 0.0, 0.0);
+    let mut rotated = UiMapViewportGeometry {
+        rotation_deg,
+        ..viewport
+    };
+    let moved_anchor = ui_screen_to_world(rotated, anchor_screen, 0.0, 0.0);
+    rotated.center_world_x += wrapped_anchor.x - moved_anchor.x;
+    rotated.center_world_y += wrapped_anchor.y - moved_anchor.y;
+    rotated
+}
+
 pub fn ui_transform_screen_point(
     from: UiMapViewportGeometry,
     from_width: f64,
@@ -467,6 +488,20 @@ mod tests {
     #[test]
     fn matches_shared_ui_geometry_vectors() {
         let vectors: Value = serde_json::from_str(CONFORMANCE).expect("geometry conformance JSON");
+        for vector in vectors["map_anchor_rotation"].as_array().unwrap() {
+            let original = viewport(&vector["viewport"]);
+            let anchor = point(&vector["world"]);
+            let rotated = ui_rotate_viewport_around_world_point(
+                original,
+                number(vector, "rotation_deg"),
+                anchor,
+            );
+            assert_eq!(rotated, viewport(&vector["expected"]), "{}", vector["name"]);
+            assert_point(
+                ui_world_to_screen(rotated, anchor, 1000.0, 800.0),
+                ui_world_to_screen(original, anchor, 1000.0, 800.0),
+            );
+        }
         for vector in vectors["route_label_runs"]
             .as_array()
             .expect("route label run vectors")

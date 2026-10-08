@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import conformance from "../generated/uiGeometryConformance.json";
 import { mapView } from "./mapTestFixtures";
 import {
+  rotateViewportAroundWorldPoint,
   applyPinchGesture,
   compassNeedleRotationDegrees,
   committedViewportInvalidatesMapSelection,
@@ -28,6 +29,29 @@ import {
 } from "./mapViewport";
 
 describe("mapViewport", () => {
+  it("matches core's anchored rotation conformance vectors", () => {
+    const viewport = (value: typeof conformance.map_anchor_rotation[number]["viewport"]) => ({
+      centerWorldX: value.center_world_x, centerWorldY: value.center_world_y,
+      zoom: value.zoom, rotationDeg: value.rotation_deg,
+    });
+    for (const vector of conformance.map_anchor_rotation) {
+      expect(rotateViewportAroundWorldPoint(viewport(vector.viewport), vector.rotation_deg, vector.world))
+        .toEqual(viewport(vector.expected));
+    }
+  });
+
+  it("keeps an off-center ownship fixed on screen through repeated track changes", () => {
+    let viewport = { centerWorldX: 128, centerWorldY: 128, zoom: 6, rotationDeg: 0 };
+    const ownship = { x: 128.25, y: 128.5 };
+    const anchor = worldToScreen(viewport, ownship, 1000, 800);
+    for (const bearing of [90, 180, 270, 359, 1, 33, 0]) {
+      viewport = { ...rotateViewportAroundWorldPoint(viewport, bearing, ownship), rotationDeg: bearing };
+      const actual = worldToScreen(viewport, ownship, 1000, 800);
+      expect(actual.x).toBeCloseTo(anchor.x, 8);
+      expect(actual.y).toBeCloseTo(anchor.y, 8);
+    }
+  });
+
   it("keeps asynchronous raster and vector query frames aligned while TRK turns", () => {
     const viewport = createInitialViewport(mapView);
     const width = 1200, height = 800;
@@ -52,6 +76,19 @@ describe("mapViewport", () => {
         expect(x * Math.cos(angle) - y * Math.sin(angle) + width / 2).toBeCloseTo(expected.x, 5);
         expect(x * Math.sin(angle) + y * Math.cos(angle) + height / 2).toBeCloseTo(expected.y, 5);
       }
+    }
+  });
+
+  it("retains the anchor after a rotated pan and zoom", () => {
+    const ownship = { x: 128.25, y: 128.5 };
+    const panned = dragViewport({ centerWorldX: 128, centerWorldY: 128, zoom: 6, rotationDeg: 73 }, -73, 27);
+    const zoomed = zoomAroundPoint(panned, mapView, { x: 230, y: 300 }, 800, 600, 9.5);
+    const anchor = worldToScreen(zoomed, ownship, 800, 600);
+    for (const bearing of [120, 359, 1, 270, 0]) {
+      const rotated = rotateViewportAroundWorldPoint(zoomed, bearing, ownship);
+      const actual = worldToScreen(rotated, ownship, 800, 600);
+      expect(actual.x).toBeCloseTo(anchor.x, 7);
+      expect(actual.y).toBeCloseTo(anchor.y, 7);
     }
   });
 

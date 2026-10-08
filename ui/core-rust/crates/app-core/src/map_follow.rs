@@ -220,6 +220,69 @@ mod tests {
     }
 
     #[test]
+    fn display_rotation_preserves_synced_anchor_through_motion_and_zoom() {
+        use crate::ui_geometry::ui_rotate_viewport_around_world_point;
+
+        let mut state = MapFollowSessionState::default();
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
+            zoom: 9.0,
+            rotation_deg: 73.0,
+            pitch_deg: 0.0,
+        };
+        state.engage(viewport);
+        let mut aircraft = ownship(47.45, -122.25);
+        state.sync_for_viewport(&aircraft, viewport, 800.0, 600.0);
+        let mut expected = ui_lat_lon_to_screen(
+            aircraft.position.unwrap(),
+            viewport_geometry(viewport),
+            800.0,
+            600.0,
+        );
+        for (index, bearing) in [120.0, 359.0, 1.0, 270.0, 0.0].into_iter().enumerate() {
+            aircraft.position.as_mut().unwrap().lat += 0.02;
+            let (_, target) = state.snapshot_projection(&aircraft);
+            let displayed = ui_rotate_viewport_around_world_point(
+                viewport_geometry(target.unwrap()),
+                bearing,
+                ui_lat_lon_to_world(aircraft.position.unwrap()),
+            );
+            let actual = ui_lat_lon_to_screen(aircraft.position.unwrap(), displayed, 800.0, 600.0);
+            assert!(
+                (actual.x - expected.x).abs() < 1e-8,
+                "{actual:?} vs {expected:?}"
+            );
+            assert!(
+                (actual.y - expected.y).abs() < 1e-8,
+                "{actual:?} vs {expected:?}"
+            );
+            if index == 1 {
+                // Resync after a zoom while rotated; the next turn must use this
+                // displayed bearing, not reinterpret the new anchor as north-up.
+                let zoomed = MapViewport {
+                    center: ui_world_to_lat_lon(UiGeometryPoint {
+                        x: displayed.center_world_x,
+                        y: displayed.center_world_y,
+                    }),
+                    zoom: displayed.zoom + 0.5,
+                    rotation_deg: bearing,
+                    pitch_deg: 0.0,
+                };
+                expected = ui_lat_lon_to_screen(
+                    aircraft.position.unwrap(),
+                    viewport_geometry(zoomed),
+                    800.0,
+                    600.0,
+                );
+                state.sync_for_viewport(&aircraft, zoomed, 800.0, 600.0);
+            }
+        }
+    }
+
+    #[test]
     fn engage_centers_on_ownship() {
         let mut state = MapFollowSessionState::default();
         let viewport = MapViewport {

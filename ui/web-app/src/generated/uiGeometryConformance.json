@@ -1,4 +1,34 @@
 {
+  "map_anchor_rotation": [
+    {
+      "name": "offset ownship quarter turn",
+      "viewport": { "center_world_x": 128, "center_world_y": 128, "zoom": 6, "rotation_deg": 0 },
+      "world": { "x": 128.25, "y": 128.5 },
+      "rotation_deg": 90,
+      "expected": { "center_world_x": 128.75, "center_world_y": 128.25, "zoom": 6, "rotation_deg": 90 }
+    },
+    {
+      "name": "offset ownship already rotated",
+      "viewport": { "center_world_x": 128.75, "center_world_y": 128.25, "zoom": 6, "rotation_deg": 90 },
+      "world": { "x": 128.25, "y": 128.5 },
+      "rotation_deg": 180,
+      "expected": { "center_world_x": 128.5, "center_world_y": 129, "zoom": 6, "rotation_deg": 180 }
+    },
+    {
+      "name": "nearest wrap across date line",
+      "viewport": { "center_world_x": 255.75, "center_world_y": 128, "zoom": 6, "rotation_deg": 0 },
+      "world": { "x": 0.25, "y": 128.5 },
+      "rotation_deg": 90,
+      "expected": { "center_world_x": 256.75, "center_world_y": 128, "zoom": 6, "rotation_deg": 90 }
+    },
+    {
+      "name": "centered ownship",
+      "viewport": { "center_world_x": 128, "center_world_y": 128, "zoom": 10, "rotation_deg": 15 },
+      "world": { "x": 128, "y": 128 },
+      "rotation_deg": 225,
+      "expected": { "center_world_x": 128, "center_world_y": 128, "zoom": 10, "rotation_deg": 225 }
+    }
+  ],
   "map_antimeridian": {
     "viewport": {
       "center_world_x": 255.2888888888889,

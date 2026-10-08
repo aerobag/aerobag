@@ -19,6 +19,34 @@ class MapViewportTest {
     private val maxZoom = 10.8
 
     @Test
+    fun turnsPreserveOwnshipAnchorAfterRotatedPanAndZoom() {
+        var viewport = MapViewportState(128.0, 128.0, 6.0, 73.0)
+        val ownship = WorldPoint(128.25, 128.5)
+        viewport = dragViewport(viewport, -73f, 27f)
+        viewport = zoomAroundPoint(viewport, 2.0, 14.0, ScreenPoint(230f, 300f), 800f, 600f, 7.5)
+        val anchor = worldToScreen(viewport, ownship, 800f, 600f)
+        for (bearing in listOf(120.0, 359.0, 1.0, 270.0, 0.0)) {
+            viewport = rotateViewportAroundWorldPoint(viewport, bearing, ownship)
+            val actual = worldToScreen(viewport, ownship, 800f, 600f)
+            assertEquals(anchor.x, actual.x, 1e-3f)
+            assertEquals(anchor.y, actual.y, 1e-3f)
+        }
+    }
+
+    @Test
+    fun previewingFollowFrameDoesNotConsumeSyncGate() {
+        val gate = MapFollowTargetGate()
+        gate.beginSync()
+        assertFalse(gate.canApplyTarget(3))
+        gate.acknowledgeSyncSnapshot(following = true, targetRevision = 3)
+        assertFalse(gate.canApplyTarget(2))
+        assertTrue(gate.canApplyTarget(3))
+        assertEquals(3L, gate.minimumRevision())
+        assertTrue(gate.shouldApplyTarget(3))
+        assertEquals(null, gate.minimumRevision())
+    }
+
+    @Test
     fun plannedRasterCountUsesTheSameIdentityAsTheBitmapCache() {
         fun tile(path: String, x: Int = 41) = RenderTile(
             x = x,

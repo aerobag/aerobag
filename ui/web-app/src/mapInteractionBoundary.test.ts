@@ -43,6 +43,25 @@ describe("map interaction boundaries", () => {
     expect(appSource).not.toContain('aria-label="Debug map-up rotation"');
   });
 
+  it("preserves the captured bearing and lands follow rotation before paint", () => {
+    const sync = functionSource("syncFollowStateForViewport");
+    expect(sync).toContain("rotationDeg: mapUpDegRef.current");
+    expect(sync).toContain("beginSync(displayedViewport)");
+    expect(sync).toContain(".syncMapFollow(displayedViewport,");
+    const fromCore = sourceBetween("function mapViewportFromCore", "function arrowHeadPoints");
+    expect(fromCore).toContain("rotationDeg: viewport.rotation_deg");
+    const follow = sourceBetween(
+      "useLayoutEffect(() => {\n    if (!mapFollowUiState.following || !mapFollowTargetViewport)",
+      "function handlePointerDown",
+    );
+    expect(follow).toContain("shouldApplyTarget(coreTarget)");
+    expect(follow).toContain("rotateViewportAroundWorldPoint(");
+    expect(follow).toContain("coreTarget, plannedMapUpDeg, latLonToWorld(ownship.position.lat, ownship.position.lon)");
+    expect(follow).toContain("if (!ownship.position) return");
+    expect(follow).toContain("updateViewport(nextViewport);");
+    expect(follow).not.toContain("deferReactCommit: true");
+  });
+
   it("clips rotated rasters at the map surface rather than before rotation", () => {
     const mapSurfaceBlocks = [...styles.matchAll(/\.mapSurface\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")

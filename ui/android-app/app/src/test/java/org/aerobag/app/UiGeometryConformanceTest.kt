@@ -26,6 +26,7 @@ import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.WorldPoint
 import org.aerobag.app.domain.clampImageViewport
 import org.aerobag.app.domain.worldToScreen
+import org.aerobag.app.domain.rotateViewportAroundWorldPoint
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -70,6 +71,14 @@ class UiGeometryConformanceTest {
 
     @Test
     fun `map geometry matches core conformance vectors`() {
+        vectors.arrayAt("map_anchor_rotation").forEach { element ->
+            val vector = element.jsonObject
+            val original = vector.objectAt("viewport").viewport()
+            val anchor = vector.objectAt("world").worldPoint()
+            val rotated = rotateViewportAroundWorldPoint(original, vector.doubleAt("rotation_deg"), anchor)
+            assertEquals(vector.stringAt("name"), vector.objectAt("expected").viewport(), rotated)
+            assertEquals(worldToScreen(original, anchor, 1000f, 800f), worldToScreen(rotated, anchor, 1000f, 800f))
+        }
         val antimeridian = vectors.objectAt("map_antimeridian")
         val projected = worldToScreen(
             antimeridian.objectAt("viewport").viewport(),

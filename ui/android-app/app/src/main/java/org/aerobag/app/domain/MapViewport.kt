@@ -170,6 +170,22 @@ fun sameMapViewport(left: MapViewportState, right: MapViewportState): Boolean =
         abs(left.zoom - right.zoom) < VIEWPORT_EPSILON &&
         abs(left.rotationDeg - right.rotationDeg) < VIEWPORT_EPSILON
 
+fun rotateViewportAroundWorldPoint(
+    viewport: MapViewportState,
+    rotationDeg: Double,
+    anchorWorld: WorldPoint,
+): MapViewportState {
+    if (viewport.rotationDeg == rotationDeg) return viewport
+    val anchorScreen = worldToScreen(viewport, anchorWorld, 0f, 0f)
+    val wrappedAnchor = screenToWorld(viewport, anchorScreen, 0f, 0f)
+    val rotated = viewport.copy(rotationDeg = rotationDeg)
+    val movedAnchor = screenToWorld(rotated, anchorScreen, 0f, 0f)
+    return rotated.copy(
+        centerWorldX = rotated.centerWorldX + wrappedAnchor.x - movedAnchor.x,
+        centerWorldY = rotated.centerWorldY + wrappedAnchor.y - movedAnchor.y,
+    )
+}
+
 class MapFollowTargetGate {
     // Ownship can move before Compose observes a sync result, so viewport equality
     // cannot identify the first authoritative target after that sync.
@@ -197,10 +213,11 @@ class MapFollowTargetGate {
 
     fun minimumRevision(): Long? = minimumTargetRevision
 
+    fun canApplyTarget(targetRevision: Long): Boolean =
+        !syncInFlight && minimumTargetRevision?.let { targetRevision < it } != true
+
     fun shouldApplyTarget(targetRevision: Long): Boolean {
-        if (syncInFlight || minimumTargetRevision?.let { targetRevision < it } == true) {
-            return false
-        }
+        if (!canApplyTarget(targetRevision)) return false
         minimumTargetRevision = null
         return true
     }

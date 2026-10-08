@@ -137,6 +137,7 @@ import {
   displayFrameCssTransform,
   dragViewport,
   latLonToWorld,
+  rotateViewportAroundWorldPoint,
   preserveViewportForMap,
   resolveMapUpDegrees,
   rotatedViewportEnvelopeSize,
@@ -6627,9 +6628,10 @@ function MapPage(props: {
       return;
     }
     deferredFollowSyncViewportRef.current = null;
+    const displayedViewport = { ...nextViewport, rotationDeg: mapUpDegRef.current };
     const serial = followSyncSerialRef.current + 1;
     followSyncSerialRef.current = serial;
-    followTargetGateRef.current.beginSync(nextViewport);
+    followTargetGateRef.current.beginSync(displayedViewport);
     setFollowSyncPendingSerial(serial);
     perfDebugLog("map.follow.sync.request", () => ({
       serial,
@@ -6639,7 +6641,7 @@ function MapPage(props: {
       gesture_active: gestureActiveRef.current,
     }));
     void uiSession
-      .syncMapFollow(nextViewport, surfaceSize.width, surfaceSize.height)
+      .syncMapFollow(displayedViewport, surfaceSize.width, surfaceSize.height)
       .then((nextSnapshot) => {
         if (followSyncSerialRef.current !== serial) {
           perfDebugLog("map.follow.sync.stale_response", () => ({ serial, latest_serial: followSyncSerialRef.current }));
@@ -6805,11 +6807,13 @@ function MapPage(props: {
     };
   }, [mapFollowTargetViewport, mapFollowUiState.following, props.onPlaybackSnapshotChange, uiSession, viewport]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!mapFollowUiState.following || !mapFollowTargetViewport) {
       followTargetGateRef.current.clear();
       return;
     }
+    // A lost position must not restore the center from an older, differently rotated target.
+    if (!ownship.position) return;
     const remainingGestureMs = viewportGestureUntilRef.current - Date.now();
     if (gestureActiveRef.current || followSyncPendingSerial !== 0 || remainingGestureMs > 0) {
       perfDebugLog("map.follow.target.skip_during_gesture", () => ({
@@ -6827,28 +6831,36 @@ function MapPage(props: {
       }
       return;
     }
-    const nextViewport = mapViewportFromCore(mapFollowTargetViewport);
+    const coreTarget = mapViewportFromCore(mapFollowTargetViewport);
     const awaitedViewport = followTargetGateRef.current.awaitedViewport();
-    if (!followTargetGateRef.current.shouldApplyTarget(nextViewport)) {
+    if (!followTargetGateRef.current.shouldApplyTarget(coreTarget)) {
       perfDebugLog("map.follow.target.skip_stale_sync_target", () => ({
-        target_zoom: nextViewport.zoom,
-        target_center_world_x: nextViewport.centerWorldX,
-        target_center_world_y: nextViewport.centerWorldY,
+        target_zoom: coreTarget.zoom,
+        target_center_world_x: coreTarget.centerWorldX,
+        target_center_world_y: coreTarget.centerWorldY,
         awaited_zoom: awaitedViewport?.zoom,
         awaited_center_world_x: awaitedViewport?.centerWorldX,
         awaited_center_world_y: awaitedViewport?.centerWorldY,
       }));
       return;
     }
-    if (!sameMapViewport(nextViewport, viewport)) {
+    const nextViewport = {
+      ...rotateViewportAroundWorldPoint(
+        coreTarget, plannedMapUpDeg, latLonToWorld(ownship.position.lat, ownship.position.lon),
+      ),
+      // Content is north-up; its common parent applies the display bearing.
+      rotationDeg: 0,
+    };
+    if (!sameMapViewport(nextViewport, viewportRef.current)) {
       perfDebugLog("map.follow.target.apply", () => ({
         zoom: nextViewport.zoom,
         center_world_x: nextViewport.centerWorldX,
         center_world_y: nextViewport.centerWorldY,
       }));
-      updateViewport(nextViewport, { deferReactCommit: true });
+      // Commit center with bearing before paint, not a frame later or behind a gesture timer.
+      updateViewport(nextViewport);
     }
-  }, [followSyncPendingSerial, followTargetRetryToken, mapFollowTargetViewport, mapFollowUiState.following, viewport]);
+  }, [followSyncPendingSerial, followTargetRetryToken, mapFollowTargetViewport, mapFollowUiState.following, ownship.position, plannedMapUpDeg, viewport]);
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (trayGroup.scrimOpen || mapSelection?.detailModal) {
@@ -14311,12 +14323,14 @@ function resolvePlateOwnshipOverlay(
 function mapViewportFromCore(viewport: {
   center: LatLon;
   zoom: number;
+  rotation_deg: number;
 }) {
   const centerWorld = latLonToWorld(viewport.center.lat, viewport.center.lon);
   return {
     centerWorldX: centerWorld.x,
     centerWorldY: centerWorld.y,
     zoom: viewport.zoom,
+    rotationDeg: viewport.rotation_deg,
   } satisfies MapViewportState;
 }
 

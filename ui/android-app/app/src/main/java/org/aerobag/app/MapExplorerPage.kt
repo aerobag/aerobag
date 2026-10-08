@@ -298,6 +298,7 @@ import org.aerobag.app.domain.dragViewport
 import org.aerobag.app.domain.imageDisplaySize
 import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.latLonToWorld
+import org.aerobag.app.domain.rotateViewportAroundWorldPoint
 import org.aerobag.app.domain.mapFollowSyncViewportForCompletedGesture
 import org.aerobag.app.domain.physicalDisplayMaxZoom
 import org.aerobag.app.domain.preserveViewportForMap
@@ -2196,10 +2197,24 @@ internal fun MapExplorerPage(
             }
         }
     }
-    val currentViewport = viewportState.value
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val plannedMapUpDeg = mapOrientationMemory.resolve(mapOrientationMode, ownship.trackDegTrue)
+    // Derive the whole frame before drawing. A later effect alone would leave one
+    // frame with the new bearing and old center, making an offset ownship orbit.
+    val followDisplayViewport = if (
+        mapFollowUiState.following && !mapGestureActive && mapSelection?.centeredViewport == null &&
+        followTargetGate.canApplyTarget(sessionSnapshot.sessionRevision)
+    ) {
+        ownship.position?.let { position ->
+            mapFollowTargetViewport?.let { target ->
+                rotateViewportAroundWorldPoint(
+                    mapViewportFromCore(target), plannedMapUpDeg, latLonToWorld(position.lat, position.lon),
+                )
+            }
+        }
+    } else null
+    val currentViewport = followDisplayViewport?.copy(rotationDeg = 0.0) ?: viewportState.value
     val displayViewport = currentViewport.copy(rotationDeg = plannedMapUpDeg)
     val mapGeometryFrame = rememberUpdatedState(MapDisplayFrame(displayViewport, surfaceWidthPx, surfaceHeightPx))
     val planningDiameterPx = hypot(surfaceWidthPx, surfaceHeightPx)
@@ -2500,7 +2515,7 @@ internal fun MapExplorerPage(
         viewportSyncPending = true
         actions.onViewportChange(northUpViewport)
         if (syncFollow) {
-            syncFollowStateForViewport(northUpViewport)
+            syncFollowStateForViewport(nextViewport.copy(rotationDeg = plannedMapUpDeg))
         }
     }
 
@@ -2869,7 +2884,7 @@ internal fun MapExplorerPage(
     }
     LaunchedEffect(
         mapFollowUiState.following,
-        mapFollowTargetViewport,
+        followDisplayViewport,
         sessionSnapshot.sessionRevision,
         mapGestureActive,
     ) {
@@ -2880,8 +2895,7 @@ internal fun MapExplorerPage(
         if (mapGestureActive) {
             return@LaunchedEffect
         }
-        val target = mapFollowTargetViewport ?: return@LaunchedEffect
-        val nextViewport = mapViewportFromCore(target)
+        val nextViewport = followDisplayViewport?.copy(rotationDeg = 0.0) ?: return@LaunchedEffect
         val minimumTargetRevision = followTargetGate.minimumRevision()
         perfLogInfo(MapViewportLogTag) {
             "follow-target revision=${sessionSnapshot.sessionRevision} highRateRevision=${highRate.sessionRevision} minimumRevision=$minimumTargetRevision targetZoom=${"%.2f".format(nextViewport.zoom)} targetCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} localZoom=${"%.2f".format(viewportState.value.zoom)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}"

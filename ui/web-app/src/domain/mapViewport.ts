@@ -100,6 +100,23 @@ export function sameMapViewport(left: MapViewportState, right: MapViewportState)
   );
 }
 
+export function rotateViewportAroundWorldPoint(
+  viewport: MapViewportState,
+  rotationDeg: number,
+  anchorWorld: { x: number; y: number },
+): MapViewportState {
+  if ((viewport.rotationDeg ?? 0) === rotationDeg) return viewport;
+  const anchorScreen = worldToScreen(viewport, anchorWorld, 0, 0);
+  const wrappedAnchor = screenToWorld(viewport, anchorScreen, 0, 0);
+  const rotated = { ...viewport, rotationDeg };
+  const movedAnchor = screenToWorld(rotated, anchorScreen, 0, 0);
+  return {
+    ...rotated,
+    centerWorldX: rotated.centerWorldX + wrappedAnchor.x - movedAnchor.x,
+    centerWorldY: rotated.centerWorldY + wrappedAnchor.y - movedAnchor.y,
+  };
+}
+
 export function committedViewportInvalidatesMapSelection(
   committedViewport: MapViewportState,
   interactionViewport: MapViewportState,

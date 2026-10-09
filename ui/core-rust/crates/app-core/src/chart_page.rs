@@ -381,7 +381,7 @@ pub fn derive_chart_page_state_from_collections(
             enabled: chart_enabled,
             disabled_reason: (!chart_enabled).then(|| "No charts are available.".to_string()),
         },
-        procedure_load_menu: crate::empty_procedure_load_menu(),
+        procedure_load_menu: crate::empty_procedure_load_menu(None),
         procedure_geometry_status,
         status_controls: Default::default(),
     }

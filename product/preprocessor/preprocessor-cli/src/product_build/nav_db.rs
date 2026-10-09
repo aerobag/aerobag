@@ -3054,18 +3054,22 @@ pub(super) fn build_nav_kv_plate_airports(
                     "approach" => Some("approach"),
                     _ => None,
                 };
-                if let (Some(kind), Some(procedure_id)) = (kind, plate.cifp_procedure_id.as_deref())
-                {
-                    charted_procedures
-                        .entry((kind, procedure_id))
-                        .or_insert_with(|| {
-                            serde_json::json!({
-                                "procedure_id": procedure_id,
-                                "display_label": plate.label,
-                                "kind": kind,
-                                "plate_id": plate.id,
-                            })
-                        });
+                if let Some(kind) = kind {
+                    for procedure_id in plate_procedure_cifp_ids(
+                        plate.cifp_procedure_id.as_deref(),
+                        &plate.procedure_cifp_id_candidate_groups,
+                    ) {
+                        charted_procedures
+                            .entry((kind, procedure_id))
+                            .or_insert_with(|| {
+                                serde_json::json!({
+                                    "procedure_id": procedure_id,
+                                    "display_label": plate.label,
+                                    "kind": kind,
+                                    "plate_id": nav_kv_plate_id(airport_id, plate),
+                                })
+                            });
+                    }
                 }
             }
         }
@@ -4721,6 +4725,20 @@ fn procedure_rendezvous_keys(
     Ok(keys)
 }
 
+fn plate_procedure_cifp_ids<'a>(
+    procedure_id: Option<&'a str>,
+    candidate_groups: &'a [preprocessor_core::ProcedureCifpIdCandidateGroup],
+) -> BTreeSet<&'a str> {
+    procedure_id
+        .into_iter()
+        .chain(
+            candidate_groups
+                .iter()
+                .filter_map(preprocessor_core::ProcedureCifpIdCandidateGroup::definitive_id),
+        )
+        .collect()
+}
+
 fn plate_procedure_rendezvous_keys(
     procedure_kind: &str,
     airport_id: &str,
@@ -4729,17 +4747,7 @@ fn plate_procedure_rendezvous_keys(
     plate_label: &str,
 ) -> anyhow::Result<BTreeSet<ProcedureRendezvousKey>> {
     let mut keys = BTreeSet::new();
-    if let Some(procedure_id) = procedure_id {
-        keys.insert(procedure_rendezvous_key(
-            procedure_kind,
-            airport_id,
-            procedure_id,
-        )?);
-    }
-    for procedure_id in candidate_groups
-        .iter()
-        .filter_map(preprocessor_core::ProcedureCifpIdCandidateGroup::definitive_id)
-    {
+    for procedure_id in plate_procedure_cifp_ids(procedure_id, candidate_groups) {
         keys.insert(procedure_rendezvous_key(
             procedure_kind,
             airport_id,

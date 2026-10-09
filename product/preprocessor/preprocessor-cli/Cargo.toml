@@ -39,6 +39,7 @@ rusqlite.workspace = true
 tzf-rs.workspace = true
 
 [dev-dependencies]
+app-core = { path = "../../../ui/core-rust/crates/app-core" }
 app-ui-contracts = { path = "../../../ui/core-rust/crates/app-ui-contracts" }
 
 [build-dependencies]

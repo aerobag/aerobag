@@ -1281,7 +1281,7 @@ pub fn describe_plate_procedure_load_menu(
         .map(|row| row.procedure_kind.clone())
         .next();
     let Some(procedure_kind) = procedure_kind else {
-        return Ok(empty_procedure_load_menu());
+        return Ok(empty_procedure_load_menu(None));
     };
     if candidates.iter().any(|candidate| {
         candidate
@@ -1375,8 +1375,7 @@ pub fn describe_plate_procedure_load_menu(
         header,
         header_tone,
         enabled,
-        disabled_reason: (!enabled)
-            .then(|| "No loadable procedure is available for this plate.".to_string()),
+        disabled_reason: (!enabled).then(|| NO_PROCEDURE_GEOMETRY_REASON.to_string()),
         options,
     })
 }
@@ -1464,14 +1463,24 @@ fn plate_procedure_load_context(
     ))
 }
 
-pub(crate) fn empty_procedure_load_menu() -> ProcedureLoadMenu {
+pub(crate) const NO_PROCEDURE_GEOMETRY_REASON: &str = "No CIFP geometry available.";
+
+pub(crate) fn empty_procedure_load_menu(kind: Option<ProcedureKind>) -> ProcedureLoadMenu {
     ProcedureLoadMenu {
-        procedure_kind: None,
-        launcher_label: "LOAD\nPROC".to_string(),
+        launcher_label: kind
+            .as_ref()
+            .map(procedure_load_launcher_label)
+            .unwrap_or("LOAD\nPROC")
+            .to_string(),
         header: "No loadable procedure".to_string(),
         header_tone: ProcedureLoadHeaderTone::Normal,
         enabled: false,
-        disabled_reason: Some("No loadable procedure is available for this plate.".to_string()),
+        disabled_reason: Some(if kind.is_some() {
+            NO_PROCEDURE_GEOMETRY_REASON.to_string()
+        } else {
+            "No loadable procedure is available for this plate.".to_string()
+        }),
+        procedure_kind: kind,
         options: Vec::new(),
     }
 }

@@ -1227,6 +1227,7 @@ name = "preprocessor-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-core",
  "app-ui-contracts",
  "chrono",
  "crossbeam-channel",

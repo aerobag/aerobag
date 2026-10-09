@@ -3810,8 +3810,6 @@ fn expand_procedure_geometry_segments(
     Ok(())
 }
 
-const NO_PROCEDURE_GEOMETRY_REASON: &str = "No geometry; use Plates page.";
-
 fn list_procedures(
     store: &NavKvStore,
     airport_id: &str,
@@ -3915,7 +3913,7 @@ fn list_procedures(
             accent_category: kind.accent_category().to_string(),
             kind: kind.clone(),
             enabled,
-            disabled_reason: (!enabled).then(|| NO_PROCEDURE_GEOMETRY_REASON.to_string()),
+            disabled_reason: (!enabled).then(|| crate::NO_PROCEDURE_GEOMETRY_REASON.to_string()),
         });
     }
     crate::disambiguate_duplicate_procedure_display_labels(&mut procedures);
@@ -4896,15 +4894,30 @@ pub(crate) fn describe_plate_loads(
     plan: &FlightPlan,
     plate_id: &str,
 ) -> Result<ProcedureLoadMenu, HadReadError> {
-    let Some(rows) = read_optional::<Vec<CifpTppMatchRow>>(
+    let rows = read_optional::<Vec<CifpTppMatchRow>>(
         store,
         NavKvQuery::PlateProcedureCandidates {
             plate_id: plate_id.to_string(),
         },
     )?
-    else {
-        return Ok(crate::empty_procedure_load_menu());
-    };
+    .unwrap_or_default();
+    if rows.is_empty() {
+        let chart = read_optional::<crate::chart_page::ChartAssetRecord>(
+            store,
+            NavKvQuery::PlateById {
+                plate_id: plate_id.to_string(),
+            },
+        )?;
+        let kind = chart
+            .filter(|chart| chart.kind == "plate")
+            .and_then(|chart| match chart.folder_category.as_str() {
+                "approach" => Some(ProcedureKind::Approach),
+                "departure" => Some(ProcedureKind::Sid),
+                "star" => Some(ProcedureKind::Star),
+                _ => None,
+            });
+        return Ok(crate::empty_procedure_load_menu(kind));
+    }
     let mut grouped = HashMap::<String, Vec<CifpTppMatchRow>>::new();
     for row in rows {
         grouped
@@ -4923,9 +4936,6 @@ pub(crate) fn describe_plate_loads(
             &preferred.cifp_id,
             preferred.procedure_kind.clone(),
         )?;
-        if options.valid_choices.is_empty() {
-            continue;
-        }
         candidates.push(PlateProcedureLoadCandidateInput {
             airport_id: preferred.airport_id,
             cifp_id: preferred.cifp_id,
@@ -8686,6 +8696,83 @@ mod tests {
     }
 
     #[test]
+    fn charted_approaches_without_cifp_geometry_are_disabled_with_help() {
+        let plate_id = "plate:KTIW:IAP-WA-ILS OR LOC RWY 17.png";
+        let store = test_nav_kv_store(&[(
+            "plate/airport/KTIW",
+            serde_json::json!({
+                "id": "KTIW",
+                "label": "Tacoma Narrows",
+                "chart_ids": [plate_id],
+                "charted_procedures": [
+                    {"procedure_id": "I17", "display_label": "ILS or LOC 17", "kind": "approach", "plate_id": plate_id},
+                    {"procedure_id": "L17", "display_label": "ILS or LOC 17", "kind": "approach", "plate_id": plate_id}
+                ]
+            }),
+        )]);
+        let procedures = list_procedures(&store, "KTIW", ProcedureKind::Approach).unwrap();
+        assert_eq!(procedures.len(), 2);
+        for (procedure, (id, label)) in procedures
+            .iter()
+            .zip([("I17", "ILS 17"), ("L17", "LOC 17")])
+        {
+            assert_eq!(procedure.procedure_id, id);
+            assert_eq!(procedure.display_label, label);
+            assert_eq!(procedure.accent_category, "approach");
+            assert!(!procedure.enabled);
+            assert_eq!(
+                procedure.disabled_reason.as_deref(),
+                Some("No CIFP geometry available.")
+            );
+        }
+    }
+
+    #[test]
+    fn plate_without_cifp_geometry_has_typed_disabled_load_button() {
+        let plate_id = "plate:KTIW:test";
+        for (category, kind, label) in [
+            ("approach", Some(ProcedureKind::Approach), "LOAD\nAPPCH"),
+            ("departure", Some(ProcedureKind::Sid), "LOAD\nDEP"),
+            ("star", Some(ProcedureKind::Star), "LOAD\nARR"),
+            ("airport-diagram", None, "LOAD\nPROC"),
+            ("csup", None, "LOAD\nPROC"),
+        ] {
+            for matched in [false, true] {
+                let mut entries = vec![(
+                    "plate/by-id/plate%3AKTIW%3Atest",
+                    serde_json::json!({
+                        "id": plate_id, "airport_id": "KTIW", "label": "Test plate",
+                        "kind": "plate", "folder_category": category,
+                        "package_id": "NW_TPP", "asset_path": "plates/test.png"
+                    }),
+                )];
+                if matched {
+                    let rows = kind.as_ref().map(|kind| serde_json::json!([{
+                        "airport_id": "KTIW", "cifp_id": "I17", "procedure_kind": kind,
+                        "plate_id": plate_id, "plate_label": "Test plate", "package_id": "NW_TPP",
+                        "public": 1, "priority": 0, "match_kind": "unique", "is_primary": 1
+                    }])).unwrap_or_else(|| serde_json::json!([]));
+                    entries.push(("plate/procedure-candidates/plate%3AKTIW%3Atest", rows));
+                }
+                let store = test_nav_kv_store(&entries);
+                let menu = describe_plate_loads(&store, &FlightPlan::default(), plate_id).unwrap();
+                assert_eq!(menu.procedure_kind, kind, "{category} matched={matched}");
+                assert_eq!(menu.launcher_label, label);
+                assert!(!menu.enabled);
+                assert!(menu.options.is_empty());
+                assert_eq!(
+                    menu.disabled_reason.as_deref(),
+                    Some(if kind.is_some() {
+                        "No CIFP geometry available."
+                    } else {
+                        "No loadable procedure is available for this plate."
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
     fn charted_procedure_without_geometry_is_listed_but_disabled() {
         let airport = serde_json::json!({
             "id": "KSEA",
@@ -8721,7 +8808,7 @@ mod tests {
         assert!(!procedures[0].enabled);
         assert_eq!(
             procedures[0].disabled_reason.as_deref(),
-            Some("No geometry; use Plates page.")
+            Some("No CIFP geometry available.")
         );
     }
 

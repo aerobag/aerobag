@@ -3520,6 +3520,103 @@ mod tests {
     }
 
     #[test]
+    fn charted_approach_without_cifp_rows_is_published_for_the_procedure_menu() {
+        let mut index = minimal_resource_index();
+        let plate_id = "plate:KTIW:IAP-WA-ILS OR LOC RWY 17.png";
+        let mut plate = test_plate_record(plate_id, "KTIW");
+        plate.asset_path = "plates/TIW/IAP-WA-ILS OR LOC RWY 17.png".to_string();
+        plate.label = "ILS or LOC 17".to_string();
+        // FAA publishes the plate but explicitly lists I17 and L17 as Not In CIFP.
+        plate.procedure_cifp_id_candidate_groups =
+            preprocessor_data::faa_procedure_id_candidate_groups("ILS OR LOC RWY 17")
+                .into_iter()
+                .map(preprocessor_core::ProcedureCifpIdCandidateGroup)
+                .collect();
+        index.plates.push(plate);
+        index.airport_resources.push(AirportResourcesRecord {
+            airport_id: "KTIW".to_string(),
+            plate_ids: vec![plate_id.to_string()],
+            csup_ids: Vec::new(),
+            package_ids: vec!["NW_TPP".to_string()],
+        });
+
+        let mut pairs = build_nav_kv_plate_pairs(&index).expect("publish plates without CIFP");
+        nav_db::attach_procedure_metadata_to_plate_pairs(&mut pairs).unwrap();
+        let airport: serde_json::Value = serde_json::from_slice(
+            &pairs
+                .iter()
+                .find(|pair| pair.key == "plate/airport/KTIW")
+                .unwrap()
+                .value,
+        )
+        .unwrap();
+        assert_eq!(
+            airport["charted_procedures"],
+            serde_json::json!([
+                {"procedure_id": "I17", "display_label": "ILS or LOC 17", "kind": "approach", "plate_id": plate_id},
+                {"procedure_id": "L17", "display_label": "ILS or LOC 17", "kind": "approach", "plate_id": plate_id}
+            ])
+        );
+        assert!(!pairs
+            .iter()
+            .any(|pair| pair.key.starts_with("procedure/geometry/")));
+        assert!(!pairs.iter().any(|pair| pair.key.starts_with("plate/cifp/")));
+
+        // Exercise NAVDB encoding and both core consumers, not a hand-written UI model.
+        let nav = preprocessor_core::nav_kv::build_nav_kv_sorted(pairs, 4096).unwrap();
+        let mut store =
+            app_core::NavKvStore::new(app_core::NavKvRoot::parse(&nav.root_bytes).unwrap());
+        for (index, page) in nav.pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+        let outcome = app_core::run_had_operation(
+            &store,
+            app_core::HadOperation::ListProcedures {
+                airport_id: "KTIW".to_string(),
+                procedure_kind: app_core::ProcedureKind::Approach,
+            },
+        )
+        .unwrap();
+        let app_core::HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("procedure menu should be available from the published NAVDB");
+        };
+        let procedures: Vec<app_core::ProcedureSummary> = serde_json::from_value(result).unwrap();
+        assert_eq!(
+            procedures
+                .iter()
+                .map(|p| p.display_label.as_str())
+                .collect::<Vec<_>>(),
+            ["ILS 17", "LOC 17"]
+        );
+        assert!(procedures
+            .iter()
+            .all(|p| !p.enabled
+                && p.disabled_reason.as_deref() == Some("No CIFP geometry available.")));
+
+        let session =
+            app_core::create_ui_session(app_core::FlightPlan::empty(), &[], None, None).unwrap();
+        app_core::attach_nav_kv_store_to_session(session.handle, 1, &store).unwrap();
+        let loads = app_core::query_flight_plan_in_session(
+            session.handle,
+            app_core::FlightPlanSessionQuery::DescribePlateProcedureLoads {
+                plate_id: plate_id.to_string(),
+            },
+        );
+        app_core::destroy_session(session.handle);
+        let app_core::HadOperationOutcome::Complete { result, .. } = loads.unwrap() else {
+            panic!("plate load button should be available from the published NAVDB");
+        };
+        let menu: app_core::ProcedureLoadMenu = serde_json::from_value(result).unwrap();
+        assert_eq!(menu.launcher_label, "LOAD\nAPPCH");
+        assert!(!menu.enabled);
+        assert!(menu.options.is_empty());
+        assert_eq!(
+            menu.disabled_reason.as_deref(),
+            Some("No CIFP geometry available.")
+        );
+    }
+
+    #[test]
     fn nav_kv_airport_carries_charted_procedures_without_cifp_geometry() {
         let mut index = minimal_resource_index();
         index.airports.push(AirportRecord {
@@ -3530,6 +3627,7 @@ mod tests {
             airport_type: "AIRPORT".to_string(),
         });
         let mut plate = test_plate_record("plate:KSEA:STR-WA-GLASR THREE.png", "KSEA");
+        plate.asset_path = "plates/SEA/STR-WA-GLASR THREE.png".to_string();
         plate.label = "GLASR THREE".to_string();
         plate.document_type = "star".to_string();
         plate.cifp_procedure_id = Some("GLASR3".to_string());

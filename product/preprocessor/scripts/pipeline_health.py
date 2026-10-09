@@ -68,6 +68,8 @@ PRODUCT_METRIC_REQUIREMENTS = {
 }
 
 SERVICE_METRIC_REQUIREMENTS = {
+    **{f"product_archive.{field}": ("product-archive", f"product_archive.{field}")
+       for field in ("failure_count", "capture_gap_count", "buffer_bytes", "repository_bytes")},
     "service_bulletins.publication_failure_count": ("service-bulletins", "service_bulletins.publication_failure_count"),
 }
 
@@ -194,6 +196,7 @@ class MonitorConfig:
     calendar_path: Path
     listen: str
     poll_seconds: float
+    archive_enabled: bool = False
 
 
 def default_config_from_env() -> MonitorConfig:
@@ -224,6 +227,7 @@ def default_config_from_env() -> MonitorConfig:
         )
     )
     return MonitorConfig(
+        archive_enabled=os.environ.get("AEROBAG_ARCHIVE_ENABLED", env.get("AEROBAG_ARCHIVE_ENABLED", "0")) == "1",
         artifact_root=artifact_root,
         data_root=data_root,
         health_root=health_root,
@@ -604,8 +608,64 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
             },
             "chart_quality": collect_chart_quality(config.artifact_root),
             "service_bulletins": collect_service_bulletins(config.data_root / "service", release_state),
+            "product_archive": collect_archive_facts(config.data_root / "health/archive") if config.archive_enabled else None,
         },
     }
+
+
+def collect_archive_facts(root: Path) -> dict[str, Any]:
+    result = {}
+    for worker in ("collect", "store"):
+        try:
+            catalog = telemetry_contracts.default_catalog_root()
+            pin = telemetry_contracts.producer_pins(catalog)["product-archive"]
+            descriptor = telemetry_contracts.load_contract(pin, "product-archive", catalog)
+            value = read_json_file(root / (worker + ".json"))
+            if value[1]:
+                raise ValueError(value[1])
+            payload = value[0]
+            if not isinstance(payload, dict):
+                raise ValueError("archive status must be an object")
+            if payload.get("schema_version") != descriptor["payload_schema_version"] or payload.get("telemetry_contract") != pin:
+                raise ValueError("archive telemetry identity mismatch")
+            for measurement in descriptor["measurements"].values():
+                number = payload.get(measurement["field"])
+                if type(number) is not int or number < 0:
+                    raise ValueError(f"archive omitted required measurement {measurement['field']}")
+            result[worker] = payload
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            result[worker] = {"coverage_error": str(error)}
+    return result
+
+
+def add_archive_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime) -> None:
+    source = facts.get("inputs", {}).get("product_archive")
+    if source is None:
+        return
+    for worker, payload in source.items():
+        error = payload.get("coverage_error")
+        try:
+            timestamp = payload["attempted_at_utc"]
+            if not isinstance(timestamp, str):
+                raise ValueError("archive timestamp must be a string")
+            age = (now - datetime.fromisoformat(timestamp.replace("Z", "+00:00"))).total_seconds()
+            if age > (120 if worker == "collect" else 4 * 3600):
+                error = f"archive {worker} has not reported for {age:.0f}s"
+        except (KeyError, TypeError, ValueError):
+            error = error or "archive status has no valid timestamp"
+        prefix = f"product_archive.{worker}"
+        add_metric(metrics, metric_id=prefix + ".coverage", label=f"Archive {worker} reporting",
+                   value=None if error else 0, severity="critical" if error else "ok",
+                   message=error or "Archive telemetry is current")
+        if error:
+            continue
+        for field in ("failure_count", "capture_gap_count", "buffer_bytes", "repository_bytes"):
+            value = payload[field]
+            failed = field.endswith("count") and value > 0
+            add_metric(metrics, metric_id=prefix + "." + field,
+                       label=f"Archive {worker}: {field.replace('_', ' ')}", value=value,
+                       severity="critical" if failed else "ok",
+                       message=payload.get("error") if field == "failure_count" and failed else f"{field}: {value}")
 
 
 def collect_service_bulletins(root: Path, release_state: Any) -> dict[str, Any]:
@@ -858,6 +918,7 @@ def evaluate_health(
     add_aerobag_cloud_metrics(metrics, facts)
     add_chart_quality_metrics(metrics, facts, now)
     add_service_bulletin_metrics(metrics, facts)
+    add_archive_metrics(metrics, facts, now)
     channels = facts.get("channels")
     if isinstance(channels, dict):
         production_facts = None
@@ -3426,6 +3487,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listen", default=defaults.listen)
     parser.add_argument("--poll-seconds", type=float, default=defaults.poll_seconds)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--archive-enabled", action=argparse.BooleanOptionalAction, default=defaults.archive_enabled)
     return parser.parse_args()
 
 
@@ -3444,6 +3506,7 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         calendar_path=args.calendar,
         listen=args.listen,
         poll_seconds=args.poll_seconds,
+        archive_enabled=getattr(args, "archive_enabled", False),
     )
 
 

@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "required": {
+    "product-archive": {
+      "id": "product-archive-v1",
+      "sha256": "1955a0d664acd800a4ff312f0948d0d5fe20e88bb4b8376ffe4bbbd5c176c61a"
+    },
     "product-facts": {
       "id": "product-facts-v3",
       "sha256": "7fcbfa46a0c620802d0dd8701241ff2b06f5f7aad6b7996343b46f7dfdec7489"

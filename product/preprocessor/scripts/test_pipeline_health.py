@@ -2127,6 +2127,7 @@ class LiveFeedBindingCollectionTests(unittest.TestCase):
         self.channel_root.symlink_to(self.generation, target_is_directory=True)
         self.config = SimpleNamespace(
             artifact_root=self.root, data_root=self.root, channel_root=self.channel_root,
+            archive_enabled=False,
             standalone_current_artifacts_path=None, standalone_live_feeds_status_url=None,
             deploy_health_path=self.root / "health.json", cloud_status_secret_path=self.root / "secret",
             cloud_status_url="http://cloud/status", build_watch_url="http://build/status",
@@ -2487,6 +2488,7 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
             root = Path(temporary)
             config = SimpleNamespace(
                 artifact_root=root, data_root=root, deploy_health_path=root / "health.json",
+                archive_enabled=False,
                 cloud_status_secret_path=root / "secret", cloud_status_url="http://cloud/status",
                 build_watch_url="http://build/status", calendar_path=root / "calendar.json",
             )
@@ -2531,6 +2533,7 @@ class LiveFeedClientMetricsTests(unittest.TestCase):
             current.write_text("[]")
             config = SimpleNamespace(
                 artifact_root=root, data_root=root, deploy_health_path=root / "health.json",
+                archive_enabled=False,
                 cloud_status_secret_path=root / "secret", cloud_status_url="http://cloud/status",
                 build_watch_url="http://build/status", calendar_path=root / "calendar.json",
             )

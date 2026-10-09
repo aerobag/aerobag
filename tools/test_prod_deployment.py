@@ -568,6 +568,7 @@ class RuntimeUpdateTests(unittest.TestCase):
                 "prepare_remote_paths", "migrate_cloud_storage_layout",
                 "install_nms_notams_credential", "install_cloud_server_secret", "write_remote_file",
                 "install_weather_camera_credential",
+                "install_archive_tools", "start_archive_services",
                 "reload_services", "start_support_runtime", "start_release_live_feeds",
                 "record_runtime_fingerprint",
             ]:
@@ -585,6 +586,7 @@ class RuntimeUpdateTests(unittest.TestCase):
             method.assert_not_called()
         self.assertLess(calls.index("quiesce_release_reconciliation"), calls.index("sync_source_checkout"))
         self.assertLess(calls.index("write_remote_config"), calls.index("start_support_runtime"))
+        self.assertLess(calls.index("install_archive_tools"), calls.index("start_archive_services"))
         self.assertEqual(calls[-1], "record_runtime_fingerprint")
         ssh.assert_called_once_with(config, "systemctl start aerobag-build-product.timer", dry_run=False)
 

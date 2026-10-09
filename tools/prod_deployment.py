@@ -52,6 +52,11 @@ RUNTIME_FINGERPRINT_FILE = "/etc/aerobag/runtime-inputs.sha256"
 # Files executed by the controller or used to generate installed runtime files.
 # Release assignments and application source have independent lifecycles.
 RUNTIME_SOURCE_PATHS = (
+    "tools/archive_service.py",
+    "tools/product_archive.py",
+    "tools/live_feed_archive.py",
+    "crates/notam-state/src/bin/aerobag-archive-notam.rs",
+    "crates/notam-state/src/lib.rs",
     "tools/prod_deployment.py",
     "tools/reconcile_prod_releases.py",
     "tools/release_reconciler.py",
@@ -340,6 +345,10 @@ def load_config(path: Path) -> dict[str, Any]:
     if missing:
         raise SystemExit(f"{path} missing required keys: {', '.join(missing)}")
     config.setdefault("release_desired_state", "deploy/releases.json")
+    config.setdefault("archive_enabled", False)
+    if config["archive_enabled"]:
+        from archive_service import validate_config
+        validate_config(config)
     config.setdefault("service_public_base_url", "https://aerobag.org")
     config.setdefault("release_live_port_base", 8100)
     config.setdefault("pipeline_health_listen", PIPELINE_HEALTH_LISTEN)
@@ -955,6 +964,7 @@ def env_file(config: dict[str, Any]) -> str:
         "SOURCE_ROOT": config["source_root"],
         "DATA_ROOT": config["data_root"],
         "ARTIFACT_ROOT": artifact_root,
+        "AEROBAG_ARCHIVE_ENABLED": "1" if config.get("archive_enabled") else "0",
         "AEROBAG_UI_TARGET_ROOT": config["ui_target_root"],
         "CARGO_TARGET_DIR": config["cargo_target_dir"],
         "AEROBAG_CARGO_TARGET_MAX_BYTES": str(config["cargo_target_max_bytes"]),
@@ -1989,6 +1999,55 @@ WantedBy=timers.target
 """
 
 
+def archive_unit(config: dict[str, Any], mode: str) -> str:
+    if mode not in {"collect", "store"}:
+        raise ValueError("invalid archive service mode")
+    kind = "simple" if mode == "collect" else "oneshot"
+    restart = "Restart=on-failure\nRestartSec=15\n" if mode == "collect" else "TimeoutStartSec=4h\n"
+    return f"""[Unit]
+Description=Aerobag product archive {mode}
+After=local-fs.target
+RequiresMountsFor={config['archive_root']}
+
+[Service]
+Type={kind}
+ExecStart=/usr/bin/python3 {config['source_root']}/tools/archive_service.py --mode {mode}
+{restart}Nice=15
+IOSchedulingClass=idle
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={config['archive_root']} {config['artifact_root']}/state {config['artifact_root']}/locks {config['data_root']}/health
+Environment=BORG_CACHE_DIR={config['archive_root']}/borg-cache
+Environment=BORG_SECURITY_DIR={config['archive_root']}/borg-security
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def install_archive_tools(config: dict[str, Any], *, dry_run: bool) -> None:
+    if not config.get("archive_enabled"):
+        return
+    run_ssh(config, textwrap.dedent(f"""\
+        set -euo pipefail
+        source {ENV_FILE}
+        command -v borg >/dev/null || apt-get install -y --no-install-recommends borgbackup
+        export CARGO_TARGET_DIR
+        cargo build --locked --release --manifest-path "$SOURCE_ROOT/product/preprocessor/Cargo.toml" -p notam-state --bin aerobag-archive-notam
+        install -m 0755 "$CARGO_TARGET_DIR/release/aerobag-archive-notam" /usr/local/bin/aerobag-archive-notam
+    """), dry_run=dry_run)
+
+
+def start_archive_services(config: dict[str, Any], *, dry_run: bool) -> None:
+    if config.get("archive_enabled"):
+        run_ssh(config, "systemctl enable --now aerobag-archive-collect.service aerobag-archive-store.timer", dry_run=dry_run)
+        run_ssh(config, "systemctl restart aerobag-archive-collect.service", dry_run=dry_run)
+    else:
+        run_ssh(config, "if systemctl cat aerobag-archive-collect.service >/dev/null 2>&1; then systemctl disable --now aerobag-archive-collect.service aerobag-archive-store.timer; fi", dry_run=dry_run)
+
+
 def write_remote_config(
     config: dict[str, Any],
     *,
@@ -1997,6 +2056,23 @@ def write_remote_config(
     dry_run: bool,
 ) -> None:
     write_remote_file(config, ENV_FILE, env_file(config), dry_run=dry_run)
+    if config.get("archive_enabled"):
+        archive_config = {key: value for key, value in config.items() if key.startswith("archive_")}
+        archive_config.update({key: config[key] for key in ("source_root", "data_root", "artifact_root")})
+        archive_config["archive_notam_helper"] = "/usr/local/bin/aerobag-archive-notam"
+        write_remote_file(config, "/etc/aerobag/archive.json", json.dumps(archive_config, indent=2) + "\n", dry_run=dry_run)
+        for mode in ("collect", "store"):
+            write_remote_file(config, f"{SYSTEMD_DIR}/aerobag-archive-{mode}.service", archive_unit(config, mode), dry_run=dry_run)
+        write_remote_file(config, f"{SYSTEMD_DIR}/aerobag-archive-store.timer", """[Unit]
+Description=Archive sealed live-feed days and cycle publications
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Persistent=true
+Unit=aerobag-archive-store.service
+[Install]
+WantedBy=timers.target
+""", dry_run=dry_run)
     write_remote_file(
         config,
         f"{config['data_root']}/admin/index.html",
@@ -2484,6 +2560,7 @@ def repair_runtime(
     reload_services(config, dry_run=dry_run)
     start_support_runtime(config, dry_run=dry_run)
     start_release_live_feeds(config, dry_run=dry_run)
+    start_archive_services(config, dry_run=dry_run)
 
 
 def update_runtime(
@@ -2509,10 +2586,12 @@ def update_runtime(
         install_cloud_server_secret(config, dry_run=dry_run)
         install_cloud_server_policy(config, dry_run=dry_run)
         write_remote_config(config, deployed_rev=deployed_rev, dry_run=dry_run)
+        install_archive_tools(config, dry_run=dry_run)
         reload_services(config, dry_run=dry_run)
         _report(progress, "Restarting support services")
         start_support_runtime(config, dry_run=dry_run)
         start_release_live_feeds(config, dry_run=dry_run)
+        start_archive_services(config, dry_run=dry_run)
         write_remote_file(
             config, DEPLOY_CONFIG_FILE, deploy_config_json(config, deployed_rev),
             dry_run=dry_run,
@@ -2589,6 +2668,7 @@ def reconcile_host(
     )
     write_remote_config(config, deployed_rev=deployed_rev, dry_run=dry_run)
     run_initial_toolchain_build(config, dry_run=dry_run)
+    install_archive_tools(config, dry_run=dry_run)
     run_android_sdk_setup(config, dry_run=dry_run)
     # Keep the old runtime serving until every fallible installation step has
     # completed. Only the final service handoff needs these units stopped.
@@ -2596,6 +2676,7 @@ def reconcile_host(
     reload_services(config, dry_run=dry_run)
     _report(progress, "Reconciling release artifacts and channel assignments")
     start_reconciled_runtime(config, progress=progress, dry_run=dry_run)
+    start_archive_services(config, dry_run=dry_run)
     record_runtime_fingerprint(config, dry_run=dry_run)
 
 

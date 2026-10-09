@@ -616,6 +616,9 @@ def remote_runtime_failures(
             "active channel link is missing",
         ),
     ]
+    if config.get("archive_enabled"):
+        checks.append(("test -x /usr/local/bin/aerobag-archive-notam && command -v borg >/dev/null",
+                       "host", "archive tools are not installed"))
     required_units = [
         "nginx.service",
         "aerobag-cloud-server.service",
@@ -625,6 +628,7 @@ def remote_runtime_failures(
         "aerobag-build-product.timer",
         "aerobag-health.timer",
         "aerobag-cloud-backup.timer",
+        *(["aerobag-archive-collect.service", "aerobag-archive-store.timer"] if config.get("archive_enabled") else []),
         *releases.live_feed_health_targets(desired, observed),
     ]
     checks.extend(

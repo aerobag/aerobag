@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "product-archive-v1",
+  "producer": "product-archive",
+  "payload_schema_version": 1,
+  "requires_claim": true,
+  "measurements": {
+    "product_archive.failure_count": {
+      "field": "failure_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "One when the latest collector or Borg worker attempt failed; zero following a successful attempt. Each worker emits its own status."
+    },
+    "product_archive.capture_gap_count": {
+      "field": "capture_gap_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "Count of explicitly recorded unrecoverable or potentially incomplete capture intervals. Persists across restarts and archival; requires operator acknowledgement to clear."
+    },
+    "product_archive.buffer_bytes": {
+      "field": "buffer_bytes",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "bytes",
+      "meaning": "Allocated bytes of committed live-feed payload files plus their SQLite indexes in open and sealed buffers. Excludes temporary writes, small control files, and filesystem directory overhead."
+    },
+    "product_archive.repository_bytes": {
+      "field": "repository_bytes",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "bytes",
+      "meaning": "Allocated repository bytes; collector status reports live-feeds, store status reports cycles. Includes Borg metadata and uncompacted segments."
+    }
+  }
+}

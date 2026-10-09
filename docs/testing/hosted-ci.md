@@ -93,11 +93,36 @@ No downloaded fixtures, browser, emulator, or production access is needed.
 Use warm target workspaces and tool caches. This command avoids web/WASM/native
 app packaging, browsers/emulators, and external fixture replays. It does not
 create release-qualification receipts. Every run retains its logs and has a
-180-second deadline per suite, including compilation; a timeout is a failure,
-not skipped coverage. `--timeout-seconds` is an explicit override for cold setup.
+180-second execution deadline per phase; a timeout is a failure, not skipped
+coverage. `--timeout-seconds` is an explicit override for cold setup.
 Generated schemas, wires, conformance data and symbols are compared in temporary
 paths first, before Android generation can overwrite stale checked-in files.
 The run also fails if source files or HEAD change while checks are in progress.
+
+Local preflights declare build/test dependencies and shared resources as typed
+lane phases. Rust builds and doctests, plus Android's schema generation, acquire
+the scheduler's `cargo-build` resource. Rust test phases use freshly generated
+nextest binary/Cargo metadata instead of reentering Cargo's build lock. Android's
+test phase skips schema generation only after its prerequisite succeeds. Keep
+the generated-source comparison before any phase that can regenerate sources.
+Python's real package-launcher tests also declare this resource: they deliberately
+exercise cold Cargo builds, unlike the other Python tests which remain parallel.
+The two Python phases retain separate JUnit files and verbose progress, and a
+selection test checks that their union includes every ordinary Python test file
+exactly once.
+This retains one warm target cache without racing Cargo users within a run.
+Unrelated phases and prebuilt tests remain parallel. The latency-sensitive
+services lane still waits for all other lanes.
+
+Queue time does not consume a phase's execution budget. `logs/phase-timings.jsonl`
+reports queue time, execution time, required resources, exit status and individual
+phase logs. Every predecessor has a bounded execution budget; failed phases block
+their dependents and release resources, never retry. Other independent lanes
+continue so their failures are retained too. This scheduler controls its own
+lanes, not arbitrary builds or other preflight processes sharing the host/cache.
+Controlled scheduler tests hold a build resource, prove unrelated work progresses,
+and prove prebuilt tests overlap. Do not replace this with a longer lane timeout
+or independent duplicate Cargo caches just to avoid lock contention.
 
 The local services lane includes the ACS workload's latency assertions, so the
 shared lane runner executes it exclusively after joining the other lanes. Do not
@@ -733,6 +758,29 @@ Keep this distinction explicit:
 
 - readiness deadlines absorb legitimate runner variability;
 - behavioral deadlines and assertions define the product contract.
+
+External HTTP timeout tests must distinguish transfer termination from host
+throughput. `preprocessor-fetch` tests assert curl's typed timeout exit status
+against a loopback endpoint that never responds, plus connection and partial-file
+cleanup. They separately check the exact configured deadline arguments. Do not
+add an elapsed-time assertion around subprocess startup, cache access and cleanup:
+that once failed under concurrent preflight load despite curl returning a timeout.
+Each cache/authentication combination has its own test and diagnostics. A separate
+test watchdog closes the endpoint on a hang and always fails the case; it is not
+an alternate successful timeout. Endpoint workers are joined even on early exits.
+Use controlled watchdog events to test teardown, not sleeps or retries. Actual
+latency requirements belong in resource-controlled workload tests.
+
+The daemon's loopback response tests use a shared HTTP exchange lifecycle. The
+connected pair is established before handler execution, worker progress identifies
+request/response phases, and a supervisor owns the hang watchdog. All error and
+panic paths close both sockets and join both workers, retaining the originating
+failure plus both outcomes. A client socket's five-second read timeout previously
+returned early and detached a server that then panicked with Broken Pipe. That
+was neither a useful latency measurement nor correct test teardown. Controlled
+tests inject client failure, server panic and watchdog expiry while I/O is pending;
+no sleeps are used to establish progress. Production request/SSE deadlines are
+unchanged; functional response assertions still check the actual served bytes.
 
 Shared observations own deadlines even when a probe or event notification never
 settles. Only `TransientObservationError` permits another read. A terminal

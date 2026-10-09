@@ -71,9 +71,18 @@ def cheap_lanes(run_root: Path) -> list[qualification.Lane]:
         qualification.Lane("ci-web-unit", (
             str(ROOT / "ui/web-app/scripts/run-target-workspace.sh"), "inner:check",
         )),
-        qualification.Lane("ci-android-jvm", (
-            str(ROOT / "ui/android-app/scripts/test.sh"), "testDebugUnitTest",
-        ), env={"ANDROID_BUILD_NATIVE_LIBRARIES": "false"}),
+        qualification.Lane("ci-android-jvm", (), env={
+            "ANDROID_BUILD_NATIVE_LIBRARIES": "false",
+            "AEROBAG_UI_RUST_TARGET_DIR": environment["CARGO_TARGET_DIR"],
+        }, phases=(
+            qualification.LanePhase("generate", (
+                str(ROOT / "ui/android-app/scripts/test.sh"), "generateCoreUiContractSchemas", "--rerun-tasks",
+            ), resources=("cargo-build",)),
+            qualification.LanePhase("test", (
+                str(ROOT / "ui/android-app/scripts/test.sh"), "testDebugUnitTest",
+                "-x", "generateCoreUiContractSchemas",
+            )),
+        )),
         qualification.Lane("ci-diff", ("git", "diff", "--check", "HEAD")),
     ])
     return [replace(lane, env={**environment, **(lane.env or {})}) for lane in lanes]
@@ -84,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="store_true", help="show all suites without running them")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--timeout-seconds", type=int, default=180,
-                        help="per-suite deadline, including compilation (default: 180)")
+                        help="per-phase execution deadline, excluding scheduler queue time (default: 180)")
     args = parser.parse_args(argv)
     if args.jobs < 1 or args.timeout_seconds < 1:
         parser.error("jobs and timeout must be positive")
@@ -94,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     lanes = [replace(lane, timeout_seconds=args.timeout_seconds) for lane in cheap_lanes(run_root)]
     if args.list:
         for lane in lanes:
-            print(f"{lane.name}: {json.dumps(lane.command)}")
+            for phase in lane.phases or (qualification.LanePhase("run", lane.command),):
+                print(f"{lane.name}/{phase.name}: {json.dumps(phase.command)} resources={phase.resources}")
         return 0
     print(f"Cheap preflight logs: {run_root}", flush=True)
     before = worktree_fingerprint()

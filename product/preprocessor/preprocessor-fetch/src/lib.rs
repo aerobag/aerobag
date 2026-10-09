@@ -14,7 +14,7 @@ use std::{
     io::Write,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, ExitStatus, Output, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -847,10 +847,21 @@ fn fetch_network_with_cache_once(
         let _ = fs::remove_file(&cookies_path);
         bail!("server returned HTML instead of data for {network_url}");
     }
-    if !result.success || !(result.http_status == 304 || (200..300).contains(&result.http_status)) {
+    if !result.status.success()
+        || !(result.http_status == 304 || (200..300).contains(&result.http_status))
+    {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&headers_path);
         let _ = fs::remove_file(&cookies_path);
+        if !result.status.success() {
+            return Err(CurlFailure {
+                url: network_url.to_string(),
+                http_status: Some(result.http_status),
+                status: result.status,
+                stderr: result.stderr,
+            }
+            .into());
+        }
         bail!(
             "curl failed for {network_url} with HTTP {}: {}",
             result.http_status,
@@ -890,9 +901,29 @@ fn fetch_network_with_cache_once(
 
 struct CurlDownloadResult {
     http_status: u16,
-    success: bool,
+    status: ExitStatus,
     stderr: String,
 }
+
+#[derive(Debug)]
+struct CurlFailure {
+    url: String,
+    http_status: Option<u16>,
+    status: ExitStatus,
+    stderr: String,
+}
+
+impl std::fmt::Display for CurlFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "curl failed for {}", self.url)?;
+        if let Some(http_status) = self.http_status {
+            write!(formatter, " with HTTP {http_status}")?;
+        }
+        write!(formatter, ": {}: {}", self.status, self.stderr)
+    }
+}
+
+impl std::error::Error for CurlFailure {}
 
 fn curl_download_with_status(
     network_url: &str,
@@ -947,7 +978,7 @@ fn curl_download_with_status(
     })?;
     Ok(CurlDownloadResult {
         http_status,
-        success: output.status.success(),
+        status: output.status,
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
 }
@@ -1015,10 +1046,13 @@ fn fetch_network_once(
     if !output.status.success() {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&cookies_path);
-        bail!(
-            "curl failed for {url}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        return Err(CurlFailure {
+            url: url.to_string(),
+            http_status: None,
+            status: output.status,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+        .into());
     }
     fs::rename(&temp_path, &archive_path).with_context(|| {
         format!(
@@ -1424,6 +1458,8 @@ mod tests {
     use std::net::TcpListener;
     use std::os::unix::fs::MetadataExt;
 
+    mod http_deadline;
+
     #[test]
     fn failed_prefetch_waits_for_sibling_workers_before_returning() -> anyhow::Result<()> {
         use std::sync::mpsc;
@@ -1456,69 +1492,6 @@ mod tests {
     }
 
     #[test]
-    fn stalled_http_has_a_deadline_with_and_without_cache_or_headers() -> anyhow::Result<()> {
-        for cached in [false, true] {
-            for authenticated in [false, true] {
-                let temp = tempfile::tempdir()?;
-                // The listening socket accepts TCP into its backlog but never
-                // supplies an HTTP response. No sleeps or external server needed.
-                let listener = TcpListener::bind("127.0.0.1:0")?;
-                listener.set_nonblocking(true)?;
-                let url = format!("http://{}/stalled.json", listener.local_addr()?);
-                let headers = if authenticated {
-                    BTreeMap::from([("Authorization".to_string(), "test-only-token".to_string())])
-                } else {
-                    BTreeMap::new()
-                };
-                let timeouts = NetworkTimeouts {
-                    connect: Duration::from_secs(1),
-                    total: Duration::from_millis(200),
-                };
-                let archive_path = temp.path().join("stalled.json");
-                let started = std::time::Instant::now();
-                let result = if cached {
-                    fetch_network_with_cache_once(&NetworkFetchRequest {
-                        layout: &CacheLayout::new(temp.path().join("cache")),
-                        cache_key: &url,
-                        network_url: &url,
-                        headers: &headers,
-                        force_http1: false,
-                        allow_html: false,
-                        timeouts,
-                        file_name: "stalled.json",
-                        dest_dir: temp.path(),
-                        archive_path: &archive_path,
-                    })
-                    .map(|_| ())
-                } else {
-                    fetch_network_once(&url, &headers, false, timeouts, "stalled.json", temp.path())
-                };
-                let error = format!("{:#}", result.expect_err("stalled response succeeded"));
-                assert!(error.contains("timed out"), "{error}");
-                assert!(
-                    started.elapsed() < Duration::from_secs(5),
-                    "HTTP deadline was not enforced"
-                );
-                assert!(
-                    listener.accept().is_ok(),
-                    "curl never connected to the stalled endpoint"
-                );
-                assert!(
-                    !archive_path.exists(),
-                    "timed-out response became a valid download"
-                );
-                assert_eq!(
-                    fs::read_dir(temp.path())?.count(),
-                    0,
-                    "failed attempt leaked partial files"
-                );
-                assert!(!error.contains("test-only-token"));
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
     fn network_deadlines_are_explicit_and_positive() -> anyhow::Result<()> {
         let mut command = Command::new("curl");
         NetworkTimeouts::default().apply(&mut command)?;
@@ -1526,12 +1499,28 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             ["--connect-timeout", "15", "--max-time", "1800"]
         );
-        assert!(NetworkTimeouts {
-            connect: Duration::ZERO,
-            total: Duration::from_secs(1)
+        let mut command = Command::new("curl");
+        NetworkTimeouts {
+            connect: Duration::from_secs(1),
+            total: Duration::from_millis(200),
         }
-        .apply(&mut command)
-        .is_err());
+        .apply(&mut command)?;
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--connect-timeout", "1", "--max-time", "0.2"]
+        );
+        for timeouts in [
+            NetworkTimeouts {
+                connect: Duration::ZERO,
+                total: Duration::from_secs(1),
+            },
+            NetworkTimeouts {
+                connect: Duration::from_secs(1),
+                total: Duration::ZERO,
+            },
+        ] {
+            assert!(timeouts.apply(&mut Command::new("curl")).is_err());
+        }
         Ok(())
     }
 

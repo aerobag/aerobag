@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -58,6 +58,13 @@ class QualificationError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class LanePhase:
+    name: str
+    command: tuple[str, ...]
+    resources: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Lane:
     name: str
     command: tuple[str, ...]
@@ -66,6 +73,7 @@ class Lane:
     timeout_seconds: int = 7_200
     # Latency-sensitive workloads must not compete with our own build/test lanes.
     exclusive: bool = False
+    phases: tuple[LanePhase, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -454,16 +462,83 @@ def run_lane(lane: Lane, log_dir: Path) -> LaneResult:
     return LaneResult(lane.name, returncode, duration, log_path)
 
 
+def run_phased_lanes(selected: list[Lane], log_dir: Path, workers: int) -> list[LaneResult]:
+    """Only start execution budgets after dependencies/resources are ready."""
+    if len({lane.name for lane in selected}) != len(selected):
+        raise QualificationError("duplicate lane names")
+    phases = {}
+    for lane in selected:
+        if lane.phases and lane.command:
+            raise QualificationError(f"{lane.name}: specify phases or command, not both")
+        steps = lane.phases or (LanePhase("run", lane.command),)
+        if len({step.name for step in steps}) != len(steps) or any(not step.command for step in steps):
+            raise QualificationError(f"{lane.name}: invalid phases")
+        phases[lane.name] = steps
+    pending = [(lane, 0, time.monotonic()) for lane in selected]
+    running = {}
+    held: set[str] = set()
+    completed: dict[str, list[LaneResult]] = {lane.name: [] for lane in selected}
+    results = []
+    log_dir.mkdir(parents=True, exist_ok=True)
+    # One scheduler owns resource admission. Workers never wait for our locks
+    # while their execution deadline is ticking; independent work still overlaps.
+    with (log_dir / "phase-timings.jsonl").open("a", encoding="utf-8") as timings, \
+            concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        while pending or running:
+            for task in list(pending):
+                lane, index, queued_at = task
+                phase = phases[lane.name][index]
+                if len(running) >= max(1, workers) or held.intersection(phase.resources):
+                    continue
+                pending.remove(task)
+                held.update(phase.resources)
+                queued_seconds = time.monotonic() - queued_at
+                print(f"READY {lane.name}/{phase.name} queued={queued_seconds:.3f}s "
+                      f"resources={phase.resources}", flush=True)
+                step = replace(lane, name=f"{lane.name}.{phase.name}" if lane.phases else lane.name,
+                               command=phase.command, phases=())
+                running[executor.submit(run_lane, step, log_dir)] = (lane, index, queued_seconds)
+            done, _ = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                lane, index, queued_seconds = running.pop(future)
+                phase = phases[lane.name][index]
+                held.difference_update(phase.resources)
+                result = future.result()
+                completed[lane.name].append(result)
+                timings.write(json.dumps({
+                    "lane": lane.name, "phase": phase.name, "resources": phase.resources,
+                    "queued_seconds": queued_seconds, "execution_seconds": result.duration_seconds,
+                    "returncode": result.returncode, "log": str(result.log_path),
+                }) + "\n")
+                timings.flush()
+                if result.passed and index + 1 < len(phases[lane.name]):
+                    pending.append((lane, index + 1, time.monotonic()))
+                    continue
+                if not lane.phases:
+                    results.append(result)
+                    continue
+                summary = log_dir / f"{lane.name}.log"
+                with summary.open("w", encoding="utf-8") as log:
+                    for item in completed[lane.name]:
+                        log.write(f"\n=== {item.name} ({item.duration_seconds:.3f}s) ===\n")
+                        log.write(item.log_path.read_text(encoding="utf-8", errors="replace"))
+                    for skipped in phases[lane.name][index + 1:]:
+                        log.write(f"\nBLOCKED {skipped.name}: prerequisite {phase.name} failed\n")
+                results.append(LaneResult(lane.name, result.returncode,
+                                          sum(item.duration_seconds for item in completed[lane.name]), summary))
+    return results
+
+
 def run_lanes(lanes: Iterable[Lane], log_dir: Path, workers: int) -> list[LaneResult]:
     selected = list(lanes)
     if not selected:
         return []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = [executor.submit(run_lane, lane, log_dir) for lane in selected if not lane.exclusive]
-        results = [future.result() for future in concurrent.futures.as_completed(futures)]
+    results = run_phased_lanes([lane for lane in selected if not lane.exclusive], log_dir, workers)
     # Joining the pool is the barrier, not a delay or a guess about host idleness.
     # Keep running selected lanes after failures, then report every failed result.
-    results.extend(run_lane(lane, log_dir) for lane in selected if lane.exclusive)
+    for lane in selected:
+        if lane.exclusive:
+            results.extend(run_phased_lanes([lane], log_dir, 1))
     failures = [result for result in results if not result.passed]
     if failures:
         for failure in failures:
@@ -480,19 +555,55 @@ def bash(script: str) -> tuple[str, ...]:
     return ("bash", "-euo", "pipefail", "-c", script)
 
 
+def rust_test_lane(name: str, workspace: Path, run_root: Path,
+                   *, before_build: str = "", env: dict[str, str] | None = None) -> Lane:
+    metadata = run_root / "rust-tests" / name
+    cargo_json = shlex.quote(str(metadata / "cargo.json"))
+    binaries_json = shlex.quote(str(metadata / "binaries.json"))
+    return Lane(name, (), workspace, env, phases=(
+        LanePhase("build", bash(
+            before_build + f"mkdir -p {shlex.quote(str(metadata))} && "
+            f"cargo metadata --format-version 1 --locked > {cargo_json} && "
+            f"cargo nextest list --workspace --profile ci --locked --cargo-metadata {cargo_json} "
+            f"--list-type binaries-only --message-format json > {binaries_json}"
+        ), resources=("cargo-build",)),
+        LanePhase("test", ("cargo", "nextest", "run", "--profile", "ci",
+                           "--cargo-metadata", str(metadata / "cargo.json"),
+                           "--binaries-metadata", str(metadata / "binaries.json"))),
+        LanePhase("doctest", ("cargo", "test", "--workspace", "--doc", "--locked"),
+                  resources=("cargo-build",)),
+    ))
+
+
 def ordinary_lanes(run_root: Path) -> list[Lane]:
     empty_artifacts = run_root / "no-artifacts"
     empty_artifacts.mkdir(parents=True, exist_ok=True)
     workload = run_root / "aerobag-cloud-workload-ci.json"
     workload_health = run_root / "aerobag-cloud-workload-ci-pipeline-health.json"
-    python_tests = shlex.join(sorted(
+    python_tests = sorted(
         str(path.relative_to(ROOT))
         for directory in (
             "tools", "product/preprocessor/scripts",
             "product/preprocessor/preprocessor-tpp/scripts",
         )
         for path in (ROOT / directory).rglob("test_*.py")
-    ))
+    )
+    # These exercise the real cold-start launcher, including its Cargo builds.
+    # Do not let that implicit build wait inside the ordinary Python test budget.
+    python_build_tests = {"tools/test_publish_notices.py"}
+    python_phases = tuple(
+        LanePhase(name, bash(
+            ("python3 tools/ci/verify_locked_fixture_contracts.py && "
+             "python3 tools/ci/verify_telemetry_contracts.py && " if name == "tools" else "") +
+            f"mkdir -p {shlex.quote(str(run_root / 'python-results'))} && "
+            f"/usr/bin/python3 -m pytest -v --durations=20 {shlex.join(tests)} "
+            f"--junitxml={shlex.quote(str(run_root / 'python-results' / (name + '.xml')))}"
+        ), resources=resources)
+        for name, tests, resources in (
+            ("tools", [test for test in python_tests if test not in python_build_tests], ()),
+            ("package-launcher", [test for test in python_tests if test in python_build_tests], ("cargo-build",)),
+        )
+    )
     return [
         Lane("ci-actionlint", ("go", "run", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.7")),
         Lane("ci-reuse", (str(ROOT / "scripts/check-licenses.sh"),)),
@@ -510,16 +621,15 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
             "AEROBAG_REPO_ROOT": str(ROOT),
             "AEROBAG_WEB_WORKSPACE_DIR": str(run_root / "harness-workspace"),
         }, timeout_seconds=300),
-        Lane(
+        rust_test_lane(
             "ci-rust-shared",
-            bash("python3 ../tools/ci/check_generated_contract_inventories.py && cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),
-            ROOT / "crates",
+            ROOT / "crates", run_root,
+            before_build="python3 ../tools/ci/check_generated_contract_inventories.py && ",
         ),
-        Lane(
+        rust_test_lane(
             "ci-rust-core",
-            bash("cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),
-            ROOT / "ui/core-rust",
-            {"AEROBAG_ARTIFACT_READ_PATH": str(empty_artifacts)},
+            ROOT / "ui/core-rust", run_root,
+            env={"AEROBAG_ARTIFACT_READ_PATH": str(empty_artifacts)},
         ),
         Lane(
             "ci-rust-services",
@@ -531,20 +641,11 @@ def ordinary_lanes(run_root: Path) -> list[Lane]:
             ROOT / "services",
             exclusive=True,
         ),
-        Lane(
+        rust_test_lane(
             "ci-rust-preprocessor",
-            bash("cargo nextest run --workspace --profile ci --locked && cargo test --workspace --doc --locked"),
-            ROOT / "product/preprocessor",
+            ROOT / "product/preprocessor", run_root,
         ),
-        Lane(
-            "ci-python",
-            bash(
-                "python3 tools/ci/verify_locked_fixture_contracts.py && "
-                "python3 tools/ci/verify_telemetry_contracts.py && "
-                f"mkdir -p {run_root / 'python-results'} && /usr/bin/python3 -m pytest {python_tests} "
-                f"--junitxml={run_root / 'python-results/junit.xml'}"
-            ),
-        ),
+        Lane("ci-python", (), phases=python_phases),
     ]
 
 

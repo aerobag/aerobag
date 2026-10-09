@@ -3499,6 +3499,7 @@ fn next_path(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
+    mod http_exchange;
     use super::*;
     use product_contracts::NAV_DB_CONTRACT_ID;
     use std::io::Read;
@@ -5624,12 +5625,11 @@ mod tests {
         compatibility: DaemonCompatibility,
         status: DaemonStatus,
     ) -> anyhow::Result<String> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
+        let exchange = http_exchange::HttpExchange::connect()?;
         let config = DaemonConfig {
             service_bulletin_file: None,
             live_root: root.to_path_buf(),
-            listen: addr,
+            listen: exchange.address,
             scratch_root: root.join("../scratch/live-feeds"),
             fetch_cache_root: root.join("../cache/fetch"),
             fetch_cache_mode: "offline".to_string(),
@@ -5643,18 +5643,8 @@ mod tests {
             sse_event_limit: Some(1),
         };
         let broker = BroadcastSseBroker::default();
-        let handle = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept request");
+        exchange.request(request, |stream| {
             handle_connection(stream, &config, &broker, &status, &compatibility)
-                .expect("handle request");
-        });
-        let mut stream = TcpStream::connect(addr)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.write_all(request.as_bytes())?;
-        stream.shutdown(std::net::Shutdown::Write)?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-        handle.join().expect("server thread");
-        Ok(response)
+        })
     }
 }

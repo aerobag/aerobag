@@ -30,8 +30,12 @@ fixture replays, package production, and full web/native app builds remain
 separate checks when the change warrants them.
 
 - Aim for about two minutes on warm caches. Cold builds/dependency setup can take
-  longer; suite deadlines fail explicitly and preserve logs. Report unexpected
+  longer; phase deadlines fail explicitly and preserve logs. Report unexpected
   cost or missing prerequisites before extending the deadline.
+- Declare shared build resources and prerequisites as preflight lane phases.
+  Resource queue time is separate from bounded execution time. Rust test phases
+  consume the binaries built by their prerequisite; do not silently reintroduce
+  Cargo build-lock waits into parallel test execution.
 - Inspect the final diff and stage only intended changes; preserve other
   sessions' work. Check after the final edit or integration change.
 - Keep generated sources current. The preflight checks them in temporary paths

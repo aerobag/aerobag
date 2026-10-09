@@ -49,8 +49,9 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             qualification.Lane("workload-b", ("true",), exclusive=True),
             qualification.Lane("build-b", ("true",)),
         ]
-        with mock.patch.object(qualification, "run_lane", side_effect=run):
-            results = qualification.run_lanes(lanes, Path("unused-logs"), 2)
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(qualification, "run_lane", side_effect=run):
+            results = qualification.run_lanes(lanes, Path(directory), 2)
         self.assertEqual(set(completed[:2]), parallel)
         self.assertEqual(completed[2:], ["workload-a", "workload-b"])
         self.assertEqual([result.name for result in results], sorted(completed))
@@ -119,7 +120,7 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             self.assertIn("tools/ci/live_feed_proxy_smoke.py", proxy.command)
             self.assertEqual(proxy.timeout_seconds, 120)
             self.assertEqual(proxy.env["AEROBAG_PROXY_SMOKE_ARTIFACT_DIR"], str(root / "live-feed-proxy"))
-            self.assertNotIn("live_feed_proxy_smoke.py", lanes["ci-python"].command[-1])
+            self.assertNotIn("live_feed_proxy_smoke.py", lanes["ci-python"].phases[0].command[-1])
 
     def test_single_pass_runs_every_lane_and_preserves_isolated_gui_phases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

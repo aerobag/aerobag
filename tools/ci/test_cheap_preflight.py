@@ -6,6 +6,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -36,7 +37,7 @@ class CheapPreflightTests(unittest.TestCase):
                 lanes["ci-generated-ui"].env["CARGO_TARGET_DIR"],
                 lanes["ci-rust-core"].env["CARGO_TARGET_DIR"],
             )
-            self.assertNotIn("live_feed_proxy_smoke.py", lanes["ci-python"].command[-1])
+            self.assertNotIn("live_feed_proxy_smoke.py", lanes["ci-python"].phases[0].command[-1])
             self.assertEqual(set(lanes), {
                 "ci-actionlint", "ci-reuse", "ci-rust-format", "ci-harness-contracts",
                 "ci-rust-shared", "ci-rust-core", "ci-rust-services", "ci-rust-preprocessor",
@@ -58,16 +59,47 @@ class CheapPreflightTests(unittest.TestCase):
             self.assertEqual(release_harness.env["AEROBAG_WEB_WORKSPACE_DIR"],
                              str(root / "harness-workspace"))
             workflow = (cheap_preflight.ROOT / ".github/workflows/ci.yml").read_text()
-            self.assertIn("check_generated_contract_inventories.py", lanes["ci-rust-shared"].command[-1])
+            self.assertIn("check_generated_contract_inventories.py", lanes["ci-rust-shared"].phases[0].command[-1])
             self.assertIn("run: python3 tools/ci/check_generated_contract_inventories.py", workflow)
             self.assertIn("run: ./ui/web-app/scripts/run-target-workspace.sh inner:test:harness", workflow)
-            self.assertIn("--workspace", lanes["ci-rust-core"].command[-1])
-            self.assertNotIn("-E ", lanes["ci-rust-core"].command[-1])
-            self.assertIn("testDebugUnitTest", lanes["ci-android-jvm"].command)
+            for name in ("ci-rust-shared", "ci-rust-core", "ci-rust-preprocessor"):
+                build, tests, docs = lanes[name].phases
+                self.assertIn("--workspace", build.command[-1])
+                self.assertIn("--locked", build.command[-1])
+                self.assertIn("--list-type binaries-only", build.command[-1])
+                self.assertIn("--binaries-metadata", tests.command)
+                self.assertIn("--cargo-metadata", tests.command)
+                self.assertNotIn("-E", tests.command)
+                self.assertEqual(build.resources, ("cargo-build",))
+                self.assertEqual(tests.resources, ())
+                self.assertEqual(docs.resources, build.resources)
+                self.assertEqual(docs.command, ("cargo", "test", "--workspace", "--doc", "--locked"))
+            generation, tests = lanes["ci-android-jvm"].phases
+            self.assertEqual(generation.resources, ("cargo-build",))
+            self.assertIn("generateCoreUiContractSchemas", generation.command)
+            self.assertIn("--rerun-tasks", generation.command)
+            self.assertEqual(tests.resources, ())
+            self.assertIn("testDebugUnitTest", tests.command)
+            self.assertEqual(tests.command[-2:], ("-x", "generateCoreUiContractSchemas"))
+            self.assertEqual(lanes["ci-android-jvm"].env["AEROBAG_UI_RUST_TARGET_DIR"],
+                             lanes["ci-rust-core"].env["CARGO_TARGET_DIR"])
             self.assertEqual(lanes["ci-android-jvm"].env["ANDROID_BUILD_NATIVE_LIBRARIES"], "false")
             self.assertEqual(lanes["ci-web-unit"].command[-1], "inner:check")
             self.assertIn("product/preprocessor/preprocessor-tpp/scripts/test_detect_landscape_rotation.py",
-                          lanes["ci-python"].command[-1])
+                          lanes["ci-python"].phases[0].command[-1])
+            python_tools, python_launcher = lanes["ci-python"].phases
+            self.assertEqual(python_tools.resources, ())
+            self.assertEqual(python_launcher.resources, ("cargo-build",))
+            self.assertNotIn("tools/test_publish_notices.py", python_tools.command[-1])
+            self.assertIn("tools/test_publish_notices.py", python_launcher.command[-1])
+            selected = [argument for phase in lanes["ci-python"].phases
+                        for argument in shlex.split(phase.command[-1])
+                        if Path(argument).name.startswith("test_") and argument.endswith(".py")]
+            expected = [str(path.relative_to(cheap_preflight.ROOT))
+                        for directory in ("tools", "product/preprocessor/scripts",
+                                          "product/preprocessor/preprocessor-tpp/scripts")
+                        for path in (cheap_preflight.ROOT / directory).rglob("test_*.py")]
+            self.assertCountEqual(selected, expected)
             for lane in lanes.values():
                 self.assertEqual(lane.env["AEROBAG_ARTIFACT_READ_PATH"], str(root / "no-artifacts"))
                 self.assertNotIn("run-release-journey", " ".join(lane.command))

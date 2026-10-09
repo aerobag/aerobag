@@ -1302,6 +1302,8 @@ data class WireAltitudePlannerDepartureEditorUiView(
     val when_value: String,
     val when_suffix: String,
     val when_is_past: Boolean,
+    val now_label: String,
+    val now_action_uid: String,
     val enabled: Boolean,
     val disabled_reason: String? = null,
 )

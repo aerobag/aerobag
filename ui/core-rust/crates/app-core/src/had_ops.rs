@@ -2201,7 +2201,6 @@ pub(crate) fn flight_plan_ui_projection(
         wind_model_available,
         modeled_prediction_error,
         estimate_basis,
-        departure_time_epoch_ms: plan.planned_departure_time_epoch_ms,
         effective_departure_time_epoch_ms: departure_epoch_ms,
         now_epoch_ms,
         time_display_mode: live_data.time_display_mode,

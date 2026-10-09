@@ -17,6 +17,9 @@ use crate::{
 const MAX_INTEGRATION_STEP_NM: f64 = 1.0;
 const MAX_INTEGRATION_STEP_SECONDS: f64 = 30.0;
 const ALTITUDE_CAPTURE_FT: f64 = 10.0;
+pub(crate) const DEPART_NOW_ACTION_UID: &str = "altitude-planner:depart-now";
+pub(crate) const ACTIVE_NAVIGATION_DEPARTURE_REASON: &str =
+    "Active navigation models from NOW. Use STOP NAV to edit a planned departure.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +64,8 @@ pub struct AltitudePlannerDepartureEditorUiView {
     pub when_value: String,
     pub when_suffix: String,
     pub when_is_past: bool,
+    pub now_label: String,
+    pub now_action_uid: String,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
@@ -193,7 +198,6 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_available: bool,
     pub modeled_prediction_error: Option<String>,
     pub estimate_basis: FlightPlanEstimateBasis,
-    pub departure_time_epoch_ms: Option<i64>,
     pub effective_departure_time_epoch_ms: i64,
     pub now_epoch_ms: i64,
     pub time_display_mode: TimeDisplayMode,
@@ -233,7 +237,6 @@ impl Default for AltitudePlannerUiInput {
             wind_model_available: true,
             modeled_prediction_error: None,
             estimate_basis: FlightPlanEstimateBasis::Unavailable,
-            departure_time_epoch_ms: None,
             effective_departure_time_epoch_ms: 0,
             now_epoch_ms: 0,
             time_display_mode: TimeDisplayMode::Local,
@@ -434,16 +437,19 @@ fn project_departure_editor(
     );
     let time_value = displayed_time.value;
     let basis_label = displayed_time.basis_label;
-    let when_value = input
-        .departure_time_epoch_ms
-        .map(|epoch_ms| format_departure_offset(epoch_ms - input.now_epoch_ms))
-        .unwrap_or_else(|| "now".to_string());
-    let when_is_past = input
-        .departure_time_epoch_ms
-        .is_some_and(|epoch_ms| epoch_ms < input.now_epoch_ms);
+    let when_value = if input.navigation_active {
+        "NOW".to_string()
+    } else {
+        format_departure_offset(
+            input
+                .effective_departure_time_epoch_ms
+                .saturating_sub(input.now_epoch_ms),
+        )
+    };
+    let when_is_past = input.effective_departure_time_epoch_ms < input.now_epoch_ms;
     let disabled_reason = input
         .navigation_active
-        .then(|| "Active navigation always models from ownship at the current time.".to_string());
+        .then(|| ACTIVE_NAVIGATION_DEPARTURE_REASON.to_string());
     AltitudePlannerDepartureEditorUiView {
         title: "Depart:".to_string(),
         time_label: String::new(),
@@ -452,8 +458,15 @@ fn project_departure_editor(
         time_display_action_id: crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
         when_label: "=".to_string(),
         when_value,
-        when_suffix: "from now".to_string(),
+        when_suffix: if input.navigation_active {
+            ""
+        } else {
+            "from now"
+        }
+        .to_string(),
         when_is_past,
+        now_label: "NOW".to_string(),
+        now_action_uid: DEPART_NOW_ACTION_UID.to_string(),
         enabled: !input.navigation_active,
         disabled_reason,
     }
@@ -1505,7 +1518,6 @@ mod tests {
         let departure = utc("2026-08-05T22:15:00Z").timestamp_millis();
         let local = project_altitude_planner_ui(AltitudePlannerUiInput {
             now_epoch_ms: now,
-            departure_time_epoch_ms: Some(departure),
             effective_departure_time_epoch_ms: departure,
             time_display_mode: TimeDisplayMode::Local,
             local_time_zone: chrono_tz::America::Los_Angeles,
@@ -1520,7 +1532,6 @@ mod tests {
 
         let zulu = project_altitude_planner_ui(AltitudePlannerUiInput {
             now_epoch_ms: now,
-            departure_time_epoch_ms: Some(departure),
             effective_departure_time_epoch_ms: departure,
             time_display_mode: TimeDisplayMode::Utc,
             local_time_zone: chrono_tz::America::Los_Angeles,
@@ -1532,7 +1543,6 @@ mod tests {
 
         let past = project_altitude_planner_ui(AltitudePlannerUiInput {
             now_epoch_ms: now,
-            departure_time_epoch_ms: Some(now - 1),
             effective_departure_time_epoch_ms: now - 1,
             ..AltitudePlannerUiInput::default()
         });
@@ -1540,19 +1550,22 @@ mod tests {
 
         let exactly_now = project_altitude_planner_ui(AltitudePlannerUiInput {
             now_epoch_ms: now,
-            departure_time_epoch_ms: Some(now),
             effective_departure_time_epoch_ms: now,
             ..AltitudePlannerUiInput::default()
         });
         assert!(!exactly_now.departure.when_is_past);
 
-        let dynamic_now = project_altitude_planner_ui(AltitudePlannerUiInput {
+        let active = project_altitude_planner_ui(AltitudePlannerUiInput {
             now_epoch_ms: now,
-            departure_time_epoch_ms: None,
             effective_departure_time_epoch_ms: now,
+            navigation_active: true,
             ..AltitudePlannerUiInput::default()
         });
-        assert!(!dynamic_now.departure.when_is_past);
+        assert!(!active.departure.when_is_past);
+        assert!(!active.departure.enabled);
+        assert_eq!(active.departure.when_value, "NOW");
+        assert_eq!(active.departure.when_suffix, "");
+        assert_eq!(active.departure.now_label, "NOW");
     }
 
     #[test]

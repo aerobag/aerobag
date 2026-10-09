@@ -4595,6 +4595,13 @@ fn perform_altitude_planner_action_in_session(
     handle: u32,
     action_uid: String,
 ) -> AppResult<HadOperationOutcome> {
+    if action_uid == crate::altitude_planner::DEPART_NOW_ACTION_UID {
+        return set_altitude_planner_departure_input_in_session(
+            handle,
+            crate::AltitudePlannerDepartureInputField::When,
+            "now".to_string(),
+        );
+    }
     if let Some(selection) = crate::had_ops::planner_aircraft_from_action_uid(&action_uid) {
         let slot = session_slot(handle)?;
         let session_guard = slot.lock_running()?;
@@ -4728,7 +4735,7 @@ fn set_altitude_planner_departure_input_in_session(
     if plan.guidance.is_some() {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
-            message: "active navigation always models departure from ownship now".to_string(),
+            message: crate::altitude_planner::ACTIVE_NAVIGATION_DEPARTURE_REASON.to_string(),
         });
     }
     let parsed = crate::parse_altitude_planner_departure_input(
@@ -19596,6 +19603,171 @@ mod tests {
                 .and_then(|plan| plan.planned_departure_time_epoch_ms),
             None
         );
+    }
+
+    #[test]
+    fn active_navigation_departure_editor_uses_one_time_basis() {
+        let now = utc("2026-10-08T12:00:00Z").timestamp_millis();
+        let mut plan = short_lat_lon_preview_plan();
+        plan.guidance = None;
+        let init = create_ui_session_at_epoch_ms(plan, &[], None, None, now)
+            .expect("create planning session");
+        let store = crate::navkv::nav_kv_store_for_test(&[], 1024);
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::SetAltitudePlannerDepartureInput {
+                field: crate::AltitudePlannerDepartureInputField::When,
+                input: "-8h".to_string(),
+            },
+            now,
+        )
+        .expect("set a saved departure eight hours ago");
+        let before = get_session_snapshot(init.handle).expect("planning snapshot");
+        let plan_ui = before.app_ui_state.active_plan.as_ref().unwrap();
+        assert!(plan_ui.altitude_planner.departure.enabled);
+        assert_eq!(plan_ui.altitude_planner.departure.time_value, "0400");
+        assert_eq!(plan_ui.altitude_planner.departure.when_value, "\u{2212}8h");
+        let target = plan_ui
+            .display_rows
+            .iter()
+            .find(|row| {
+                row.nav_ref
+                    == Some(NavRef::LatLon(LatLon {
+                        lat: 40.0,
+                        lon: -119.95,
+                    }))
+            })
+            .expect("first leg destination");
+        let activate = crate::planning::flight_plan_row_actions(target)
+            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+            .expect("activate-leg action");
+        assert!(activate.enabled);
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformRowAction {
+                row_uid: target.uid.clone(),
+                action_uid: activate.uid.clone(),
+            },
+            now,
+        )
+        .expect("activate first leg");
+
+        let without_ownship = get_session_snapshot(init.handle).expect("active without GPS");
+        let with_ownship = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.0,
+            },
+            now,
+        );
+        let departures = [without_ownship, with_ownship].map(|snapshot| {
+            snapshot
+                .app_ui_state
+                .active_plan
+                .unwrap()
+                .altitude_planner
+                .departure
+        });
+        for departure in &departures {
+            assert!(
+                !departure.enabled,
+                "an active leg currently locks both fields"
+            );
+            assert!(departure.disabled_reason.is_some());
+            assert_eq!(departure.time_value, "1200", "active modeling starts now");
+        }
+        for (field, input) in [
+            (crate::AltitudePlannerDepartureInputField::Time, "1300Z"),
+            (crate::AltitudePlannerDepartureInputField::When, "0h"),
+        ] {
+            let error = perform_flight_plan_command_in_session(
+                init.handle,
+                FlightPlanSessionCommand::SetAltitudePlannerDepartureInput {
+                    field,
+                    input: input.to_string(),
+                },
+                now,
+            )
+            .expect_err("active navigation rejects departure edits in core");
+            assert_eq!(error.kind, AppErrorKind::UnsupportedOperation);
+            assert_eq!(
+                error.message,
+                departures[0].disabled_reason.as_deref().unwrap()
+            );
+        }
+        let error = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: departures[0].now_action_uid.clone(),
+            },
+            now,
+        )
+        .expect_err("NOW cannot rewrite a saved departure during active navigation");
+        assert_eq!(error.kind, AppErrorKind::UnsupportedOperation);
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformControl {
+                control_id: crate::FlightPlanControlId::StopNavigation,
+            },
+            now,
+        )
+        .expect("stop navigation");
+        let stopped = get_session_snapshot(init.handle).expect("stopped snapshot");
+        let stopped = stopped
+            .app_ui_state
+            .active_plan
+            .unwrap()
+            .altitude_planner
+            .departure;
+        assert!(stopped.enabled);
+        assert_eq!(
+            stopped.time_value, "0400",
+            "navigation preserves the saved ETD"
+        );
+        assert_eq!(stopped.now_label, "NOW");
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: stopped.now_action_uid,
+            },
+            now,
+        )
+        .expect("reset to now after stopping navigation");
+        let reset = get_session_snapshot(init.handle).expect("reset snapshot");
+        let reset = reset
+            .app_ui_state
+            .active_plan
+            .unwrap()
+            .altitude_planner
+            .departure;
+        assert_eq!(reset.time_value, "1200");
+        assert_eq!(reset.when_value, "now");
+        assert_eq!(reset.basis_label, stopped.basis_label);
+        let later = get_session_snapshot_at_epoch_ms(init.handle, now + 60_000)
+            .expect("NOW follows the advancing clock, not a frozen timestamp");
+        let later = later
+            .app_ui_state
+            .active_plan
+            .unwrap()
+            .altitude_planner
+            .departure;
+        assert_eq!(later.time_value, "1201");
+        assert_eq!(later.when_value, "now");
+        assert!(!later.when_is_past);
+        destroy_session(init.handle);
+
+        // Both fields describe the effective prediction start, not a mixture of
+        // now and the saved preflight ETD. Reproduces the in-flight "-8h" report.
+        for departure in departures {
+            assert_eq!(
+                departure.when_value, "NOW",
+                "inconsistent editor: {departure:?}"
+            );
+            assert!(!departure.when_is_past);
+        }
     }
 
     fn data_status_box<'a>(

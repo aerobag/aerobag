@@ -9304,7 +9304,7 @@ function PlaybackWidget(props: {
   );
 }
 
-function AltitudePlannerPage(props: {
+export function AltitudePlannerPage(props: {
   page: AppPage;
   planUiState: FlightPlanUiState;
   mostRecentChartOrPlatePage: AppPage;
@@ -9378,9 +9378,13 @@ function AltitudePlannerPage(props: {
   ]);
 
   useEffect(() => {
-    if (!departureTimeFocused.current) setDepartureTimeInput(planner.departure.time_value);
-    if (!departureWhenFocused.current) setDepartureWhenInput(planner.departure.when_value);
-  }, [planner.departure.time_value, planner.departure.when_value]);
+    if (!planner.departure.enabled || !departureTimeFocused.current) {
+      setDepartureTimeInput(planner.departure.time_value);
+    }
+    if (!planner.departure.enabled || !departureWhenFocused.current) {
+      setDepartureWhenInput(planner.departure.when_value);
+    }
+  }, [planner.departure.enabled, planner.departure.time_value, planner.departure.when_value]);
 
   const performAction = (actionUid: string) => {
     setOpenControlId(null);
@@ -9431,10 +9435,10 @@ function AltitudePlannerPage(props: {
     userActionPendingRefresh.current = true;
     void (async () => {
       try {
-        if (departureTimeInput !== planner.departure.time_value) {
+        if (planner.departure.enabled && departureTimeInput !== planner.departure.time_value) {
           await props.onSetDepartureInput("time", departureTimeInput);
         }
-        if (departureWhenInput !== planner.departure.when_value) {
+        if (planner.departure.enabled && departureWhenInput !== planner.departure.when_value) {
           await props.onSetDepartureInput("when", departureWhenInput);
         }
         await props.onToggleDepartureTimeBasis();
@@ -9525,13 +9529,18 @@ function AltitudePlannerPage(props: {
                 type="text"
                 inputMode="text"
                 value={departureTimeInput}
-                disabled={!planner.departure.enabled || !interactionEnabled}
+                readOnly={!planner.departure.enabled}
+                aria-disabled={!planner.departure.enabled}
+                disabled={!interactionEnabled}
+                onClick={() => {
+                  if (planner.departure.disabled_reason) showDisabledAction(planner.departure.disabled_reason);
+                }}
                 aria-label="Departure time"
                 onChange={(event) => setDepartureTimeInput(event.currentTarget.value)}
                 onFocus={() => { departureTimeFocused.current = true; }}
                 onBlur={() => {
                   departureTimeFocused.current = false;
-                  if (suppressDepartureBlurSubmit.current) return;
+                  if (!planner.departure.enabled || suppressDepartureBlurSubmit.current) return;
                   if (departureTimeInput !== planner.departure.time_value) {
                     submitDepartureInput("time", departureTimeInput);
                   }
@@ -9544,7 +9553,7 @@ function AltitudePlannerPage(props: {
                 type="button"
                 className="trayButton altitudePlannerDepartureBasis"
                 data-testid="altitude-planner-departure-basis"
-                disabled={!planner.departure.enabled || !interactionEnabled}
+                disabled={!interactionEnabled}
                 onMouseDown={() => { suppressDepartureBlurSubmit.current = true; }}
                 onClick={toggleDepartureTimeBasis}
               >
@@ -9559,13 +9568,18 @@ function AltitudePlannerPage(props: {
                 type="text"
                 inputMode="text"
                 value={departureWhenInput}
-                disabled={!planner.departure.enabled || !interactionEnabled}
+                readOnly={!planner.departure.enabled}
+                aria-disabled={!planner.departure.enabled}
+                disabled={!interactionEnabled}
+                onClick={() => {
+                  if (planner.departure.disabled_reason) showDisabledAction(planner.departure.disabled_reason);
+                }}
                 aria-label="Departure offset"
                 onChange={(event) => setDepartureWhenInput(event.currentTarget.value)}
                 onFocus={() => { departureWhenFocused.current = true; }}
                 onBlur={() => {
                   departureWhenFocused.current = false;
-                  if (suppressDepartureBlurSubmit.current) return;
+                  if (!planner.departure.enabled || suppressDepartureBlurSubmit.current) return;
                   if (departureWhenInput !== planner.departure.when_value) {
                     submitDepartureInput("when", departureWhenInput);
                   }
@@ -9576,6 +9590,31 @@ function AltitudePlannerPage(props: {
               />
               <span>{planner.departure.when_suffix}</span>
             </label>
+            <button
+              type="button"
+              className={`trayButton altitudePlannerDepartureNow${planner.departure.enabled ? "" : " isDisabled"}`}
+              data-testid="altitude-planner-departure-now"
+              aria-disabled={!planner.departure.enabled || !interactionEnabled}
+              title={planner.departure.disabled_reason ?? undefined}
+              onPointerDown={(event) => { event.preventDefault(); }}
+              onClick={() => {
+                if (!interactionEnabled) {
+                  showDisabledAction("Calculation in progress.");
+                } else if (!planner.departure.enabled) {
+                  if (planner.departure.disabled_reason) showDisabledAction(planner.departure.disabled_reason);
+                } else {
+                  // Reset discards an unfinished edit rather than submitting it on blur.
+                  suppressDepartureBlurSubmit.current = true;
+                  if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+                  setDepartureTimeInput(planner.departure.time_value);
+                  setDepartureWhenInput(planner.departure.when_value);
+                  suppressDepartureBlurSubmit.current = false;
+                  performAction(planner.departure.now_action_uid);
+                }
+              }}
+            >
+              {planner.departure.now_label}
+            </button>
           </section>
         </div>
       </header>

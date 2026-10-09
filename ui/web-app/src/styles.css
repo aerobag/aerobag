@@ -3285,6 +3285,15 @@ button {
   font-size: calc(var(--thumb) * 0.17);
 }
 
+.altitudePlannerDepartureNow {
+  width: calc(var(--thumb) * 0.9);
+  min-width: calc(var(--thumb) * 0.9);
+  height: calc(var(--thumb) * 0.58);
+  min-height: calc(var(--thumb) * 0.58);
+  padding: 0 calc(var(--thumb) * 0.08);
+  font-size: calc(var(--thumb) * 0.17);
+}
+
 .altitudePlannerDeparture.isDisabled {
   opacity: 0.72;
 }

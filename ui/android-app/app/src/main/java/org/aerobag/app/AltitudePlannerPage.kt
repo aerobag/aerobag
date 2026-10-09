@@ -103,10 +103,15 @@ internal fun AltitudePlannerPage(
     }
     var departureTimeFocused by remember { mutableStateOf(false) }
     var departureWhenFocused by remember { mutableStateOf(false) }
+    var suppressDepartureBlurSubmit by remember { mutableStateOf(false) }
 
-    LaunchedEffect(planner.departure.timeValue, planner.departure.whenValue) {
-        if (!departureTimeFocused) departureTimeInput = planner.departure.timeValue
-        if (!departureWhenFocused) departureWhenInput = planner.departure.whenValue
+    LaunchedEffect(planner.departure.enabled, planner.departure.timeValue, planner.departure.whenValue) {
+        if (!planner.departure.enabled || !departureTimeFocused) {
+            departureTimeInput = planner.departure.timeValue
+        }
+        if (!planner.departure.enabled || !departureWhenFocused) {
+            departureWhenInput = planner.departure.whenValue
+        }
     }
 
     val plannerProjectionKey = planVersion to planner
@@ -290,7 +295,8 @@ internal fun AltitudePlannerPage(
                         onTimeValueChange = { departureTimeInput = it },
                         onWhenValueChange = { departureWhenInput = it },
                         onTimeFocusChange = { focused ->
-                            if (departureTimeFocused && !focused &&
+                            if (planner.departure.enabled && !suppressDepartureBlurSubmit &&
+                                departureTimeFocused && !focused &&
                                 departureTimeInput != planner.departure.timeValue
                             ) {
                                 setDepartureInput("time", departureTimeInput)
@@ -298,7 +304,8 @@ internal fun AltitudePlannerPage(
                             departureTimeFocused = focused
                         },
                         onWhenFocusChange = { focused ->
-                            if (departureWhenFocused && !focused &&
+                            if (planner.departure.enabled && !suppressDepartureBlurSubmit &&
+                                departureWhenFocused && !focused &&
                                 departureWhenInput != planner.departure.whenValue
                             ) {
                                 setDepartureInput("when", departureWhenInput)
@@ -310,6 +317,16 @@ internal fun AltitudePlannerPage(
                             focusManager.clearFocus()
                             toggleDepartureTimeBasis()
                         },
+                        onNow = {
+                            // Reset replaces the draft instead of submitting it on focus loss.
+                            suppressDepartureBlurSubmit = true
+                            focusManager.clearFocus()
+                            departureTimeInput = planner.departure.timeValue
+                            departureWhenInput = planner.departure.whenValue
+                            suppressDepartureBlurSubmit = false
+                            performAction(planner.departure.nowActionUid)
+                        },
+                        interactionEnabled = interactionEnabled,
                         onDisabledClick = planner.departure.disabledReason?.let { reason ->
                             { showDisabledActionToast(context, reason) }
                         },
@@ -481,7 +498,7 @@ internal fun AltitudePlannerPage(
 }
 
 @Composable
-private fun DepartureEditorRow(
+internal fun DepartureEditorRow(
     departure: AltitudePlannerDepartureEditorUiView,
     timeValue: String,
     whenValue: String,
@@ -491,12 +508,14 @@ private fun DepartureEditorRow(
     onWhenFocusChange: (Boolean) -> Unit,
     onDone: () -> Unit,
     onToggleBasis: () -> Unit,
+    onNow: () -> Unit,
+    interactionEnabled: Boolean,
     onDisabledClick: (() -> Unit)?,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = Modifier
-            .width((ThumbSize * 6.2f) + DepartureWhenFieldWidth - (ThumbSize * 0.9f))
+            .width((ThumbSize * 7.2f) + DepartureWhenFieldWidth - (ThumbSize * 0.9f))
             .height(ThumbSize),
         color = uiTheme.controls.controlGroupBg,
         shape = RoundedCornerShape(ThumbRadius),
@@ -513,6 +532,7 @@ private fun DepartureEditorRow(
                 value = timeValue,
                 testTag = "parity:altitude-planner-departure-time",
                 enabled = departure.enabled,
+                onDisabledClick = onDisabledClick,
                 onValueChange = onTimeValueChange,
                 onFocusChange = onTimeFocusChange,
                 onDone = onDone,
@@ -524,6 +544,7 @@ private fun DepartureEditorRow(
                     .height(ThumbSize * 0.58f),
                 maxLines = 1,
                 testTag = "parity:altitude-planner-departure-basis",
+                enabled = interactionEnabled,
                 onClick = onToggleBasis,
             )
             DepartureLabel(departure.whenLabel)
@@ -532,12 +553,21 @@ private fun DepartureEditorRow(
                 width = DepartureWhenFieldWidth,
                 testTag = "parity:altitude-planner-departure-when",
                 enabled = departure.enabled,
+                onDisabledClick = onDisabledClick,
                 warning = departure.whenIsPast,
                 onValueChange = onWhenValueChange,
                 onFocusChange = onWhenFocusChange,
                 onDone = onDone,
             )
             DepartureLabel(departure.whenSuffix)
+            CompactSquareButton(
+                label = departure.nowLabel,
+                modifier = Modifier.width(ThumbSize * 0.9f).height(ThumbSize * 0.58f),
+                testTag = "parity:altitude-planner-departure-now",
+                enabled = departure.enabled && interactionEnabled,
+                onDisabledClick = onDisabledClick,
+                onClick = onNow,
+            )
         }
     }
 }
@@ -564,6 +594,7 @@ private fun DepartureTextField(
     width: Dp = ThumbSize * 0.9f,
     testTag: String,
     enabled: Boolean,
+    onDisabledClick: (() -> Unit)?,
     warning: Boolean = false,
     onValueChange: (String) -> Unit,
     onFocusChange: (Boolean) -> Unit,
@@ -575,7 +606,11 @@ private fun DepartureTextField(
     Surface(
         modifier = Modifier
             .width(width)
-            .height(ThumbSize * 0.58f),
+            .height(ThumbSize * 0.58f)
+            .then(
+                if (!enabled && onDisabledClick != null) Modifier.clickable(onClick = onDisabledClick)
+                else Modifier,
+            ),
         color = uiTheme.controls.textInputBg,
         shape = RoundedCornerShape(ThumbRadius),
         border = BorderStroke(

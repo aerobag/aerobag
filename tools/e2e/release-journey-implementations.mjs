@@ -2510,13 +2510,13 @@ async function inspectorDetails(runtime) {
   await dismissMapSelectionIfPresent(runtime, "dismiss SPOT inspector");
   await runtime.openPage("flight_plan");
   await openPlanRow(runtime, "KSEA");
-  const unavailableArrival = await runtime.driver.readElement(runtime.platform === "web"
-    ? "plan-row-action-select_arrival"
-    : "plan-row-action:select_arrival");
-  const disabledReason = unavailableArrival?.disabled_reason;
+  const unavailableMoveUp = await runtime.driver.readElement(runtime.platform === "web"
+    ? "plan-row-action-move_up"
+    : "plan-row-action:move_up");
+  const disabledReason = unavailableMoveUp?.disabled_reason;
   runtime.check(
     "inspector.disabled-reason",
-    Boolean(unavailableArrival && !unavailableArrival.enabled && disabledReason),
+    Boolean(unavailableMoveUp && !unavailableMoveUp.enabled && disabledReason),
     disabledReason,
   );
   const planInfo = await runtime.action("open flight-plan airport info", "plan-row-action:waypoint_info", {

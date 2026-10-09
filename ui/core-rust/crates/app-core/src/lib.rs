@@ -1295,6 +1295,20 @@ pub fn describe_plate_procedure_load_menu(
             message: format!("plate procedure candidates mix procedure kinds for {airport_id}"),
         });
     }
+    let airport_index = plate_procedure_airport_index(&plan, &airport_id, &procedure_kind);
+    if let Err(error) =
+        planning::validate_procedure_load_attachment(&plan, airport_index, procedure_kind.clone())
+    {
+        return Ok(ProcedureLoadMenu {
+            procedure_kind: Some(procedure_kind.clone()),
+            launcher_label: procedure_load_launcher_label(&procedure_kind).to_string(),
+            header: format!("Load {}", procedure_kind_noun(&procedure_kind)),
+            header_tone: ProcedureLoadHeaderTone::Normal,
+            enabled: false,
+            disabled_reason: Some(error.message),
+            options: Vec::new(),
+        });
+    }
     let (header, header_tone, target) =
         plate_procedure_load_context(&plan, &airport_id, &procedure_kind)?;
     let mut choices = std::collections::BTreeMap::<
@@ -1367,37 +1381,59 @@ pub fn describe_plate_procedure_load_menu(
     })
 }
 
+fn plate_procedure_airport_index(
+    plan: &FlightPlan,
+    airport_id: &str,
+    kind: &ProcedureKind,
+) -> Option<usize> {
+    let airports = plan
+        .route_components
+        .iter()
+        .enumerate()
+        .filter_map(|(index, component)| {
+            matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Airport(code) }
+            if code.trim() == airport_id.trim())
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    airports
+        .iter()
+        .copied()
+        .find(|&index| attached_procedure_component_index(plan, index, kind.clone()).is_some())
+        .or_else(|| match kind {
+            ProcedureKind::Sid => airports.first().copied(),
+            _ => airports.last().copied(),
+        })
+}
+
 fn plate_procedure_load_context(
     plan: &FlightPlan,
     airport_id: &str,
     procedure_kind: &ProcedureKind,
 ) -> AppResult<(String, ProcedureLoadHeaderTone, ProcedureLoadPlanTarget)> {
-    if *procedure_kind == ProcedureKind::Sid {
-        return plate_departure_load_context(plan, airport_id);
-    }
-    let destination_index = plan.route_components.len().checked_sub(1).filter(|index| {
-        matches!(
-            plan.route_components.get(*index),
-            Some(RouteComponent::Waypoint { waypoint: NavRef::Airport(code) })
-                if code.trim() == airport_id
-        )
-    });
-    let Some(destination_index) = destination_index else {
+    let is_departure = *procedure_kind == ProcedureKind::Sid;
+    let Some(airport_index) = plate_procedure_airport_index(plan, airport_id, procedure_kind)
+    else {
         return Ok((
             format!(
-                "Append {airport_id} to plan and load {}",
+                "{} {airport_id} to plan and load {}",
+                if is_departure { "Prepend" } else { "Append" },
                 procedure_kind_noun(procedure_kind)
             ),
             ProcedureLoadHeaderTone::Normal,
-            ProcedureLoadPlanTarget::AppendDestination,
+            if is_departure {
+                ProcedureLoadPlanTarget::PrependOrigin
+            } else {
+                ProcedureLoadPlanTarget::AppendDestination
+            },
         ));
     };
-    let destination_row_uid = project_ui_state(plan)
+    let row_uid = project_ui_state(plan)
         .display_rows
         .into_iter()
         .find(|row| {
             row.depth == 0
-                && row.component_index == Some(destination_index)
+                && row.component_index == Some(airport_index)
                 && row.nav_ref
                     .as_ref()
                     .is_some_and(|nav_ref| matches!(nav_ref, NavRef::Airport(code) if code.trim() == airport_id.trim()))
@@ -1408,8 +1444,7 @@ fn plate_procedure_load_context(
             message: format!("procedure load target row missing for airport {airport_id}"),
         })?;
     let has_current_procedure =
-        attached_procedure_component_index(plan, destination_index, procedure_kind.clone())
-            .is_some();
+        attached_procedure_component_index(plan, airport_index, procedure_kind.clone()).is_some();
     Ok((
         if has_current_procedure {
             format!("Replace current {}", procedure_kind_noun(procedure_kind))
@@ -1421,58 +1456,10 @@ fn plate_procedure_load_context(
         } else {
             ProcedureLoadHeaderTone::Normal
         },
-        ProcedureLoadPlanTarget::ExistingDestination {
-            row_uid: destination_row_uid,
-        },
-    ))
-}
-
-fn plate_departure_load_context(
-    plan: &FlightPlan,
-    airport_id: &str,
-) -> AppResult<(String, ProcedureLoadHeaderTone, ProcedureLoadPlanTarget)> {
-    let origin_index = (!plan.route_components.is_empty()
-        && matches!(
-            plan.route_components.first(),
-            Some(RouteComponent::Waypoint { waypoint: NavRef::Airport(code) })
-                if code.trim() == airport_id.trim()
-        ))
-    .then_some(0usize);
-    let Some(origin_index) = origin_index else {
-        return Ok((
-            format!("Prepend {airport_id} to plan and load departure"),
-            ProcedureLoadHeaderTone::Normal,
-            ProcedureLoadPlanTarget::PrependOrigin,
-        ));
-    };
-    let origin_row_uid = project_ui_state(plan)
-        .display_rows
-        .into_iter()
-        .find(|row| row.depth == 0 && row.component_index == Some(origin_index))
-        .map(|row| row.uid)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("departure load target row missing for airport {airport_id}"),
-        })?;
-    let has_current_departure = matches!(
-        plan.route_components.get(origin_index + 1),
-        Some(RouteComponent::Procedure { procedure })
-            if procedure.kind == ProcedureKind::Sid
-                && procedure.airport_id.0.trim() == airport_id.trim()
-    );
-    Ok((
-        if has_current_departure {
-            "Replace current departure".to_string()
+        if is_departure {
+            ProcedureLoadPlanTarget::ExistingOrigin { row_uid }
         } else {
-            "Load departure".to_string()
-        },
-        if has_current_departure {
-            ProcedureLoadHeaderTone::Destructive
-        } else {
-            ProcedureLoadHeaderTone::Normal
-        },
-        ProcedureLoadPlanTarget::ExistingOrigin {
-            row_uid: origin_row_uid,
+            ProcedureLoadPlanTarget::ExistingDestination { row_uid }
         },
     ))
 }
@@ -1898,6 +1885,77 @@ mod tests {
     }
 
     #[test]
+    fn plate_loads_target_interior_airports_and_preserve_their_row_identity() {
+        let plan = FlightPlan {
+            route_components: ["KRNT", "KSEA", "KOMA", "KPLU"]
+                .map(|id| RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport(id.into()),
+                })
+                .to_vec(),
+            ..FlightPlan::default()
+        }
+        .normalized();
+        for (index, candidate) in [
+            (1, ksea_bangr_sid_candidate()),
+            (2, koma_ils_or_loc_candidate("I32R")),
+            (2, koma_sayin_star_candidate()),
+        ] {
+            let menu = describe_plate_procedure_load_menu(&plan, vec![candidate]).unwrap();
+            assert!(menu.enabled);
+            assert!(menu.header.starts_with("Load "));
+            let command: ProcedureLoadCommand =
+                serde_json::from_str(&menu.options[0].load_id).unwrap();
+            let row_uid = match command.target {
+                ProcedureLoadPlanTarget::ExistingOrigin { row_uid }
+                | ProcedureLoadPlanTarget::ExistingDestination { row_uid } => row_uid,
+                other => panic!("must reuse existing airport: {other:?}"),
+            };
+            let ui = project_ui_state(&plan);
+            assert_eq!(
+                ui.display_rows
+                    .iter()
+                    .find(|row| row.uid == row_uid)
+                    .unwrap()
+                    .component_index,
+                Some(index)
+            );
+        }
+    }
+
+    #[test]
+    fn plate_load_menu_explains_a_procedure_already_attached_elsewhere() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KPAE".into()),
+                        procedure_id: "I16R".into(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".into()),
+                },
+            ],
+            ..FlightPlan::default()
+        }
+        .normalized();
+        let menu =
+            describe_plate_procedure_load_menu(&plan, vec![koma_ils_or_loc_candidate("I32R")])
+                .unwrap();
+        assert!(!menu.enabled);
+        assert!(menu.options.is_empty());
+        let reason = menu.disabled_reason.unwrap();
+        assert!(reason.contains("KPAE"));
+        assert!(reason.contains("Remove it"));
+    }
+
+    #[test]
     fn plate_load_menu_marks_replacing_the_destination_approach_as_destructive() {
         let plan = FlightPlan {
             route_components: vec![
@@ -1931,6 +1989,15 @@ mod tests {
         assert_eq!(menu.header, "Replace current approach");
         assert_eq!(menu.header_tone, ProcedureLoadHeaderTone::Destructive);
         assert_eq!(menu.options.len(), 1);
+
+        let extended = append_plate_destination(&plan, "KPLU").unwrap();
+        let extended_menu =
+            describe_plate_procedure_load_menu(&extended, vec![koma_ils_or_loc_candidate("I32R")])
+                .unwrap();
+        assert_eq!(
+            extended_menu, menu,
+            "extending the route must not retarget plate replacement"
+        );
     }
 
     #[test]

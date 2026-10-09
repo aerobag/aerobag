@@ -4309,15 +4309,26 @@ pub(crate) fn preview_flight_plan_entry(
 ) -> Result<FlightPlanEntryPreview, HadReadError> {
     let tokens = tokenize_flight_plan_entry(input);
     let evaluated = evaluate_flight_plan_entry_tokens(store, &tokens)?;
-    let issues = validate_flight_plan_entry(plan, &evaluated)?;
-    let can_commit = !input.trim().is_empty()
+    let mut issues = validate_flight_plan_entry(plan, &evaluated)?;
+    let ready = !input.trim().is_empty()
         && issues.is_empty()
         && evaluated.iter().all(|token| {
             token.recognized.is_some()
                 && (token.parsed.terminated
                     || token.token_state == FlightPlanEntryTokenState::Recognized)
-        })
-        && append_flight_plan_tokens(plan, &evaluated).is_ok();
+        });
+    if ready {
+        match append_flight_plan_tokens(plan, &evaluated) {
+            Ok(_) => {}
+            Err(HadReadError::Fatal(message)) => issues.push(FlightPlanEntryIssue {
+                start: 0,
+                end: input.len(),
+                message,
+            }),
+            Err(error) => return Err(error),
+        }
+    }
+    let can_commit = ready && issues.is_empty();
     Ok(FlightPlanEntryPreview {
         can_commit,
         tokens: evaluated
@@ -8969,6 +8980,85 @@ mod tests {
         ] {
             assert_eq!(parse_spot_coordinates(value), None, "{value}");
         }
+    }
+
+    #[test]
+    fn route_entry_preview_reports_mutation_rejections() {
+        let store = test_nav_kv_store(&[]);
+        let mut plan = route_entry_approach_plan();
+        // A restored/imported plan must report a broken attachment, not silently
+        // discard the mutation validator's error at the editor boundary.
+        plan.route_components[2] = RouteComponent::Waypoint {
+            waypoint: NavRef::Airport("KSEA".into()),
+        };
+        let input = "47.3,-122.9";
+        let HadReadError::Fatal(message) = append_flight_plan_entry(&store, &plan, input)
+            .expect_err("approach airport must match its attached airport")
+        else {
+            panic!("unexpected page fault");
+        };
+        let preview = preview_flight_plan_entry(&store, &plan, input).unwrap();
+        assert!(!preview.can_commit);
+        assert_eq!(
+            preview.issues.len(),
+            1,
+            "rejection must not silently disable Enter"
+        );
+        assert_eq!(preview.issues[0].message, message);
+        assert_eq!(
+            (preview.issues[0].start, preview.issues[0].end),
+            (0, input.len())
+        );
+    }
+
+    #[test]
+    fn route_entry_appends_kplu_after_an_airport_with_an_approach() {
+        let store = test_nav_kv_store(&[(
+            "waypoint/identifier/KPLU",
+            serde_json::to_value(NavRef::Airport("KPLU".into())).unwrap(),
+        )]);
+        let plan = route_entry_approach_plan();
+        let preview = preview_flight_plan_entry(&store, &plan, "KPLU").unwrap();
+        assert!(preview.can_commit, "{:?}", preview.issues);
+        let extended = append_flight_plan_entry(&store, &plan, "KPLU").unwrap();
+        assert_eq!(extended.route_components[..3], plan.route_components);
+        assert_eq!(
+            extended.route_component_uids[..3],
+            plan.route_component_uids
+        );
+        assert_eq!(
+            extended.route_components[3],
+            RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KPLU".into()),
+            }
+        );
+    }
+
+    fn route_entry_approach_plan() -> FlightPlan {
+        FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".into()),
+                },
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KPAE".into()),
+                        procedure_id: "I16R".into(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: Some(crate::ProcedureDiscontinuity::Hold),
+                        data_quality: Vec::new(),
+                    },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".into()),
+                },
+            ],
+            ..FlightPlan::default()
+        }
+        .normalized()
     }
 
     #[test]

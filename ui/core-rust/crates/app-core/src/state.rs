@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(error.kind, AppErrorKind::InvalidFlightPlan);
         assert_eq!(
             error.message,
-            "A departure procedure is attached to the origin airport."
+            "Keep the departure immediately after its airport, or remove the departure first."
         );
     }
 

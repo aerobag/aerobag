@@ -5566,12 +5566,6 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
             message: format!("procedure target component is stale: {component_uid}"),
         })?;
     let is_departure = kind == ProcedureKind::Sid;
-    if is_departure && airport_component_index != 0 {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "departures can be selected at the flight-plan origin only".to_string(),
-        });
-    }
     let replace_component_index =
         crate::attached_procedure_component_index(&plan, airport_component_index, kind.clone());
     crate::core_debug_log(
@@ -5694,18 +5688,19 @@ pub(crate) fn load_plate_procedure_in_session(
                     kind: AppErrorKind::InvalidFlightPlan,
                     message: format!("procedure load target row is stale: {row_uid}"),
                 })?;
-            if row.chart_airport_id.as_deref() != Some(command.airport_id.as_str())
-                || row.component_index != Some(0)
-            {
+            if row.chart_airport_id.as_deref() != Some(command.airport_id.as_str()) {
                 return Err(AppError {
                     kind: AppErrorKind::InvalidFlightPlan,
                     message: format!(
-                        "departure load target is no longer the origin: {}",
+                        "departure load target no longer matches airport: {}",
                         command.airport_id
                     ),
                 });
             }
-            0
+            row.component_index.ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "departure load target has no route component".to_string(),
+            })?
         }
         ProcedureLoadPlanTarget::PrependOrigin => {
             if !is_departure {
@@ -5758,15 +5753,6 @@ pub(crate) fn load_plate_procedure_in_session(
                     kind: AppErrorKind::InvalidFlightPlan,
                     message: format!("procedure load target component is stale: {component_uid}"),
                 })?;
-            if component_index + 1 != plan.route_components.len() {
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidFlightPlan,
-                    message: format!(
-                        "procedure load target is no longer the destination: {}",
-                        command.airport_id
-                    ),
-                });
-            }
             component_index
         }
         ProcedureLoadPlanTarget::AppendDestination => {

@@ -40,11 +40,11 @@ const PROCEDURE_REMOVE_DISABLED_REASON: &str =
 const REMOVE_ALL_ABOVE_DISABLED_REASON: &str =
     "This row cannot be used as a Remove All Above target.";
 const DEPARTURE_ATTACHMENT_MESSAGE: &str =
-    "A departure procedure is attached to the origin airport.";
+    "Keep the departure immediately after its airport, or remove the departure first.";
 const ARRIVAL_ATTACHMENT_MESSAGE: &str =
-    "An arrival procedure is attached to the destination airport.";
+    "Keep the arrival immediately before its airport or approach, or remove the arrival first.";
 const APPROACH_ATTACHMENT_MESSAGE: &str =
-    "An approach procedure is attached to the destination airport.";
+    "Keep the approach immediately before its airport, or remove the approach first.";
 const MAX_INSTANTANEOUS_PROCEDURE_TURN_DEG: f64 = 150.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2482,12 +2482,6 @@ fn project_display_rows(
                         leg_index,
                         nav_ref: projected_nav_ref.as_ref(),
                         can_add_airway_after: component.can_add_airway_after,
-                        can_add_procedure_before: component.can_add_procedure_before,
-                        can_select_departure: component.component_index == 0
-                            && chart_airport_id.is_some(),
-                        is_destination_airport: component.component_index + 1
-                            == plan.route_components.len()
-                            && chart_airport_id.is_some(),
                         can_remove_component: component.can_remove,
                         can_reorder_up: component.can_reorder_up,
                         can_reorder_down: component.can_reorder_down,
@@ -2978,21 +2972,27 @@ pub fn attached_procedure_component_index(
     airport_component_index: usize,
     kind: ProcedureKind,
 ) -> Option<usize> {
+    attached_procedure_index(&plan.route_components, airport_component_index, kind)
+}
+
+fn attached_procedure_index(
+    components: &[RouteComponent],
+    airport_component_index: usize,
+    kind: ProcedureKind,
+) -> Option<usize> {
     let RouteComponent::Waypoint {
         waypoint: NavRef::Airport(airport_id),
-    } = plan.route_components.get(airport_component_index)?
+    } = components.get(airport_component_index)?
     else {
         return None;
     };
     let candidate_index = match kind {
-        ProcedureKind::Sid => {
-            (airport_component_index == 0).then_some(airport_component_index + 1)?
-        }
+        ProcedureKind::Sid => airport_component_index + 1,
         ProcedureKind::Approach => airport_component_index.checked_sub(1)?,
         ProcedureKind::Star => {
             let previous_index = airport_component_index.checked_sub(1)?;
             if matches!(
-                plan.route_components.get(previous_index),
+                components.get(previous_index),
                 Some(RouteComponent::Procedure { procedure })
                     if procedure.kind == ProcedureKind::Approach
             ) {
@@ -3003,7 +3003,7 @@ pub fn attached_procedure_component_index(
         }
     };
     matches!(
-        plan.route_components.get(candidate_index),
+        components.get(candidate_index),
         Some(RouteComponent::Procedure { procedure })
             if procedure.kind == kind && procedure.airport_id.0.trim() == airport_id.trim()
     )
@@ -3031,36 +3031,48 @@ pub fn procedure_component_index_for_load(
     {
         return Ok(index);
     }
+    validate_procedure_load_attachment(plan, Some(airport_component_index), kind.clone())?;
     match kind {
-        ProcedureKind::Sid => {
-            if airport_component_index == 0 {
-                Ok(1)
-            } else {
-                Err(procedure_attachment_error(DEPARTURE_ATTACHMENT_MESSAGE))
-            }
-        }
-        ProcedureKind::Approach => {
-            if airport_component_index + 1 == plan.route_components.len() {
-                Ok(airport_component_index)
-            } else {
-                Err(procedure_attachment_error(APPROACH_ATTACHMENT_MESSAGE))
-            }
-        }
-        ProcedureKind::Star => {
-            if airport_component_index + 1 != plan.route_components.len() {
-                return Err(procedure_attachment_error(ARRIVAL_ATTACHMENT_MESSAGE));
-            }
-            Ok(airport_component_index
-                - usize::from(
-                    attached_procedure_component_index(
-                        plan,
-                        airport_component_index,
-                        ProcedureKind::Approach,
-                    )
-                    .is_some(),
-                ))
-        }
+        ProcedureKind::Sid => Ok(airport_component_index + 1),
+        ProcedureKind::Approach => Ok(airport_component_index),
+        ProcedureKind::Star => Ok(airport_component_index
+            - usize::from(
+                attached_procedure_component_index(
+                    plan,
+                    airport_component_index,
+                    ProcedureKind::Approach,
+                )
+                .is_some(),
+            )),
     }
+}
+
+pub(crate) fn validate_procedure_load_attachment(
+    plan: &FlightPlan,
+    airport_index: Option<usize>,
+    kind: ProcedureKind,
+) -> AppResult<()> {
+    let attached = airport_index
+        .and_then(|index| attached_procedure_component_index(plan, index, kind.clone()));
+    if let Some(procedure) =
+        plan.route_components
+            .iter()
+            .enumerate()
+            .find_map(|(index, component)| match component {
+                RouteComponent::Procedure { procedure }
+                    if procedure.kind == kind && Some(index) != attached =>
+                {
+                    Some(procedure)
+                }
+                _ => None,
+            })
+    {
+        return Err(procedure_attachment_error(&format!(
+            "The plan already has a loaded {} at {}. Remove it before loading one at another airport.",
+            crate::procedure_kind_noun(&kind), procedure.airport_id.0,
+        )));
+    }
+    Ok(())
 }
 
 fn can_insert_procedure_before_component(plan: &FlightPlan, component_index: usize) -> bool {
@@ -3134,6 +3146,19 @@ fn apply_component_mutation_action_availability(
     for action in &mut actions {
         let result =
             match action.id {
+                FlightPlanRowActionId::SelectDeparture
+                | FlightPlanRowActionId::SelectArrival
+                | FlightPlanRowActionId::SelectApproach => Some(
+                    procedure_component_index_for_load(
+                        plan,
+                        component_index,
+                        action
+                            .procedure_kind
+                            .clone()
+                            .expect("procedure action kind"),
+                    )
+                    .map(|_| ()),
+                ),
                 FlightPlanRowActionId::Remove | FlightPlanRowActionId::RemoveProcedure => Some(
                     validate_component_removal_attachments(plan, component_index),
                 ),
@@ -3187,7 +3212,7 @@ fn validate_component_removal_attachments(
             message: format!("component index out of bounds: {component_index}"),
         });
     }
-    let delete_range = endpoint_with_attached_procedures_range(plan, component_index);
+    let delete_range = component_with_attached_procedures_range(plan, component_index);
     let route_components = plan
         .route_components
         .iter()
@@ -3291,9 +3316,6 @@ struct WaypointRowActionsInput<'a> {
     leg_index: Option<usize>,
     nav_ref: Option<&'a NavRef>,
     can_add_airway_after: bool,
-    can_add_procedure_before: bool,
-    can_select_departure: bool,
-    is_destination_airport: bool,
     can_remove_component: bool,
     can_reorder_up: bool,
     can_reorder_down: bool,
@@ -3309,9 +3331,6 @@ fn waypoint_actions_for_row(input: WaypointRowActionsInput<'_>) -> Vec<FlightPla
         leg_index,
         nav_ref,
         can_add_airway_after,
-        can_add_procedure_before,
-        can_select_departure,
-        is_destination_airport,
         can_remove_component,
         can_reorder_up,
         can_reorder_down,
@@ -3355,17 +3374,17 @@ fn waypoint_actions_for_row(input: WaypointRowActionsInput<'_>) -> Vec<FlightPla
             procedure_action(
                 FlightPlanRowActionId::SelectDeparture,
                 ProcedureKind::Sid,
-                can_select_departure && component_index.is_some(),
+                chart_airport_id.is_some() && component_index.is_some(),
             ),
             procedure_action(
                 FlightPlanRowActionId::SelectArrival,
                 ProcedureKind::Star,
-                can_add_procedure_before && is_destination_airport && component_index.is_some(),
+                chart_airport_id.is_some() && component_index.is_some(),
             ),
             procedure_action(
                 FlightPlanRowActionId::SelectApproach,
                 ProcedureKind::Approach,
-                can_add_procedure_before && is_destination_airport && component_index.is_some(),
+                chart_airport_id.is_some() && component_index.is_some(),
             ),
             action(FlightPlanRowActionId::Plates, chart_airport_id.is_some()),
         ]
@@ -3625,13 +3644,13 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             }
             FlightPlanRowActionId::FindRoute => FIND_ROUTE_DISABLED_REASON,
             FlightPlanRowActionId::SelectDeparture => {
-                "Departures can be selected at the flight-plan origin only."
+                "Departures can be selected at an airport waypoint only."
             }
             FlightPlanRowActionId::SelectArrival => {
-                "Arrivals can be selected at the flight-plan destination only."
+                "Arrivals can be selected at an airport waypoint only."
             }
             FlightPlanRowActionId::SelectApproach => {
-                "Approaches can be selected at the flight-plan destination only."
+                "Approaches can be selected at an airport waypoint only."
             }
             FlightPlanRowActionId::Plates => "No airport plates are associated with this row.",
             FlightPlanRowActionId::ShowPlate => "This procedure has no plate to show.",
@@ -4104,94 +4123,57 @@ pub(crate) fn validate_airway_geometry(plan: &FlightPlan) -> AppResult<()> {
 }
 
 pub(crate) fn validate_procedure_attachments(route_components: &[RouteComponent]) -> AppResult<()> {
-    let procedure_indices = |kind: ProcedureKind| {
-        route_components
-            .iter()
-            .enumerate()
-            .filter_map(|(index, component)| match component {
-                RouteComponent::Procedure { procedure } if procedure.kind == kind => Some(index),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    let departure_indices = procedure_indices(ProcedureKind::Sid);
-    let arrival_indices = procedure_indices(ProcedureKind::Star);
-    let approach_indices = procedure_indices(ProcedureKind::Approach);
-
-    if departure_indices.len() > 1 {
-        return Err(procedure_attachment_error(DEPARTURE_ATTACHMENT_MESSAGE));
-    }
-    if arrival_indices.len() > 1 {
-        return Err(procedure_attachment_error(ARRIVAL_ATTACHMENT_MESSAGE));
-    }
-    if approach_indices.len() > 1 {
-        return Err(procedure_attachment_error(APPROACH_ATTACHMENT_MESSAGE));
-    }
-
-    if let Some(&departure_index) = departure_indices.first() {
-        let valid = match (
-            route_components.first(),
-            route_components.get(departure_index),
-        ) {
-            (
-                Some(RouteComponent::Waypoint {
-                    waypoint: NavRef::Airport(origin_airport_id),
-                }),
-                Some(RouteComponent::Procedure { procedure }),
-            ) => departure_index == 1 && origin_airport_id.trim() == procedure.airport_id.0.trim(),
-            _ => false,
+    let mut indices = [None; 3];
+    for (index, component) in route_components.iter().enumerate() {
+        let RouteComponent::Procedure { procedure } = component else {
+            continue;
         };
-        if !valid {
-            return Err(procedure_attachment_error(DEPARTURE_ATTACHMENT_MESSAGE));
+        let slot = match procedure.kind {
+            ProcedureKind::Sid => 0,
+            ProcedureKind::Approach => 1,
+            ProcedureKind::Star => 2,
+        };
+        if indices[slot].replace(index).is_some() {
+            return Err(procedure_attachment_error(&format!(
+                "Only one {} may be loaded in a flight plan.",
+                crate::procedure_kind_noun(&procedure.kind),
+            )));
         }
     }
-
-    if let Some(&approach_index) = approach_indices.first() {
-        let valid = terminal_procedure_matches_destination(
-            route_components,
-            approach_index,
-            route_components.len().checked_sub(2),
-        );
-        if !valid {
-            return Err(procedure_attachment_error(APPROACH_ATTACHMENT_MESSAGE));
+    // An approach's attachment also determines where a preceding STAR attaches.
+    for ((kind, message), index) in [
+        (ProcedureKind::Sid, DEPARTURE_ATTACHMENT_MESSAGE),
+        (ProcedureKind::Approach, APPROACH_ATTACHMENT_MESSAGE),
+        (ProcedureKind::Star, ARRIVAL_ATTACHMENT_MESSAGE),
+    ]
+    .into_iter()
+    .zip(indices)
+    {
+        if let Some(index) = index {
+            let airport_index = match kind {
+                ProcedureKind::Sid => index.checked_sub(1),
+                ProcedureKind::Approach => Some(index + 1),
+                ProcedureKind::Star => Some(
+                    index
+                        + if matches!(
+                            route_components.get(index + 1),
+                            Some(RouteComponent::Procedure { procedure }) if procedure.kind == ProcedureKind::Approach
+                        ) {
+                            2
+                        } else {
+                            1
+                        },
+                ),
+            };
+            if airport_index.and_then(|airport_index| {
+                attached_procedure_index(route_components, airport_index, kind.clone())
+            }) != Some(index)
+            {
+                return Err(procedure_attachment_error(message));
+            }
         }
     }
-
-    if let Some(&arrival_index) = arrival_indices.first() {
-        let expected_index = route_components
-            .len()
-            .checked_sub(if approach_indices.is_empty() { 2 } else { 3 });
-        if !terminal_procedure_matches_destination(route_components, arrival_index, expected_index)
-        {
-            return Err(procedure_attachment_error(ARRIVAL_ATTACHMENT_MESSAGE));
-        }
-    }
-
     Ok(())
-}
-
-fn terminal_procedure_matches_destination(
-    route_components: &[RouteComponent],
-    procedure_index: usize,
-    expected_index: Option<usize>,
-) -> bool {
-    let Some(expected_index) = expected_index else {
-        return false;
-    };
-    let (
-        Some(RouteComponent::Procedure { procedure }),
-        Some(RouteComponent::Waypoint {
-            waypoint: NavRef::Airport(destination_airport_id),
-        }),
-    ) = (
-        route_components.get(procedure_index),
-        route_components.last(),
-    )
-    else {
-        return false;
-    };
-    procedure_index == expected_index
-        && procedure.airport_id.0.trim() == destination_airport_id.trim()
 }
 
 fn procedure_attachment_error(message: &str) -> AppError {
@@ -4545,7 +4527,7 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
     }
 
     let old_grouped_legs = grouped_component_legs(&plan);
-    let delete_range = endpoint_with_attached_procedures_range(&plan, component_index);
+    let delete_range = component_with_attached_procedures_range(&plan, component_index);
     let mut rebuilt_components = Vec::new();
     for old_index in 0..plan.route_components.len() {
         if delete_range.contains(&old_index) {
@@ -4565,51 +4547,18 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
     )
 }
 
-fn endpoint_with_attached_procedures_range(
+fn component_with_attached_procedures_range(
     plan: &FlightPlan,
     component_index: usize,
 ) -> std::ops::RangeInclusive<usize> {
-    if component_index == 0
-        && matches!(
-            plan.route_components.get(1),
-            Some(RouteComponent::Procedure { procedure })
-                if procedure.kind == ProcedureKind::Sid
-        )
-    {
-        return 0..=1;
-    }
-
-    if component_index + 1 == plan.route_components.len()
-        && matches!(
-            plan.route_components.get(component_index),
-            Some(RouteComponent::Waypoint {
-                waypoint: NavRef::Airport(_)
-            })
-        )
-    {
-        let mut first_attached_index = component_index;
-        if first_attached_index > 0
-            && matches!(
-                plan.route_components.get(first_attached_index - 1),
-                Some(RouteComponent::Procedure { procedure })
-                    if procedure.kind == ProcedureKind::Approach
-            )
-        {
-            first_attached_index -= 1;
-        }
-        if first_attached_index > 0
-            && matches!(
-                plan.route_components.get(first_attached_index - 1),
-                Some(RouteComponent::Procedure { procedure })
-                    if procedure.kind == ProcedureKind::Star
-            )
-        {
-            first_attached_index -= 1;
-        }
-        return first_attached_index..=component_index;
-    }
-
-    component_index..=component_index
+    let first = attached_procedure_component_index(plan, component_index, ProcedureKind::Star)
+        .or_else(|| {
+            attached_procedure_component_index(plan, component_index, ProcedureKind::Approach)
+        })
+        .unwrap_or(component_index);
+    let last = attached_procedure_component_index(plan, component_index, ProcedureKind::Sid)
+        .unwrap_or(component_index);
+    first..=last
 }
 
 pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
@@ -5148,9 +5097,7 @@ pub fn insert_terminal_procedure_before_airport(
             })
         }
     };
-    if airport_component_index + 1 != plan.route_components.len()
-        || airport_id.trim() != procedure.airport_id.0.trim()
-    {
+    if airport_id.trim() != procedure.airport_id.0.trim() {
         return Err(procedure_attachment_error(match procedure.kind {
             ProcedureKind::Star => ARRIVAL_ATTACHMENT_MESSAGE,
             ProcedureKind::Approach => APPROACH_ATTACHMENT_MESSAGE,
@@ -5237,14 +5184,6 @@ pub fn insert_departure_after_airport(
     procedure: ProcedureSegment,
     procedure_legs: Vec<ResolvedLeg>,
 ) -> AppResult<FlightPlan> {
-    if airport_component_index != 0 {
-        return Err(AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!(
-                "departure insertion requires the first component, got {airport_component_index}"
-            ),
-        });
-    }
     if procedure.kind != ProcedureKind::Sid {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -5259,14 +5198,14 @@ pub fn insert_departure_after_airport(
     }
 
     let plan = plan.clone().normalized();
-    match plan.route_components.first() {
+    match plan.route_components.get(airport_component_index) {
         Some(RouteComponent::Waypoint {
             waypoint: NavRef::Airport(airport_id),
         }) if airport_id.trim() == procedure.airport_id.0.trim() => {}
         Some(RouteComponent::Waypoint { .. }) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
-                message: "departure airport does not match the flight-plan origin".to_string(),
+                message: "departure airport does not match the selected airport".to_string(),
             })
         }
         Some(_) => {
@@ -5278,12 +5217,12 @@ pub fn insert_departure_after_airport(
         None => {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
-                message: "departure insertion requires a flight-plan origin".to_string(),
+                message: "departure insertion requires an airport waypoint".to_string(),
             })
         }
     }
     if matches!(
-        plan.route_components.get(1),
+        plan.route_components.get(airport_component_index + 1),
         Some(RouteComponent::Procedure { procedure }) if procedure.kind == ProcedureKind::Sid
     ) {
         return Err(AppError {
@@ -5292,21 +5231,23 @@ pub fn insert_departure_after_airport(
         });
     }
 
+    procedure_component_index_for_load(&plan, airport_component_index, ProcedureKind::Sid)?;
     let old_grouped_legs = grouped_component_legs(&plan);
     let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
-    rebuilt_components.push(rebuilt_existing_component(&plan, &old_grouped_legs, 0));
-    rebuilt_components.push(rebuilt_new_component(
-        RouteComponent::Procedure {
-            procedure: procedure.clone(),
-        },
-        Some(procedure_legs),
-    ));
-    for old_index in 1..plan.route_components.len() {
+    for old_index in 0..plan.route_components.len() {
         rebuilt_components.push(rebuilt_existing_component(
             &plan,
             &old_grouped_legs,
             old_index,
         ));
+        if old_index == airport_component_index {
+            rebuilt_components.push(rebuilt_new_component(
+                RouteComponent::Procedure {
+                    procedure: procedure.clone(),
+                },
+                Some(procedure_legs.clone()),
+            ));
+        }
     }
 
     let rebuilt = rebuild_plan_from_uid_components(
@@ -6636,6 +6577,156 @@ mod tests {
     }
 
     #[test]
+    fn procedure_attachments_allow_extending_both_ends_of_the_route() {
+        let plan = plan_with_all_attached_procedures();
+        let appended = insert_waypoint(&plan, 5, false, NavRef::Airport("KPLU".into()))
+            .expect("extend beyond the approach airport");
+        let extended = insert_waypoint(&appended, 0, true, NavRef::Airport("KRNT".into()))
+            .expect("extend before the departure airport");
+        assert_eq!(extended.route_components[1..7], plan.route_components);
+        assert_eq!(
+            extended.route_component_uids[1..7],
+            plan.route_component_uids
+        );
+        assert_eq!(
+            attached_procedure_component_index(&extended, 1, ProcedureKind::Sid),
+            Some(2)
+        );
+        assert_eq!(
+            attached_procedure_component_index(&extended, 6, ProcedureKind::Star),
+            Some(4)
+        );
+        assert_eq!(
+            attached_procedure_component_index(&extended, 6, ProcedureKind::Approach),
+            Some(5)
+        );
+        for (index, kind, action) in [
+            (
+                1,
+                ProcedureKind::Sid,
+                FlightPlanRowActionId::SelectDeparture,
+            ),
+            (6, ProcedureKind::Star, FlightPlanRowActionId::SelectArrival),
+            (
+                6,
+                ProcedureKind::Approach,
+                FlightPlanRowActionId::SelectApproach,
+            ),
+        ] {
+            assert!(row_action_for_component(&extended, index, action).enabled);
+            assert_eq!(
+                procedure_component_index_for_load(&extended, index, kind.clone()).unwrap(),
+                attached_procedure_component_index(&extended, index, kind).unwrap()
+            );
+        }
+        let removed = delete_component(&extended, 6).unwrap();
+        assert_eq!(
+            removed.route_components,
+            [
+                extended.route_components[..4].to_vec(),
+                extended.route_components[7..].to_vec()
+            ]
+            .concat()
+        );
+        let removed = delete_component(&extended, 1).unwrap();
+        assert_eq!(
+            removed.route_components,
+            [
+                extended.route_components[..1].to_vec(),
+                extended.route_components[3..].to_vec()
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn extending_route_preserves_loaded_geometry_and_active_procedure_leg() {
+        let plan = sample_waypoint_only_plan();
+        let (mut procedure, legs) = sample_inserted_procedure();
+        procedure.kind = ProcedureKind::Approach;
+        procedure.airport_id = AirportId("KHIO".into());
+        procedure.terminal_discontinuity = Some(ProcedureDiscontinuity::Hold);
+        let plan = insert_terminal_procedure_before_airport(&plan, 2, procedure, legs).unwrap();
+        let active_index = plan
+            .resolved_legs
+            .iter()
+            .position(|leg| leg.id == "proc-autto1-1")
+            .unwrap();
+        let plan = activate_leg(&plan, active_index).unwrap();
+        let extended = insert_waypoint(&plan, 3, false, NavRef::Airport("KPLU".into())).unwrap();
+        assert_eq!(extended.route_components[..4], plan.route_components);
+        assert_eq!(
+            extended.resolved_legs[..plan.resolved_legs.len()],
+            plan.resolved_legs
+        );
+        assert_eq!(extended.guidance, plan.guidance);
+        let restored: FlightPlan =
+            serde_json::from_value(serde_json::to_value(&extended).unwrap()).unwrap();
+        crate::build_flight_plan(restored).expect("extended attachments survive save/reload");
+    }
+
+    #[test]
+    fn procedures_can_be_loaded_replaced_and_removed_at_an_interior_airport() {
+        let plan = sample_waypoint_only_plan();
+        let plan = insert_waypoint(&plan, 2, false, NavRef::Airport("KPLU".into())).unwrap();
+        let mut plan = plan;
+        for kind in [
+            ProcedureKind::Sid,
+            ProcedureKind::Approach,
+            ProcedureKind::Star,
+        ] {
+            let airport_index =
+                top_level_waypoint_component_index(&plan, &NavRef::Airport("KHIO".into())).unwrap();
+            let (mut procedure, legs) = sample_inserted_procedure();
+            procedure.airport_id = AirportId("KHIO".into());
+            procedure.kind = kind.clone();
+            procedure.terminal_discontinuity = None;
+            plan = if kind == ProcedureKind::Sid {
+                insert_departure_after_airport(&plan, airport_index, procedure, legs)
+            } else {
+                insert_terminal_procedure_before_airport(&plan, airport_index, procedure, legs)
+            }
+            .unwrap();
+        }
+        assert_eq!(plan.route_components.len(), 7);
+        let airport_index = 4;
+        for (kind, action) in [
+            (ProcedureKind::Sid, FlightPlanRowActionId::SelectDeparture),
+            (ProcedureKind::Star, FlightPlanRowActionId::SelectArrival),
+            (
+                ProcedureKind::Approach,
+                FlightPlanRowActionId::SelectApproach,
+            ),
+        ] {
+            let index =
+                attached_procedure_component_index(&plan, airport_index, kind.clone()).unwrap();
+            let uid = plan.route_component_uids[index].clone();
+            let (mut procedure, legs) = sample_replaced_procedure();
+            procedure.airport_id = AirportId("KHIO".into());
+            procedure.kind = kind.clone();
+            plan = replace_procedure_component(&plan, index, procedure, legs).unwrap();
+            assert_eq!(plan.route_component_uids[index], uid);
+            assert!(row_action_for_component(&plan, airport_index, action.clone()).enabled);
+            let blocked = row_action_for_component(&plan, 6, action);
+            assert!(!blocked.enabled);
+            let message = procedure_component_index_for_load(&plan, 6, kind)
+                .unwrap_err()
+                .message;
+            assert_eq!(blocked.disabled_reason.as_deref(), Some(message.as_str()));
+            assert!(message.contains("KHIO"));
+        }
+        let removed = delete_component(&plan, airport_index).unwrap();
+        assert_eq!(
+            removed.route_components,
+            [
+                plan.route_components[..2].to_vec(),
+                plan.route_components[6..].to_vec()
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
     fn procedure_attachment_invariants_accept_the_canonical_route_shape() {
         validate_procedure_attachments(&plan_with_all_attached_procedures().route_components)
             .expect("canonical SID/STAR/approach attachments");
@@ -6733,7 +6824,10 @@ mod tests {
 
         let mut duplicate_departure = valid.route_components.clone();
         duplicate_departure.insert(2, procedure_component(ProcedureKind::Sid, "KSEA"));
-        cases.push((duplicate_departure, DEPARTURE_ATTACHMENT_MESSAGE));
+        cases.push((
+            duplicate_departure,
+            "Only one departure may be loaded in a flight plan.",
+        ));
 
         let mut detached_arrival = valid.route_components.clone();
         detached_arrival.swap(2, 3);
@@ -6741,7 +6835,10 @@ mod tests {
 
         let mut duplicate_arrival = valid.route_components.clone();
         duplicate_arrival.insert(3, procedure_component(ProcedureKind::Star, "KPAE"));
-        cases.push((duplicate_arrival, ARRIVAL_ATTACHMENT_MESSAGE));
+        cases.push((
+            duplicate_arrival,
+            "Only one arrival may be loaded in a flight plan.",
+        ));
 
         let mut detached_approach = valid.route_components.clone();
         detached_approach.swap(4, 5);
@@ -6752,7 +6849,10 @@ mod tests {
             valid.route_components.len() - 1,
             procedure_component(ProcedureKind::Approach, "KPAE"),
         );
-        cases.push((duplicate_approach, APPROACH_ATTACHMENT_MESSAGE));
+        cases.push((
+            duplicate_approach,
+            "Only one approach may be loaded in a flight plan.",
+        ));
 
         for (components, expected_message) in cases {
             let error = validate_procedure_attachments(&components).unwrap_err();
@@ -6816,17 +6916,13 @@ mod tests {
     fn attached_procedures_explain_insertions_but_leave_endpoint_removal_enabled() {
         let plan = plan_with_all_attached_procedures();
 
-        for action_id in [
-            FlightPlanRowActionId::InsertBefore,
-            FlightPlanRowActionId::InsertAfter,
-        ] {
-            let action = row_action_for_component(&plan, 0, action_id);
-            assert!(!action.enabled);
-            assert_eq!(
-                action.disabled_reason.as_deref(),
-                Some(DEPARTURE_ATTACHMENT_MESSAGE)
-            );
-        }
+        assert!(row_action_for_component(&plan, 0, FlightPlanRowActionId::InsertBefore).enabled);
+        let action = row_action_for_component(&plan, 0, FlightPlanRowActionId::InsertAfter);
+        assert!(!action.enabled);
+        assert_eq!(
+            action.disabled_reason.as_deref(),
+            Some(DEPARTURE_ATTACHMENT_MESSAGE)
+        );
 
         let destination_insert_before =
             row_action_for_component(&plan, 5, FlightPlanRowActionId::InsertBefore);
@@ -6837,11 +6933,8 @@ mod tests {
         );
         let destination_insert_after =
             row_action_for_component(&plan, 5, FlightPlanRowActionId::InsertAfter);
-        assert!(!destination_insert_after.enabled);
-        assert_eq!(
-            destination_insert_after.disabled_reason.as_deref(),
-            Some(APPROACH_ATTACHMENT_MESSAGE)
-        );
+        assert!(destination_insert_after.enabled);
+        assert!(destination_insert_after.disabled_reason.is_none());
 
         assert!(row_action_for_component(&plan, 0, FlightPlanRowActionId::Remove).enabled);
         assert!(row_action_for_component(&plan, 5, FlightPlanRowActionId::Remove).enabled);
@@ -9196,7 +9289,7 @@ mod tests {
     }
 
     #[test]
-    fn airport_rows_offer_procedure_classes_for_their_route_role() {
+    fn airport_rows_offer_procedure_classes_independent_of_route_position() {
         let plan = FlightPlan {
             route_components: vec![
                 RouteComponent::Waypoint {
@@ -9229,14 +9322,14 @@ mod tests {
             procedure_actions(0),
             vec![
                 (ProcedureKind::Sid, true),
-                (ProcedureKind::Star, false),
-                (ProcedureKind::Approach, false),
+                (ProcedureKind::Star, true),
+                (ProcedureKind::Approach, true),
             ]
         );
         assert_eq!(
             procedure_actions(1),
             vec![
-                (ProcedureKind::Sid, false),
+                (ProcedureKind::Sid, true),
                 (ProcedureKind::Star, true),
                 (ProcedureKind::Approach, true),
             ]

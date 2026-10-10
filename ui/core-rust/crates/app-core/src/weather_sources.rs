@@ -70,6 +70,16 @@ pub struct StationPosition {
 }
 
 impl StationPosition {
+    /// Published weather can carry out-of-range "unknown location" values.
+    /// That is missing station metadata, not a reason to discard its report.
+    fn from_product(latitude: f64, longitude: f64) -> Option<Self> {
+        let position = Self {
+            latitude,
+            longitude,
+        };
+        position.validate().ok().map(|()| position)
+    }
+
     fn validate(self) -> Result<(), &'static str> {
         if !(-90.0..=90.0).contains(&self.latitude) || !(-180.0..=180.0).contains(&self.longitude) {
             return Err("invalid weather station coordinates");
@@ -673,10 +683,7 @@ impl StationWeather {
             if station != StationId::new(&key)? {
                 return Err("METAR key/station mismatch");
             }
-            let position = StationPosition {
-                latitude: record.latitude,
-                longitude: record.longitude,
-            };
+            let position = StationPosition::from_product(record.latitude, record.longitude);
             let report_time = record
                 .observed_at_utc
                 .as_deref()
@@ -720,10 +727,7 @@ impl StationWeather {
             if station != StationId::new(&key)? {
                 return Err("TAF key/station mismatch");
             }
-            let position = StationPosition {
-                latitude: record.latitude,
-                longitude: record.longitude,
-            };
+            let position = StationPosition::from_product(record.latitude, record.longitude);
             let report_time = record
                 .issued_at_utc
                 .as_deref()
@@ -754,21 +758,22 @@ impl StationWeather {
         kind: StationReportKind,
         source: StationMetadataSource,
         metadata: WeatherProductMetadata,
-        reports: Vec<(StationReport, StationPosition)>,
+        reports: Vec<(StationReport, Option<StationPosition>)>,
     ) -> Result<(), &'static str> {
         let mut directory = self.directory.clone();
         let mut replacement = StationReports::default();
         for (report, position) in reports {
-            position.validate()?;
             let station = report.station.clone();
             if replacement.get(&station, kind).is_some() {
                 return Err("duplicate weather station");
             }
-            if directory
-                .get(&station)
-                .is_none_or(|existing| existing.source >= source)
-            {
-                directory.correct_location(station, StationMetadata { position, source })?;
+            if let Some(position) = position {
+                if directory
+                    .get(&station)
+                    .is_none_or(|existing| existing.source >= source)
+                {
+                    directory.correct_location(station, StationMetadata { position, source })?;
+                }
             }
             replacement.ingest(report)?;
         }
@@ -1082,7 +1087,14 @@ mod tests {
         state.install_metars(metars(47.4), time(20)).unwrap();
         state.ingest(WeatherSource::Receiver, report(40)).unwrap();
         let before = state.snapshot().unwrap();
-        assert!(state.install_metars(metars(91.0), time(20)).is_err());
+        let mut invalid = metars(47.4);
+        invalid
+            .metars_by_station
+            .get_mut("PASS")
+            .unwrap()
+            .raw_text
+            .clear();
+        assert!(state.install_metars(invalid, time(20)).is_err());
         assert_eq!(
             state.snapshot().unwrap(),
             before,
@@ -1142,6 +1154,101 @@ mod tests {
             state.query().station_position("PASS"),
             restored.query().station_position("PASS")
         );
+    }
+
+    #[test]
+    fn internet_reports_with_missing_geography_do_not_poison_products_or_known_locations() {
+        for (latitude, longitude) in [
+            (-99.99, -99.99),
+            (-99.999, -99.999),
+            (47.4, 181.0),
+            (f64::NAN, -121.4),
+        ] {
+            let mut state = StationWeather::default();
+            let known = StationMetadata {
+                position: StationPosition {
+                    latitude: 47.4,
+                    longitude: -121.4,
+                },
+                source: StationMetadataSource::Internet,
+            };
+            state
+                .directory
+                .discover(StationId::new("KNOWN").unwrap(), known.clone())
+                .unwrap();
+            let mut metars = crate::MetarProductPayload {
+                schema_version: 3,
+                version_label: "metars-v1".into(),
+                generated_at_utc: Some(time(10)),
+                observed_at_utc: None,
+                metar_count: None,
+                metars_by_station: Default::default(),
+            };
+            let mut tafs = crate::TafProductPayload {
+                schema_version: 1,
+                version_label: "tafs-v1".into(),
+                generated_at_utc: Some(time(10)),
+                taf_count: None,
+                tafs_by_station: Default::default(),
+            };
+            for id in ["KNOWN", "UNKNOWN", "HEALTHY"] {
+                let (latitude, longitude) = if id == "HEALTHY" {
+                    (47.5, -121.5)
+                } else {
+                    (latitude, longitude)
+                };
+                metars.metars_by_station.insert(
+                    id.into(),
+                    crate::MetarRecord {
+                        station_id: id.into(),
+                        latitude,
+                        longitude,
+                        raw_text: format!("METAR {id} 060110Z 00000KT 10SM CLR 10/08 A3000"),
+                        observed_at_utc: Some(time(10).to_rfc3339()),
+                        flight_category: Some("VFR".into()),
+                        clouds: None,
+                    },
+                );
+                tafs.tafs_by_station.insert(
+                    id.into(),
+                    crate::TafRecord {
+                        station_id: id.into(),
+                        latitude,
+                        longitude,
+                        raw_text: format!("TAF {id} 060110Z 0601/0701 00000KT P6SM SCT020"),
+                        issued_at_utc: Some(time(10).to_rfc3339()),
+                    },
+                );
+            }
+            state.install_metars(metars, time(20)).unwrap();
+            state.install_tafs(tafs, time(20)).unwrap();
+            let restored = StationWeather::restore(&state.snapshot().unwrap()).unwrap();
+            for weather in [&state, &restored] {
+                let query = weather.query();
+                for id in ["KNOWN", "UNKNOWN", "HEALTHY"] {
+                    assert!(query.metar(id).is_some());
+                    assert!(query.taf(id).is_some());
+                }
+                assert_eq!(query.station_position("KNOWN"), Some(known.position));
+                assert_eq!(query.station_position("UNKNOWN"), None);
+                assert_eq!(
+                    query
+                        .in_bounds(47.0, -122.0, 48.0, -121.0)
+                        .iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["HEALTHY", "KNOWN"]
+                );
+            }
+            let directory =
+                StationDirectory::decode_document(&state.directory.encode_document().unwrap())
+                    .unwrap();
+            assert!(directory.get(&StationId::new("UNKNOWN").unwrap()).is_none());
+            assert_eq!(
+                directory.get(&StationId::new("KNOWN").unwrap()),
+                Some(&known)
+            );
+        }
     }
 
     #[test]

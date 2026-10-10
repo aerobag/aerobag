@@ -21485,7 +21485,7 @@ mod tests {
         let state = serde_json::json!({
             "schema_version": 3,
             "version_label": "v1",
-            "metar_count": 1,
+            "metar_count": 2,
             "metars_by_station": {
                 "KAAA": {
                     "raw_text": "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000",
@@ -21495,6 +21495,12 @@ mod tests {
                     "clouds": { "symbol": "SCT" },
                     "longitude": 0.0,
                     "latitude": 0.0
+                },
+                "ENUN": {
+                    "raw_text": "METAR ENUN 171920Z AUTO 09010KT 9999 OVC031/// 09/02 Q0996 W///S3",
+                    "station_id": "ENUN",
+                    "longitude": -99.99,
+                    "latitude": -99.99
                 }
             }
         });
@@ -21564,6 +21570,9 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
+            let query = session.weather.runtime().station_weather.query();
+            assert!(query.metar("ENUN").is_some());
+            assert!(query.station_position("ENUN").is_none());
             assert!(session
                 .weather
                 .runtime()
@@ -21619,6 +21628,7 @@ mod tests {
             let session = session_mut(&mut sessions, restarted.handle).unwrap();
             let query = session.weather.runtime().station_weather.query();
             assert!(query.station_position("KAAA").is_some());
+            assert!(query.station_position("ENUN").is_none());
             assert!(query.metar("KAAA").is_none());
         }
         destroy_session(restarted.handle);

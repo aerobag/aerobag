@@ -467,3 +467,14 @@ no coordinate changes after the first product; whole-document writes are bounded
 and metadata-driven, not per-observation. This cache is local, not user/cloud state.
 Exact cycle weather-station metadata still requires a NAV publication/fixture
 update; airport ARP aliases remain explicitly unsuitable substitutes.
+
+Real-platform validation with the pinned national weather fixture exposed
+out-of-range upstream station coordinates (for example ENUN at -99.99/-99.99).
+Report validity and geographic availability must remain separate: both Internet
+METAR/TAF adapters retain these reports by station ID but emit no location update.
+They neither poison the whole product nor erase an existing learned location.
+The shared directory still strictly validates persisted coordinates. Regression
+coverage includes both products, preservation across restart, and prepared-product
+landing through a real session; the new missing-geography test failed before this
+correction. Original failed UI-run evidence is retained under
+`/tmp/gtx-local-doc-results` in this development workspace.

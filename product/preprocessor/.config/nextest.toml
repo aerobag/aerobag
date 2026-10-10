@@ -7,3 +7,9 @@ fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# This is an ordering test using real durable publication, not an IO benchmark.
+# Kill an actual deadlock without requiring its fsyncs to meet a channel deadline.
+[[profile.default.overrides]]
+filter = 'test(=tests::production_workers_publish_and_repoll_while_another_feed_is_blocked)'
+slow-timeout = { period = "60s", terminate-after = 2 }

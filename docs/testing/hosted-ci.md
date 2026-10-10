@@ -782,6 +782,16 @@ tests inject client failure, server panic and watchdog expiry while I/O is pendi
 no sleeps are used to establish progress. Production request/SSE deadlines are
 unchanged; functional response assertions still check the actual served bytes.
 
+The production-worker isolation test also asserts ordering, not host disk speed.
+It holds the slow builder on an explicit gate while the observer executes two
+real publication ticks, consumes their already-announced SSE events, and checks
+status. Only then can it release the slow builder and verify both catalog entries.
+Do not wrap those fsyncs and compression subprocesses in a channel performance
+deadline: concurrent release-preflight IO once made valid publication exceed ten
+seconds. The nextest process watchdog bounds deadlocks separately; it cannot
+release the gate or turn blocked work into a passing test. Early errors/panics
+drop the gate sender before joining the worker.
+
 Shared observations own deadlines even when a probe or event notification never
 settles. Only `TransientObservationError` permits another read. A terminal
 pre-action read forbids mutation; an action timeout aborts the journey, never

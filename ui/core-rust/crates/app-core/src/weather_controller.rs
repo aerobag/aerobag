@@ -160,6 +160,7 @@ pub(crate) struct WeatherRuntime {
     // lives exclusively in station_weather's directory.
     pub pirep_tile_cache: HashMap<String, MetarTilePayload>,
     pub station_weather: StationWeather,
+    pub directory_persistence: crate::weather_directory_storage::WeatherDirectoryPersistence,
     pub pirep_payload: Option<crate::PirepProductPayload>,
     pub prepared_pirep_tiles: Option<Vec<crate::PreparedPirepTile>>,
     pub important_metar_station_ids: Option<HashSet<String>>,
@@ -188,6 +189,24 @@ pub(crate) struct WeatherController {
 }
 
 impl WeatherController {
+    pub fn load_station_directory(
+        &mut self,
+        storage: &Arc<crate::local_documents::LocalDocuments>,
+    ) {
+        self.runtime
+            .directory_persistence
+            .load(self.runtime.station_weather.directory_mut(), storage);
+    }
+
+    pub fn persist_station_directory(
+        &mut self,
+        storage: &Arc<crate::local_documents::LocalDocuments>,
+    ) {
+        self.runtime
+            .directory_persistence
+            .flush(self.runtime.station_weather.directory(), storage);
+    }
+
     pub fn set_receiver_radar(&mut self, radar: Arc<crate::receiver::radar::History>) {
         if !Arc::ptr_eq(&self.model.receiver_radar, &radar) {
             self.model.receiver_radar = radar;

@@ -71,6 +71,7 @@ pub mod time_display;
 pub mod ui_geometry;
 pub mod ui_work_scheduler;
 mod weather_controller;
+mod weather_directory_storage;
 pub mod weather_sources;
 
 pub use adsb::VisibleAdsbTraffic;

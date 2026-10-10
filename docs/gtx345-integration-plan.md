@@ -403,7 +403,6 @@ Tests cover the production runtime's actual export in addition to fragmented,
 retransmitted, reconnected, truncated, corrupted, and out-of-order input.
 
 Remaining followups beyond this first-cut artifact: exact cycle station metadata,
-durable learned-directory wiring (current offline Internet products reseed it),
 raw-METAR flight-category parsing, radar-history restoration, and independent
 hardware validation. Text-only receiver reports remain readable without
 invented coordinates or borrowed flight-category symbols.
@@ -446,14 +445,25 @@ SQLite cache is created and the storage failure is gone. Both NEXRAD journeys
 pass again with that build. These checks do not simulate a Bluetooth radio or
 establish independent live weather reception.
 
-The remaining station-directory persistence requires a deliberate shared local
-cache boundary. The present durable live-feed store retains current products;
-it cannot preserve a station removed from those products. Hanging learned
-geography off the Android-only receiver worker would recreate platform-owned
-weather policy, and synchronous file writes inside session mutation would
-violate the scheduling discipline. Proposed next step: core-owned, bounded
-cache reads/writes with asynchronous platform byte-storage effects, separate
-from user/cloud settings. This decision has been raised for review before
-expanding the current capture-ready artifact. Exact cycle weather-station
-metadata would additionally require a NAV publication/fixture update; airport
-ARP aliases remain explicitly unsuitable substitutes.
+### Shared Local Storage Followthrough
+
+The receiver work was checkpointed separately, the existing settings/tour
+storage was generalized and merged into local main first, and the receiver
+branch was rebased onto it. See [the boundary contract](refactor/local-documents.md).
+
+The learned station directory now uses that same keyed opaque-document store on
+both platforms. Core owns the document key, schema, validation, metadata revision,
+write coalescing and error status. Platforms do not know what stations are.
+Only identifiers, exact coordinates and metadata provenance are persisted;
+weather reports retain their separate source/cache lifetimes, and the spatial
+index is rebuilt on load. One metadata-changing batch queues one replacement;
+report-only updates do not serialize or write this document. Restored metadata
+is not rewritten at startup. Invalid documents are protected and reported through
+core while live station learning remains usable in memory.
+
+The measured dev-feed union had 5,231 stations: directory JSON was 432,946 bytes
+(about 423 KiB; 63 KiB gzipped). A three-hour sample introduced 156 stations and
+no coordinate changes after the first product; whole-document writes are bounded
+and metadata-driven, not per-observation. This cache is local, not user/cloud state.
+Exact cycle weather-station metadata still requires a NAV publication/fixture
+update; airport ARP aliases remain explicitly unsuitable substitutes.

@@ -2568,6 +2568,9 @@ pub fn configure_platform_capabilities_in_session(
             settings_storage.map(crate::local_documents::LocalDocuments::new);
         session.coordinator.persistence_write_block_reason = None;
         load_session_persistence_from_storage(session)?;
+        if let Some(storage) = &session.coordinator.persistence_storage {
+            session.weather.load_station_directory(storage);
+        }
         session
             .coordinator
             .service_notifications
@@ -8322,23 +8325,35 @@ fn ingest_live_forecast_atmosphere_resource(
 }
 
 fn install_station_metars(session: &mut UiSession, payload: MetarProductPayload) -> AppResult<()> {
-    let received_at = utc_from_epoch_ms(session.coordinator.wall_clock_epoch_ms);
-    session
-        .weather
-        .runtime_mut()
-        .station_weather
-        .install_metars(payload, received_at)
-        .map_err(station_weather_install_error)
+    install_station_weather(session, |weather, received_at| {
+        weather.install_metars(payload, received_at)
+    })
 }
 
 fn install_station_tafs(session: &mut UiSession, payload: TafProductPayload) -> AppResult<()> {
+    install_station_weather(session, |weather, received_at| {
+        weather.install_tafs(payload, received_at)
+    })
+}
+
+fn install_station_weather(
+    session: &mut UiSession,
+    install: impl FnOnce(
+        &mut crate::weather_sources::StationWeather,
+        DateTime<Utc>,
+    ) -> Result<(), &'static str>,
+) -> AppResult<()> {
     let received_at = utc_from_epoch_ms(session.coordinator.wall_clock_epoch_ms);
-    session
-        .weather
-        .runtime_mut()
-        .station_weather
-        .install_tafs(payload, received_at)
-        .map_err(station_weather_install_error)
+    install(
+        &mut session.weather.runtime_mut().station_weather,
+        received_at,
+    )
+    .map_err(station_weather_install_error)?;
+    if let Some(storage) = &session.coordinator.persistence_storage {
+        session.weather.persist_station_directory(storage);
+        storage.arm_completion_check(session.coordinator.wall_clock_epoch_ms);
+    }
+    Ok(())
 }
 
 fn station_weather_install_error(message: &'static str) -> AppError {
@@ -17967,10 +17982,16 @@ mod tests {
     struct MemoryLocalDocumentBackend {
         bytes: Mutex<Option<Vec<u8>>>,
         introduction: Mutex<Option<Vec<u8>>>,
+        documents: Mutex<BTreeMap<String, Vec<u8>>>,
     }
 
     impl LocalDocumentBackend for MemoryLocalDocumentBackend {
         fn read(&self, key: &str) -> AppResult<Option<Vec<u8>>> {
+            if key != crate::local_documents::TOUR_DOCUMENT
+                && key != crate::local_documents::SESSION_DOCUMENT
+            {
+                return Ok(self.documents.lock().unwrap().get(key).cloned());
+            }
             Ok(if key == crate::local_documents::TOUR_DOCUMENT {
                 &self.introduction
             } else {
@@ -17986,6 +18007,19 @@ mod tests {
             bytes: Option<Vec<u8>>,
             complete: crate::local_documents::DocumentCompletion,
         ) {
+            if key != crate::local_documents::TOUR_DOCUMENT
+                && key != crate::local_documents::SESSION_DOCUMENT
+            {
+                let mut documents = self.documents.lock().unwrap();
+                if let Some(bytes) = bytes {
+                    documents.insert(key.into(), bytes);
+                } else {
+                    documents.remove(key);
+                }
+                drop(documents);
+                complete(Ok(()));
+                return;
+            }
             *if key == crate::local_documents::TOUR_DOCUMENT {
                 &self.introduction
             } else {
@@ -21398,9 +21432,56 @@ mod tests {
     }
 
     #[test]
+    fn invalid_station_document_uses_core_storage_warning_without_blocking_settings() {
+        let storage = Arc::new(MemoryLocalDocumentBackend::default());
+        let key = crate::local_documents::STATION_DIRECTORY_DOCUMENT;
+        storage
+            .documents
+            .lock()
+            .unwrap()
+            .insert(key.into(), b"broken".to_vec());
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        let snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+        assert!(has_data_status_box(&snapshot, "local-storage"));
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "debug_flag.tile_labels".into(),
+                value_id: "on".into(),
+            },
+            1_000,
+        )
+        .unwrap();
+        assert!(
+            get_session_snapshot(init.handle)
+                .unwrap()
+                .debug_state
+                .tile_labels
+        );
+        assert!(storage
+            .read(crate::local_documents::SESSION_DOCUMENT)
+            .unwrap()
+            .is_some());
+        assert_eq!(storage.read(key).unwrap().unwrap(), b"broken");
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn prepared_live_feed_metars_install_station_directory() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let storage = Arc::new(MemoryLocalDocumentBackend::default());
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .unwrap();
         let state = serde_json::json!({
             "schema_version": 3,
             "version_label": "v1",
@@ -21519,6 +21600,28 @@ mod tests {
         assert_eq!(overlay.visible_metars.len(), 1);
         assert_eq!(overlay.visible_metars[0].station_id, "KAAA");
         assert_eq!(overlay.visible_metars[0].flight_category, "mvfr");
+        // Real prepared-product landing must save geography through the same
+        // host used at startup. A fresh session has no live-feed data to reseed it.
+        assert!(storage
+            .read(crate::local_documents::STATION_DIRECTORY_DOCUMENT)
+            .unwrap()
+            .is_some());
+        destroy_session(init.handle);
+        let restarted = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_platform_capabilities_in_session(
+            restarted.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .unwrap();
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, restarted.handle).unwrap();
+            let query = session.weather.runtime().station_weather.query();
+            assert!(query.station_position("KAAA").is_some());
+            assert!(query.metar("KAAA").is_none());
+        }
+        destroy_session(restarted.handle);
     }
 
     #[test]

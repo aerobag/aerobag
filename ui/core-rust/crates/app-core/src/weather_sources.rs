@@ -14,6 +14,7 @@ const MAX_STATIONS: usize = 65_536;
 const MAX_REPORT_BYTES: usize = 16 * 1024;
 const MAX_SOURCE_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_DIRECTORY_BYTES: usize = 16 * 1024 * 1024;
 const SPATIAL_CELL_DEGREES: f64 = 2.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -93,9 +94,56 @@ pub struct StationMetadata {
 pub struct StationDirectory {
     stations: BTreeMap<StationId, StationMetadata>,
     spatial: BTreeMap<(i16, i16), BTreeSet<StationId>>,
+    revision: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryDocument<T> {
+    schema_version: u32,
+    stations: T,
 }
 
 impl StationDirectory {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Durable geography only: no reports, receipt clocks or derived index.
+    pub fn encode_document(&self) -> Result<Vec<u8>, &'static str> {
+        let document = DirectoryDocument {
+            schema_version: 1,
+            stations: self.stations.iter().collect::<Vec<_>>(),
+        };
+        let bytes = serde_json::to_vec(&document).map_err(|_| "station directory encoding")?;
+        if bytes.len() > MAX_DIRECTORY_BYTES {
+            return Err("station directory size limit");
+        }
+        Ok(bytes)
+    }
+
+    pub fn decode_document(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.len() > MAX_DIRECTORY_BYTES {
+            return Err("station directory size limit");
+        }
+        let document: DirectoryDocument<Vec<(StationId, StationMetadata)>> =
+            serde_json::from_slice(bytes).map_err(|_| "invalid station directory document")?;
+        if document.schema_version != 1 {
+            return Err("unsupported station directory version");
+        }
+        if document.stations.len() > MAX_STATIONS {
+            return Err("station directory limit");
+        }
+        let mut directory = Self::default();
+        for (id, metadata) in document.stations {
+            if directory.get(&id).is_some() {
+                return Err("duplicate station in directory document");
+            }
+            directory.discover(id, metadata)?;
+        }
+        Ok(directory)
+    }
+
     pub fn get(&self, id: &StationId) -> Option<&StationMetadata> {
         self.stations.get(id)
     }
@@ -151,6 +199,7 @@ impl StationDirectory {
             .entry(metadata.position.cell())
             .or_default()
             .insert(id);
+        self.revision += 1;
         Ok(true)
     }
 

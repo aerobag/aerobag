@@ -152,6 +152,7 @@ pub fn local_document_keys_json() -> Result<String, JsValue> {
     serde_json::to_string(&[
         app_core::local_documents::SESSION_DOCUMENT,
         app_core::local_documents::TOUR_DOCUMENT,
+        app_core::local_documents::STATION_DIRECTORY_DOCUMENT,
     ])
     .map_err(|error| JsValue::from_str(&error.to_string()))
 }

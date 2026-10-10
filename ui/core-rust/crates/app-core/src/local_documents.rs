@@ -12,6 +12,7 @@ use std::{
 
 pub const SESSION_DOCUMENT: &str = "aerobag.core.settings.v1";
 pub const TOUR_DOCUMENT: &str = "aerobag.tour.introduction.v1";
+pub const STATION_DIRECTORY_DOCUMENT: &str = "aerobag.weather.station-directory.v1";
 const RETRY_MS: i64 = 30_000;
 
 /// Existing Android filenames are part of the local persistence contract.
@@ -95,6 +96,24 @@ impl LocalDocuments {
         self.set(key, Some(bytes.to_vec()))
     }
 
+    /// The document owner rejected its schema/content. Keep the original bytes
+    /// protected just as for an IO read failure; report through the same status.
+    pub fn protect_unreadable(&self, key: &str, reason: &str) {
+        let mut state = self.state.lock().unwrap();
+        let document = state.documents.entry(key.into()).or_default();
+        document.read_failed = true;
+        document.error = Some(reason.chars().take(512).collect());
+    }
+
+    pub fn is_protected(&self, key: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .documents
+            .get(key)
+            .is_some_and(|doc| doc.read_failed)
+    }
+
     pub fn delete(self: &Arc<Self>, key: &str) -> AppResult<()> {
         self.set(key, None)
     }
@@ -145,12 +164,16 @@ impl LocalDocuments {
                     match result {
                         Ok(()) => {
                             document.persisted = written;
-                            document.error = None;
-                            document.retry_at = 0;
+                            if !document.read_failed {
+                                document.error = None;
+                                document.retry_at = 0;
+                            }
                         }
                         Err(error) => {
-                            document.error = Some(error.chars().take(512).collect());
-                            document.retry_at = now.saturating_add(RETRY_MS);
+                            if !document.read_failed {
+                                document.error = Some(error.chars().take(512).collect());
+                                document.retry_at = now.saturating_add(RETRY_MS);
+                            }
                         }
                     }
                 }
@@ -343,6 +366,18 @@ mod tests {
         assert_eq!(host.read("a").unwrap().as_deref(), Some(b"old".as_slice()));
         assert!(store.errors().is_empty());
         assert_eq!(store.next_refresh(RETRY_MS), None);
+    }
+
+    #[test]
+    fn completion_does_not_clear_a_newer_document_validation_fault() {
+        let host = Arc::new(Host::default());
+        let store = LocalDocuments::new(host.clone());
+        store.replace("a", b"old-valid-state").unwrap();
+        store.protect_unreadable("a", "invalid document");
+        host.finish(0, Ok(()));
+        assert_eq!(store.errors(), ["a: invalid document"]);
+        assert!(store.replace("a", b"new").is_err());
+        assert!(host.writes.lock().unwrap().is_empty());
     }
 
     #[test]

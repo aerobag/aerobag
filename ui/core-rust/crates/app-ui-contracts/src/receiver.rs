@@ -28,6 +28,17 @@ pub struct ReceiverDevice {
     pub name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum ReceiverInventoryResult {
+    Ready { devices: Vec<ReceiverDevice> },
+    PermissionRequired,
+    BluetoothOff,
+    Unavailable,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -49,9 +60,10 @@ pub enum ReceiverHostEvent {
         succeeded: bool,
     },
     HostUnavailable,
+    RefreshInventory,
     Inventory {
-        permitted: bool,
-        devices: Vec<ReceiverDevice>,
+        request_id: u64,
+        result: ReceiverInventoryResult,
     },
     Action {
         action_id: String,
@@ -88,7 +100,9 @@ pub enum ReceiverHostEffect {
         max_bytes: u32,
     },
     RequestPermission,
-    RefreshInventory,
+    RefreshInventory {
+        request_id: u64,
+    },
     Connect {
         connection_id: u64,
         device: String,

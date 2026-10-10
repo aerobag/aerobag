@@ -1547,6 +1547,7 @@ fn startup_prefetch_pages(
         &mut touched,
         "weather/metar-important-stations",
     )?;
+    trace_extract_value(root, pages, &mut touched, "weather/station-catalog")?;
     let package_keys = trace_prefix_keys(root, pages, &mut touched, "package/by-id/")?;
     for key in package_keys {
         trace_extract_value(root, pages, &mut touched, &key)?;

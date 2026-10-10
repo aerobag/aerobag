@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "https://github.com/aerobag/test-artifacts.git",
-  "commit": "4a0aa71284d6b57021ccba38f24b4215331db52f",
+  "commit": "d0a036d5099a4cb98b2d7f44f396aba3210c6ed0",
   "fixtures": {
     "android-smoke-publication": {
       "path": "e2e/android-smoke-publication",
@@ -16,7 +16,7 @@
           "bundle_manifest_schema": 2
         },
         "package_contracts": {
-          "nav-db": "NAV28",
+          "nav-db": "NAV29",
           "tpp": "TPP1"
         }
       }
@@ -80,7 +80,7 @@
           "csup": "CSUP1",
           "enr-h": "ENH1",
           "enr-l": "ENL1",
-          "nav-db": "NAV28",
+          "nav-db": "NAV29",
           "sec": "SEC1",
           "shaded-relief": "SHD1",
           "tac": "TAC1",

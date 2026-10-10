@@ -18,10 +18,20 @@ import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import org.aerobag.app.generated.ReceiverDevice
+import org.aerobag.app.generated.ReceiverInventoryResult
 
 // OS facts only. Device selection, service UUIDs, timing, retry, capture and
 // aviation messages belong to core, not to this byte-stream adapter.
-internal data class PairedBluetoothDevice(val address: String, val name: String?)
+internal fun readBluetoothInventory(read: () -> ReceiverInventoryResult): ReceiverInventoryResult = try {
+    read()
+} catch (error: java.util.concurrent.CancellationException) {
+    throw error
+} catch (_: SecurityException) {
+    ReceiverInventoryResult.PermissionRequired
+} catch (_: Exception) {
+    ReceiverInventoryResult.Failed
+}
 
 internal class AndroidRfcomm(private val context: Context) {
     fun hasPermission(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
@@ -29,10 +39,12 @@ internal class AndroidRfcomm(private val context: Context) {
         PackageManager.PERMISSION_GRANTED
 
     @SuppressLint("MissingPermission")
-    fun pairedDevices(): List<PairedBluetoothDevice> {
-        check(hasPermission()) { "Bluetooth permission is required" }
-        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return emptyList()
-        return adapter.bondedDevices.map { PairedBluetoothDevice(it.address, it.name) }
+    fun inventory(): ReceiverInventoryResult = readBluetoothInventory {
+        if (!hasPermission()) return@readBluetoothInventory ReceiverInventoryResult.PermissionRequired
+        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
+            ?: return@readBluetoothInventory ReceiverInventoryResult.Unavailable
+        if (!adapter.isEnabled) return@readBluetoothInventory ReceiverInventoryResult.BluetoothOff
+        ReceiverInventoryResult.Ready(adapter.bondedDevices.map { ReceiverDevice(it.address, it.name ?: it.address) })
     }
 
     @SuppressLint("MissingPermission")

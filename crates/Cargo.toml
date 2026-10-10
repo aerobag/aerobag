@@ -12,5 +12,6 @@ members = [
     "notam-state",
     "procedure-geometry-types",
     "product-contracts",
+    "weather-observation",
 ]
 resolver = "2"

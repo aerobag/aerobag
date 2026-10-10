@@ -520,11 +520,13 @@ export type ReceiverDevice = {
   name: string;
 };
 
+export type ReceiverInventoryResult = { devices: ReceiverDevice[]; kind: "ready" } | { kind: "permission_required" } | { kind: "bluetooth_off" } | { kind: "unavailable" } | { kind: "failed" };
+
 export type ReceiverIoFailure = "connection" | "read" | "write" | "permission" | "bluetooth_disabled";
 
-export type ReceiverHostEvent = { kind: "host_failed" } | { kind: "file_read"; request_id: string; succeeded: boolean } | { kind: "host_unavailable" } | { devices: ReceiverDevice[]; kind: "inventory"; permitted: boolean } | { action_id: string; kind: "action" } | { connection_id: number; kind: "connected" } | { connection_id: number; kind: "received" } | { connection_id: number; kind: "written"; write_id: number } | { connection_id: number; failure: ReceiverIoFailure; kind: "failed" } | { kind: "tick" };
+export type ReceiverHostEvent = { kind: "host_failed" } | { kind: "file_read"; request_id: string; succeeded: boolean } | { kind: "host_unavailable" } | { kind: "refresh_inventory" } | { kind: "inventory"; request_id: number; result: ReceiverInventoryResult } | { action_id: string; kind: "action" } | { connection_id: number; kind: "connected" } | { connection_id: number; kind: "received" } | { connection_id: number; kind: "written"; write_id: number } | { connection_id: number; failure: ReceiverIoFailure; kind: "failed" } | { kind: "tick" };
 
-export type ReceiverHostEffect = { kind: "share_file"; mime_type: string; path: string; title: string } | { kind: "read_private_file"; max_bytes: number; request_id: string } | { kind: "request_permission" } | { kind: "refresh_inventory" } | { connection_id: number; device: string; kind: "connect"; service_uuid: string } | { connection_id: number; kind: "close" } | { bytes_base64: string; connection_id: number; kind: "write"; write_id: number };
+export type ReceiverHostEffect = { kind: "share_file"; mime_type: string; path: string; title: string } | { kind: "read_private_file"; max_bytes: number; request_id: string } | { kind: "request_permission" } | { kind: "refresh_inventory"; request_id: number } | { connection_id: number; device: string; kind: "connect"; service_uuid: string } | { connection_id: number; kind: "close" } | { bytes_base64: string; connection_id: number; kind: "write"; write_id: number };
 
 export type ReceiverHostOutput = {
   delivery_ready: boolean;

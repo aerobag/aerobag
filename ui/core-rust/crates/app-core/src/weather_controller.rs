@@ -166,6 +166,7 @@ pub(crate) struct WeatherRuntime {
     pub important_metar_station_ids: Option<HashSet<String>>,
     pub metar_station_importance_status: Option<DataStatusRecord>,
     pub weather_station_airport_aliases: Option<WeatherStationAirportAliases>,
+    pub cycle_station_catalog_loaded: bool,
     pub obstacle_had: Option<LiveObstacleHadState>,
     pub forecast_atmosphere_state: Option<LiveForecastAtmosphereState>,
     pub forecast_atmosphere: Option<crate::InstalledForecastAtmosphere>,
@@ -431,6 +432,7 @@ impl WeatherController {
         self.runtime.important_metar_station_ids = None;
         self.runtime.metar_station_importance_status = None;
         self.runtime.weather_station_airport_aliases = None;
+        self.runtime.cycle_station_catalog_loaded = false;
         self.note_change();
     }
 

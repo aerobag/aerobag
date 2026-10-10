@@ -11,7 +11,7 @@ use std::{
 use anyhow::{bail, Context};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::{events::Event, Reader};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 mod tpp_cifp_matching;
 
@@ -27,6 +27,60 @@ pub use tpp_cifp_matching::{
 
 pub const INTERMEDIATE_SQLITE_BASENAME: &str = "intermediate-sqlite.db";
 
+pub fn is_contiguous_us_state(state: &str) -> bool {
+    matches!(
+        state.trim().to_ascii_uppercase().as_str(),
+        "AL" | "AZ"
+            | "AR"
+            | "CA"
+            | "CO"
+            | "CT"
+            | "DE"
+            | "FL"
+            | "GA"
+            | "ID"
+            | "IL"
+            | "IN"
+            | "IA"
+            | "KS"
+            | "KY"
+            | "LA"
+            | "ME"
+            | "MD"
+            | "MA"
+            | "MI"
+            | "MN"
+            | "MS"
+            | "MO"
+            | "MT"
+            | "NE"
+            | "NV"
+            | "NH"
+            | "NJ"
+            | "NM"
+            | "NY"
+            | "NC"
+            | "ND"
+            | "OH"
+            | "OK"
+            | "OR"
+            | "PA"
+            | "RI"
+            | "SC"
+            | "SD"
+            | "TN"
+            | "TX"
+            | "UT"
+            | "VT"
+            | "VA"
+            | "WA"
+            | "WV"
+            | "WI"
+            | "WY"
+            | "DC"
+    )
+}
+
 const TABLES: &[&str] = &[
     "airports",
     "airportcontacts",
@@ -36,6 +90,7 @@ const TABLES: &[&str] = &[
     "procedure_navaids",
     "fix",
     "awos",
+    "weatherstations",
     "saa",
     "airways",
     "cifp_sid_star_app",
@@ -218,28 +273,42 @@ fn awy_coord(value: &str) -> f64 {
     }
 }
 
-fn awos_coord_lat_bug(value: &str) -> Option<f64> {
-    if value.len() != 14 {
-        return None;
+fn awos_coordinate(value: &str, latitude: bool) -> anyhow::Result<Option<f64>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
     }
-    let deg = perl_num(trim(field(value, 0, 3)));
-    let min = perl_num(trim(field(value, 4, 2))) / 60.0;
-    let sec = perl_num(trim(field(value, 7, 7))) / 3600.0;
-    let hemi = field(value, 0, 1);
-    let coord = deg + min + sec;
-    Some(if hemi == "N" { coord } else { -coord })
-}
-
-fn awos_coord_lon_bug(value: &str) -> Option<f64> {
-    if value.len() != 14 {
-        return None;
-    }
-    let deg = perl_num(trim(field(value, 0, 3)));
-    let min = perl_num(trim(field(value, 4, 2))) / 60.0;
-    let sec = perl_num(trim(field(value, 7, 7))) / 3600.0;
-    let hemi = field(value, 14, 1);
-    let coord = deg + min + sec;
-    Some(if hemi == "W" { -coord } else { coord })
+    // FAA AWOS layout: DD-MM-SS.SSSSH / DDD-MM-SS.SSSSH, not ARP.
+    anyhow::ensure!(
+        value.is_ascii() && value.len() == if latitude { 14 } else { 15 },
+        "Invalid AWOS coordinate {value:?}"
+    );
+    let hemisphere = value.as_bytes()[value.len() - 1];
+    anyhow::ensure!(
+        if latitude {
+            b"NS".contains(&hemisphere)
+        } else {
+            b"EW".contains(&hemisphere)
+        },
+        "Invalid AWOS hemisphere {value:?}"
+    );
+    let parts: Vec<_> = value[..value.len() - 1].split('-').collect();
+    anyhow::ensure!(parts.len() == 3, "Invalid AWOS DMS {value:?}");
+    let degrees: u32 = parts[0].parse()?;
+    let minutes: u32 = parts[1].parse()?;
+    let seconds: f64 = parts[2].parse()?;
+    let decimal = f64::from(degrees) + f64::from(minutes) / 60.0 + seconds / 3600.0;
+    anyhow::ensure!(
+        minutes < 60
+            && (0.0..60.0).contains(&seconds)
+            && decimal <= if latitude { 90.0 } else { 180.0 },
+        "Invalid AWOS range {value:?}"
+    );
+    Ok(Some(if b"SW".contains(&hemisphere) {
+        -decimal
+    } else {
+        decimal
+    }))
 }
 
 fn setup_schema(conn: &Connection) -> anyhow::Result<()> {
@@ -254,6 +323,7 @@ CREATE TABLE procedure_navaids(identifier Text,icao_code Text,section_code Text,
 CREATE TABLE fix(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text);
 CREATE TABLE fix_usage(LocationID Text,Usage Text);
 CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longitude float, Elevation Text, Frequency1 Text, Frequency2 Text, Telephone1 Text, Telephone2 Text, Remark Text);
+CREATE TABLE weatherstations(station_id TEXT PRIMARY KEY, latitude REAL NOT NULL, longitude REAL NOT NULL);
 CREATE TABLE saa(designator TEXT,name TEXT,upperlimit TEXT,lowerlimit TEXT,begintime TEXT,endtime TEXT,timeref TEXT,beginday TEXT,endday TEXT,day TEXT,FreqTx TEXT,FreqRx TEXT,lat FLOAT,lon FLOAT);
 -- `recommended_navaid` / `recd_nav_*` are inherited ARINC-style names from the CIFP
 -- fixed-width SID/STAR/approach record layout. FAA says CIFP follows ARINC 424, and
@@ -797,8 +867,8 @@ fn insert_awos_with_ids(
     let mut ident = String::new();
     let mut kind = String::new();
     let mut status = String::new();
-    let mut lat = String::new();
-    let mut lon = String::new();
+    let mut lat = None;
+    let mut lon = None;
     let mut elevation = String::new();
     let mut freq1 = String::new();
     let mut freq2 = String::new();
@@ -822,13 +892,38 @@ fn insert_awos_with_ids(
             kind = trim(field(&line, 9, 10)).to_string();
             status = trim(field(&line, 19, 1)).to_string();
             let lat_s = trim(field(&line, 31, 14));
-            lat = awos_coord_lat_bug(lat_s)
-                .map(|value| value.to_string())
-                .unwrap_or_default();
-            let lon_s = trim(field(&line, 45, 14));
-            lon = awos_coord_lon_bug(lon_s)
-                .map(|value| value.to_string())
-                .unwrap_or_default();
+            lat = awos_coordinate(lat_s, true)?;
+            let lon_s = trim(field(&line, 45, 15));
+            lon = awos_coordinate(lon_s, false)?;
+            if status == "Y" {
+                let raw_ident = trim(field(&line, 5, 4)).to_ascii_uppercase();
+                let state = trim(field(&line, 161, 2));
+                let station_id = if ident.len() == 4 {
+                    Some(ident.clone())
+                } else if raw_ident.len() == 3 && is_contiguous_us_state(state) {
+                    Some(format!("K{raw_ident}"))
+                } else {
+                    None
+                };
+                if let (Some(station_id), Some(latitude), Some(longitude)) = (station_id, lat, lon)
+                {
+                    let previous: Option<(f64, f64)> = conn
+                        .query_row(
+                            "SELECT latitude,longitude FROM weatherstations WHERE station_id=?1",
+                            [&station_id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()?;
+                    anyhow::ensure!(
+                        previous.is_none_or(|p| p == (latitude, longitude)),
+                        "Conflicting AWOS positions for {station_id}"
+                    );
+                    conn.execute(
+                        "INSERT OR IGNORE INTO weatherstations VALUES (?1,?2,?3)",
+                        params![station_id, latitude, longitude],
+                    )?;
+                }
+            }
             elevation = trim(field(&line, 60, 7)).to_string();
             freq1 = trim(field(&line, 68, 7)).to_string();
             freq2 = trim(field(&line, 75, 7)).to_string();
@@ -1735,6 +1830,33 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn station_dms_uses_faa_widths_and_hemispheres_and_rejects_invalid_nonempty_values() {
+        assert_eq!(awos_coordinate("47-30-00.0000N", true).unwrap(), Some(47.5));
+        assert_eq!(
+            awos_coordinate("47-30-00.0000S", true).unwrap(),
+            Some(-47.5)
+        );
+        assert_eq!(
+            awos_coordinate("122-15-00.0000W", false).unwrap(),
+            Some(-122.25)
+        );
+        assert_eq!(
+            awos_coordinate("122-15-00.0000E", false).unwrap(),
+            Some(122.25)
+        );
+        assert_eq!(awos_coordinate("              ", true).unwrap(), None);
+        for value in [
+            "47-60-00.0000N",
+            "47-30-60.0000N",
+            "91-00-00.0000N",
+            "47-30-00.0000W",
+            "47garbage",
+        ] {
+            assert!(awos_coordinate(value, true).is_err(), "{value}");
+        }
+    }
     use tempfile::tempdir;
 
     fn put_field(line: &mut [u8], start: usize, len: usize, value: &str) {
@@ -1891,13 +2013,14 @@ mod tests {
     }
 
     fn build_awos1_line(faa: &str) -> String {
-        let mut line = vec![b' '; 120];
+        let mut line = vec![b' '; 255];
         put_field(&mut line, 0, 5, "AWOS1");
         put_field(&mut line, 5, 4, faa);
         put_field(&mut line, 9, 10, "AWOS-3");
         put_field(&mut line, 19, 1, "Y");
-        put_field(&mut line, 31, 14, "047 29 51.00N");
-        put_field(&mut line, 45, 14, "122 12 34.00W");
+        put_field(&mut line, 31, 14, "47-29-51.0000N");
+        put_field(&mut line, 45, 15, "122-12-34.0000W");
+        put_field(&mut line, 161, 2, "WA");
         put_field(&mut line, 60, 7, "0032");
         put_field(&mut line, 68, 7, "118.00");
         put_field(&mut line, 75, 7, "121.50");
@@ -1911,6 +2034,67 @@ mod tests {
         put_field(&mut line, 0, 5, "AWOS2");
         put_field(&mut line, 19, remark.len(), remark);
         String::from_utf8(line).unwrap()
+    }
+
+    #[test]
+    fn weather_catalog_uses_sensor_coordinates_and_keeps_nonairport_stations() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE awos(LocationID,Type,Status,Latitude,Longitude,Elevation,Frequency1,Frequency2,Telephone1,Telephone2,Remark); CREATE TABLE weatherstations(station_id TEXT PRIMARY KEY,latitude REAL,longitude REAL);").unwrap();
+        let mut alaska = build_awos1_line("ANC").into_bytes();
+        put_field(&mut alaska, 161, 2, "AK");
+        let mut unknown_alaska = build_awos1_line("ZZZ").into_bytes();
+        put_field(&mut unknown_alaska, 161, 2, "AK");
+        let mut missing_location = build_awos1_line("AAA").into_bytes();
+        put_field(&mut missing_location, 31, 14, "");
+        let mut inactive = build_awos1_line("BBB").into_bytes();
+        put_field(&mut inactive, 19, 1, "N");
+        std::fs::write(
+            dir.path().join("AWOS.txt"),
+            [
+                build_awos1_line("SEA"),
+                build_awos1_line("1S5"),
+                String::from_utf8(alaska).unwrap(),
+                String::from_utf8(unknown_alaska).unwrap(),
+                String::from_utf8(missing_location).unwrap(),
+                String::from_utf8(inactive).unwrap(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let aliases =
+            BTreeMap::from([("SEA".into(), "KSEA".into()), ("ANC".into(), "PANC".into())]);
+        insert_awos_with_ids(&conn, dir.path(), &aliases).unwrap();
+        let rows = conn
+            .prepare(
+                "SELECT station_id,latitude,longitude FROM weatherstations ORDER BY station_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            ["K1S5", "KSEA", "PANC"]
+        );
+        for (_, latitude, longitude) in rows {
+            assert!((latitude - (47.0 + 29.0 / 60.0 + 51.0 / 3600.0)).abs() < 1e-10);
+            assert!((longitude + (122.0 + 12.0 / 60.0 + 34.0 / 3600.0)).abs() < 1e-10);
+        }
+        let mut conflict = build_awos1_line("SEA").into_bytes();
+        put_field(&mut conflict, 31, 14, "48-29-51.0000N");
+        std::fs::write(dir.path().join("AWOS.txt"), conflict).unwrap();
+        assert!(insert_awos_with_ids(&conn, dir.path(), &aliases)
+            .unwrap_err()
+            .to_string()
+            .contains("Conflicting AWOS positions"));
     }
 
     fn build_fix1_line(id: &str) -> String {

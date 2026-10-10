@@ -115,6 +115,51 @@ struct DirectoryDocument<T> {
 }
 
 impl StationDirectory {
+    pub(crate) fn install_cycle(
+        &mut self,
+        catalog: product_contracts::WeatherStationCatalog,
+    ) -> Result<(), String> {
+        catalog.validate()?;
+        // Validate and apply to a candidate so a malformed catalog cannot leave
+        // half an index installed. A new cycle explicitly replaces its old entries.
+        let mut next = self.clone();
+        let old: Vec<_> = next
+            .stations
+            .iter()
+            .filter(|(_, metadata)| metadata.source == StationMetadataSource::CycleStationCatalog)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in old {
+            let position = next.stations.remove(&id).unwrap().position;
+            let cell = position.cell();
+            let ids = next.spatial.get_mut(&cell).unwrap();
+            ids.remove(&id);
+            if ids.is_empty() {
+                next.spatial.remove(&cell);
+            }
+        }
+        for (id, position) in catalog.stations {
+            next.correct_location(
+                StationId::new(&id)?,
+                StationMetadata {
+                    source: StationMetadataSource::CycleStationCatalog,
+                    position: StationPosition {
+                        latitude: position.latitude,
+                        longitude: position.longitude,
+                    },
+                },
+            )?;
+        }
+        if next.stations != self.stations {
+            next.revision = self
+                .revision
+                .checked_add(1)
+                .expect("station revisions exhausted");
+            *self = next;
+        }
+        Ok(())
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -300,12 +345,17 @@ pub enum StationReportDetails {
 }
 
 impl StationReportDetails {
-    fn unknown(kind: StationReportKind) -> Self {
+    pub(crate) fn from_raw(kind: StationReportKind, text: &str) -> Self {
         match kind {
-            StationReportKind::Metar => Self::Metar {
-                flight_category: None,
-                cloud_symbol: None,
-            },
+            StationReportKind::Metar => {
+                let observation = weather_observation::metar(text);
+                Self::Metar {
+                    flight_category: observation
+                        .flight_category
+                        .map(|category| category.as_str().into()),
+                    cloud_symbol: observation.cloud_symbol.map(str::to_string),
+                }
+            }
             StationReportKind::Taf => Self::Taf,
         }
     }
@@ -349,8 +399,8 @@ impl StationReport {
             StationReportDetails::Taf => None,
         }
     }
-    /// Only parse the identity/revision/time header here. Preserve the complete
-    /// aviation text; container issue time is not the individual report time.
+    /// Preserve complete aviation text while deriving display fields. Container
+    /// issue time is not the individual report time.
     pub fn from_receiver(
         kind: StationReportKind,
         report: &crate::receiver::TextReport,
@@ -384,7 +434,7 @@ impl StationReport {
         }
         let result = Self {
             station,
-            details: StationReportDetails::unknown(kind),
+            details: StationReportDetails::from_raw(kind, &report.text),
             raw_text: report.text.clone(),
             report_time: Some(report_time),
             received_at,
@@ -974,6 +1024,85 @@ fn report_revision(raw_text: &str, kind: StationReportKind) -> ReportRevision {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cycle_catalog_seeds_offline_receiver_geography_and_keeps_feed_only_stations() {
+        let mut directory = StationDirectory::default();
+        let metadata = |latitude| StationMetadata {
+            position: StationPosition {
+                latitude,
+                longitude: -122.0,
+            },
+            source: StationMetadataSource::Internet,
+        };
+        directory
+            .discover(StationId::new("PASS").unwrap(), metadata(48.0))
+            .unwrap();
+        directory
+            .discover(StationId::new("KPAE").unwrap(), metadata(47.0))
+            .unwrap();
+        let catalog = |latitude| product_contracts::WeatherStationCatalog {
+            schema_version: 1,
+            stations: BTreeMap::from([(
+                "KPAE".into(),
+                product_contracts::WeatherStationCoordinates {
+                    latitude,
+                    longitude: -122.0,
+                },
+            )]),
+        };
+        directory.install_cycle(catalog(47.9)).unwrap();
+        let revision = directory.revision();
+        directory.install_cycle(catalog(47.9)).unwrap();
+        assert_eq!(
+            directory.revision(),
+            revision,
+            "same catalog is not a metadata edit"
+        );
+        assert_eq!(
+            directory
+                .get(&StationId::new("KPAE").unwrap())
+                .unwrap()
+                .position
+                .latitude,
+            47.9
+        );
+        assert!(!directory
+            .discover(StationId::new("KPAE").unwrap(), metadata(46.0))
+            .unwrap());
+        directory.install_cycle(catalog(47.8)).unwrap();
+        assert_eq!(
+            directory
+                .get(&StationId::new("KPAE").unwrap())
+                .unwrap()
+                .position
+                .latitude,
+            47.8
+        );
+        assert_eq!(
+            directory
+                .get(&StationId::new("PASS").unwrap())
+                .unwrap()
+                .position
+                .latitude,
+            48.0
+        );
+        let saved = directory.encode_document().unwrap();
+        assert!(directory.install_cycle(catalog(100.0)).is_err());
+        assert_eq!(
+            directory.encode_document().unwrap(),
+            saved,
+            "invalid candidate must be atomic"
+        );
+        let restored = StationDirectory::decode_document(&saved).unwrap();
+        assert_eq!(
+            restored
+                .in_bounds(47.7, -122.1, 48.1, -121.9)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
     fn time(minute: u32) -> DateTime<Utc> {
         chrono::NaiveDate::from_ymd_opt(2026, 10, 6)
             .unwrap()
@@ -984,7 +1113,7 @@ mod tests {
     fn report(minute: u32) -> StationReport {
         StationReport {
             station: StationId::new("PASS").unwrap(),
-            details: StationReportDetails::unknown(StationReportKind::Metar),
+            details: StationReportDetails::from_raw(StationReportKind::Metar, ""),
             raw_text: format!("METAR PASS 0601{minute:02}Z"),
             report_time: Some(time(minute)),
             received_at: time(55),
@@ -1510,7 +1639,7 @@ mod tests {
                 let id = record.station.clone();
                 let mut state = StationWeather::default();
                 let mut older = report(10);
-                older.details = StationReportDetails::unknown(kind);
+                older.details = StationReportDetails::from_raw(kind, "");
                 state.ingest(WeatherSource::Internet, older).unwrap();
                 state.ingest(WeatherSource::Receiver, record).unwrap();
                 let restored = StationWeather::restore(&state.snapshot().unwrap()).unwrap();

@@ -17,6 +17,8 @@ mod notam_catalog_identity;
 mod notam_subject;
 pub mod publication;
 pub mod versioned_json;
+mod weather_station_catalog;
+pub use weather_station_catalog::*;
 
 pub use aerobag_cloud::*;
 pub use aircraft::*;
@@ -444,7 +446,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV28";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV29";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -497,6 +499,10 @@ pub fn nav_db_contract_descriptor() -> NavDbContractDescriptor {
         contract_id: NAV_DB_CONTRACT_ID.to_string(),
         page_encoding: "xz".to_string(),
         required_exact_keys: BTreeMap::from([
+            (
+                WEATHER_STATION_CATALOG_KEY.to_string(),
+                WeatherStationCatalog::SCHEMA_VERSION,
+            ),
             (
                 NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
                 NotamAirportCatalog::SCHEMA_VERSION,
@@ -651,8 +657,8 @@ mod tests {
     #[test]
     fn nav_db_contract_descriptor_matches_immutable_revision() {
         let expected: NavDbContractDescriptor =
-            serde_json::from_str(include_str!("../contracts/nav-db/NAV28.json"))
-                .expect("decode NAV28 contract descriptor");
+            serde_json::from_str(include_str!("../contracts/nav-db/NAV29.json"))
+                .expect("decode NAV29 contract descriptor");
         assert_eq!(nav_db_contract_descriptor(), expected);
     }
 

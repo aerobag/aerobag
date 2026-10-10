@@ -63,6 +63,7 @@ dependencies = [
  "sha2",
  "sunrise",
  "thiserror 1.0.69",
+ "weather-observation",
  "zip",
 ]
 
@@ -1422,6 +1423,10 @@ checksum = "39129a682a6d2d841b6c429d0c51e5cb0ed1a03829d8b3d1e69a011e62cb3d3b"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "weather-observation"
+version = "0.1.0"
 
 [[package]]
 name = "winapi"

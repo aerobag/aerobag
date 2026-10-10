@@ -28,6 +28,7 @@ use std::{
 };
 
 const BATCH_SIZE: usize = 32;
+const INVENTORY_TIMEOUT_MS: u64 = 5_000;
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
 
 /// Pure identity allocation, called when a publisher is constructed, before any
@@ -121,12 +122,58 @@ impl Mailbox {
     }
 }
 
+enum InventoryState {
+    NotChecked,
+    Refreshing {
+        deadline_ms: u64,
+    },
+    Checked {
+        result: ReceiverInventoryResult,
+        at: String,
+    },
+    TimedOut,
+}
+
+impl InventoryState {
+    fn devices(&self) -> &[ReceiverDevice] {
+        match self {
+            Self::Checked {
+                result: ReceiverInventoryResult::Ready { devices },
+                ..
+            } => devices,
+            _ => &[],
+        }
+    }
+
+    fn deadline(&self) -> Option<u64> {
+        match self {
+            Self::Refreshing { deadline_ms } => Some(*deadline_ms),
+            _ => None,
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::NotChecked => "Paired devices have not been checked yet.".into(),
+            Self::Refreshing { .. } => "Refreshing paired devices...".into(),
+            Self::TimedOut => "Paired-device refresh timed out. Try Refresh paired devices again.".into(),
+            Self::Checked { result, at } => match result {
+                ReceiverInventoryResult::Ready { devices } if devices.is_empty() => format!("Refreshed at {at}: no paired Bluetooth devices. Pair the GTX 345 in Android Bluetooth settings, then refresh."),
+                ReceiverInventoryResult::Ready { devices } => format!("Refreshed at {at}: {} paired Bluetooth device{}. Choose Connect for your receiver. This list does not indicate whether devices are in range.", devices.len(), if devices.len() == 1 { "" } else { "s" }),
+                ReceiverInventoryResult::PermissionRequired => "Bluetooth permission is required. Choose Allow Bluetooth, then allow nearby devices.".into(),
+                ReceiverInventoryResult::BluetoothOff => "Bluetooth is turned off. Turn it on in Android settings, then refresh paired devices.".into(),
+                ReceiverInventoryResult::Unavailable => "Bluetooth is unavailable on this device.".into(),
+                ReceiverInventoryResult::Failed => "Could not read paired Bluetooth devices. Try Refresh paired devices again.".into(),
+            },
+        }
+    }
+}
+
 pub struct Runtime {
     root: PathBuf,
     connection: Option<Connection<CaptureArchive>>,
-    devices: Vec<ReceiverDevice>,
+    inventory: InventoryState,
     inventory_generation: u64,
-    permitted: bool,
     error: Option<String>,
     host_failed: bool,
     credentials_ready: bool,
@@ -142,6 +189,11 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(super) fn test_snapshot(&self) -> Arc<super::live::LiveSnapshot> {
+        self.live.snapshot()
+    }
+
     pub fn new(root: PathBuf) -> Self {
         let cache = WeatherCache::open(&root);
         let (weather_cache, weather_error) = match cache {
@@ -151,12 +203,15 @@ impl Runtime {
                 Some(format!("Receiver weather cache unavailable: {error}")),
             ),
         };
+        let mut live = super::live::LiveInput::default();
+        if let Some(cache) = &weather_cache {
+            live.restore_radar(cache.radar().clone());
+        }
         Self {
             root,
             connection: None,
-            devices: Vec::new(),
+            inventory: InventoryState::NotChecked,
             inventory_generation: 0,
-            permitted: false,
             error: None,
             host_failed: false,
             credentials_ready: false,
@@ -167,7 +222,7 @@ impl Runtime {
             weather_cache,
             weather_error,
             last_delivery_signal_ms: None,
-            live: super::live::LiveInput::default(),
+            live,
             mailbox: Arc::new(Mutex::new(Mailbox {
                 next_id: 1,
                 consumer: 0,
@@ -210,6 +265,27 @@ impl Runtime {
         }
     }
 
+    fn ingest_radar(&mut self, radar: &super::Radar, clock: CaptureClock) {
+        if self.weather_error.is_some() {
+            return;
+        }
+        let Some(cache) = &mut self.weather_cache else {
+            return;
+        };
+        let mut history = cache.radar().clone();
+        let prepared = DateTime::<Utc>::from_timestamp_millis(clock.wall_epoch_ms)
+            .ok_or("invalid radar receipt time")
+            .and_then(|now| history.ingest(radar, now));
+        match prepared {
+            Ok(true) => match cache.store_radar(history) {
+                Ok(()) => self.live.restore_radar(cache.radar().clone()),
+                Err(error) => self.weather_error = Some(format!("Receiver radar cache failed: {error}. New weather is not displayed; raw recording continues. Restart the app after correcting storage.")),
+            },
+            Ok(false) => {},
+            Err(_) => self.rejected += 1,
+        }
+    }
+
     fn credentials(&self) -> Result<Credentials, String> {
         let read = |name: &str| -> Result<Vec<u8>, String> {
             let file = fs::File::open(self.root.join(name))
@@ -232,6 +308,13 @@ impl Runtime {
     ) -> ReceiverHostOutput {
         let mut effects = Vec::new();
         let mut output = Output::default();
+        if self
+            .inventory
+            .deadline()
+            .is_some_and(|deadline| clock.monotonic_ms >= deadline)
+        {
+            self.inventory = InventoryState::TimedOut;
+        }
         let event = if self.host_failed {
             ReceiverHostEvent::Tick
         } else {
@@ -272,28 +355,41 @@ impl Runtime {
                 self.connection = None;
                 self.error = Some("Android stopped receiver background service; reconnect when the app is visible".into());
             }
+            ReceiverHostEvent::RefreshInventory => self.refresh_inventory(clock, &mut effects),
             ReceiverHostEvent::Inventory {
-                permitted,
-                mut devices,
+                request_id,
+                mut result,
             } => {
-                devices.truncate(128);
-                devices.retain(|device| device.address.len() <= 64 && device.name.len() <= 256);
-                devices.sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
-                devices.dedup_by(|a, b| a.address == b.address);
-                self.inventory_generation = self
-                    .inventory_generation
-                    .checked_add(1)
-                    .expect("receiver inventory generation exhausted");
-                self.devices = devices;
-                self.permitted = permitted;
-                self.credentials_ready = self.credentials().is_ok();
+                if request_id == self.inventory_generation && self.inventory.deadline().is_some() {
+                    if let ReceiverInventoryResult::Ready { devices } = &mut result {
+                        devices.truncate(128);
+                        devices.retain(|device| {
+                            device.address.len() <= 64 && device.name.len() <= 256
+                        });
+                        devices.sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
+                        devices.dedup_by(|a, b| a.address == b.address);
+                    }
+                    self.inventory = InventoryState::Checked {
+                        result,
+                        at: {
+                            let seconds = clock.wall_epoch_ms.rem_euclid(86_400_000) / 1000;
+                            format!(
+                                "{:02}:{:02}:{:02}Z",
+                                seconds / 3600,
+                                seconds / 60 % 60,
+                                seconds % 60
+                            )
+                        },
+                    };
+                    self.credentials_ready = self.credentials().is_ok();
+                }
             }
             ReceiverHostEvent::Action { action_id } => {
                 self.error = None;
                 if action_id == "receiver:permission" {
                     effects.push(ReceiverHostEffect::RequestPermission);
                 } else if action_id == "receiver:refresh" {
-                    effects.push(ReceiverHostEffect::RefreshInventory);
+                    self.refresh_inventory(clock, &mut effects);
                 } else if matches!(
                     action_id.as_str(),
                     "receiver:import-token" | "receiver:import-bundle"
@@ -332,12 +428,13 @@ impl Runtime {
                     }
                 } else {
                     let device = self
-                        .devices
+                        .inventory
+                        .devices()
                         .iter()
                         .enumerate()
                         .find(|(index, _)| action_id == self.device_action(*index))
                         .map(|(_, device)| device.address.clone());
-                    if let Some(device) = device.filter(|_| self.permitted && !self.active()) {
+                    if let Some(device) = device.filter(|_| !self.active()) {
                         // Blocked owners must release the file lock before opening a new archive.
                         self.connection = None;
                         match self.credentials().and_then(|credentials| {
@@ -436,9 +533,7 @@ impl Runtime {
                 self.live.ingest_nmea(sentence, clock);
             }
             if let Ok(Product::Weather(Weather::Radar(radar))) = &message.product {
-                if self.live.ingest_radar(radar, clock).is_err() {
-                    self.rejected += 1;
-                }
+                self.ingest_radar(radar, clock);
             }
             if let Ok(Product::Weather(Weather::Text { kind, reports, .. })) = message.product {
                 let report_kind = match kind {
@@ -488,8 +583,25 @@ impl Runtime {
                 .into_iter()
                 .chain(pending.then_some(clock.monotonic_ms.saturating_add(1000)))
                 .chain(self.live.next_wake_ms())
+                .chain(self.inventory.deadline())
                 .min(),
         }
+    }
+
+    fn refresh_inventory(&mut self, clock: CaptureClock, effects: &mut Vec<ReceiverHostEffect>) {
+        if self.inventory.deadline().is_some() {
+            return;
+        }
+        self.inventory_generation = self
+            .inventory_generation
+            .checked_add(1)
+            .expect("receiver inventory generation exhausted");
+        self.inventory = InventoryState::Refreshing {
+            deadline_ms: clock.monotonic_ms.saturating_add(INVENTORY_TIMEOUT_MS),
+        };
+        effects.push(ReceiverHostEffect::RefreshInventory {
+            request_id: self.inventory_generation,
+        });
     }
 
     fn active(&self) -> bool {
@@ -644,6 +756,9 @@ impl Runtime {
                 .push(action("receiver:stop", "Disconnect and stop recording"));
         } else {
             panel
+                .detail
+                .push_str(&format!("\n\n{}", self.inventory.description()));
+            panel
                 .actions
                 .push(action("receiver:export", "Export private capture"));
             if !self.credentials_ready {
@@ -655,27 +770,43 @@ impl Runtime {
             panel
                 .actions
                 .push(action("receiver:import-bundle", "Import receiver bundle"));
-            if !self.permitted {
+            if matches!(
+                self.inventory,
+                InventoryState::Checked {
+                    result: ReceiverInventoryResult::PermissionRequired,
+                    ..
+                }
+            ) {
                 panel
                     .actions
                     .push(action("receiver:permission", "Allow Bluetooth"));
-                return panel;
             }
+            let mut refresh = action("receiver:refresh", "Refresh paired devices");
+            if self.inventory.deadline().is_some() {
+                refresh.label = "Refreshing paired devices...".into();
+                refresh.enabled = false;
+                refresh.disabled_reason = Some("Waiting for Android's paired-device list".into());
+            }
+            panel.actions.push(refresh);
             panel
                 .actions
-                .push(action("receiver:refresh", "Refresh paired devices"));
-            panel
-                .actions
-                .extend(self.devices.iter().enumerate().map(|(index, device)| {
-                    let mut button = action(
-                        &self.device_action(index),
-                        &format!("Connect {} ({})", device.name, device.address),
-                    );
-                    button.enabled = self.credentials_ready;
-                    button.disabled_reason = (!self.credentials_ready)
-                        .then(|| "Import both private receiver credential files first".into());
-                    button
-                }));
+                .extend(
+                    self.inventory
+                        .devices()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, device)| {
+                            let mut button = action(
+                                &self.device_action(index),
+                                &format!("Connect {} ({})", device.name, device.address),
+                            );
+                            button.enabled = self.credentials_ready;
+                            button.disabled_reason = (!self.credentials_ready).then(|| {
+                                "Import both private receiver credential files first".into()
+                            });
+                            button
+                        }),
+                );
         }
         panel
     }
@@ -775,14 +906,31 @@ mod tests {
             action_id: id.into(),
         }
     }
-    fn inventory() -> ReceiverHostEvent {
-        ReceiverHostEvent::Inventory {
-            permitted: true,
+    fn inventory() -> ReceiverInventoryResult {
+        ReceiverInventoryResult::Ready {
             devices: vec![ReceiverDevice {
                 address: "00:00:00:00:00:01".into(),
                 name: "Test receiver".into(),
             }],
         }
+    }
+    fn request_inventory(runtime: &mut Runtime, now: u64) -> ReceiverHostOutput {
+        runtime.update(action("receiver:refresh"), &[], clock(now))
+    }
+    fn refresh(
+        runtime: &mut Runtime,
+        result: ReceiverInventoryResult,
+        now: u64,
+    ) -> ReceiverHostOutput {
+        let requested = request_inventory(runtime, now);
+        let ReceiverHostEffect::RefreshInventory { request_id } = requested.effects[0] else {
+            panic!("missing inventory request")
+        };
+        runtime.update(
+            ReceiverHostEvent::Inventory { request_id, result },
+            &[],
+            clock(now),
+        )
     }
     fn root() -> Temp {
         let root = Temp::new();
@@ -796,7 +944,7 @@ mod tests {
         root
     }
     fn start(runtime: &mut Runtime, now: u64) -> u64 {
-        let panel = runtime.update(inventory(), &[], clock(now)).panel;
+        let panel = refresh(runtime, inventory(), now).panel;
         let id = panel.actions.last().unwrap().action_id.clone();
         let output = runtime.update(action(&id), &[], clock(now));
         assert!(output.keep_alive);
@@ -817,6 +965,183 @@ mod tests {
             DateTime::from_timestamp_millis(clock(0).wall_epoch_ms).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn refresh_feedback_distinguishes_waiting_success_empty_and_unchanged_lists() {
+        let root = root();
+        let mut runtime = Runtime::new(root.path().into());
+        let requested = request_inventory(&mut runtime, 0);
+        assert!(requested.panel.detail.contains("Refreshing paired devices"));
+        let button = requested
+            .panel
+            .actions
+            .iter()
+            .find(|a| a.action_id == "receiver:refresh")
+            .unwrap();
+        assert!(!button.enabled);
+        assert!(button.disabled_reason.is_some());
+        assert!(
+            request_inventory(&mut runtime, 1).effects.is_empty(),
+            "coalesce repeated taps"
+        );
+        let ReceiverHostEffect::RefreshInventory { request_id } = requested.effects[0] else {
+            panic!()
+        };
+        let first = runtime.update(
+            ReceiverHostEvent::Inventory {
+                request_id,
+                result: inventory(),
+            },
+            &[],
+            clock(10),
+        );
+        assert_eq!(first.panel.status, "Disconnected", "refresh never connects");
+        assert!(first.effects.is_empty());
+        assert!(first.panel.detail.contains("1 paired Bluetooth device."));
+        assert!(first
+            .panel
+            .detail
+            .contains("does not indicate whether devices are in range"));
+        assert!(first
+            .panel
+            .actions
+            .iter()
+            .any(|a| a.enabled && a.label.starts_with("Connect Test receiver")));
+        let again = refresh(&mut runtime, inventory(), 2_000);
+        assert_ne!(
+            first.panel.detail, again.panel.detail,
+            "unchanged list still acknowledges the new refresh time"
+        );
+        let empty = refresh(
+            &mut runtime,
+            ReceiverInventoryResult::Ready { devices: vec![] },
+            3_000,
+        );
+        assert!(empty.panel.detail.contains("no paired Bluetooth devices"));
+        assert!(empty.panel.detail.contains("Android Bluetooth settings"));
+        assert!(!empty
+            .panel
+            .actions
+            .iter()
+            .any(|a| a.label.starts_with("Connect ")));
+    }
+
+    #[test]
+    fn inventory_failures_are_explicit_and_never_reuse_a_stale_device_list() {
+        for (failure, message) in [
+            (
+                ReceiverInventoryResult::PermissionRequired,
+                "Bluetooth permission is required",
+            ),
+            (
+                ReceiverInventoryResult::BluetoothOff,
+                "Bluetooth is turned off",
+            ),
+            (
+                ReceiverInventoryResult::Unavailable,
+                "Bluetooth is unavailable",
+            ),
+            (
+                ReceiverInventoryResult::Failed,
+                "Could not read paired Bluetooth devices",
+            ),
+        ] {
+            let root = root();
+            let mut runtime = Runtime::new(root.path().into());
+            let old = refresh(&mut runtime, inventory(), 0)
+                .panel
+                .actions
+                .last()
+                .unwrap()
+                .action_id
+                .clone();
+            let failed = refresh(&mut runtime, failure.clone(), 10);
+            assert!(failed.panel.detail.contains(message));
+            assert!(!failed.panel.detail.contains("no paired Bluetooth devices"));
+            assert!(!failed
+                .panel
+                .actions
+                .iter()
+                .any(|a| a.label.starts_with("Connect ")));
+            assert_eq!(
+                failed
+                    .panel
+                    .actions
+                    .iter()
+                    .any(|a| a.label == "Allow Bluetooth"),
+                failure == ReceiverInventoryResult::PermissionRequired
+            );
+            assert!(runtime
+                .update(action(&old), &[], clock(11))
+                .effects
+                .is_empty());
+            let recovered = refresh(&mut runtime, inventory(), 20);
+            assert!(recovered
+                .panel
+                .actions
+                .iter()
+                .any(|a| a.enabled && a.label.starts_with("Connect ")));
+            assert!(!recovered.panel.detail.contains(message));
+        }
+    }
+
+    #[test]
+    fn stuck_inventory_times_out_and_late_results_cannot_replace_newer_inventory() {
+        let root = root();
+        let mut runtime = Runtime::new(root.path().into());
+        let requested = request_inventory(&mut runtime, 0);
+        let ReceiverHostEffect::RefreshInventory { request_id: old } = requested.effects[0] else {
+            panic!()
+        };
+        assert!(requested.next_wake_monotonic_ms.unwrap() <= INVENTORY_TIMEOUT_MS);
+        let timeout = runtime.update(ReceiverHostEvent::Tick, &[], clock(INVENTORY_TIMEOUT_MS));
+        assert!(timeout.panel.detail.contains("refresh timed out"));
+        assert!(timeout
+            .panel
+            .actions
+            .iter()
+            .any(|a| a.action_id == "receiver:refresh" && a.enabled));
+        let late = runtime.update(
+            ReceiverHostEvent::Inventory {
+                request_id: old,
+                result: inventory(),
+            },
+            &[],
+            clock(INVENTORY_TIMEOUT_MS + 1),
+        );
+        assert_eq!(late.panel, timeout.panel);
+        let requested = request_inventory(&mut runtime, 6_000);
+        let ReceiverHostEffect::RefreshInventory { request_id } = requested.effects[0] else {
+            panic!()
+        };
+        let stale = runtime.update(
+            ReceiverHostEvent::Inventory {
+                request_id: old,
+                result: inventory(),
+            },
+            &[],
+            clock(6_001),
+        );
+        assert_eq!(stale.panel, requested.panel);
+        let empty = runtime.update(
+            ReceiverHostEvent::Inventory {
+                request_id,
+                result: ReceiverInventoryResult::Ready { devices: vec![] },
+            },
+            &[],
+            clock(6_002),
+        );
+        assert!(empty.panel.detail.contains("no paired Bluetooth devices"));
+        let duplicate = runtime.update(
+            ReceiverHostEvent::Inventory {
+                request_id,
+                result: inventory(),
+            },
+            &[],
+            clock(6_003),
+        );
+        assert_eq!(duplicate.panel, empty.panel);
     }
 
     #[test]
@@ -905,7 +1230,7 @@ mod tests {
     ) {
         let root = root();
         let mut runtime = Runtime::new(root.path().into());
-        let initial = runtime.update(ReceiverHostEvent::Tick, &[], clock(0));
+        let initial = refresh(&mut runtime, ReceiverInventoryResult::PermissionRequired, 0);
         let permission = initial
             .panel
             .actions
@@ -918,15 +1243,14 @@ mod tests {
                 .effects[0],
             ReceiverHostEffect::RequestPermission
         ));
-        let selection = runtime
-            .update(inventory(), &[], clock(2))
+        let selection = refresh(&mut runtime, inventory(), 2)
             .panel
             .actions
             .last()
             .unwrap()
             .action_id
             .clone();
-        runtime.update(inventory(), &[], clock(3));
+        refresh(&mut runtime, inventory(), 3);
         let stale = runtime.update(action(&selection), &[], clock(4));
         assert!(!stale.keep_alive);
         assert!(stale.panel.status.contains("selection changed"));
@@ -1069,7 +1393,7 @@ mod tests {
         );
         let initial = runtime.mailbox.lock().unwrap().begin().unwrap();
         runtime.mailbox.lock().unwrap().acknowledge(&initial);
-        let update = runtime.update(inventory(), &[], clock(10));
+        let update = refresh(&mut runtime, inventory(), 10);
         assert!(!update.delivery_ready);
         assert!(
             update.next_wake_monotonic_ms.is_some(),
@@ -1160,7 +1484,7 @@ mod tests {
     fn replacement_session_restores_acknowledged_weather_and_rejects_old_consumers() {
         let root = root();
         let mut runtime = Runtime::new(root.path().into());
-        runtime.update(inventory(), &[], clock(0));
+        refresh(&mut runtime, inventory(), 0);
         let old = new_session_consumer();
         runtime.attach(old).unwrap();
         runtime.ingest_weather(vec![report(10)]);
@@ -1320,7 +1644,7 @@ mod tests {
     fn failed_host_has_no_live_controls_and_cannot_be_restarted_by_a_queued_action() {
         let root = root();
         let mut runtime = Runtime::new(root.path().into());
-        let panel = runtime.update(inventory(), &[], clock(0)).panel;
+        let panel = refresh(&mut runtime, inventory(), 0).panel;
         let start = panel.actions.last().unwrap().action_id.clone();
         let failed = runtime.update(ReceiverHostEvent::HostFailed, &[], clock(1));
         assert!(failed.panel.actions.is_empty());

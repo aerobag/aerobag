@@ -32,8 +32,6 @@ pub mod simulation;
 pub mod tfr_detail_backfill;
 mod winds_aloft;
 
-const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
-
 #[derive(Debug, Clone)]
 pub struct BuildTfrRequest {
     pub input_dir: PathBuf,
@@ -1812,92 +1810,7 @@ fn structured_metar_clouds(raw_text: &str) -> StructuredMetarClouds {
     }
 }
 
-fn metar_cloud_symbol(raw_text: &str) -> Option<&'static str> {
-    let observation = raw_text
-        .split_once(" RMK ")
-        .map(|(observation, _)| observation)
-        .unwrap_or(raw_text);
-    let mut layers = Vec::new();
-    for token in observation.split_whitespace() {
-        if METAR_TREND_TOKENS.contains(&token) {
-            break;
-        }
-        match parse_metar_cloud_token(token) {
-            MetarCloudToken::None => {}
-            MetarCloudToken::Immediate(symbol) => return Some(symbol),
-            MetarCloudToken::Layer { amount, height_ft } => {
-                layers.push((amount, height_ft));
-            }
-        }
-    }
-    choose_metar_cloud_symbol(&layers)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MetarCloudToken {
-    None,
-    Immediate(&'static str),
-    Layer {
-        amount: &'static str,
-        height_ft: Option<u32>,
-    },
-}
-
-fn parse_metar_cloud_token(token: &str) -> MetarCloudToken {
-    match token {
-        "CAVOK" | "SKC" | "CLR" | "NCD" => return MetarCloudToken::Immediate("SKC"),
-        "NSC" => return MetarCloudToken::Immediate("NSC"),
-        _ => {}
-    }
-    if token.starts_with("VV") && parse_metar_cloud_height(&token[2..]).is_some() {
-        return MetarCloudToken::Immediate("VV");
-    }
-    for amount in ["FEW", "SCT", "BKN", "OVC"] {
-        if let Some(rest) = token.strip_prefix(amount) {
-            return match parse_metar_cloud_height(rest) {
-                Some(height_ft) => MetarCloudToken::Layer { amount, height_ft },
-                None => MetarCloudToken::None,
-            };
-        }
-    }
-    MetarCloudToken::None
-}
-
-fn parse_metar_cloud_height(rest: &str) -> Option<Option<u32>> {
-    if rest.starts_with("///") {
-        return Some(None);
-    }
-    let digit_len = rest
-        .as_bytes()
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .take(4)
-        .count();
-    if digit_len < 3 {
-        return None;
-    }
-    let suffix = &rest[digit_len..];
-    if !(suffix.is_empty() || suffix == "CB" || suffix == "TCU" || suffix == "///") {
-        return None;
-    }
-    rest[..digit_len]
-        .parse::<u32>()
-        .ok()
-        .map(|hundreds_ft| Some(hundreds_ft * 100))
-}
-
-fn choose_metar_cloud_symbol(layers: &[(&'static str, Option<u32>)]) -> Option<&'static str> {
-    layers
-        .iter()
-        .filter(|(amount, _)| *amount == "BKN" || *amount == "OVC")
-        .min_by_key(|(_, height_ft)| height_ft.unwrap_or(u32::MAX))
-        .or_else(|| {
-            layers
-                .iter()
-                .min_by_key(|(_, height_ft)| height_ft.unwrap_or(u32::MAX))
-        })
-        .map(|(amount, _)| *amount)
-}
+use weather_observation::metar_cloud_symbol;
 
 pub fn load_tfr_notam_ids(input_dir: &Path) -> anyhow::Result<Vec<String>> {
     Ok(load_tfr_list_entries(input_dir)?

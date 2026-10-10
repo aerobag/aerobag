@@ -342,8 +342,8 @@ only a tile-sized RGBA buffer is encoded at a time. CONUS lies below regional
 radar in each receiver frame, preserving source palettes and no-coverage shading.
 Unknown codes shade as no data, not clear weather. The grid age conservatively
 uses the oldest displayed layer; expired layers are removed independently.
-Disconnect retains radar with its original dates; process restart does not
-restore the volatile radar history (the raw evidence remains on disk).
+Disconnect retains radar with its original dates. The followup below also makes
+that bounded history survive process restart, independently of the raw recording.
 
 Both sources use one source-grid mesh projector and animation policy. Core-owned
 image URIs use the existing tile-byte bridge on Android and a WASM byte bridge on
@@ -402,10 +402,9 @@ or weather bodies. Passive replay cannot prove mutual authentication succeeded.
 Tests cover the production runtime's actual export in addition to fragmented,
 retransmitted, reconnected, truncated, corrupted, and out-of-order input.
 
-Remaining followups beyond this first-cut artifact: exact cycle station metadata,
-raw-METAR flight-category parsing, radar-history restoration, and independent
-hardware validation. Text-only receiver reports remain readable without
-invented coordinates or borrowed flight-category symbols.
+The October 10 followup below adds exact cycle station metadata, raw-METAR
+classification, and radar restoration. Independent hardware validation remains
+required. Reports without known station geography remain readable by identity.
 
 ### Validation And Next Boundary
 
@@ -478,3 +477,99 @@ coverage includes both products, preservation across restart, and prepared-produ
 landing through a real session; the new missing-geography test failed before this
 correction. Original failed UI-run evidence is retained under
 `/tmp/gtx-local-doc-results` in this development workspace.
+
+### Maximize The Next Hardware Experiment (October 10)
+
+Credentials come from the private October 6 handoff's `reference/auth-token.bin`
+and `reference/auth-user.bin`. They are application-level Connext material
+recovered from the user's installed Pilot build, not a Garmin account login or
+Bluetooth PIN. They worked with the independently tested receiver/firmware; this
+does not establish compatibility with every receiver. Durable development copies
+are in `/root/aerobag-credentials/gtx345/` (directory 0700, files 0600). Import
+both through the existing receiver Settings file pickers. Never embed them in
+an APK, a public artifact, Git, or cloud state. Delete any shared-storage transfer
+copies from the tablet after import. Exported captures also remain private
+because they contain authentication exchanges.
+
+Before installation, complete these software followups and their validation:
+
+1. NAV29 publishes `weather/station-catalog`, containing NASR weather-station
+   coordinates, not airport ARPs. Repair the old AWOS fixed-width coordinate
+   parser; use the FAA's hemisphere and longitude field width. Core replaces
+   cycle-owned geography at adoption while preserving feed-only stations. Rebuild
+   real compact fixtures and the matching cycle product before shipping a client
+   that requires this contract. Existing NAV28 products cannot satisfy it.
+2. Extract the live-feeds cloud-symbol parser into `weather-observation`, shared
+   with core receiver normalization. Derive flight category from prevailing
+   visibility and observed ceiling, ignoring remarks and forecast trends. Unknown
+   fields remain unknown, not VFR; never borrow classification from an older
+   Internet report. Re-derive cached display fields from original text on startup
+   without changing observation/receipt timestamps.
+3. Extend the receiver's existing private SQLite cache to hold compressed radar
+   tiles and frame references. Transactionally write new images, replace frame
+   history, and reclaim unreferenced images before publishing to sessions. Restore
+   on the background owner with original timestamps and frame IDs. Preserve the
+   32 MiB radar bound and 64 MiB total database ceiling. A failed durable write
+   leaves the previous complete frame available; raw capture continues separately
+   with an explicit cache-failure diagnostic. GPS, traffic and pressure are never
+   restored as live inputs.
+4. Validate thresholds, cross-source selection in all consumers, station catalog
+   replacement, offline restart, v1 cache upgrade, quota/failed transactions, and
+   private corpus replay. Run the native filesystem tests on Android, not just
+   host Rust. Build an arm64 release APK and exercise the visible source controls.
+
+One airport visit should collect more than a connection-success anecdote:
+
+- At home: install the matching app/data, import credentials, warm Internet
+  weather, confirm offline packages, and verify recording space. No need to
+  discover credential/file-picker problems at the airport.
+- Refresh paired devices only rereads Android's bonded-device list; it neither
+  scans for nearby devices nor connects. Core shows refresh progress, a UTC
+  completion time/count (including unchanged and empty lists), or the specific
+  permission/Bluetooth/query failure. A five-second core deadline makes a stuck
+  OS query visible; tagged late results cannot restore obsolete connect buttons.
+  Pair in Android settings first, refresh, then explicitly choose Connect GTX345.
+- Parked: pair/connect explicitly; verify protocol state, raw RX/TX and decoded
+  counters, and that capture bytes advance. Record receiver model/firmware. Try a
+  short disconnect/reconnect and export/replay before committing to a long flight.
+- In normal operations: leave automatic recording running, including unknown
+  messages. A passenger can note UTC times when traffic, METAR/TAF and radar first
+  arrive; compare selected-source age, receiver GPS/MSL and BARO with the panel.
+  Do not make the pilot debug or perform unnecessary avionics operations aloft.
+- After landing: inspect source selection, animation and stale/disconnected
+  behavior. Restart the app while disconnected and verify reports/radar remain
+  readable with their old dates while sensor values remain absent. Export all
+  sealed sessions and preserve the ZIP privately. Pair the radar portion with the
+  independently collected imagery from the separate archival project.
+
+No simulator/replay result establishes live authentication, nonempty independent
+weather reception, or geographic accuracy of the provisional radar decoder.
+
+Software evidence for these followups:
+
+- Rebuilt NASR input produces 2,651 exact station locations, including K1S5
+  without requiring an airport record. Producer tests cover missing locations,
+  inactive stations, Alaska identifiers and conflicting coordinates.
+- Private flight replay accepts all 1,416 METARs and 613 TAFs and prepares all
+  11 radar snapshots, with no decoder failures or rejected reports. METAR
+  categories: 1,296 VFR, 37 MVFR, 26 IFR, 32 LIFR and 25 unknown. Unknown does
+  not hide the raw report or borrow an older source's classification.
+- All 63 receiver tests pass as native Android binaries on both the x86 emulator
+  and the physical red arm64 tablet (2.44 seconds on the tablet). The tight-SQLite-quota
+  regression first reproduced `SQLITE_FULL` when a replacement temporarily
+  needed both histories. Eviction now occurs inside the same transaction,
+  before allocation. Rollback restores the evicted frame as well as its tiles.
+- The external three-hour Internet METAR delta reconstruction still passes.
+- Full cycle-2610 product publication passed integrity validation. The isolated
+  package source is
+  `http://aerobag-dev.iac.jonh.net:18080/packages/gtx345-preview/`; the shared
+  dev-stack catalog remains unchanged. Both compact CI publications were rebuilt
+  from this product, not relabeled, and pinned together in the artifact lock.
+- `shared.prepared-live-feeds` and `shared.nexrad-frames` pass on web and native
+  Android against those new fixtures. These prove normal weather consumers and
+  source/animation controls still work, not live Bluetooth reception.
+- The old flight archive has 11.2 MiB of wire data across 27 active minute
+  buckets (the elapsed span includes long gaps); its busiest minute is about
+  646 KiB. This suggests useful headroom under the 256 MiB capture limit, not
+  a guaranteed recording duration: socket chunk overhead and future receiver
+  traffic differ. Quota exhaustion is explicit and never evicts old evidence.

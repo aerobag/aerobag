@@ -319,6 +319,13 @@ pub struct LiveInput {
 }
 
 impl LiveInput {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn restore_radar(&mut self, radar: super::radar::History) {
+        let snapshot = Arc::make_mut(&mut self.snapshot);
+        snapshot.available |= !radar.frames.is_empty();
+        snapshot.radar = Arc::new(radar);
+    }
+
     pub fn snapshot(&self) -> Arc<LiveSnapshot> {
         self.snapshot.clone()
     }

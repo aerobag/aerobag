@@ -5288,9 +5288,12 @@ mod tests {
             entered_rx.recv_timeout(Duration::from_secs(10))?;
             scope.spawn(|| {
                 let result = (|| -> anyhow::Result<()> {
-                    for minute in 0..2 {
+                    for attempt in 0..2 {
                         let result = run_production_task_tick(
-                            now + chrono::Duration::minutes(minute),
+                            // The worker records its completion with the wall clock.
+                            // Poll after that completion, not at a synthetic offset
+                            // from test startup which a slow first build can overrun.
+                            Utc::now(),
                             &mut fast,
                             &scratch,
                             &publisher,
@@ -5308,7 +5311,7 @@ mod tests {
                         );
                         assert_eq!(
                             status.snapshot().products["metars"].attempts.len(),
-                            minute as usize + 1
+                            attempt + 1
                         );
                     }
                     Ok(())

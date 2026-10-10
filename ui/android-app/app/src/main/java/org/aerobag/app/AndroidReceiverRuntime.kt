@@ -43,7 +43,7 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
         scope.launch {
             try {
                 NativeBindings.initializeReceiver(File(context.filesDir, "receiver").absolutePath)
-                receiveInventory()
+                inputs.send(Input(ReceiverHostEvent.RefreshInventory))
                 for (input in inputs) {
                     // Sample clocks here, not on callback producer threads: enqueue order can differ.
                     val output = Json.decodeFromString<ReceiverHostOutput>(NativeBindings.receiverHostEventJson(
@@ -96,7 +96,7 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
     }
 
     fun action(actionId: String) = send(ReceiverHostEvent.Action(actionId))
-    fun refreshInventory() { scope.launch { receiveInventory() } }
+    fun refreshInventory() = send(ReceiverHostEvent.RefreshInventory)
     fun hostStopped() = send(ReceiverHostEvent.HostUnavailable)
 
     fun fileSelected(uri: android.net.Uri?) {
@@ -118,18 +118,16 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
         scope.launch { inputs.send(Input(event)) }
     }
 
-    private suspend fun receiveInventory() {
-        val permitted = rfcomm.hasPermission()
-        val devices = if (permitted) runCatching { rfcomm.pairedDevices() }.getOrDefault(emptyList()) else emptyList()
-        inputs.send(Input(ReceiverHostEvent.Inventory(permitted = permitted, devices = devices.map { ReceiverDevice(it.address, it.name ?: it.address) })))
-    }
-
     private fun execute(effect: ReceiverHostEffect) {
         when (effect) {
             is ReceiverHostEffect.ShareFile -> shareRequests.tryEmit(effect)
             is ReceiverHostEffect.ReadPrivateFile -> { pendingFile = effect; fileRequests.tryEmit(Unit) }
             ReceiverHostEffect.RequestPermission -> permissionRequests.tryEmit(Unit)
-            ReceiverHostEffect.RefreshInventory -> refreshInventory()
+            is ReceiverHostEffect.RefreshInventory -> scope.launch {
+                // Binder work must not block core's progress publication or refresh deadline.
+                val result = withContext(Dispatchers.IO) { rfcomm.inventory() }
+                send(ReceiverHostEvent.Inventory(requestId = effect.requestId, result = result))
+            }
             is ReceiverHostEffect.Close -> sockets.remove(effect.connectionId)?.close()
             is ReceiverHostEffect.Connect -> {
                 try {

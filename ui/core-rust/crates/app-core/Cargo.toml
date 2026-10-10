@@ -15,6 +15,7 @@ had-key = { path = "../../../../crates/had-key" }
 had-nav-kv = { path = "../../../../crates/had-nav-kv" }
 nav-kv-package = { path = "../../../../crates/nav-kv-package" }
 product-contracts = { path = "../../../../crates/product-contracts" }
+weather-observation = { path = "../../../../crates/weather-observation" }
 notam-state = { path = "../../../../crates/notam-state" }
 procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types" }
 base64.workspace = true
@@ -26,7 +27,7 @@ getrandom.workspace = true
 hkdf.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
 sunrise.workspace = true
 postcard = { version = "1", features = ["alloc"] }

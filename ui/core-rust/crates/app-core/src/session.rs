@@ -9141,6 +9141,7 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
 fn ensure_weather_station_airport_aliases_loaded(
     session: &mut UiSession,
 ) -> Result<(), HadReadError> {
+    ensure_cycle_station_catalog_loaded(session)?;
     if session
         .weather
         .runtime()
@@ -9183,6 +9184,31 @@ fn ensure_weather_station_airport_aliases_loaded(
                 .into_iter()
                 .map(|(station_id, alias)| (station_id, alias.airport_id, alias.position)),
         ));
+    Ok(())
+}
+
+fn ensure_cycle_station_catalog_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
+    if session.weather.runtime().cycle_station_catalog_loaded {
+        return Ok(());
+    }
+    let Some(store) = session.nav_data.store() else {
+        return Ok(());
+    };
+    let catalog = read_attached_json_optional::<product_contracts::WeatherStationCatalog>(
+        store,
+        NavKvQuery::WeatherStationCatalog,
+    )?
+    .ok_or_else(|| HadReadError::Fatal("NAVDB weather station catalog is missing".into()))?;
+    session
+        .weather
+        .runtime_mut()
+        .station_weather
+        .directory_mut()
+        .install_cycle(catalog)
+        .map_err(HadReadError::Fatal)?;
+    session.weather.runtime_mut().cycle_station_catalog_loaded = true;
+    // This can run while projecting a provisional NAVDB adoption. Cycle data
+    // is reloadable from NAVDB; do not persist speculative station positions.
     Ok(())
 }
 
@@ -22763,9 +22789,12 @@ mod tests {
             .iter()
             .find(|row| row.nav_ref == Some(NavRef::Airport("KAAA".into())))
             .unwrap();
-        assert!(
-            row.weather_badge.is_none(),
-            "new unclassified receiver report cannot retain an old VFR badge"
+        assert_eq!(
+            row.weather_badge
+                .as_ref()
+                .map(|badge| badge.flight_category.as_str()),
+            Some("lifr"),
+            "receiver classification must replace the old Internet VFR badge"
         );
         let wx = crate::planning::flight_plan_row_actions(row)
             .find(|action| action.id == FlightPlanRowActionId::Weather)
@@ -23222,6 +23251,7 @@ mod tests {
     fn weather_station_metadata_comes_from_dense_nav_db_records() {
         let store = crate::navkv::nav_kv_store_for_test(
             &[
+                ("weather/station-catalog", br#"{"schema_version":1,"stations":{"K1S5":{"latitude":46.328,"longitude":-119.971}}}"#),
                 (
                     "weather/metar-important-stations",
                     br#"{"schema_version":1,"station_ids":["kaaa","KBBB",""]}"#,
@@ -23237,6 +23267,17 @@ mod tests {
 
         ensure_metar_station_importance_loaded(&mut session).expect("important station ids");
         ensure_weather_station_airport_aliases_loaded(&mut session).expect("airport aliases");
+        assert_eq!(
+            session
+                .weather
+                .runtime()
+                .station_weather
+                .query()
+                .station_position("K1S5")
+                .unwrap()
+                .latitude,
+            46.328
+        );
 
         assert_eq!(
             session.weather.runtime().important_metar_station_ids,
@@ -31235,6 +31276,10 @@ mod tests {
                 ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
                 ("navref/position/fix/AYINU", position_json.as_slice()),
                 ("navref/symbol/fix/AYINU", symbol_json.as_slice()),
+                (
+                    "weather/station-catalog",
+                    br#"{"schema_version":1,"stations":{}}"#,
+                ),
             ],
             1024,
         );

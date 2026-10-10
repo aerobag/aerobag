@@ -84,6 +84,7 @@ dependencies = [
  "sha2",
  "sunrise",
  "thiserror 1.0.69",
+ "weather-observation",
  "zip",
 ]
 
@@ -1362,6 +1363,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "weather-observation",
  "zip",
 ]
 
@@ -2195,6 +2197,10 @@ dependencies = [
  "indexmap",
  "semver",
 ]
+
+[[package]]
+name = "weather-observation"
+version = "0.1.0"
 
 [[package]]
 name = "webpki-roots"

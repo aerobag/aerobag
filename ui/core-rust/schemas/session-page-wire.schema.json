@@ -882,10 +882,16 @@
             "kind": {
               "const": "refresh_inventory",
               "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "request_id"
           ],
           "type": "object"
         },
@@ -1019,24 +1025,36 @@
         {
           "additionalProperties": false,
           "properties": {
-            "devices": {
-              "items": {
-                "$ref": "#/$defs/ReceiverDevice"
-              },
-              "type": "array"
-            },
+            "kind": {
+              "const": "refresh_inventory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "kind": {
               "const": "inventory",
               "type": "string"
             },
-            "permitted": {
-              "type": "boolean"
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result": {
+              "$ref": "#/$defs/ReceiverInventoryResult"
             }
           },
           "required": [
             "kind",
-            "permitted",
-            "devices"
+            "request_id",
+            "result"
           ],
           "type": "object"
         },
@@ -1194,6 +1212,83 @@
       ],
       "title": "ReceiverHostOutput",
       "type": "object"
+    },
+    "ReceiverInventoryResult": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "devices": {
+              "items": {
+                "$ref": "#/$defs/ReceiverDevice"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "devices"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "permission_required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "bluetooth_off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "kind"
     },
     "ReceiverIoFailure": {
       "enum": [
@@ -3448,6 +3543,7 @@
     "UiReceiverAction",
     "UiReceiverPanel",
     "ReceiverDevice",
+    "ReceiverInventoryResult",
     "ReceiverIoFailure",
     "ReceiverHostEvent",
     "ReceiverHostEffect",

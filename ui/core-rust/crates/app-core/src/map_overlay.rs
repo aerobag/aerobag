@@ -10502,7 +10502,7 @@ mod tests {
             .ingest(WeatherSource::Receiver, receiver_taf.clone())
             .unwrap();
         // No stale VFR badge/cloud symbol may be borrowed from the old report.
-        assert_consumers(&weather, &receiver.raw_text, "missing", "30.12");
+        assert_consumers(&weather, &receiver.raw_text, "lifr", "30.12");
         let mut updated = internet.metars_by_station["KAAA"].clone();
         updated.raw_text = "METAR KAAA 060150Z 00000KT 1SM OVC003 10/08 A3007".into();
         updated.observed_at_utc = Some("2026-10-06T01:50:00Z".into());
@@ -10515,7 +10515,7 @@ mod tests {
         assert_eq!(weather.query().taf("KAAA").unwrap(), &receiver_taf);
         weather.clear_internet_product(StationReportKind::Metar);
         let restored = StationWeather::restore(&weather.snapshot().unwrap()).unwrap();
-        assert_consumers(&restored, &receiver.raw_text, "missing", "30.12");
+        assert_consumers(&restored, &receiver.raw_text, "lifr", "30.12");
         assert_eq!(
             weather_detail_for_airport("KAAA", &aliases, Some(restored.query()), None, Some(now))
                 .unwrap()

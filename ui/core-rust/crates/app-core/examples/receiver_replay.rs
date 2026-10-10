@@ -212,6 +212,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         received_at,
                                     )
                                     .and_then(|record| {
+                                        if station_kind == StationReportKind::Metar {
+                                            *counts
+                                                .entry(format!(
+                                                    "metar_category_{}",
+                                                    record.flight_category().unwrap_or("unknown")
+                                                ))
+                                                .or_default() += 1;
+                                            *counts
+                                                .entry(format!(
+                                                    "metar_cloud_{}",
+                                                    record.cloud_symbol().unwrap_or("unknown")
+                                                ))
+                                                .or_default() += 1;
+                                        }
                                         if record
                                             .timing(received_at)
                                             .timestamp_ahead_of_receipt_ms

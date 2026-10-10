@@ -15,17 +15,17 @@ use std::{
 
 pub(crate) const RESOURCE_PREFIX: &str = "core-image://receiver-radar/";
 const TILE_SIZE: u32 = 256;
-const MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_HISTORY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Image {
     pub id: String,
     pub observed: DateTime<Utc>,
-    issue: DateTime<Utc>,
-    regional: bool,
+    pub(super) issue: DateTime<Utc>,
+    pub(super) regional: bool,
     pub manifest: serde_json::Value,
-    tiles: BTreeMap<String, Arc<[u8]>>,
-    bytes: usize,
+    pub(super) tiles: BTreeMap<String, Arc<[u8]>>,
+    pub(super) bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +33,17 @@ pub(crate) struct Frame {
     pub id: String,
     // Coarse CONUS underneath regional, with each layer's own date and palette.
     pub layers: Vec<Arc<Image>>,
+}
+
+impl Frame {
+    pub(super) fn new(layers: Vec<Arc<Image>>) -> Self {
+        let id = layers
+            .iter()
+            .map(|image| image.id.as_str())
+            .collect::<Vec<_>>()
+            .join("+");
+        Self { id, layers }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -165,12 +176,7 @@ impl History {
         if layers.iter().map(|image| image.bytes).sum::<usize>() > MAX_HISTORY_BYTES {
             return Err("receiver radar memory limit");
         }
-        let id = layers
-            .iter()
-            .map(|image| image.id.as_str())
-            .collect::<Vec<_>>()
-            .join("+");
-        self.frames.push(Frame { id, layers });
+        self.frames.push(Frame::new(layers));
         while self.frames.len() > crate::live_feeds::NEXRAD_FRAME_WINDOW_SIZE
             || self.bytes() > MAX_HISTORY_BYTES
         {

@@ -3353,6 +3353,7 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
         let _ = facility_name;
     }
     pairs.push(metar_important_stations_pair(&important_metar_station_ids)?);
+    pairs.push(weather_station_catalog_pair(connection)?);
     pairs.push(weather_station_airport_aliases_pair(
         connection,
         &airport_ids,
@@ -3858,6 +3859,32 @@ fn dedupe_airport_contacts(values: &mut Vec<serde_json::Value>) {
     });
 }
 
+fn weather_station_catalog_pair(connection: &rusqlite::Connection) -> anyhow::Result<NavKvPair> {
+    let mut statement = connection
+        .prepare("SELECT station_id,latitude,longitude FROM weatherstations ORDER BY station_id")?;
+    let stations = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                product_contracts::WeatherStationCoordinates {
+                    latitude: row.get(1)?,
+                    longitude: row.get(2)?,
+                },
+            ))
+        })?
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let catalog = product_contracts::WeatherStationCatalog {
+        schema_version: product_contracts::WeatherStationCatalog::SCHEMA_VERSION,
+        stations,
+    };
+    catalog.validate().map_err(anyhow::Error::msg)?;
+    json_pair(
+        product_contracts::WEATHER_STATION_CATALOG_KEY.into(),
+        &serde_json::to_value(catalog)?,
+        "weather station catalog",
+    )
+}
+
 pub(super) fn metar_important_stations_pair(
     station_ids: &BTreeSet<String>,
 ) -> anyhow::Result<NavKvPair> {
@@ -3923,59 +3950,7 @@ fn weather_station_airport_aliases_pair(
     )
 }
 
-fn is_contiguous_us_state(state: &str) -> bool {
-    matches!(
-        state.trim().to_ascii_uppercase().as_str(),
-        "AL" | "AZ"
-            | "AR"
-            | "CA"
-            | "CO"
-            | "CT"
-            | "DE"
-            | "FL"
-            | "GA"
-            | "ID"
-            | "IL"
-            | "IN"
-            | "IA"
-            | "KS"
-            | "KY"
-            | "LA"
-            | "ME"
-            | "MD"
-            | "MA"
-            | "MI"
-            | "MN"
-            | "MS"
-            | "MO"
-            | "MT"
-            | "NE"
-            | "NV"
-            | "NH"
-            | "NJ"
-            | "NM"
-            | "NY"
-            | "NC"
-            | "ND"
-            | "OH"
-            | "OK"
-            | "OR"
-            | "PA"
-            | "RI"
-            | "SC"
-            | "SD"
-            | "TN"
-            | "TX"
-            | "UT"
-            | "VT"
-            | "VA"
-            | "WA"
-            | "WV"
-            | "WI"
-            | "WY"
-            | "DC"
-    )
-}
+use preprocessor_data::is_contiguous_us_state;
 
 pub(super) fn build_nav_kv_navaid_navref_pairs(
     connection: &rusqlite::Connection,
@@ -7207,6 +7182,8 @@ mod tests {
                     LocationID TEXT,
                     Status TEXT
                 );
+                CREATE TABLE weatherstations(station_id TEXT PRIMARY KEY, latitude REAL, longitude REAL);
+                INSERT INTO weatherstations VALUES ('K1S5', 7.01, 8.02);
                 INSERT INTO airports VALUES
                     ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100', 'WA', ''),
                     ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200', 'WA', ''),
@@ -7224,6 +7201,18 @@ mod tests {
             .expect("schema");
 
         let pairs = build_nav_kv_airport_navref_pairs(&connection).expect("pairs");
+        let catalog: product_contracts::WeatherStationCatalog = serde_json::from_slice(
+            &pairs
+                .iter()
+                .find(|p| p.key == product_contracts::WEATHER_STATION_CATALOG_KEY)
+                .unwrap()
+                .value,
+        )
+        .unwrap();
+        assert_eq!(
+            catalog.stations["K1S5"].latitude, 7.01,
+            "Station position must not be replaced with airport ARP"
+        );
         let importance_pair = pairs
             .iter()
             .find(|pair| pair.key == "weather/metar-important-stations")
@@ -7487,6 +7476,7 @@ mod tests {
                     facility_name TEXT,
                     variation REAL
                 );
+                CREATE TABLE weatherstations(station_id TEXT PRIMARY KEY, latitude REAL, longitude REAL);
                 CREATE TABLE fix (
                     LocationID TEXT,
                     ARPLatitude REAL,

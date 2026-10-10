@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { FlightDataCommand, UiAirwayRouteDragPhase, UiGlideRing } from "../generated/sessionPageWire";
+import { prepareLocalDocuments } from "./localDocuments";
 import type {
   AltitudeComparisonPanelUiView,
   AppUiState,
@@ -1004,6 +1005,7 @@ type WasmModule = {
   maintain_nav_db_in_session_at_epoch_ms(handle: number, nowEpochMs: bigint): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  local_document_keys_json(): string;
   configure_data_sources_in_session(handle: number, cycleDataBaseUrl: string, liveFeedsBaseUrl: string, debugLogSinkUrl?: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   should_prepare_live_feed_resource(resourceId: string): boolean;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -1170,6 +1172,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     sessionNowEpochMs?: number,
   ): Promise<UiSession> {
     const module = this.module;
+    await prepareLocalDocuments(JSON.parse(module.local_document_keys_json()) as string[]);
     let invalidationListener: UiInvalidationListener | null = null;
     let projectionListener: UiSessionProjectionListener | null = null;
     const publishInvalidations: UiInvalidationListener = (invalidations) => {
@@ -2435,6 +2438,7 @@ async function loadBestAvailableAdapterUncached(
     "maintain_nav_db_in_session_at_epoch_ms",
     "set_resource_policy_in_session",
     "configure_platform_capabilities_in_session",
+    "local_document_keys_json",
     "should_prepare_live_feed_resource",
     "perform_guided_tour_action_in_session",
     "perform_flight_plan_command_in_session",

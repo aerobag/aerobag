@@ -10,6 +10,7 @@ import {
   type UiSessionProjectionLanding,
 } from "./appCoreAdapter";
 import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
+import { setLocalDocumentHost, type DocumentRequest, type DocumentResponse, type DocumentRead } from "./localDocuments";
 import { debugLog, observeDebugLog, setBrowserInstanceId, type DebugLogRecord } from "./debugLog";
 import { workerSessionResultForTransport } from "./workerSessionTransport";
 
@@ -53,12 +54,6 @@ type WorkerSessionProjection = {
   landing: UiSessionProjectionLanding;
 };
 
-type WorkerCoreSettingsChanged = {
-  kind: "coreSettingsChanged";
-  settingsJson: string | null;
-  tourIntroductionJson: string | null;
-};
-
 type WorkerDebugLog = {
   kind: "workerDebugLog";
   record: DebugLogRecord;
@@ -76,11 +71,18 @@ type WorkerSessionMarker = {
 };
 
 type WorkerRuntime = {
-  addEventListener(type: "message", listener: (event: MessageEvent<WorkerCallRequest>) => void): void;
-  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerSessionProjection | WorkerCoreSettingsChanged | WorkerDebugLog, transfer?: Transferable[]): void;
+  addEventListener(type: "message", listener: (event: MessageEvent<WorkerCallRequest | DocumentResponse>) => void): void;
+  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerSessionProjection | DocumentRequest | WorkerDebugLog, transfer?: Transferable[]): void;
 };
 
 const ctx = self as unknown as WorkerRuntime;
+let nextDocumentRequest = 1;
+const documentRequests = new Map<number, (result: DocumentRead) => void>();
+setLocalDocumentHost((key, operation, bytes) => new Promise(resolve => {
+  const id = nextDocumentRequest++;
+  documentRequests.set(id, resolve);
+  ctx.postMessage({ kind: "localDocument", id, key, operation, bytes });
+}));
 let adapterPromise: Promise<AppCoreAdapter> | null = null;
 let nextSessionId = 1;
 const sessions = new Map<number, UiSession>();
@@ -100,8 +102,13 @@ function alignWorkerClock(epochMs: number): void {
   }
 }
 
-ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
+ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest | DocumentResponse>) => {
   const message = event.data;
+  if (message.kind === "localDocumentResult") {
+    documentRequests.get(message.id)?.(message.result);
+    documentRequests.delete(message.id);
+    return;
+  }
   if (message.kind !== "call") {
     return;
   }
@@ -197,8 +204,6 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
   debugLog("app_core.worker.adapter_ready", { method });
   if (method === "createUiSession") {
     const request = args[0] as WorkerCreateUiSessionRequest;
-    setWorkerCoreSettingsJson(request.settingsJson);
-    setWorkerTourIntroductionJson(request.tourIntroductionJson);
     const session = await adapter.createUiSession(
       request.recentAirportIds,
       request.selectedAirportId,
@@ -230,19 +235,8 @@ async function callSessionMethod(
   if (method === "setInvalidationListener") {
     throw new Error("session invalidation listener is controlled by the worker proxy");
   }
-  const settingsBefore = workerCoreSettingsJson();
-  const introductionBefore = workerTourIntroductionJson();
   try {
     const result = await callMethod(session, method, args);
-    const settingsAfter = workerCoreSettingsJson();
-    const introductionAfter = workerTourIntroductionJson();
-    if (settingsAfter !== settingsBefore || introductionAfter !== introductionBefore) {
-      ctx.postMessage({
-        kind: "coreSettingsChanged",
-        settingsJson: settingsAfter,
-        tourIntroductionJson: introductionAfter,
-      });
-    }
     return workerSessionResultForTransport(result);
   } finally {
     if (method === "destroy") {
@@ -370,23 +364,6 @@ function serializeError(error: unknown): WorkerErrorPayload {
   return { message: String(error) };
 }
 
-function setWorkerCoreSettingsJson(settingsJson: string | null): void {
-  (globalThis as unknown as { __aerobagCoreSettingsJson?: string | null }).__aerobagCoreSettingsJson = settingsJson;
-}
-
-function workerCoreSettingsJson(): string | null {
-  const value = (globalThis as unknown as { __aerobagCoreSettingsJson?: unknown }).__aerobagCoreSettingsJson;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function setWorkerTourIntroductionJson(settingsJson: string | null): void {
-  (globalThis as unknown as { __aerobagTourIntroductionJson?: string | null }).__aerobagTourIntroductionJson = settingsJson;
-}
-
-function workerTourIntroductionJson(): string | null {
-  const value = (globalThis as unknown as { __aerobagTourIntroductionJson?: unknown }).__aerobagTourIntroductionJson;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
 
 type PendingWorkerCall = {
   target: WorkerCallTarget;

@@ -2251,7 +2251,7 @@ class MainActivity : ComponentActivity() {
             BuildConfig.AEROBAG_E2E_ENABLED &&
             intent?.getBooleanExtra(DebugClearCoreSettingsExtra, false) == true
         ) {
-            AndroidCoreSettingsStore(applicationContext).clearSettings()
+            AndroidLocalDocumentStore(applicationContext).clearSettings()
         }
         intent?.removeExtra(DebugClearCoreSettingsExtra)
         val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]

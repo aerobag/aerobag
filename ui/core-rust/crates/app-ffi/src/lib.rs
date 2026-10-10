@@ -2757,95 +2757,130 @@ fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
         .map_err(|err| err.to_string())
 }
 
-struct JniSettingsStore {
+struct JniDocumentIo {
     vm: JavaVM,
     store: GlobalRef,
 }
 
-impl app_core::SettingsStorage for JniSettingsStore {
-    fn read_settings(&self) -> app_core::AppResult<Option<Vec<u8>>> {
-        self.read_document("readSettings")
+type DocumentWrite = (
+    String,
+    Option<Vec<u8>>,
+    app_core::local_documents::DocumentCompletion,
+);
+struct JniLocalDocumentBackend {
+    io: Arc<JniDocumentIo>,
+    writes: std::sync::mpsc::Sender<DocumentWrite>,
+}
+
+impl app_core::LocalDocumentBackend for JniLocalDocumentBackend {
+    fn read(&self, key: &str) -> app_core::AppResult<Option<Vec<u8>>> {
+        self.io.read(key).map_err(|message| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message,
+        })
     }
-    fn write_settings(&self, bytes: &[u8]) -> app_core::AppResult<()> {
-        self.write_document("writeSettings", bytes)
-    }
-    fn read_tour_introduction(&self) -> app_core::AppResult<Option<Vec<u8>>> {
-        self.read_document("readTourIntroduction")
-    }
-    fn write_tour_introduction(&self, bytes: &[u8]) -> app_core::AppResult<()> {
-        self.write_document("writeTourIntroduction", bytes)
+    fn write(
+        &self,
+        key: &str,
+        bytes: Option<Vec<u8>>,
+        complete: app_core::local_documents::DocumentCompletion,
+    ) {
+        if let Err(error) = self.writes.send((key.into(), bytes, complete)) {
+            (error.0 .2)(Err("Local document writer stopped".into()));
+        }
     }
 }
-impl JniSettingsStore {
-    fn read_document(&self, method: &str) -> app_core::AppResult<Option<Vec<u8>>> {
-        let mut env = self
-            .vm
-            .attach_current_thread()
-            .map_err(|err| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message: err.to_string(),
-            })?;
-        let value = env
-            .call_method(self.store.as_obj(), method, "()[B", &[])
-            .map_err(|err| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message: err.to_string(),
-            })?
+
+impl JniDocumentIo {
+    fn read(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let mut env = self.vm.attach_current_thread().map_err(|e| e.to_string())?;
+        let name = env
+            .new_string(app_core::local_documents::native_file_name(key))
+            .map_err(|e| e.to_string())?;
+        let result = env.call_method(
+            self.store.as_obj(),
+            "readDocument",
+            "(Ljava/lang/String;)[B",
+            &[JValue::Object(name.as_ref())],
+        );
+        let value = result
+            .map_err(|error| document_java_error(&mut env, error))?
             .l()
-            .map_err(|err| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message: err.to_string(),
-            })?;
+            .map_err(|e| e.to_string())?;
         if value.is_null() {
             return Ok(None);
         }
         env.convert_byte_array(JByteArray::from(value))
             .map(Some)
-            .map_err(|err| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message: err.to_string(),
-            })
+            .map_err(|e| e.to_string())
     }
-
-    fn write_document(&self, method: &str, bytes: &[u8]) -> app_core::AppResult<()> {
-        let mut env = self
-            .vm
-            .attach_current_thread()
-            .map_err(|err| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message: err.to_string(),
-            })?;
-        let array = env
-            .byte_array_from_slice(bytes)
-            .map_err(|err| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message: err.to_string(),
-            })?;
-        let array = JObject::from(array);
-        env.call_method(
+    fn write(&self, key: &str, bytes: Option<Vec<u8>>) -> Result<(), String> {
+        let mut env = self.vm.attach_current_thread().map_err(|e| e.to_string())?;
+        let name = env
+            .new_string(app_core::local_documents::native_file_name(key))
+            .map_err(|e| e.to_string())?;
+        let array: JObject = match bytes {
+            Some(bytes) => env
+                .byte_array_from_slice(&bytes)
+                .map_err(|e| e.to_string())?
+                .into(),
+            None => JObject::null(),
+        };
+        let result = env.call_method(
             self.store.as_obj(),
-            method,
-            "([B)V",
-            &[JValue::Object(&array)],
-        )
-        .map(|_| ())
-        .map_err(|err| app_core::AppError {
-            kind: app_core::AppErrorKind::Internal,
-            message: err.to_string(),
-        })
+            "writeDocument",
+            "(Ljava/lang/String;[B)V",
+            &[JValue::Object(name.as_ref()), JValue::Object(&array)],
+        );
+        result
+            .map(|_| ())
+            .map_err(|error| document_java_error(&mut env, error))
     }
 }
 
-fn settings_store_from_java(
+fn document_java_error(env: &mut JNIEnv, error: jni::errors::Error) -> String {
+    // Pending Java exceptions must be cleared on this reusable worker thread.
+    if let Ok(exception) = env.exception_occurred() {
+        if !exception.is_null() {
+            let _ = env.exception_clear();
+            let message = env
+                .call_method(exception, "toString", "()Ljava/lang/String;", &[])
+                .ok()
+                .and_then(|v| v.l().ok())
+                .map(JString::from);
+            if let Some(message) = message {
+                if let Ok(text) = env.get_string(&message) {
+                    return text.into();
+                }
+            }
+            let _ = env.exception_clear();
+        }
+    }
+    error.to_string()
+}
+
+fn local_document_backend_from_java(
     env: &mut JNIEnv,
     store: JObject,
-) -> Result<Option<app_core::SettingsStorageHandle>, String> {
+) -> Result<Option<app_core::LocalDocumentBackendHandle>, String> {
     if store.is_null() {
         return Ok(None);
     }
-    let vm = env.get_java_vm().map_err(|err| err.to_string())?;
-    let store = env.new_global_ref(store).map_err(|err| err.to_string())?;
-    Ok(Some(Arc::new(JniSettingsStore { vm, store })))
+    let io = Arc::new(JniDocumentIo {
+        vm: env.get_java_vm().map_err(|e| e.to_string())?,
+        store: env.new_global_ref(store).map_err(|e| e.to_string())?,
+    });
+    let (writes, pending) = std::sync::mpsc::channel::<DocumentWrite>();
+    let writer = io.clone();
+    std::thread::Builder::new()
+        .name("local-documents".into())
+        .spawn(move || {
+            while let Ok((key, bytes, complete)) = pending.recv() {
+                complete(writer.write(&key, bytes));
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(Some(Arc::new(JniLocalDocumentBackend { io, writes })))
 }
 
 fn get_java_byte_array(env: &mut JNIEnv, value: JByteArray) -> Result<Vec<u8>, String> {
@@ -3753,7 +3788,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_configurePlatf
         let capabilities_json = get_java_string(&mut env, capabilities_json)?;
         let capabilities: app_core::PlatformCapabilities =
             serde_json::from_str(&capabilities_json).map_err(|err| err.to_string())?;
-        let settings_storage = settings_store_from_java(&mut env, settings_store)?;
+        let settings_storage = local_document_backend_from_java(&mut env, settings_store)?;
         let snapshot = app_core::configure_platform_capabilities_in_session(
             handle as u32,
             capabilities,

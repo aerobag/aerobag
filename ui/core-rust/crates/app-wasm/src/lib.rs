@@ -11,7 +11,7 @@ use std::{
 };
 
 #[cfg(target_arch = "wasm32")]
-use std::sync::Arc;
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -20,9 +20,6 @@ use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Function, Reflect};
-
-#[cfg(target_arch = "wasm32")]
-const WEB_CORE_SETTINGS_STORAGE_KEY: &str = "aerobag.core.settings.v1";
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -148,125 +145,95 @@ fn lock_notam_projection_preparer() -> MutexGuard<'static, app_core::NotamProjec
 }
 
 #[cfg(target_arch = "wasm32")]
-struct WebCoreSettingsStorage;
+struct WebLocalDocumentBackend;
+
+#[wasm_bindgen]
+pub fn local_document_keys_json() -> Result<String, JsValue> {
+    serde_json::to_string(&[
+        app_core::local_documents::SESSION_DOCUMENT,
+        app_core::local_documents::TOUR_DOCUMENT,
+    ])
+    .map_err(|error| JsValue::from_str(&error.to_string()))
+}
 
 #[cfg(target_arch = "wasm32")]
-impl app_core::SettingsStorage for WebCoreSettingsStorage {
-    fn read_tour_introduction(&self) -> app_core::AppResult<Option<Vec<u8>>> {
-        read_web_document(
-            "aerobag.tour.introduction.v1",
-            "__aerobagTourIntroductionJson",
-        )
-        .map(|value| value.map(String::into_bytes))
-        .map_err(|message| app_core::AppError {
-            kind: app_core::AppErrorKind::Internal,
-            message,
-        })
-    }
-    fn write_tour_introduction(&self, bytes: &[u8]) -> app_core::AppResult<()> {
-        let value = std::str::from_utf8(bytes).map_err(|e| app_core::AppError {
-            kind: app_core::AppErrorKind::Internal,
-            message: e.to_string(),
-        })?;
-        write_web_document(
-            "aerobag.tour.introduction.v1",
-            "__aerobagTourIntroductionJson",
-            value,
-        )
-        .map_err(|message| app_core::AppError {
-            kind: app_core::AppErrorKind::Internal,
-            message,
-        })
-    }
-    fn read_settings(&self) -> app_core::AppResult<Option<Vec<u8>>> {
-        read_web_document(WEB_CORE_SETTINGS_STORAGE_KEY, "__aerobagCoreSettingsJson")
-            .map(|value| value.map(String::into_bytes))
-            .map_err(|message| app_core::AppError {
-                kind: app_core::AppErrorKind::Internal,
-                message,
+impl app_core::LocalDocumentBackend for WebLocalDocumentBackend {
+    fn read(&self, key: &str) -> app_core::AppResult<Option<Vec<u8>>> {
+        let result = (|| -> Result<Option<Vec<u8>>, String> {
+            let function = document_host_function("__aerobagReadDocument")?;
+            let value = function
+                .call1(&JsValue::NULL, &JsValue::from_str(key))
+                .map_err(|error| format!("Local document read failed: {error:?}"))?;
+            let error =
+                Reflect::get(&value, &JsValue::from_str("error")).map_err(|e| format!("{e:?}"))?;
+            if let Some(error) = error.as_string() {
+                return Err(error);
+            }
+            let bytes =
+                Reflect::get(&value, &JsValue::from_str("bytes")).map_err(|e| format!("{e:?}"))?;
+            Ok(if bytes.is_null() {
+                None
+            } else {
+                Some(js_sys::Uint8Array::new(&bytes).to_vec())
             })
+        })();
+        result.map_err(|message| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message,
+        })
     }
 
-    fn write_settings(&self, bytes: &[u8]) -> app_core::AppResult<()> {
-        let value = std::str::from_utf8(bytes).map_err(|err| app_core::AppError {
-            kind: app_core::AppErrorKind::Internal,
-            message: err.to_string(),
-        })?;
-        write_web_document(
-            WEB_CORE_SETTINGS_STORAGE_KEY,
-            "__aerobagCoreSettingsJson",
-            value,
-        )
-        .map_err(|message| app_core::AppError {
-            kind: app_core::AppErrorKind::Internal,
-            message,
-        })
+    fn write(
+        &self,
+        key: &str,
+        bytes: Option<Vec<u8>>,
+        complete: app_core::local_documents::DocumentCompletion,
+    ) {
+        let function = match document_host_function("__aerobagWriteDocument") {
+            Ok(function) => function,
+            Err(error) => {
+                complete(Err(error));
+                return;
+            }
+        };
+        let completion = Rc::new(Cell::new(Some(complete)));
+        let called = completion.clone();
+        let callback = Closure::once_into_js(move |error: JsValue| {
+            if let Some(complete) = called.take() {
+                complete(match error.as_string() {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                });
+            }
+        });
+        let payload = bytes
+            .as_deref()
+            .map(js_sys::Uint8Array::from)
+            .map(JsValue::from)
+            .unwrap_or(JsValue::NULL);
+        if let Err(error) =
+            function.call3(&JsValue::NULL, &JsValue::from_str(key), &payload, &callback)
+        {
+            if let Some(complete) = completion.take() {
+                complete(Err(format!("Local document write failed: {error:?}")));
+            }
+        }
     }
 }
 
-fn web_core_settings_storage() -> Option<app_core::SettingsStorageHandle> {
+#[cfg(target_arch = "wasm32")]
+fn document_host_function(name: &str) -> Result<Function, String> {
+    Reflect::get(&js_sys::global(), &JsValue::from_str(name))
+        .map_err(|error| format!("{error:?}"))?
+        .dyn_into::<Function>()
+        .map_err(|_| format!("Missing local document host: {name}"))
+}
+
+fn web_local_document_backend() -> Option<app_core::LocalDocumentBackendHandle> {
     #[cfg(not(target_arch = "wasm32"))]
     return None;
-
     #[cfg(target_arch = "wasm32")]
-    Some(Arc::new(WebCoreSettingsStorage))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn web_local_storage() -> Option<JsValue> {
-    let global = js_sys::global();
-    let storage = Reflect::get(&global, &JsValue::from_str("localStorage")).ok()?;
-    if storage.is_null() || storage.is_undefined() {
-        None
-    } else {
-        Some(storage)
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn read_web_document(key: &str, worker_key: &str) -> Result<Option<String>, String> {
-    let value = if let Some(storage) = web_local_storage() {
-        let get_item = Reflect::get(&storage, &JsValue::from_str("getItem"))
-            .map_err(|err| format!("localStorage.getItem lookup failed: {err:?}"))?
-            .dyn_into::<Function>()
-            .map_err(|_| "localStorage.getItem is not callable".to_string())?;
-        get_item
-            .call1(&storage, &JsValue::from_str(key))
-            .map_err(|err| format!("localStorage.getItem failed: {err:?}"))?
-    } else {
-        Reflect::get(&js_sys::global(), &JsValue::from_str(worker_key))
-            .map_err(|err| format!("worker core settings lookup failed: {err:?}"))?
-    };
-    if value.is_null() || value.is_undefined() {
-        Ok(None)
-    } else {
-        value
-            .as_string()
-            .map(Some)
-            .ok_or_else(|| "localStorage core settings value is not a string".to_string())
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn write_web_document(key: &str, worker_key: &str, value: &str) -> Result<(), String> {
-    if let Some(storage) = web_local_storage() {
-        let set_item = Reflect::get(&storage, &JsValue::from_str("setItem"))
-            .map_err(|err| format!("localStorage.setItem lookup failed: {err:?}"))?
-            .dyn_into::<Function>()
-            .map_err(|_| "localStorage.setItem is not callable".to_string())?;
-        set_item
-            .call2(&storage, &JsValue::from_str(key), &JsValue::from_str(value))
-            .map(|_| ())
-            .map_err(|err| format!("localStorage.setItem failed: {err:?}"))
-    } else {
-        Reflect::set(
-            &js_sys::global(),
-            &JsValue::from_str(worker_key),
-            &JsValue::from_str(value),
-        )
-        .map(|_| ())
-        .map_err(|err| format!("worker core settings write failed: {err:?}"))
-    }
+    Some(Arc::new(WebLocalDocumentBackend))
 }
 
 fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenController>> {
@@ -1185,7 +1152,7 @@ pub fn configure_platform_capabilities_in_session(
     let snapshot = app_core::configure_platform_capabilities_in_session(
         handle,
         capabilities,
-        web_core_settings_storage(),
+        web_local_document_backend(),
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))

@@ -244,7 +244,7 @@ internal class AerobagRetainedModel : ViewModel() {
             selectedAirportId,
             selectedChartId,
             runtimeContent.installedPackageIds,
-            settingsStore = AndroidCoreSettingsStore(context.applicationContext),
+            settingsStore = AndroidLocalDocumentStore(context.applicationContext),
             displayPolicySettingsAvailable = true,
             aerobagCloudBaseUrl = loadAndroidCloudServerBaseUrl(context.applicationContext),
             serviceBulletinUrls = BuildConfig.AEROBAG_SERVICE_BULLETIN_URLS.split(',').filter { it.isNotBlank() },

@@ -16,7 +16,7 @@ pub(super) fn load_introduction(s: &mut UiSession, existing_state: bool) -> AppR
     let Some(storage) = &s.coordinator.persistence_storage else {
         return Ok(());
     };
-    let offered = match storage.read_tour_introduction()? {
+    let offered = match storage.read(crate::local_documents::TOUR_DOCUMENT)? {
         Some(bytes) => {
             let doc: TourIntroductionDocument =
                 serde_json::from_slice(&bytes).map_err(|e| AppError {
@@ -50,8 +50,12 @@ pub(super) fn persist_introduction(s: &UiSession) -> AppResult<()> {
             kind: AppErrorKind::Internal,
             message: e.to_string(),
         })?;
-        if storage.read_tour_introduction()?.as_deref() != Some(bytes.as_slice()) {
-            storage.write_tour_introduction(&bytes)?;
+        if storage
+            .read(crate::local_documents::TOUR_DOCUMENT)?
+            .as_deref()
+            != Some(bytes.as_slice())
+        {
+            storage.replace(crate::local_documents::TOUR_DOCUMENT, &bytes)?;
         }
     }
     Ok(())

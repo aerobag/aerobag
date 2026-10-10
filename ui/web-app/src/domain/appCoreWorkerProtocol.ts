@@ -6,7 +6,5 @@ export type WorkerCreateUiSessionRequest = {
   recentAirportIds: string[];
   selectedAirportId?: string;
   selectedChartId?: string;
-  settingsJson: string | null;
-  tourIntroductionJson: string | null;
   nowEpochMs: number;
 };

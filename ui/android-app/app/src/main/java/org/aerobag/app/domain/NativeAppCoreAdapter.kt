@@ -459,11 +459,6 @@ private val NativeAppCoreJson = Json {
     ignoreUnknownKeys = false
 }
 
-private object NoopCoreSettingsStore : CoreSettingsStore {
-    override fun readSettings(): ByteArray? = null
-    override fun writeSettings(bytes: ByteArray) = Unit
-}
-
 internal fun androidPlatformCapabilitiesJson(
     displayPolicySettingsAvailable: Boolean = false,
     aerobagCloudBaseUrl: String? = null,
@@ -531,7 +526,7 @@ class NativeAppCoreAdapter(
         selectedAirportId: String?,
         selectedChartId: String?,
         installedPackageIds: List<String> = emptyList(),
-        settingsStore: CoreSettingsStore? = null,
+        settingsStore: LocalDocumentStore? = null,
         displayPolicySettingsAvailable: Boolean = false,
         aerobagCloudBaseUrl: String? = null,
         clientBuildInfo: ClientBuildInfo? = null,
@@ -580,7 +575,7 @@ class NativeAppCoreAdapter(
                 clientBuildInfo = clientBuildInfo,
                 serviceBulletinUrls = serviceBulletinUrls,
             ),
-            settingsStore = settingsStore ?: NoopCoreSettingsStore,
+            settingsStore = settingsStore,
         )
         if (cycleDataBaseUrl != null && liveFeedsBaseUrl != null) {
             session.configureDataSources(cycleDataBaseUrl, liveFeedsBaseUrl, debugLogSinkUrl)
@@ -1700,7 +1695,7 @@ class NativeUiSession internal constructor(
 
     fun configurePlatformCapabilities(
         capabilitiesJson: String,
-        settingsStore: CoreSettingsStore,
+        settingsStore: LocalDocumentStore?,
     ): UiSessionSnapshot {
         return runPagedSnapshot("configurePlatformCapabilities") {
             bridge.configurePlatformCapabilitiesInSessionJson(handle, capabilitiesJson, settingsStore)

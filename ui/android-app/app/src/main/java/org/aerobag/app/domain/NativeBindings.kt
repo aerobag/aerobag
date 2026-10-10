@@ -4,11 +4,9 @@
 
 package org.aerobag.app.domain
 
-interface CoreSettingsStore {
-    fun readSettings(): ByteArray?
-    fun writeSettings(bytes: ByteArray)
-    fun readTourIntroduction(): ByteArray? = null
-    fun writeTourIntroduction(bytes: ByteArray) {}
+interface LocalDocumentStore {
+    fun readDocument(key: String): ByteArray?
+    fun writeDocument(key: String, bytes: ByteArray?)
 }
 
 interface NativeBridge {
@@ -207,7 +205,7 @@ interface NativeBridge {
     fun configurePlatformCapabilitiesInSessionJson(
         handle: Long,
         capabilitiesJson: String,
-        settingsStore: CoreSettingsStore,
+        settingsStore: LocalDocumentStore?,
     ): String
 
     fun navigationPageStateJson(capabilitiesJson: String): String
@@ -894,7 +892,7 @@ object NativeBindings : NativeBridge {
     external override fun configurePlatformCapabilitiesInSessionJson(
         handle: Long,
         capabilitiesJson: String,
-        settingsStore: CoreSettingsStore,
+        settingsStore: LocalDocumentStore?,
     ): String
 
     external override fun navigationPageStateJson(capabilitiesJson: String): String

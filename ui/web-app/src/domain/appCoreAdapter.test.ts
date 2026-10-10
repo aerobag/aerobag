@@ -217,6 +217,7 @@ describe("loadBestAvailableAdapter", () => {
         return mutationOutcomeJson();
       },
       configure_platform_capabilities_in_session: async () => mutationOutcomeJson(),
+      local_document_keys_json: () => "[]",
       configure_data_sources_in_session: async () => mutationOutcomeJson(),
       perform_cloud_ui_action_in_session: async () => mutationOutcomeJson(),
       record_offline_package_preferences_in_session: async () => mutationOutcomeJson(),

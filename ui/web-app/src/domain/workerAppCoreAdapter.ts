@@ -15,6 +15,7 @@ import type {
 import { sessionUpdateGroupNames } from "./appCoreAdapter";
 import { UI_SESSION_UPDATE_GROUPS } from "../generated/sessionUpdateWire";
 import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
+import { executeDocumentRequest, type DocumentRequest } from "./localDocuments";
 import { debugLog, getBrowserInstanceId, isDebugLogEnabled, type DebugLogRecord } from "./debugLog";
 import type { SituationRingCandidate } from "./types";
 import {
@@ -72,18 +73,12 @@ type WorkerSessionProjection = {
   landing: UiSessionProjectionLanding;
 };
 
-type WorkerCoreSettingsChanged = {
-  kind: "coreSettingsChanged";
-  settingsJson: string | null;
-  tourIntroductionJson: string | null;
-};
-
 type WorkerDebugLog = {
   kind: "workerDebugLog";
   record: DebugLogRecord;
 };
 
-type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerSessionProjection | WorkerCoreSettingsChanged | WorkerDebugLog;
+type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerSessionProjection | DocumentRequest | WorkerDebugLog;
 
 type WorkerErrorPayload = {
   name?: string;
@@ -190,9 +185,11 @@ class AppCoreWorkerClient {
       this.sessionProjections.deliver(message.sessionId, message.landing);
       return;
     }
-    if (message.kind === "coreSettingsChanged") {
-      writePersistedCoreSettingsJson(message.settingsJson);
-      writePersistedCoreSettingsJson(message.tourIntroductionJson, webTourIntroductionStorageKey);
+    if (message.kind === "localDocument") {
+      let result;
+      try { result = executeDocumentRequest(window.localStorage, message); }
+      catch (error) { result = { bytes: null, error: String(error) }; }
+      this.worker.postMessage({ kind: "localDocumentResult", id: message.id, result });
       return;
     }
     if (message.kind === "workerDebugLog") {
@@ -360,8 +357,6 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
         recentAirportIds,
         selectedAirportId,
         selectedChartId,
-        settingsJson: readPersistedCoreSettingsJson(),
-        tourIntroductionJson: readPersistedCoreSettingsJson(webTourIntroductionStorageKey),
         nowEpochMs: Date.now(),
       };
       const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [request]);
@@ -521,27 +516,4 @@ function workerError(payload: WorkerErrorPayload): Error {
     error.stack = payload.stack;
   }
   return error;
-}
-
-const webTourIntroductionStorageKey = "aerobag.tour.introduction.v1";
-const webCoreSettingsStorageKey = "aerobag.core.settings.v1";
-
-function readPersistedCoreSettingsJson(key = webCoreSettingsStorageKey): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writePersistedCoreSettingsJson(settingsJson: string | null, key = webCoreSettingsStorageKey): void {
-  try {
-    if (settingsJson === null || settingsJson.length === 0) {
-      window.localStorage.removeItem(key);
-      return;
-    }
-    window.localStorage.setItem(key, settingsJson);
-  } catch {
-    // Losing a persistence write should not make the live session unusable.
-  }
 }

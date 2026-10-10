@@ -39,6 +39,7 @@ pub mod ids;
 pub mod live_feed_cache;
 pub mod live_feed_runtime;
 pub mod live_feeds;
+pub mod local_documents;
 mod map_controller;
 pub mod map_follow;
 mod map_inspection;
@@ -358,18 +359,18 @@ pub use session::{
     take_cloud_provider_request_in_session, tick_bad_autopilot_in_session,
     tick_playback_in_session, update_ownship_source_status_in_session, ClientBuildInfo,
     DebugFlagId, DisplayDimTimeout, FlightPlanSessionCommand, FlightPlanSessionQuery,
-    InactivitySleepTimeout, LiveFeedAcquisitionPolicy, MapLayerId, NavDbAdvanceDisposition,
-    NavDbAdvanceResult, NavDbMaintenanceAction, NavDbMaintenanceResult, NexradAcquisitionDirective,
+    InactivitySleepTimeout, LiveFeedAcquisitionPolicy, LocalDocumentBackend,
+    LocalDocumentBackendHandle, MapLayerId, NavDbAdvanceDisposition, NavDbAdvanceResult,
+    NavDbMaintenanceAction, NavDbMaintenanceResult, NexradAcquisitionDirective,
     NexradAcquisitionPreferences, NexradCoverageMode, NexradOfflineProfile, NexradUpdateCadence,
     PlatformCapabilities, PlatformCloudCapability, PlatformDisplayPolicyCapability,
     PlatformLiveFeedsCapability, PlatformOfflinePackagesCapability, SettingsPreferences,
-    SettingsStorage, SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisclaimerState,
-    UiDisplayPolicy, UiHomeDestination, UiHomePageButton, UiHomePageState, UiMapLayerState,
-    UiMapLayerToggleState, UiNavDbIdentity, UiPlaybackPanelState, UiSessionDiagnostics,
-    UiSessionInitResult, UiSessionPhase, UiSessionResourceEffect, UiSessionSnapshot,
-    UiSessionUpdateDiagnostics, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
-    UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop, UiStatusActionDecision,
-    UiSurfaceStatusState,
+    UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomeDestination,
+    UiHomePageButton, UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
+    UiPlaybackPanelState, UiSessionDiagnostics, UiSessionInitResult, UiSessionPhase,
+    UiSessionResourceEffect, UiSessionSnapshot, UiSessionUpdateDiagnostics, UiSettingsAction,
+    UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState,
+    UiSettingsSliderStop, UiStatusActionDecision, UiSurfaceStatusState,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

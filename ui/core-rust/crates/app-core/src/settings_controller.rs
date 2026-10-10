@@ -2,10 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use app_ui_contracts::session::{
     DebugFlagId, UiAircraftLibraryState, UiDebugState, UiDisclaimerState, UiDisplayPolicy,
@@ -55,18 +52,7 @@ pub(crate) enum CloudSyncedSettingsRecord {
     NexradAcquisition,
 }
 
-pub trait SettingsStorage: Send + Sync {
-    fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
-    fn write_settings(&self, bytes: &[u8]) -> AppResult<()>;
-    fn read_tour_introduction(&self) -> AppResult<Option<Vec<u8>>> {
-        Ok(None)
-    }
-    fn write_tour_introduction(&self, _bytes: &[u8]) -> AppResult<()> {
-        Ok(())
-    }
-}
-
-pub type SettingsStorageHandle = Arc<dyn SettingsStorage>;
+pub use crate::local_documents::{LocalDocumentBackend, LocalDocumentBackendHandle};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DisplayDimTimeout {

@@ -29,9 +29,9 @@ pub(crate) use glide::{GlideRingCache, GlideRingJob};
 pub use crate::airway_routing::AirwayNavigationMode;
 
 pub use crate::settings_controller::{
-    DisplayDimTimeout, InactivitySleepTimeout, NexradAcquisitionDirective,
-    NexradAcquisitionPreferences, NexradCoverageMode, NexradOfflineProfile, NexradUpdateCadence,
-    SettingsPreferences, SettingsStorage, SettingsStorageHandle,
+    DisplayDimTimeout, InactivitySleepTimeout, LocalDocumentBackend, LocalDocumentBackendHandle,
+    NexradAcquisitionDirective, NexradAcquisitionPreferences, NexradCoverageMode,
+    NexradOfflineProfile, NexradUpdateCadence, SettingsPreferences,
 };
 
 pub use app_ui_contracts::{
@@ -442,7 +442,7 @@ struct SessionCoordinatorModel {
     last_content_report: Option<ContentReport>,
     chart_page_state: UiChartPageState,
     platform_capabilities: PlatformCapabilities,
-    persistence_storage: Option<SettingsStorageHandle>,
+    persistence_storage: Option<Arc<crate::local_documents::LocalDocuments>>,
     persistence_write_block_reason: Option<String>,
     debug_state: UiDebugState,
     cycle_product_freshness: CycleProductFreshnessState,
@@ -2536,7 +2536,7 @@ pub fn load_offline_package_library_cache_in_session(
 pub fn configure_platform_capabilities_in_session(
     handle: u32,
     capabilities: PlatformCapabilities,
-    settings_storage: Option<SettingsStorageHandle>,
+    settings_storage: Option<LocalDocumentBackendHandle>,
 ) -> AppResult<HadOperationOutcome> {
     if let Some(local_time_zone) = capabilities.local_time_zone.as_deref() {
         validate_platform_time_zone(local_time_zone)?;
@@ -2546,7 +2546,8 @@ pub fn configure_platform_capabilities_in_session(
     let session = &mut *session_guard;
     run_session_model_transaction_without_persistence(session, move |session| {
         session.coordinator.platform_capabilities = capabilities;
-        session.coordinator.persistence_storage = settings_storage;
+        session.coordinator.persistence_storage =
+            settings_storage.map(crate::local_documents::LocalDocuments::new);
         session.coordinator.persistence_write_block_reason = None;
         load_session_persistence_from_storage(session)?;
         session
@@ -2820,6 +2821,9 @@ fn run_durable_session_model_value_transaction<T>(
     should_write_persistence: impl FnOnce(&T) -> bool,
 ) -> AppResult<T> {
     let checkpoint = SessionModelTransactionCheckpoint::capture(session);
+    if let Some(storage) = &session.coordinator.persistence_storage {
+        storage.arm_completion_check(session.coordinator.wall_clock_epoch_ms);
+    }
     let result = mutate(session).and_then(|value| {
         if should_write_persistence(&value) {
             write_session_persistence_to_storage(session)?;
@@ -2902,6 +2906,11 @@ fn run_session_model_transaction_projecting(
 ) -> AppResult<HadOperationOutcome> {
     let previous_versions = session.projection_versions.versions();
     let checkpoint = SessionModelTransactionCheckpoint::capture(session);
+    if write_persistence {
+        if let Some(storage) = &session.coordinator.persistence_storage {
+            storage.arm_completion_check(session.coordinator.wall_clock_epoch_ms);
+        }
+    }
     let result = (|| {
         let invalidations = mutate(session)?;
         advance_session_revision(session);
@@ -12884,6 +12893,7 @@ fn assemble_session_update(
 fn try_snapshot_for_session(
     session: &mut UiSession,
 ) -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
+    sync_local_document_status(session);
     session
         .situation
         .refresh_ownship_at(session.coordinator.wall_clock_epoch_ms);
@@ -13124,6 +13134,14 @@ fn try_snapshot_for_session(
                     .unwrap_or(i64::MAX),
             )
             .min(session.map.inspection().next_refresh().unwrap_or(i64::MAX))
+            .min(
+                session
+                    .coordinator
+                    .persistence_storage
+                    .as_ref()
+                    .and_then(|store| store.next_refresh(session.coordinator.wall_clock_epoch_ms))
+                    .unwrap_or(i64::MAX),
+            )
             .min(
                 session
                     .coordinator
@@ -13386,8 +13404,17 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
-    let persisted = storage.read_settings()?;
-    guided_tour_session::load_introduction(session, persisted.is_some())?;
+    let persisted = match storage.read(crate::local_documents::SESSION_DOCUMENT) {
+        Ok(value) => value,
+        Err(error) => {
+            session.coordinator.persistence_write_block_reason = Some(error.message);
+            return Ok(());
+        }
+    };
+    if let Err(error) = guided_tour_session::load_introduction(session, persisted.is_some()) {
+        session.coordinator.persistence_write_block_reason = Some(error.message);
+        return Ok(());
+    }
     let Some(bytes) = persisted else {
         return Ok(());
     };
@@ -13427,6 +13454,9 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
 }
 
 fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
+    if session.coordinator.persistence_write_block_reason.is_some() {
+        return Ok(());
+    }
     guided_tour_session::persist_introduction(session)?;
     if session.coordinator.guided_tour.is_some() {
         return Ok(());
@@ -13434,18 +13464,29 @@ fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
     let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
-    if let Some(reason) = session
-        .coordinator
-        .persistence_write_block_reason
-        .as_deref()
-    {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("settings persistence writes are blocked: {reason}"),
-        });
-    }
     let bytes = encode_session_persistence(session)?;
-    storage.write_settings(&bytes)
+    storage.replace(crate::local_documents::SESSION_DOCUMENT, &bytes)
+}
+
+fn sync_local_document_status(session: &mut UiSession) {
+    let mut errors = Vec::new();
+    if let Some(storage) = &session.coordinator.persistence_storage {
+        storage.tick(session.coordinator.wall_clock_epoch_ms);
+        errors.extend(storage.errors());
+    }
+    if let Some(reason) = &session.coordinator.persistence_write_block_reason {
+        errors.push(format!(
+            "Stored state cannot be read safely; reload after correcting storage: {reason}"
+        ));
+    }
+    if errors.is_empty() {
+        clear_data_status_record(session, "local-storage");
+    } else {
+        upsert_data_status_record(session, DataStatusRecord::new(
+            "local-storage", "LOCAL STORAGE", Some("NOT SAVED".into()), UiStatusSeverity::Warning, true,
+            format!("Local storage is not working. Current edits remain in memory but may be lost on restart. {}", errors.join("; ")),
+        ));
+    }
 }
 
 fn decode_session_persistence(bytes: &[u8]) -> Result<SettingsPersistenceDocument, String> {
@@ -15329,7 +15370,7 @@ mod tests {
     #[test]
     fn tour_introduction_is_local_once_only_and_preserves_existing_users() {
         use app_ui_contracts::tour::UiTourAction;
-        let storage = Arc::new(MemorySettingsStorage::default());
+        let storage = Arc::new(MemoryLocalDocumentBackend::default());
         let open = || {
             let init = create_ui_session(FlightPlan::empty(), &[], None, None).unwrap();
             let snapshot = configure_platform_capabilities_in_session(
@@ -15354,13 +15395,20 @@ mod tests {
         // Restart between accepting the disclaimer and showing the welcome card.
         let (handle, pending) = open();
         assert!(pending.guided_tour_auto_start);
-        let saved = storage.read_settings().unwrap();
+        let saved = storage
+            .read(crate::local_documents::SESSION_DOCUMENT)
+            .unwrap();
         perform_guided_tour_action_in_session(handle, UiTourAction::StartIntroduction, None)
             .unwrap();
         let active = get_session_snapshot(handle).unwrap();
         assert!(!active.guided_tour_auto_start);
         assert_eq!(active.guided_tour.as_ref().unwrap().step_id, "welcome");
-        assert_eq!(storage.read_settings().unwrap(), saved);
+        assert_eq!(
+            storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap(),
+            saved
+        );
         // Even a process exit during the tour must count as offered.
         let (_, reopened) = open();
         assert!(!reopened.guided_tour_auto_start);
@@ -15372,7 +15420,12 @@ mod tests {
         )
         .unwrap();
         assert!(!get_session_snapshot(handle).unwrap().guided_tour_auto_start);
-        assert_eq!(storage.read_settings().unwrap(), saved);
+        assert_eq!(
+            storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap(),
+            saved
+        );
         // Existing settings predate the introduction marker.
         *storage.introduction.lock().unwrap() = None;
         let (handle, legacy) = open();
@@ -15438,7 +15491,7 @@ mod tests {
             );
             get_session_snapshot(handle).unwrap()
         }
-        let storage = Arc::new(MemorySettingsStorage::default());
+        let storage = Arc::new(MemoryLocalDocumentBackend::default());
         let mut plan = FlightPlan::empty();
         plan.route_components.push(RouteComponent::Waypoint {
             waypoint: NavRef::Spot(LatLon {
@@ -15454,7 +15507,9 @@ mod tests {
             Some(storage.clone()),
         )
         .unwrap();
-        let saved_bytes = storage.read_settings().unwrap();
+        let saved_bytes = storage
+            .read(crate::local_documents::SESSION_DOCUMENT)
+            .unwrap();
         let saved = get_session_snapshot(init.handle).unwrap();
         let started = advance(init.handle, UiTourAction::Start, None);
         let generation = started.guided_tour.as_ref().unwrap().generation;
@@ -15463,7 +15518,12 @@ mod tests {
             started.app_ui_state.active_plan,
             saved.app_ui_state.active_plan
         );
-        assert_eq!(storage.read_settings().unwrap(), saved_bytes);
+        assert_eq!(
+            storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap(),
+            saved_bytes
+        );
         assert!(take_cloud_provider_request_in_session(init.handle, 0)
             .unwrap()
             .is_none());
@@ -15505,7 +15565,12 @@ mod tests {
         );
         assert_eq!(closed.map_layer_state, saved.map_layer_state);
         assert_eq!(closed.chart_page_state, saved.chart_page_state);
-        assert_eq!(storage.read_settings().unwrap(), saved_bytes);
+        assert_eq!(
+            storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap(),
+            saved_bytes
+        );
         let started = advance(init.handle, UiTourAction::Start, None);
         let next = advance(
             init.handle,
@@ -15540,7 +15605,12 @@ mod tests {
             finished.app_ui_state.active_plan,
             saved.app_ui_state.active_plan
         );
-        assert_eq!(storage.read_settings().unwrap(), saved_bytes);
+        assert_eq!(
+            storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap(),
+            saved_bytes
+        );
         let fresh = advance(init.handle, UiTourAction::Start, None);
         assert_eq!(fresh.guided_tour.as_ref().unwrap().step_id, "welcome");
         advance(
@@ -16891,44 +16961,53 @@ mod tests {
         );
     }
 
-    struct RejectingSettingsStorage;
+    struct RejectingLocalDocumentBackend;
 
-    impl SettingsStorage for RejectingSettingsStorage {
-        fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
+    impl LocalDocumentBackend for RejectingLocalDocumentBackend {
+        fn read(&self, _key: &str) -> AppResult<Option<Vec<u8>>> {
             Ok(None)
         }
 
-        fn write_settings(&self, _bytes: &[u8]) -> AppResult<()> {
-            Err(AppError {
-                kind: AppErrorKind::Internal,
-                message: "injected settings write failure".to_string(),
-            })
+        fn write(
+            &self,
+            _key: &str,
+            _bytes: Option<Vec<u8>>,
+            complete: crate::local_documents::DocumentCompletion,
+        ) {
+            complete(Err("injected settings write failure".into()));
         }
     }
 
     struct RejectingSettingsReadStorage;
 
-    impl SettingsStorage for RejectingSettingsReadStorage {
-        fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
+    impl LocalDocumentBackend for RejectingSettingsReadStorage {
+        fn read(&self, _key: &str) -> AppResult<Option<Vec<u8>>> {
             Err(AppError {
                 kind: AppErrorKind::Internal,
                 message: "injected settings read failure".to_string(),
             })
         }
 
-        fn write_settings(&self, _bytes: &[u8]) -> AppResult<()> {
-            Ok(())
+        fn write(
+            &self,
+            _key: &str,
+            _bytes: Option<Vec<u8>>,
+            complete: crate::local_documents::DocumentCompletion,
+        ) {
+            complete(Ok(()));
         }
     }
 
     #[test]
-    fn model_transaction_rolls_back_model_and_queued_effects_when_persistence_fails() {
+    fn failed_durable_write_preserves_live_model_and_effects() {
         let mut session = isolated_test_session(None);
-        session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
+        session.coordinator.persistence_storage = Some(
+            crate::local_documents::LocalDocuments::new(Arc::new(RejectingLocalDocumentBackend)),
+        );
         let prior_revision = session.coordinator.session_revision;
-        let prior_projection_versions = observe_projection_versions(&mut session);
+        observe_projection_versions(&mut session);
 
-        let error = run_session_model_transaction(&mut session, |session| {
+        run_session_model_transaction(&mut session, |session| {
             session
                 .packages
                 .insert_installed_package_id("must-roll-back".to_string());
@@ -16939,25 +17018,28 @@ mod tests {
             );
             Ok(vec![UiInvalidation::SessionSnapshot])
         })
-        .expect_err("persistence failure must abort transaction");
-
-        assert!(error.message.contains("injected settings write failure"));
-        assert_eq!(session.coordinator.session_revision, prior_revision);
-        assert_eq!(
-            session.projection_versions.versions(),
-            prior_projection_versions
-        );
-        assert!(!session
+        .expect("storage failure must not discard a live edit");
+        sync_local_document_status(&mut session);
+        assert!(session
+            .coordinator
+            .persistence_storage
+            .as_ref()
+            .unwrap()
+            .errors()
+            .iter()
+            .any(|e| e.contains("injected settings write failure")));
+        assert!(session.coordinator.session_revision > prior_revision);
+        assert!(session
             .packages
             .installed_package_ids()
             .contains("must-roll-back"));
-        assert!(session.runtime.pending_resource_effects.is_empty());
+        assert!(!session.runtime.pending_resource_effects.is_empty());
         assert_eq!(
             session
                 .diagnostics
                 .transaction_rollback_count
                 .load(Ordering::Relaxed),
-            1
+            0
         );
     }
 
@@ -17533,7 +17615,7 @@ mod tests {
     snapshot_wrapper!(configure_platform_capabilities_in_session(
         handle: u32,
         capabilities: PlatformCapabilities,
-        settings_storage: Option<SettingsStorageHandle>,
+        settings_storage: Option<LocalDocumentBackendHandle>,
     ));
     snapshot_wrapper!(perform_settings_action_in_session(
         handle: u32,
@@ -17688,26 +17770,36 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct MemorySettingsStorage {
+    struct MemoryLocalDocumentBackend {
         bytes: Mutex<Option<Vec<u8>>>,
         introduction: Mutex<Option<Vec<u8>>>,
     }
 
-    impl SettingsStorage for MemorySettingsStorage {
-        fn read_tour_introduction(&self) -> AppResult<Option<Vec<u8>>> {
-            Ok(self.introduction.lock().unwrap().clone())
+    impl LocalDocumentBackend for MemoryLocalDocumentBackend {
+        fn read(&self, key: &str) -> AppResult<Option<Vec<u8>>> {
+            Ok(if key == crate::local_documents::TOUR_DOCUMENT {
+                &self.introduction
+            } else {
+                &self.bytes
+            }
+            .lock()
+            .unwrap()
+            .clone())
         }
-        fn write_tour_introduction(&self, bytes: &[u8]) -> AppResult<()> {
-            *self.introduction.lock().unwrap() = Some(bytes.to_vec());
-            Ok(())
-        }
-        fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
-            Ok(self.bytes.lock().expect("settings lock").clone())
-        }
-
-        fn write_settings(&self, bytes: &[u8]) -> AppResult<()> {
-            *self.bytes.lock().expect("settings lock") = Some(bytes.to_vec());
-            Ok(())
+        fn write(
+            &self,
+            key: &str,
+            bytes: Option<Vec<u8>>,
+            complete: crate::local_documents::DocumentCompletion,
+        ) {
+            *if key == crate::local_documents::TOUR_DOCUMENT {
+                &self.introduction
+            } else {
+                &self.bytes
+            }
+            .lock()
+            .unwrap() = bytes;
+            complete(Ok(()));
         }
     }
 
@@ -17717,7 +17809,7 @@ mod tests {
             b"truncated json".to_vec(),
             br#"{"version":999,"preferences":{},"cloud":{}}"#.to_vec(),
         ] {
-            let storage = Arc::new(MemorySettingsStorage {
+            let storage = Arc::new(MemoryLocalDocumentBackend {
                 bytes: Mutex::new(Some(original.clone())),
                 ..Default::default()
             });
@@ -17730,7 +17822,7 @@ mod tests {
             )
             .expect("session remains usable with protected persistence");
 
-            let error = perform_settings_action_in_session(
+            let snapshot = perform_settings_action_in_session(
                 init.handle,
                 UiSettingsAction {
                     action_id: "debug_flag.tile_labels".to_string(),
@@ -17738,13 +17830,15 @@ mod tests {
                 },
                 1_000,
             )
-            .expect_err("a settings write must not replace unreadable persistence");
-
-            assert!(
-                error.message.contains("persistence writes are blocked"),
-                "{error:?}"
+            .expect("local edit remains usable with protected storage");
+            assert!(snapshot.debug_state.tile_labels);
+            assert!(has_data_status_box(&snapshot, "local-storage"));
+            assert_eq!(
+                storage
+                    .read(crate::local_documents::SESSION_DOCUMENT)
+                    .unwrap(),
+                Some(original)
             );
-            assert_eq!(storage.read_settings().unwrap(), Some(original));
         }
     }
 
@@ -17890,7 +17984,7 @@ mod tests {
         let snapshot = configure_platform_capabilities_in_session(
             init.handle,
             PlatformCapabilities::default(),
-            Some(Arc::new(MemorySettingsStorage::default())),
+            Some(Arc::new(MemoryLocalDocumentBackend::default())),
         )
         .expect("configure platform capabilities");
 
@@ -17987,7 +18081,7 @@ mod tests {
 
     #[test]
     fn display_dim_setting_uses_core_owned_storage() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let snapshot = configure_platform_capabilities_in_session(
@@ -18038,7 +18132,7 @@ mod tests {
         );
 
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
@@ -18072,7 +18166,7 @@ mod tests {
 
     #[test]
     fn battery_only_dimming_persists_and_power_events_publish_the_display_policy() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
         let capabilities = PlatformCapabilities {
             display_policy: Some(PlatformDisplayPolicyCapability::default()),
@@ -18093,7 +18187,10 @@ mod tests {
             100,
         )
         .unwrap();
-        let persisted = storage.read_settings().unwrap().unwrap();
+        let persisted = storage
+            .read(crate::local_documents::SESSION_DOCUMENT)
+            .unwrap()
+            .unwrap();
         let persisted_json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
         assert_eq!(
             persisted_json["preferences"]["display_dim_on_battery_only"],
@@ -18122,7 +18219,10 @@ mod tests {
             assert!(policy.keep_screen_on);
             assert_eq!(policy.allow_screen_off_after_ms, Some(3_600_000));
             assert_eq!(
-                storage.read_settings().unwrap().unwrap(),
+                storage
+                    .read(crate::local_documents::SESSION_DOCUMENT)
+                    .unwrap()
+                    .unwrap(),
                 persisted,
                 "power observations must not persist or publish cloud edits"
             );
@@ -18154,7 +18254,7 @@ mod tests {
 
     #[test]
     fn inactivity_sleep_setting_is_persisted_as_a_cloud_record() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_platform_capabilities_in_session(
@@ -18186,7 +18286,7 @@ mod tests {
         );
 
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
@@ -18223,7 +18323,7 @@ mod tests {
 
     #[test]
     fn android_nexrad_settings_persist_as_one_atomic_cloud_record() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let capabilities = PlatformCapabilities {
             live_feeds: Some(PlatformLiveFeedsCapability {
                 acquisition_policy: LiveFeedAcquisitionPolicy::DurableCompleteStates,
@@ -18277,7 +18377,7 @@ mod tests {
         )
         .expect("lower shown NEXRAD cadence");
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
@@ -18339,7 +18439,7 @@ mod tests {
 
     #[test]
     fn debug_flags_are_persisted_as_independent_cloud_records() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_platform_capabilities_in_session(
@@ -18365,7 +18465,7 @@ mod tests {
         }
 
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
@@ -18393,7 +18493,7 @@ mod tests {
 
     #[test]
     fn service_inbox_reads_persist_without_acknowledging_operational_faults() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
         let url = "https://notices.test/service/bulletins-v1.json";
         let capabilities = PlatformCapabilities {
@@ -18495,7 +18595,7 @@ mod tests {
 
     #[test]
     fn flight_plan_ete_scope_action_is_core_owned_and_persistent() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let initial = configure_platform_capabilities_in_session(
@@ -18514,7 +18614,7 @@ mod tests {
         assert_eq!(flight_plan_ete_column(&toggled).label, "ETE LEG");
 
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
@@ -18548,7 +18648,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_action_leaves_live_model_unchanged_when_storage_rejects_write() {
+    fn settings_action_remains_live_and_warns_when_storage_rejects_write() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let before = configure_platform_capabilities_in_session(
@@ -18557,12 +18657,12 @@ mod tests {
                 display_policy: Some(PlatformDisplayPolicyCapability::default()),
                 ..PlatformCapabilities::default()
             },
-            Some(Arc::new(RejectingSettingsStorage)),
+            Some(Arc::new(RejectingLocalDocumentBackend)),
         )
         .expect("configure rejecting storage");
         assert_eq!(before.settings_page_state.controls()[1].value_id, "2m");
 
-        let error = super::perform_settings_action_in_session(
+        super::perform_settings_action_in_session(
             init.handle,
             UiSettingsAction {
                 action_id: "display_dim_timeout".to_string(),
@@ -18570,22 +18670,22 @@ mod tests {
             },
             100,
         )
-        .expect_err("failed persistence must reject setting");
-        assert!(error.message.contains("injected settings write failure"));
+        .expect("failed persistence must not reject a local setting");
 
         let after = get_session_snapshot(init.handle).expect("snapshot retained setting");
-        assert_eq!(after.session_revision, before.session_revision);
-        assert_eq!(after.settings_page_state.controls()[1].value_id, "2m");
+        assert!(after.session_revision > before.session_revision);
+        assert_eq!(after.settings_page_state.controls()[1].value_id, "30s");
+        assert!(has_data_status_box(&after, "local-storage"));
         assert_eq!(
             after
                 .display_policy
                 .as_ref()
                 .and_then(|policy| policy.dim_after_ms),
-            Some(120_000)
+            Some(30_000)
         );
         let diagnostics = session_diagnostics(init.handle).expect("diagnostics");
-        assert_eq!(diagnostics.transaction_rollback_count, 1);
-        assert_eq!(diagnostics.settings_revision, 0);
+        assert_eq!(diagnostics.transaction_rollback_count, 0);
+        assert_eq!(diagnostics.settings_revision, 1);
         destroy_session(init.handle);
     }
 
@@ -18797,7 +18897,7 @@ mod tests {
 
     #[test]
     fn private_aircraft_survives_local_session_restart() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let first = create_ui_session(FlightPlan::default(), &[], None, None)
             .expect("create first aircraft-library session");
         configure_platform_capabilities_in_session(
@@ -18844,10 +18944,10 @@ mod tests {
     }
 
     #[test]
-    fn platform_configuration_rolls_back_when_settings_read_fails() {
+    fn platform_configuration_reports_failed_read_without_disabling_local_operation() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
-        let error = super::configure_platform_capabilities_in_session(
+        super::configure_platform_capabilities_in_session(
             init.handle,
             PlatformCapabilities {
                 display_policy: Some(PlatformDisplayPolicyCapability::default()),
@@ -18855,21 +18955,19 @@ mod tests {
             },
             Some(Arc::new(RejectingSettingsReadStorage)),
         )
-        .expect_err("failed settings read must reject configuration");
-        assert!(error.message.contains("injected settings read failure"));
+        .expect("failed settings read must not prevent startup");
 
         let snapshot = get_session_snapshot(init.handle).expect("retained initial snapshot");
-        assert_eq!(snapshot.session_revision, 0);
-        assert!(snapshot.display_policy.is_none());
-        assert!(snapshot.settings_page_state.controls().len() == 1);
+        assert!(snapshot.display_policy.is_some());
+        assert!(has_data_status_box(&snapshot, "local-storage"));
         let diagnostics = session_diagnostics(init.handle).expect("diagnostics");
-        assert_eq!(diagnostics.transaction_rollback_count, 1);
+        assert_eq!(diagnostics.transaction_rollback_count, 0);
         destroy_session(init.handle);
     }
 
     #[test]
     fn offline_package_profile_is_core_persisted_across_session_restart() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let first =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_platform_capabilities_in_session(
@@ -18946,13 +19044,13 @@ mod tests {
     }
 
     #[test]
-    fn offline_package_profile_rolls_back_controller_and_cloud_when_persistence_fails() {
+    fn offline_package_profile_remains_consistent_when_durable_write_fails() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_platform_capabilities_in_session(
             init.handle,
             PlatformCapabilities::default(),
-            Some(Arc::new(RejectingSettingsStorage)),
+            Some(Arc::new(RejectingLocalDocumentBackend)),
         )
         .expect("configure rejecting storage");
         let before = get_session_snapshot(init.handle).expect("initial snapshot");
@@ -18963,33 +19061,25 @@ mod tests {
         })
         .to_string();
 
-        let error = record_offline_package_preferences_in_session(init.handle, &preferences, 100)
-            .expect_err("persistence failure must reject package preferences");
-
-        assert!(error.message.contains("injected settings write failure"));
+        record_offline_package_preferences_in_session(init.handle, &preferences, 100)
+            .expect("local edit must survive storage failure");
         let after = get_session_snapshot(init.handle).expect("rolled-back snapshot");
         let after_diagnostics = session_diagnostics(init.handle).expect("rolled-back diagnostics");
-        assert_eq!(after.session_revision, before.session_revision);
-        assert_eq!(
-            after_diagnostics.cloud_revision,
-            before_diagnostics.cloud_revision
-        );
-        assert_eq!(
+        assert!(after.session_revision > before.session_revision);
+        assert!(after_diagnostics.cloud_revision > before_diagnostics.cloud_revision);
+        assert_ne!(
             after.offline_package_preferences_json,
             before.offline_package_preferences_json
         );
+        assert!(has_data_status_box(&after, "local-storage"));
         let sessions = lock_sessions();
         let session = session_ref(&sessions, init.handle).expect("session");
         assert_eq!(
-            session.packages.preferences(),
-            &crate::OfflinePackagePreferences::default()
-        );
-        assert_eq!(
-            session
+            &session
                 .cloud
                 .offline_package_preferences()
                 .expect("cloud package preferences"),
-            crate::OfflinePackagePreferences::default()
+            session.packages.preferences()
         );
         drop(session);
         drop(sessions);
@@ -18998,7 +19088,7 @@ mod tests {
 
     #[test]
     fn flight_data_visibility_setting_filters_snapshot_and_persists() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let snapshot = configure_platform_capabilities_in_session(
@@ -19032,7 +19122,7 @@ mod tests {
         assert!(!settings_item.enabled);
 
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
@@ -19076,7 +19166,7 @@ mod tests {
 
     #[test]
     fn disclaimer_agreement_uses_core_owned_storage() {
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let snapshot = configure_platform_capabilities_in_session(
@@ -19095,7 +19185,7 @@ mod tests {
         assert!(!snapshot.disclaimer_state.required);
 
         let persisted = storage
-            .read_settings()
+            .read(crate::local_documents::SESSION_DOCUMENT)
             .expect("read settings")
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
@@ -25843,9 +25933,11 @@ mod tests {
         {
             let slot = session_slot(init.handle).unwrap();
             let mut session = slot.lock_running().unwrap();
-            // Any accidental write fails the operation, as well as adding avoidable
-            // serialization and synchronous disk work to this transient UI path.
-            session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
+            // Any accidental write records an error in the core storage owner.
+            session.coordinator.persistence_storage =
+                Some(crate::local_documents::LocalDocuments::new(Arc::new(
+                    RejectingLocalDocumentBackend,
+                )));
         }
         let now = 2_000_000_000_000;
         for second in 0..3 {
@@ -25882,6 +25974,10 @@ mod tests {
                 },
             )
             .expect("editor dismissal must not write settings");
+            assert!(!has_data_status_box(
+                &get_session_snapshot(init.handle).unwrap(),
+                "local-storage"
+            ));
             assert!(get_session_snapshot(init.handle)
                 .unwrap()
                 .app_ui_state
@@ -34623,7 +34719,7 @@ mod tests {
     }
 
     #[test]
-    fn airway_routing_navigation_preference_persists_and_rolls_back_with_editor_history() {
+    fn airway_routing_preference_persists_and_undo_remains_live_when_storage_fails() {
         use crate::routing_editor::RoutingEditor;
         let store = crate::airway_routing::tests::store();
         let plan = crate::build_flight_plan(FlightPlan {
@@ -34655,8 +34751,9 @@ mod tests {
             .action_id
             .clone();
         session.flight_plan.set_routing_editor(draft.clone());
-        let storage = Arc::new(MemorySettingsStorage::default());
-        session.coordinator.persistence_storage = Some(storage.clone());
+        let storage = Arc::new(MemoryLocalDocumentBackend::default());
+        session.coordinator.persistence_storage =
+            Some(crate::local_documents::LocalDocuments::new(storage.clone()));
         let transition = draft.advance(&store, &plan, &vor, epoch);
         assert!(matches!(
             apply_routing_editor_transition(&mut session, transition).unwrap(),
@@ -34666,14 +34763,20 @@ mod tests {
             session.settings.airway_navigation_mode(),
             AirwayNavigationMode::Vor
         );
-        let document =
-            decode_session_persistence(&storage.read_settings().unwrap().unwrap()).unwrap();
+        let document = decode_session_persistence(
+            &storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             document.preferences.airway_navigation_mode,
             AirwayNavigationMode::Vor
         );
         let mut restored = isolated_test_session(None);
-        restored.coordinator.persistence_storage = Some(storage.clone());
+        restored.coordinator.persistence_storage =
+            Some(crate::local_documents::LocalDocuments::new(storage.clone()));
         load_session_persistence_from_storage(&mut restored).unwrap();
         assert_eq!(
             restored.settings.airway_navigation_mode(),
@@ -34681,7 +34784,6 @@ mod tests {
         );
 
         let before = session.flight_plan.routing_editor().clone();
-        let revision = session.coordinator.session_revision;
         let undo = before
             .view(epoch)
             .unwrap()
@@ -34691,22 +34793,33 @@ mod tests {
             .find(|button| button.label == "Undo")
             .unwrap()
             .action_id;
-        session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
-        let transition = before.advance(&store, &plan, &undo, epoch);
-        let error = apply_routing_editor_transition(&mut session, transition).unwrap_err();
-        assert!(error.message.contains("injected settings write failure"));
-        assert_eq!(session.coordinator.session_revision, revision);
-        assert_eq!(session.flight_plan.routing_editor(), &before);
-        assert_eq!(
-            session.settings.airway_navigation_mode(),
-            AirwayNavigationMode::Vor
+        session.coordinator.persistence_storage = Some(
+            crate::local_documents::LocalDocuments::new(Arc::new(RejectingLocalDocumentBackend)),
         );
-
-        session.coordinator.persistence_storage = Some(storage.clone());
         let transition = before.advance(&store, &plan, &undo, epoch);
         apply_routing_editor_transition(&mut session, transition).unwrap();
-        let document =
-            decode_session_persistence(&storage.read_settings().unwrap().unwrap()).unwrap();
+        assert!(!session
+            .coordinator
+            .persistence_storage
+            .as_ref()
+            .unwrap()
+            .errors()
+            .is_empty());
+        assert_eq!(
+            session.settings.airway_navigation_mode(),
+            AirwayNavigationMode::Gnss
+        );
+
+        session.coordinator.persistence_storage =
+            Some(crate::local_documents::LocalDocuments::new(storage.clone()));
+        write_session_persistence_to_storage(&session).unwrap();
+        let document = decode_session_persistence(
+            &storage
+                .read(crate::local_documents::SESSION_DOCUMENT)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             document.preferences.airway_navigation_mode,
             AirwayNavigationMode::Gnss

@@ -486,6 +486,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     queryTerrainOverlay: (...args) => call("queryTerrainOverlay", args),
     queryGlideRing: (...args) => call("queryGlideRing", args),
     queryNexradOverlay: (...args) => call("queryNexradOverlay", args),
+    readNexradImageBytes: (...args) => call("readNexradImageBytes", args),
     queryRasterTilePlan: (...args) => call("queryRasterTilePlan", args),
     renderTerrainOverlayTileByKey: (...args) => call("renderTerrainOverlayTileByKey", args),
     projectFlightPlanRoute: () => call("projectFlightPlanRoute"),

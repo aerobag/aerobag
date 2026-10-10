@@ -87,14 +87,16 @@ internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightD
             Scrim(onDismiss = close)
             BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(imeInsets).padding(ThumbGap)) {
                 LaunchedEffect(editor.id) {
-                    focusRequester.requestFocus()
-                    keyboardController?.show()
+                    if (editor.showInput) {
+                        focusRequester.requestFocus()
+                        keyboardController?.show()
+                    }
                 }
                 val availableHeight = maxHeight
                 MenuPanel(modifier = Modifier.align(Alignment.Center).testTag("${editor.id}-tray"), width = ThumbSize * 3.8f) {
                     Column(Modifier.heightIn(max = availableHeight).observedVerticalScroll(rememberScrollState())) {
                         editor.title?.let { MenuPanelHeader(it, false, ThumbSize * 2.8f) }
-                        Row(verticalAlignment = Alignment.CenterVertically,
+                        if (editor.showInput) Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
                             BasicTextField(
                                 value = input,
@@ -110,7 +112,7 @@ internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightD
                                 modifier = Modifier.weight(1f).height(ThumbSize)
                                     .semantics { contentDescription = editor.label }
                                     .background(theme.controls.textInputBg)
-                                    .e2eIndexedControl(semanticTag = "${editor.id}-setting", enabled = true)
+                                    .e2eIndexedControl(semanticTag = "parity:${editor.id}-setting", enabled = true)
                                     .focusRequester(focusRequester)
                                     .onPreviewKeyEvent { event ->
                                         if (event.nativeKeyEvent.keyCode != android.view.KeyEvent.KEYCODE_ENTER &&
@@ -138,7 +140,7 @@ internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightD
                                                     modifier = Modifier.testTag("${editor.id}-${item.id}-symbol")) }
                                             } else null,
                                             disabledReason = item.disabledReason,
-                                            modifier = Modifier.weight(1f), testTag = "${editor.id}-${item.id}",
+                                            modifier = Modifier.weight(1f), testTag = "parity:${editor.id}-${item.id}",
                                             onSelect = { action(item.id) })
                                     }
                                 }

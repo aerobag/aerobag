@@ -55,8 +55,62 @@ import org.robolectric.shadows.ShadowToast
 class BarometerSettingTrayTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun sharedEditorPublishesAddressableControlsAndClearsThemOnUnmount() {
+        val mounted = mutableStateOf(true)
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        val editor = FlightDataEditor(id = "nexrad_age", title = "NEXRAD", showInput = false,
+            label = "NEXRAD", unit = "", input = "", inputRevision = 0, notice = "Receiver radar",
+            dismissActionId = "close", closeLabel = "CLOSE", actionRows = listOf(listOf(
+                org.aerobag.app.generated.FlightDataEditorAction(id = "latest", label = "LATEST", enabled = true, selected = true))))
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                if (mounted.value) FlightDataSettingTray(editor) {}
+            }
+        }
+        repeat(2) {
+            compose.runOnIdle {
+                WindowInspector.getGlobalWindowViews().filter { isPopupLayout(it) }
+                    .forEach { it.drawObservationFrame() }
+                E2eProjectionRegistry.query("parity:nexrad_age-latest", null).use { cursor ->
+                    assertEquals("The journey reader must find the rendered control", 1, cursor.count)
+                }
+                val control = requireNotNull(E2eProjectionRegistry.read("parity:nexrad_age-latest"))
+                assertTrue(control.state.contains("selected:true"))
+                assertTrue(control.bounds != null)
+                mounted.value = false
+            }
+            compose.runOnIdle {
+                assertEquals(null, E2eProjectionRegistry.read("parity:nexrad_age-latest"))
+                mounted.value = true
+            }
+        }
+    }
+
+    @Test fun actionOnlyTrayHasNoInputAndRoutesPhysicalSourceAndAnimationTaps() {
+        val editor = FlightDataEditor(id = "nexrad_age", title = "NEXRAD", showInput = false,
+            label = "NEXRAD", unit = "", input = "", inputRevision = 0, notice = "Receiver radar",
+            dismissActionId = "close", closeLabel = "CLOSE", actionRows = listOf(
+                listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "receiver", label = "ADS-B", enabled = true, selected = false)),
+                listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "latest", label = "LATEST", enabled = true, selected = false))))
+        val commands = mutableListOf<FlightDataCommand>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                FlightDataSettingTray(editor) { commands.add(it) }
+            }
+        }
+        compose.onNodeWithTag("parity:nexrad_age-setting").assertDoesNotExist()
+        compose.onNodeWithTag("parity:nexrad_age-receiver").assertIsDisplayed().performTouchInput { click() }
+        compose.onNodeWithTag("parity:nexrad_age-latest").assertIsDisplayed().performTouchInput { click() }
+        compose.runOnIdle {
+            assertEquals(listOf(
+                FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = "receiver"),
+                FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = "latest")), commands)
+        }
+    }
+
     @Test fun stationOnlyNearestAndCoreInputCorrectionUseTheSharedEditor() {
-        val editor = mutableStateOf(FlightDataEditor(id = "barometer", label = "Altimeter setting", unit = "inHg",
+        val editor = mutableStateOf(FlightDataEditor(id = "barometer", showInput = true, label = "Altimeter setting", unit = "inHg",
             input = "29.92", inputRevision = 0, dismissActionId = "close", closeLabel = "CLOSE",
             notice = "BARO ALT from device is cabin alt. Cross-check.",
             actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
@@ -72,34 +126,34 @@ class BarometerSettingTrayTest {
         }
         compose.onNodeWithText("KSMP 52min old", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("barometer-nearest-symbol", useUnmergedTree = true).assertIsDisplayed()
-        val buttonBounds = compose.onNodeWithTag("barometer-nearest").fetchSemanticsNode().boundsInRoot
+        val buttonBounds = compose.onNodeWithTag("parity:barometer-nearest").fetchSemanticsNode().boundsInRoot
         val noticeBounds = compose.onNodeWithText(editor.value.notice).fetchSemanticsNode().boundsInRoot
         assertTrue("cabin altitude notice belongs below the action", noticeBounds.top >= buttonBounds.bottom)
-        compose.onNodeWithTag("barometer-setting").assertIsFocused()
-        for (character in "3006") compose.onNodeWithTag("barometer-setting").performTextInput(character.toString())
+        compose.onNodeWithTag("parity:barometer-setting").assertIsFocused()
+        for (character in "3006") compose.onNodeWithTag("parity:barometer-setting").performTextInput(character.toString())
         compose.runOnIdle {
             assertEquals(listOf("3", "30", "300", "3006"), commands.filterIsInstance<FlightDataCommand.SetInput>().map { it.input })
             editor.value = editor.value.copy(input = "30.06", inputCorrection =
                 org.aerobag.app.generated.FlightDataInputCorrection(source = "3006", start = 2, end = 2, text = "."))
         }
-        compose.onNodeWithTag("barometer-setting").assertTextEquals("30.06")
+        compose.onNodeWithTag("parity:barometer-setting").assertTextEquals("30.06")
         // A core correction must preserve the caret, not reselect the entire value.
-        compose.onNodeWithTag("barometer-setting").performTextInput("7")
-        compose.onNodeWithTag("barometer-setting").assertTextEquals("30.067")
+        compose.onNodeWithTag("parity:barometer-setting").performTextInput("7")
+        compose.onNodeWithTag("parity:barometer-setting").assertTextEquals("30.067")
         compose.runOnIdle { editor.value = editor.value.copy(inputCorrection = null) }
         compose.runOnIdle { editor.value = editor.value.copy(inputCorrection =
             org.aerobag.app.generated.FlightDataInputCorrection(source = "3006", start = 2, end = 2, text = ".")) }
-        compose.onNodeWithTag("barometer-setting").assertTextEquals("30.067")
-        compose.onNodeWithTag("barometer-setting").performKeyInput { pressKey(Key.Enter) }
+        compose.onNodeWithTag("parity:barometer-setting").assertTextEquals("30.067")
+        compose.onNodeWithTag("parity:barometer-setting").performKeyInput { pressKey(Key.Enter) }
         compose.runOnIdle { assertEquals(FlightDataCommand.EditorAction(editorId = "barometer", actionId = "close"), commands.last()) }
-        compose.onNodeWithTag("barometer-nearest").performTouchInput { click() }
+        compose.onNodeWithTag("parity:barometer-nearest").performTouchInput { click() }
         compose.runOnIdle { assertEquals(FlightDataCommand.EditorAction(editorId = "barometer", actionId = "nearest"), commands.last()) }
     }
 
     @Test
     @Config(qualifiers = "w400dp-h800dp")
     fun keyboardInsetsKeepTheEditorAboveTheKeyboardAndActionsRemainReachable() {
-        val editor = FlightDataEditor(id = "altitude_target", title = "Target altitude", label = "BARO target ft",
+        val editor = FlightDataEditor(id = "altitude_target", showInput = true, title = "Target altitude", label = "BARO target ft",
             unit = "ft", dismissActionId = "close",
             input = "2500", inputRevision = 0, notice = "Use the aircraft altimeter for assigned altitudes and altitude restrictions.",
             actionRows = listOf("gps", "baro", "decrease", "increase", "off").map {
@@ -111,7 +165,7 @@ class BarometerSettingTrayTest {
     @Test
     @Config(qualifiers = "w400dp-h800dp")
     fun barometerWarningAndControlsFitAboveTheKeyboard() {
-        val editor = FlightDataEditor(id = "barometer", title = null, label = "Altimeter setting",
+        val editor = FlightDataEditor(id = "barometer", showInput = true, title = null, label = "Altimeter setting",
             unit = "inHg", dismissActionId = "close",
             input = "29.90", inputRevision = 0,
             notice = "BARO ALT from device is cabin alt. Cross-check.",
@@ -137,7 +191,7 @@ class BarometerSettingTrayTest {
                 }
             }
         }
-        compose.onNodeWithTag("${editor.id}-setting").assertIsFocused()
+        compose.onNodeWithTag("parity:${editor.id}-setting").assertIsFocused()
         val before = compose.onNodeWithTag("${editor.id}-tray").fetchSemanticsNode().boundsInRoot
         compose.runOnIdle {
             popup = WindowInspector.getGlobalWindowViews().single { isPopupLayout(it) }
@@ -153,16 +207,16 @@ class BarometerSettingTrayTest {
         assertTrue("editor must move above the IME: before=$before after=$after", after.top < before.top)
         assertTrue("editor must fit in the non-keyboard space: $after, popup=${popup.height}, ime=$keyboardHeight",
             after.bottom <= popup.height - keyboardHeight)
-        compose.onNodeWithTag("${editor.id}-setting").assertIsDisplayed()
+        compose.onNodeWithTag("parity:${editor.id}-setting").assertIsDisplayed()
         editor.warning?.let { compose.onNodeWithText(it).performScrollTo().assertIsDisplayed() }
-        compose.onNodeWithTag("${editor.id}-$actionId").performScrollTo().performTouchInput { click() }
+        compose.onNodeWithTag("parity:${editor.id}-$actionId").performScrollTo().performTouchInput { click() }
         compose.runOnIdle {
             assertEquals(listOf(FlightDataCommand.EditorAction(editorId = editor.id, actionId = actionId)), commands)
         }
     }
 
     @Test fun openingAndReopeningTargetSelectsValueWithoutReselectingOnCoreEcho() {
-        var editor = FlightDataEditor(id = "altitude_target", title = "Target altitude", label = "GPS target ft",
+        var editor = FlightDataEditor(id = "altitude_target", showInput = true, title = "Target altitude", label = "GPS target ft",
             unit = "ft", dismissActionId = "close",
             input = "2500", inputRevision = 0, notice = "Use the aircraft altimeter.", actionRows = emptyList(), closeLabel = "CLOSE")
         val banner = mutableStateOf(FlightDataBannerModel(cells = listOf(
@@ -192,18 +246,18 @@ class BarometerSettingTrayTest {
             }
         }
         compose.onNodeWithTag("flight-data-cell:altitude_target").performTouchInput { click() }
-        compose.onNodeWithTag("altitude_target-setting").assertIsFocused()
+        compose.onNodeWithTag("parity:altitude_target-setting").assertIsFocused()
         compose.runOnIdle { assertTrue("focus/selection must not send input commands", commands.isEmpty()) }
-        compose.onNodeWithTag("altitude_target-setting").performTextInput("2")
-        compose.onNodeWithTag("altitude_target-setting").assertTextEquals("2")
-        compose.onNodeWithTag("altitude_target-setting").performTextInput("6")
-        compose.onNodeWithTag("altitude_target-setting").assertTextEquals("26")
-        compose.onNodeWithTag("altitude_target-setting").performKeyInput { pressKey(Key.Enter) }
-        compose.onNodeWithTag("altitude_target-setting").assertDoesNotExist()
+        compose.onNodeWithTag("parity:altitude_target-setting").performTextInput("2")
+        compose.onNodeWithTag("parity:altitude_target-setting").assertTextEquals("2")
+        compose.onNodeWithTag("parity:altitude_target-setting").performTextInput("6")
+        compose.onNodeWithTag("parity:altitude_target-setting").assertTextEquals("26")
+        compose.onNodeWithTag("parity:altitude_target-setting").performKeyInput { pressKey(Key.Enter) }
+        compose.onNodeWithTag("parity:altitude_target-setting").assertDoesNotExist()
         compose.onNodeWithTag("flight-data-cell:altitude_target").performTouchInput { click() }
-        compose.onNodeWithTag("altitude_target-setting").assertIsFocused()
-        compose.onNodeWithTag("altitude_target-setting").performTextInput("3000")
-        compose.onNodeWithTag("altitude_target-setting").assertTextEquals("3000")
+        compose.onNodeWithTag("parity:altitude_target-setting").assertIsFocused()
+        compose.onNodeWithTag("parity:altitude_target-setting").performTextInput("3000")
+        compose.onNodeWithTag("parity:altitude_target-setting").assertTextEquals("3000")
         compose.runOnIdle {
             assertEquals(listOf("2", "26", "3000"), commands.filterIsInstance<FlightDataCommand.SetInput>().map { it.input })
         }
@@ -211,6 +265,7 @@ class BarometerSettingTrayTest {
 
     @Test fun targetControlsDispatchCoreActionsAndKeepTheCoreNoticeVisible() {
         val editor = FlightDataEditor(
+            showInput = true,
             id = "altitude_target", title = "Target altitude", label = "BARO target ft",
             unit = "ft", dismissActionId = "close",
             input = "1500", inputRevision = 0,
@@ -250,27 +305,27 @@ class BarometerSettingTrayTest {
         compose.onNodeWithTag("flight-data-cell:altitude_target").performTouchInput { click() }
         compose.onNodeWithText(editor.notice).assertIsDisplayed()
         compose.onNodeWithText(requireNotNull(editor.warning)).assertIsDisplayed()
-        compose.onNodeWithTag("altitude_target-close").assertDoesNotExist()
-        val gpsBounds = compose.onNodeWithTag("altitude_target-gps").fetchSemanticsNode().boundsInRoot
-        val baroBounds = compose.onNodeWithTag("altitude_target-baro").fetchSemanticsNode().boundsInRoot
-        val increaseBounds = compose.onNodeWithTag("altitude_target-increase").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("parity:altitude_target-close").assertDoesNotExist()
+        val gpsBounds = compose.onNodeWithTag("parity:altitude_target-gps").fetchSemanticsNode().boundsInRoot
+        val baroBounds = compose.onNodeWithTag("parity:altitude_target-baro").fetchSemanticsNode().boundsInRoot
+        val increaseBounds = compose.onNodeWithTag("parity:altitude_target-increase").fetchSemanticsNode().boundsInRoot
         assertTrue("button columns need a gutter", baroBounds.left > gpsBounds.right)
         assertTrue("button rows need a gutter", increaseBounds.top > gpsBounds.bottom)
-        compose.onNodeWithTag("altitude_target-gps").performTouchInput { click() }
-        compose.onNodeWithTag("altitude_target-increase").performTouchInput { click() }
-        compose.onNodeWithTag("altitude_target-setting").assertTextEquals("1600")
-        compose.onNodeWithTag("altitude_target-off").performTouchInput { click() }
+        compose.onNodeWithTag("parity:altitude_target-gps").performTouchInput { click() }
+        compose.onNodeWithTag("parity:altitude_target-increase").performTouchInput { click() }
+        compose.onNodeWithTag("parity:altitude_target-setting").assertTextEquals("1600")
+        compose.onNodeWithTag("parity:altitude_target-off").performTouchInput { click() }
         compose.runOnIdle {
             assertEquals(listOf("gps", "increase", "off").map {
                 FlightDataCommand.EditorAction(editorId = editor.id, actionId = it)
             }, commands)
         }
-        compose.onNodeWithTag("altitude_target-setting").assertDoesNotExist()
+        compose.onNodeWithTag("parity:altitude_target-setting").assertDoesNotExist()
     }
 
     @Test fun bannerTapOpensCoreEditorAndTextAndImeDoneReachCore() {
         val disabledReason = "No recent nearby METAR altimeter setting is available for the current position."
-        val editor = FlightDataEditor(id = "barometer", title = null, label = "Altimeter setting", input = "29.92", inputRevision = 0,
+        val editor = FlightDataEditor(id = "barometer", showInput = true, title = null, label = "Altimeter setting", input = "29.92", inputRevision = 0,
             unit = "inHg", dismissActionId = "close",
             notice = "BARO ALT from device is cabin alt. Cross-check.",
             actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "nearest", label = "NEAREST", enabled = false, selected = false, disabledReason = disabledReason))), closeLabel = "CLOSE")
@@ -302,19 +357,19 @@ class BarometerSettingTrayTest {
         compose.onNodeWithText("inHg").assertIsDisplayed()
         compose.onNodeWithText("Altimeter setting").assertDoesNotExist()
         compose.onNodeWithText("BARO").assertDoesNotExist()
-        compose.onNodeWithTag("barometer-setting").performTouchInput { click() }
-        compose.onNodeWithTag("barometer-setting").performTextReplacement("29.97")
-        compose.onNodeWithTag("barometer-nearest").performTouchInput { click() }
+        compose.onNodeWithTag("parity:barometer-setting").performTouchInput { click() }
+        compose.onNodeWithTag("parity:barometer-setting").performTextReplacement("29.97")
+        compose.onNodeWithTag("parity:barometer-nearest").performTouchInput { click() }
         compose.runOnIdle {
             assertEquals(disabledReason, ShadowToast.getTextOfLatestToast())
             assertEquals(listOf(FlightDataCommand.SetInput(editorId = "barometer", input = "29.97")), commands)
         }
         compose.onNodeWithText(editor.notice).assertIsDisplayed()
         compose.runOnIdle { banner.value = banner.value.copy(editor = editor.copy(actionRows = editor.actionRows.map { row -> row.map { it.copy(enabled = true) } })) }
-        compose.onNodeWithTag("barometer-nearest").performTouchInput { click() }
+        compose.onNodeWithTag("parity:barometer-nearest").performTouchInput { click() }
         compose.runOnIdle { assertEquals(FlightDataCommand.EditorAction(editorId = "barometer", actionId = "nearest"), commands.last()) }
-        compose.onNodeWithTag("barometer-setting").assertTextEquals("30.01")
-        compose.onNodeWithTag("barometer-setting").performImeAction()
+        compose.onNodeWithTag("parity:barometer-setting").assertTextEquals("30.01")
+        compose.onNodeWithTag("parity:barometer-setting").performImeAction()
         compose.runOnIdle { assertEquals(listOf(FlightDataCommand.SetInput(editorId = "barometer", input = "29.97"), FlightDataCommand.EditorAction(editorId = "barometer", actionId = "nearest"), FlightDataCommand.EditorAction(editorId = "barometer", actionId = "close")), commands) }
         compose.onNodeWithText("inHg").assertDoesNotExist()
     }
@@ -322,6 +377,7 @@ class BarometerSettingTrayTest {
     @Test fun targetUnavailableBaroExplainsAndPhysicalEnterCloses() {
         val reason = "This device does not provide a barometric pressure sensor."
         val editor = mutableStateOf<FlightDataEditor?>(FlightDataEditor(
+            showInput = true,
             id = "altitude_target", title = "Target altitude", label = "GPS target ft", input = "2500", inputRevision = 0,
             unit = "ft", dismissActionId = "close",
             notice = "Use the aircraft altimeter.", closeLabel = "CLOSE",
@@ -338,16 +394,16 @@ class BarometerSettingTrayTest {
                 } }
             }
         }
-        compose.onNodeWithTag("altitude_target-baro").performTouchInput { click() }
+        compose.onNodeWithTag("parity:altitude_target-baro").performTouchInput { click() }
         compose.runOnIdle {
             assertEquals(reason, ShadowToast.getTextOfLatestToast())
             assertTrue(commands.isEmpty())
         }
-        compose.onNodeWithTag("altitude_target-setting").performTouchInput { click() }
-        compose.onNodeWithTag("altitude_target-setting").performKeyInput { pressKey(Key.Enter) }
+        compose.onNodeWithTag("parity:altitude_target-setting").performTouchInput { click() }
+        compose.onNodeWithTag("parity:altitude_target-setting").performKeyInput { pressKey(Key.Enter) }
         compose.runOnIdle {
             assertEquals(listOf(FlightDataCommand.EditorAction(editorId = "altitude_target", actionId = "close")), commands)
         }
-        compose.onNodeWithTag("altitude_target-setting").assertDoesNotExist()
+        compose.onNodeWithTag("parity:altitude_target-setting").assertDoesNotExist()
     }
 }

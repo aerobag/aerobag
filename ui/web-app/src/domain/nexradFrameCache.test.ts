@@ -18,6 +18,20 @@ function plan(
 }
 
 describe("NEXRAD frame image cache", () => {
+  it("uses the supplied local resource loader and the same pruning path without network fetches", async () => {
+    const network = vi.fn(async () => { throw new Error("unexpected network"); });
+    const local = vi.fn(async () => new Blob([new Uint8Array([1,2,3])], {type: "image/png"}));
+    const revoke = vi.fn();
+    const cache = new NexradFrameImageCache(network, () => "blob:local", revoke);
+    const src = "core-image://receiver-radar/example/tiles/res0/0/0.png";
+    await expect(cache.applyPlan(plan(["frame"], [["frame", src]]), local)).resolves.toEqual({loaded: 1, failed: 0});
+    expect(cache.imageUrlFor(src)).toBe("blob:local");
+    expect(network).not.toHaveBeenCalled();
+    expect(local).toHaveBeenCalledTimes(1);
+    await cache.applyPlan(plan([], []));
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:local");
+  });
+
   it("does not fetch while hidden and reuses fresh frames after toggling back on", async () => {
     const loadBlob = vi.fn(async (src: string) => new Blob([src]));
     const revokeObjectUrl = vi.fn();

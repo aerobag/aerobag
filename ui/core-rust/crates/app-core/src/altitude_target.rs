@@ -61,6 +61,7 @@ impl AltitudeTarget {
         self.editor = Some(FlightDataEditor {
             id: TARGET_CELL_ID.into(),
             title: Some("Target altitude".into()),
+            show_input: true,
             label: "Target altitude".into(),
             unit: "ft".into(),
             input: self

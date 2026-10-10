@@ -170,7 +170,7 @@ import { MapInspectionBackdrop, MapInspectionPane } from "./MapInspectionPane";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { fetchTextResource } from "./domain/fetchTextResource";
-import { NexradFrameImageCache } from "./domain/nexradFrameCache";
+import { NexradFrameImageCache, fetchImageBlob } from "./domain/nexradFrameCache";
 import { e2eRasterTileStallUrl } from "./domain/rasterTileLoadRecovery";
 import { RasterTileImage } from "./RasterTileImage";
 import { appPageUrl } from "./domain/webRouteUrl";
@@ -1324,6 +1324,7 @@ function nexradTileBounds(tile: NexradOverlayTile) {
 async function preloadNexradOverlayImages(
   query: NexradOverlayQueryResult,
   cache: NexradFrameImageCache,
+  session: UiSession,
 ): Promise<{ loaded: number; failed: number }> {
   if (!query.cache_plan) {
     return { loaded: 0, failed: 0 };
@@ -1334,6 +1335,12 @@ async function preloadNexradOverlayImages(
       frame_version: resource.frame_version,
       src: resolveLiveFeedResourceUrl(resource.src),
     })),
+  }, async (src, signal) => {
+    if (!src.startsWith("core-image:")) return fetchImageBlob(src, signal);
+    signal.throwIfAborted();
+    const bytes = await session.readNexradImageBytes(src);
+    signal.throwIfAborted();
+    return new Blob([new Uint8Array(bytes)], { type: "image/png" });
   });
 }
 
@@ -1945,18 +1952,19 @@ function PirepSymbol(props: { feature: VisiblePirepFeature; scale?: number }) {
 
 function AdsbTrafficSymbol(props: { feature: MapOverlayQueryResult["visible_traffic"][number] }) {
   const { feature } = props;
+  const path = feature.symbol_points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ") + " Z";
   return (
     <g aria-hidden="true">
       <g transform={`rotate(${feature.track_deg_true ?? 0})`}>
         <path
-          d="M 0 -11 L 8 9 L 0 5 L -8 9 Z"
+          d={path}
           fill="none"
           stroke={loadedUiTheme.aviation.traffic_contrast}
           strokeWidth="5"
           strokeLinejoin="round"
         />
         <path
-          d="M 0 -11 L 8 9 L 0 5 L -8 9 Z"
+          d={path}
           fill={loadedUiTheme.aviation.traffic}
           stroke={loadedUiTheme.aviation.traffic_contrast}
           strokeWidth="1.25"
@@ -5215,7 +5223,7 @@ function MapPage(props: {
               continue;
             }
             const preloadStartedAt = performance.now();
-            const preload = await preloadNexradOverlayImages(query, nexradFrameCacheRef.current!);
+            const preload = await preloadNexradOverlayImages(query, nexradFrameCacheRef.current!, request.session);
             const preloadDoneAt = performance.now();
             if (nexradQueryRequestRef.current?.id !== request.id) {
               continue;
@@ -8765,7 +8773,7 @@ function FlightDataSettingTray(props: {
       onPointerDown={stopPointer} onPointerMove={stopPointer} onPointerUp={stopPointer} onPointerCancel={stopPointer}
       onWheel={stopWheel} onClick={stopClick} onDoubleClick={stopDoubleClick}>
       {props.editor.title ? <strong>{props.editor.title}</strong> : null}
-      <div className="flightDataSettingInput">
+      {props.editor.show_input ? <div className="flightDataSettingInput">
         <input aria-label={props.editor.label} ref={inputElement} data-testid={`${props.editor.id}-setting`} inputMode="decimal" value={input}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -8779,7 +8787,7 @@ function FlightDataSettingTray(props: {
             props.onCommand({ kind: "set_input", editor_id: props.editor.id, input: event.target.value });
           }} />
         <span>{props.editor.unit}</span>
-      </div>
+      </div> : null}
       {props.editor.error ? <p role="alert">{props.editor.error}</p> : null}
       {props.editor.warning ? <p className="flightDataSettingWarning" role="status">{props.editor.warning}</p> : null}
       <div className="flightDataSettingActions">
@@ -13391,6 +13399,10 @@ export function SettingsPage(props: {
               case "aircraft_library":
                 return <SettingsAircraftLibrary key={index} state={block.library}
                   onAction={props.onAircraftLibraryAction} onDisabledAction={showSettingsHelp} />;
+              case "receiver":
+                return <section key={index} className="settingsPageSection">
+                  <h2>{block.panel.title}</h2><p>{block.panel.status}</p><p>{block.panel.detail}</p>
+                </section>;
               case "section":
                 return <SettingsPageSectionView key={index} section={block.section}
                   onSettingsAction={props.onSettingsAction} onHelp={showSettingsHelp} />;

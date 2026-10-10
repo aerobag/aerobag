@@ -39,12 +39,14 @@ internal class AerobagRetainedCoreSession(
     val liveFeedRuntime: RetainedLiveFeedRuntime,
     val sessionSnapshotRefreshRunner: SessionSnapshotRefreshRunner<UiSessionSnapshot>,
     val uiSessionWorkRunner: UiSessionWorkRunner,
+    val receiverPublisher: ReceiverSessionPublisher,
 ) {
     private var closed = false
 
     fun close() {
         if (closed) return
         closed = true
+        receiverPublisher.close()
         runCatching { liveFeedRuntime.close() }
             .onFailure { Log.w("AerobagRetainedState", "failed to close live-feed runtime", it) }
         runCatching { sessionSnapshotRefreshRunner.close() }
@@ -272,6 +274,7 @@ internal class AerobagRetainedModel : ViewModel() {
         startupPerfTrace?.mark("session_package_cache_loaded", packageCacheStartedAtMs)
         val liveFeedCache = LiveFeedCacheStore.create(liveFeedSourceRootUrl)
         val resultExecutor = ContextCompat.getMainExecutor(context.applicationContext)
+        val workRunner = UiSessionWorkRunner(uiSession)
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
             appCore = appCore,
@@ -291,7 +294,8 @@ internal class AerobagRetainedModel : ViewModel() {
                 refresh = uiSession::refreshSnapshot,
                 resultExecutor = resultExecutor,
             ),
-            uiSessionWorkRunner = UiSessionWorkRunner(uiSession),
+            uiSessionWorkRunner = workRunner,
+            receiverPublisher = ReceiverSessionPublisher(AndroidReceiverRuntime.get(context), workRunner),
         )
     }
 

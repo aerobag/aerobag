@@ -83,6 +83,7 @@ internal fun SettingsPage(
     onSelectPage: (AppPage) -> Unit,
     onSettingsAction: (String, String) -> Unit,
     onAircraftLibraryAction: (String, String) -> Unit,
+    onReceiverAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Box(
@@ -146,6 +147,9 @@ internal fun SettingsPage(
                 ) {
                     state.blocks.forEach { block ->
                         when (block) {
+                            is UiSettingsPageBlock.Receiver -> item(key = "receiver") {
+                                SettingsReceiverPanel(block.panel, onReceiverAction)
+                            }
                             is UiSettingsPageBlock.Controls -> lazyColumnItems(block.rows, key = { it.id }) { row ->
                                 SettingsPageRowView(row = row, onSettingsAction = onSettingsAction)
                             }
@@ -159,6 +163,24 @@ internal fun SettingsPage(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun SettingsReceiverPanel(state: org.aerobag.app.generated.UiReceiverPanel, onAction: (String) -> Unit) {
+    val context = LocalContext.current
+    val colors = LocalAerobagUiTheme.current.controls
+    Column(modifier = Modifier.fillMaxWidth().background(colors.textInputBg).padding(ThumbGap),
+        verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+        Text(state.title, color = colors.panelFg, fontWeight = FontWeight.Bold)
+        Text(state.status, color = colors.panelFg)
+        Text(state.detail, color = colors.panelFg)
+        state.actions.forEach { action ->
+            CompactSquareButton(label = action.label, wide = true,
+                modifier = Modifier.fillMaxWidth().height(ThumbSize)
+                    .e2eIndexedControl(semanticTag = "parity:receiver:${action.actionId}", enabled = action.enabled),
+                onClick = { if (action.enabled) onAction(action.actionId) else showDisabledActionToast(context, action.disabledReason) })
         }
     }
 }

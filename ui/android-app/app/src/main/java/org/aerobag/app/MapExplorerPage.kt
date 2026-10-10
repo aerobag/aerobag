@@ -4580,10 +4580,11 @@ private fun DrawScope.drawAdsbTraffic(
 ) {
     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
     val symbol = Path().apply {
-        moveTo(center.x, center.y - 11f * densityScale)
-        lineTo(center.x + 8f * densityScale, center.y + 9f * densityScale)
-        lineTo(center.x, center.y + 5f * densityScale)
-        lineTo(center.x - 8f * densityScale, center.y + 9f * densityScale)
+        feature.symbolPoints.forEachIndexed { index, point ->
+            val x = center.x + point[0].toFloat() * densityScale
+            val y = center.y + point[1].toFloat() * densityScale
+            if (index == 0) moveTo(x, y) else lineTo(x, y)
+        }
         close()
     }
     rotate(((feature.trackDegTrue ?: 0.0) - mapUpDeg).toFloat(), center) {

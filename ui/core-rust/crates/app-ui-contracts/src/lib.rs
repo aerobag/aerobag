@@ -6,6 +6,7 @@ pub mod cloud;
 pub mod home;
 pub mod nav_query;
 pub mod nexrad;
+pub mod receiver;
 pub mod session;
 pub mod tour;
 pub mod work;

@@ -2093,6 +2093,31 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val receiverPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            AndroidReceiverRuntime.get(this).refreshInventory()
+        }
+
+    private val receiverFileLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            AndroidReceiverRuntime.get(this).fileSelected(uri)
+        }
+
+    fun requestReceiverFile() { receiverFileLauncher.launch(arrayOf("application/octet-stream", "*/*")) }
+
+    fun shareReceiverFile(effect: org.aerobag.app.generated.ReceiverHostEffect.ShareFile) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.receiver-export", java.io.File(effect.path))
+        val share = Intent(Intent.ACTION_SEND).setType(effect.mimeType).putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(Intent.createChooser(share, effect.title))
+    }
+
+    fun requestReceiverPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            receiverPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        } else AndroidReceiverRuntime.get(this).refreshInventory()
+    }
+
     fun applyCoreDisplayPolicy(policy: UiDisplayPolicy?) {
         activeDisplayPolicy = policy
         syncDisplayPolicy()
@@ -2986,6 +3011,16 @@ internal fun AerobagApp(
         }
     }
     val liveFeedRuntime = retainedCoreSession.liveFeedRuntime
+    val receiverRuntime = remember(context) { AndroidReceiverRuntime.get(context) }
+    LaunchedEffect(receiverRuntime, context) {
+        receiverRuntime.permissionRequests.collect { (context as? MainActivity)?.requestReceiverPermission() }
+    }
+    LaunchedEffect(receiverRuntime, context, "receiver-file") {
+        receiverRuntime.fileRequests.collect { (context as? MainActivity)?.requestReceiverFile() }
+    }
+    LaunchedEffect(receiverRuntime, context, "receiver-share") {
+        receiverRuntime.shareRequests.collect { (context as? MainActivity)?.shareReceiverFile(it) }
+    }
     LaunchedEffect(liveFeedRuntime, backgroundEffectsEnabled) {
         if (backgroundEffectsEnabled) {
             liveFeedRuntime.start()
@@ -4021,6 +4056,7 @@ internal fun AerobagApp(
                                 onError = ::recoverSessionCommandFailure,
                             )
                         },
+                        onReceiverAction = receiverRuntime::action,
                     )
                 }
                 AppPage.Cloud -> {

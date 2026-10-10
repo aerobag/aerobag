@@ -8,12 +8,34 @@ import { expect, it, vi } from "vitest";
 import { FlightDataBanner } from "./App";
 import type { FlightDataBannerModel } from "./generated/sessionPageWire";
 
+it("renders an action-only core tray and forwards source and animation choices without an input", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host), command = vi.fn();
+  const editor: NonNullable<FlightDataBannerModel["editor"]> = {
+    id: "nexrad_age", title: "NEXRAD", show_input: false, label: "NEXRAD", unit: "", input: "", input_revision: 0,
+    notice: "Receiver radar", dismiss_action_id: "close", close_label: "CLOSE",
+    action_rows: [[{id: "receiver", label: "ADS-B", enabled: true, selected: false}],
+      [{id: "latest", label: "LATEST", enabled: true, selected: false}]],
+  };
+  try {
+    await act(async () => root.render(<FlightDataBanner banner={{cells: [{id: "nexrad_age", label: "NEXRAD"}], editor}} edge="right"
+      onCellActivated={() => {}} onFlightDataCommand={command} onDisabledAction={() => {}} />));
+    expect(host.querySelector("input")).toBeNull();
+    for (const id of ["receiver", "latest"]) {
+      await act(async () => host.querySelector<HTMLButtonElement>(`[data-testid="nexrad_age-${id}"]`)!.click());
+      expect(command).toHaveBeenLastCalledWith({kind: "editor_action", editor_id: "nexrad_age", action_id: id});
+    }
+    expect(command).toHaveBeenCalledTimes(2);
+  } finally { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); }
+});
+
 it("applies core formatting without reselecting text or overwriting newer input", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host), command = vi.fn();
   const editor: NonNullable<FlightDataBannerModel["editor"]> = {
-    id: "barometer", label: "Altimeter setting", unit: "inHg", input: "29.92", input_revision: 0,
+    id: "barometer", show_input: true, label: "Altimeter setting", unit: "inHg", input: "29.92", input_revision: 0,
     notice: "BARO ALT from device is cabin alt. Cross-check.", action_rows: [],
     dismiss_action_id: "close", close_label: "CLOSE",
   };
@@ -52,7 +74,7 @@ it("shows station-only weather on NEAREST without an airport or extra descriptio
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host), command = vi.fn();
   const editor: NonNullable<FlightDataBannerModel["editor"]> = {
-    id: "barometer", label: "Altimeter setting", unit: "inHg", input: "29.92", input_revision: 0,
+    id: "barometer", show_input: true, label: "Altimeter setting", unit: "inHg", input: "29.92", input_revision: 0,
     notice: "BARO ALT from device is cabin alt. Cross-check.", dismiss_action_id: "close", close_label: "CLOSE",
     action_rows: [[{id: "nearest", label: "NEAREST", secondary_label: "KSMP 52min old", enabled: true, selected: false,
       symbol_feature: null, weather_badge: {flight_category: "vfr", ceiling_amount: "clear"}}]],
@@ -74,7 +96,7 @@ it("focuses and selects the value on open and reopen without selecting each core
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host), command = vi.fn();
-  const editor = {id: "altitude_target", title: "Target altitude", label: "GPS target ft", input: "2500", input_revision: 0,
+  const editor = {id: "altitude_target", show_input: true, title: "Target altitude", label: "GPS target ft", input: "2500", input_revision: 0,
     unit: "ft", dismiss_action_id: "close", notice: "Use the aircraft altimeter.", close_label: "CLOSE", action_rows: []};
   const banner: FlightDataBannerModel = {cells: [{id: "altitude_target", label: "TGT GPS", value: "2500"}], editor};
   const render = () => act(async () => root.render(<FlightDataBanner banner={banner} edge="right" onCellActivated={() => {}}
@@ -117,7 +139,7 @@ it.each(["Enter", "outside", "help", "no close button"])("target editor uses sta
   const reason = "This device does not provide a barometric pressure sensor.";
   const banner: FlightDataBannerModel = {
     cells: [{id: "altitude_target", label: "TGT GPS", value: "2500"}],
-    editor: {id: "altitude_target", title: "Target altitude", label: "GPS target ft", input: "2500", input_revision: 0,
+    editor: {id: "altitude_target", show_input: true, title: "Target altitude", label: "GPS target ft", input: "2500", input_revision: 0,
       unit: "ft", dismiss_action_id: "close",
       notice: "Use the aircraft altimeter.", close_label: "CLOSE",
       action_rows: [[{id: "baro", label: "BARO", enabled: false, selected: false, disabled_reason: reason}]]},
@@ -156,7 +178,7 @@ it("renders target reference and step actions from core and does not invent a bl
     cells: [{ id: "altitude_target", label: "TGT BARO", value: "1500",
       action: { action_id: "altitude_target", accessibility_label: "Set target altitude" },
       attention: { message: "Approaching target altitude.", highlighted: true } }],
-    editor: { id: "altitude_target", title: "Target altitude", label: "BARO target ft", input: "1500", input_revision: 0,
+    editor: { id: "altitude_target", show_input: true, title: "Target altitude", label: "BARO target ft", input: "1500", input_revision: 0,
       unit: "ft", dismiss_action_id: "close",
       notice: "Cross-check with aircraft altimeter.", close_label: "CLOSE", action_rows: [[
         { id: "baro", label: "BARO", enabled: true, selected: true },
@@ -215,7 +237,7 @@ it("renders core barometer state and sends unparsed setting input back to core",
     await act(async () => host.querySelector<HTMLElement>('[data-testid="flight-data-cell:barometer"]')!.click());
     expect(action).toHaveBeenCalledWith("barometer");
     expect(host.querySelector('[role="dialog"]')).toBeNull();
-    banner.editor = { id: "barometer", title: null, label: "Altimeter setting", unit: "inHg", dismiss_action_id: "close", input: "29.92", input_revision: 0, error: null,
+    banner.editor = { id: "barometer", show_input: true, title: null, label: "Altimeter setting", unit: "inHg", dismiss_action_id: "close", input: "29.92", input_revision: 0, error: null,
       notice: "BARO ALT from device is cabin alt. Cross-check.",
       action_rows: [[{ id: "nearest", label: "NEAREST", enabled: false, selected: false }]], close_label: "CLOSE" };
     await render();

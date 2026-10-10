@@ -20,7 +20,7 @@ type BlobLoader = (src: string, signal: AbortSignal) => Promise<Blob>;
 type ObjectUrlFactory = (blob: Blob) => string;
 type ObjectUrlReleaser = (url: string) => void;
 
-async function fetchImageBlob(src: string, signal: AbortSignal): Promise<Blob> {
+export async function fetchImageBlob(src: string, signal: AbortSignal): Promise<Blob> {
   const response = await fetch(src, { cache: "force-cache", signal });
   if (!response.ok) {
     throw new Error(`failed to load NEXRAD image ${src}: HTTP ${response.status}`);
@@ -41,7 +41,7 @@ export class NexradFrameImageCache {
     private readonly revokeObjectUrl: ObjectUrlReleaser = (url) => URL.revokeObjectURL(url),
   ) {}
 
-  async applyPlan(plan: NexradOverlayCachePlan): Promise<NexradFrameCacheLoadResult> {
+  async applyPlan(plan: NexradOverlayCachePlan, loadBlob: BlobLoader = this.loadBlob): Promise<NexradFrameCacheLoadResult> {
     const retainedVersions = new Set(plan.retained_frame_versions);
     this.prune(retainedVersions);
 
@@ -51,7 +51,7 @@ export class NexradFrameImageCache {
         .map((resource) => [resource.src, resource] as const),
     );
     const settled = await Promise.allSettled(
-      Array.from(resources.values(), (resource) => this.ensureLoaded(resource.frame_version, resource.src)),
+      Array.from(resources.values(), (resource) => this.ensureLoaded(resource.frame_version, resource.src, loadBlob)),
     );
     return {
       loaded: settled.filter((result) => result.status === "fulfilled").length,
@@ -77,7 +77,7 @@ export class NexradFrameImageCache {
     }
   }
 
-  private ensureLoaded(frameVersion: string, src: string): Promise<string> {
+  private ensureLoaded(frameVersion: string, src: string, loadBlob: BlobLoader): Promise<string> {
     const existing = this.entries.get(src);
     if (existing?.frameVersion === frameVersion) {
       return existing.load;
@@ -92,7 +92,7 @@ export class NexradFrameImageCache {
       load: Promise.resolve(""),
       abortController: new AbortController(),
     };
-    entry.load = this.loadBlob(src, entry.abortController.signal)
+    entry.load = loadBlob(src, entry.abortController.signal)
       .then((blob) => {
         const objectUrl = this.createObjectUrl(blob);
         if (this.entries.get(src) !== entry) {

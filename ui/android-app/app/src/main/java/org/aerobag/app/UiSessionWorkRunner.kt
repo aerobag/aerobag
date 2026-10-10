@@ -202,6 +202,9 @@ class UiSessionWorkRunner(
         return result.await()
     }
 
+    suspend fun applyReceiverDelivery(id: Long): UiSessionSnapshot =
+        awaitMutation("applyReceiverDelivery") { it.applyReceiverDelivery(id) }
+
     suspend fun loadPlaybackTrace(sourcePath: String, traceJson: String): UiSessionSnapshot =
         awaitMutation("loadPlaybackTrace") { it.loadPlaybackTrace(sourcePath, traceJson) }
 

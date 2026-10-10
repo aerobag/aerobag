@@ -41,6 +41,28 @@ class SettingsPageTest {
     @Test fun wideAircraftCardsShareARowAndReceivePhysicalTaps() = aircraftLayout(960, true)
     @Test fun narrowAircraftCardsStackAndReceivePhysicalTaps() = aircraftLayout(320, false)
 
+    @Test fun receiverCoreActionsReceivePhysicalTapsOnNarrowSettingsPage() {
+        val actions = mutableListOf<String>()
+        val panel = UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Private capture",
+            actions = listOf(UiReceiverAction(actionId = "opaque-device-17", label = "Connect test receiver", enabled = true)))
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme,
+                LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map)) {
+                Box(Modifier.size(320.dp, 740.dp)) {
+                    SettingsPage(page = AppPage.Settings,
+                        state = UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(UiSettingsPageBlock.Receiver(panel))),
+                        navElement = null, mostRecentChartOrPlatePage = AppPage.Map,
+                        onOpenPlan = {}, onOpenRecentChartOrPlate = {}, onSelectPage = {},
+                        onSettingsAction = { _, _ -> }, onAircraftLibraryAction = { _, _ -> },
+                        onReceiverAction = { actions.add(it) })
+                }
+            }
+        }
+        compose.onNodeWithTag("parity:receiver:opaque-device-17").assertIsDisplayed().performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("opaque-device-17"), actions) }
+    }
+
     @Test fun sliderDragPublishesNewIdentityAndUnmountRemovesIndexedControls() {
         val row = mutableStateOf(UiSettingsPageRow(
             id = "display_dim_timeout", title = "Display dims after...", helpText = "Dim the display",
@@ -195,7 +217,7 @@ class SettingsPageTest {
     private fun page(state: UiSettingsPageState, settingsAction: (String, String) -> Unit = { _, _ -> }, aircraftAction: (String, String) -> Unit = { _, _ -> }) {
         SettingsPage(page = AppPage.Settings, state = state, navElement = null,
             mostRecentChartOrPlatePage = AppPage.Map, onOpenPlan = {}, onOpenRecentChartOrPlate = {},
-            onSelectPage = {}, onSettingsAction = settingsAction, onAircraftLibraryAction = aircraftAction)
+            onSelectPage = {}, onSettingsAction = settingsAction, onAircraftLibraryAction = aircraftAction, onReceiverAction = {})
     }
 
     private fun action(id: String, label: String) = UiAircraftLibraryAction(actionId = id, label = label, enabled = true)

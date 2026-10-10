@@ -334,6 +334,9 @@
         "notice": {
           "type": "string"
         },
+        "show_input": {
+          "type": "boolean"
+        },
         "title": {
           "type": [
             "string",
@@ -352,6 +355,7 @@
       },
       "required": [
         "id",
+        "show_input",
         "label",
         "unit",
         "input",
@@ -793,6 +797,413 @@
     "PlatformOfflinePackagesCapability": {
       "additionalProperties": false,
       "type": "object"
+    },
+    "ReceiverDevice": {
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ReceiverHostEffect": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "share_file",
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "mime_type",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "read_private_file",
+              "type": "string"
+            },
+            "max_bytes": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "max_bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "request_permission",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "refresh_inventory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "connect",
+              "type": "string"
+            },
+            "service_uuid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id",
+            "device",
+            "service_uuid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "close",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bytes_base64": {
+              "type": "string"
+            },
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "write",
+              "type": "string"
+            },
+            "write_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id",
+            "write_id",
+            "bytes_base64"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "kind"
+    },
+    "ReceiverHostEvent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "host_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "file_read",
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "succeeded": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "succeeded"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "host_unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "devices": {
+              "items": {
+                "$ref": "#/$defs/ReceiverDevice"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "inventory",
+              "type": "string"
+            },
+            "permitted": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "permitted",
+            "devices"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "action",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "connected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "received",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "written",
+              "type": "string"
+            },
+            "write_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id",
+            "write_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "failure": {
+              "$ref": "#/$defs/ReceiverIoFailure"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "connection_id",
+            "failure"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "tick",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "ReceiverHostEvent",
+      "x-discriminator": "kind"
+    },
+    "ReceiverHostOutput": {
+      "properties": {
+        "delivery_ready": {
+          "type": "boolean"
+        },
+        "effects": {
+          "items": {
+            "$ref": "#/$defs/ReceiverHostEffect"
+          },
+          "type": "array"
+        },
+        "keep_alive": {
+          "type": "boolean"
+        },
+        "next_wake_monotonic_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "panel": {
+          "$ref": "#/$defs/UiReceiverPanel"
+        }
+      },
+      "required": [
+        "delivery_ready",
+        "effects",
+        "keep_alive",
+        "panel"
+      ],
+      "title": "ReceiverHostOutput",
+      "type": "object"
+    },
+    "ReceiverIoFailure": {
+      "enum": [
+        "connection",
+        "read",
+        "write",
+        "permission",
+        "bluetooth_disabled"
+      ],
+      "type": "string"
     },
     "UiAircraftLibraryAction": {
       "additionalProperties": false,
@@ -2102,6 +2513,57 @@
       ],
       "type": "object"
     },
+    "UiReceiverAction": {
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "label",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "UiReceiverPanel": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/UiReceiverAction"
+          },
+          "type": "array"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "status",
+        "detail",
+        "actions"
+      ],
+      "type": "object"
+    },
     "UiServiceNotice": {
       "additionalProperties": false,
       "properties": {
@@ -2291,6 +2753,23 @@
     },
     "UiSettingsPageBlock": {
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "receiver",
+              "type": "string"
+            },
+            "panel": {
+              "$ref": "#/$defs/UiReceiverPanel"
+            }
+          },
+          "required": [
+            "kind",
+            "panel"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "properties": {
@@ -2966,6 +3445,13 @@
     "UiSettingsPageRow",
     "UiSettingsPageSection",
     "UiSettingsPageBlock",
+    "UiReceiverAction",
+    "UiReceiverPanel",
+    "ReceiverDevice",
+    "ReceiverIoFailure",
+    "ReceiverHostEvent",
+    "ReceiverHostEffect",
+    "ReceiverHostOutput",
     "UiSettingsRowKind",
     "UiSettingsPageState",
     "UiServiceNoticeAction",

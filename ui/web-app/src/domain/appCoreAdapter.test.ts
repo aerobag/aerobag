@@ -268,6 +268,7 @@ describe("loadBestAvailableAdapter", () => {
       get_raster_tile_plan_in_session: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       get_raster_tile_plan_in_session_with_display_scale: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       render_terrain_overlay_tile_by_key_in_session: async () => new Uint8Array(),
+      nexrad_tile_bytes_in_session: async () => new Uint8Array([1, 2, 3]),
       get_session_snapshot_paged: async () => snapshotOutcomeJson(),
       get_session_snapshot_at_platform_time_paged: async (_handle: number, _epochMs: bigint, zone: string) => {
         refreshedTimeZones.push(zone);
@@ -323,6 +324,7 @@ describe("loadBestAvailableAdapter", () => {
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
     const session = await loaded.adapter.createUiSession([], undefined, undefined, 1_784_000_000_123);
+    expect(await session.readNexradImageBytes("core-image://receiver-radar/test")).toEqual(new Uint8Array([1, 2, 3]));
     expect(createdAtEpochMs).toBe(1_784_000_000_123);
     expect(startupCalls[0]).toBe("set-resource-policy");
     expect(startupCalls).toContain("attach-nav-kv");

@@ -1134,7 +1134,8 @@ fn source_selected_by_policy(source: &OwnshipSourceStatus, policy: &OwnshipPolic
 
 fn source_menu_label(source: &OwnshipSourceStatus) -> String {
     match source.source_kind {
-        OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => "GPS".to_string(),
+        OwnshipSourceKind::DeviceGps => "GPS".to_string(),
+        OwnshipSourceKind::ExternalGps => source.display_name.clone(),
         OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
         OwnshipSourceKind::GpxPlayback | OwnshipSourceKind::AdsbTrackPlayback => {
             "Replay".to_string()
@@ -1238,8 +1239,9 @@ fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
         _ => {}
     }
     match source.source_kind {
-        OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
-            gps_launcher_label(source).to_string()
+        OwnshipSourceKind::DeviceGps => gps_launcher_label(source).to_string(),
+        OwnshipSourceKind::ExternalGps => {
+            format!("{}: {}", source.display_name, gps_launcher_label(source))
         }
         OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
         OwnshipSourceKind::GpxPlayback => format!("Replay: {}", gps_launcher_label(source)),

@@ -60,6 +60,7 @@ pub struct FlightDataBannerInput {
     pub destination_estimate: Option<FlightTimeFuelEstimate>,
     pub nexrad_age: Option<String>,
     pub nexrad_action: Option<FlightDataCellAction>,
+    pub nexrad_editor: Option<crate::FlightDataEditor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +233,7 @@ impl FlightDataComputer {
         });
 
         FlightDataBannerModel {
-            editor: input.target_editor.or_else(|| {
+            editor: input.nexrad_editor.or(input.target_editor).or_else(|| {
                 input
                     .barometer
                     .as_ref()

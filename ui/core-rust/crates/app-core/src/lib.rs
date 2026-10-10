@@ -56,6 +56,7 @@ pub mod planning;
 pub mod playback;
 pub mod publication;
 pub mod raster_tiles;
+pub mod receiver;
 mod routing_editor;
 mod sequencing;
 mod service_notifications;
@@ -70,6 +71,7 @@ pub mod time_display;
 pub mod ui_geometry;
 pub mod ui_work_scheduler;
 mod weather_controller;
+pub mod weather_sources;
 
 pub use adsb::VisibleAdsbTraffic;
 pub use aircraft_profiles::performance_profile_from_definition;

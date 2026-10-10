@@ -21,8 +21,9 @@ use crate::{
     },
     live_feeds::NEXRAD_FRAME_WINDOW_SIZE,
     map_overlay::WeatherStationAirportAliases,
-    AppResult, DataStatusRecord, LiveFeedsState, MetarProductPayload, MetarTilePayload, NavKvStore,
-    NotamDisplayIndex, PointTilePayload, PreparedMetarTile, TafProductPayload, TfrProductPayload,
+    weather_sources::StationWeather,
+    AppResult, DataStatusRecord, LiveFeedsState, MetarTilePayload, NavKvStore, NotamDisplayIndex,
+    PointTilePayload, TfrProductPayload,
 };
 
 pub(crate) const NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS: i64 = 1_000;
@@ -91,6 +92,9 @@ struct WeatherModel {
     live_feeds: Arc<LiveFeedsState>,
     connection: LiveFeedConnectionState,
     nexrad_animation_mode: NexradAnimationMode,
+    nexrad_source: NexradSource,
+    nexrad_editor_open: bool,
+    receiver_radar: Arc<crate::receiver::radar::History>,
     revision: u64,
 }
 
@@ -99,6 +103,31 @@ pub(crate) enum NexradAnimationMode {
     #[default]
     Animating,
     HoldLatest,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum NexradSource {
+    #[default]
+    Internet,
+    Receiver,
+}
+
+impl NexradSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Internet => "NET",
+            Self::Receiver => "ADSB",
+        }
+    }
+    pub fn tile_url(self, id: &str, res: u32, x: u32, y: u32) -> String {
+        match self {
+            Self::Internet => format!(
+                "{}/states/nexrad/{id}/tiles/res{res}/{x}/{y}.png",
+                crate::live_feeds::LIVE_FEEDS_BASE_PATH
+            ),
+            Self::Receiver => crate::receiver::radar::tile_url(id, res, x, y),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,9 +156,10 @@ struct WeatherProjectionCache {
 
 #[derive(Default)]
 pub(crate) struct WeatherRuntime {
-    pub metar_tile_cache: HashMap<String, MetarTilePayload>,
-    pub metar_payload: Option<MetarProductPayload>,
-    pub prepared_metar_tiles: Option<Vec<PreparedMetarTile>>,
+    // PIREPs retain the observations-layer tile wire shape. METAR geography
+    // lives exclusively in station_weather's directory.
+    pub pirep_tile_cache: HashMap<String, MetarTilePayload>,
+    pub station_weather: StationWeather,
     pub pirep_payload: Option<crate::PirepProductPayload>,
     pub prepared_pirep_tiles: Option<Vec<crate::PreparedPirepTile>>,
     pub important_metar_station_ids: Option<HashSet<String>>,
@@ -139,7 +169,6 @@ pub(crate) struct WeatherRuntime {
     pub forecast_atmosphere_state: Option<LiveForecastAtmosphereState>,
     pub forecast_atmosphere: Option<crate::InstalledForecastAtmosphere>,
     pub obstacle_tile_cache: HashMap<String, PointTilePayload>,
-    pub taf_payload: Option<TafProductPayload>,
     pub notam_display_index: Option<NotamDisplayIndex>,
     pub tfr_payload: Option<TfrProductPayload>,
     pub nexrad_installed: BTreeMap<String, LiveNexradInstalledState>,
@@ -159,6 +188,73 @@ pub(crate) struct WeatherController {
 }
 
 impl WeatherController {
+    pub fn set_receiver_radar(&mut self, radar: Arc<crate::receiver::radar::History>) {
+        if !Arc::ptr_eq(&self.model.receiver_radar, &radar) {
+            self.model.receiver_radar = radar;
+            self.note_change();
+        }
+    }
+
+    pub fn receiver_radar(&self) -> &crate::receiver::radar::History {
+        &self.model.receiver_radar
+    }
+    pub fn nexrad_source(&self) -> NexradSource {
+        self.model.nexrad_source
+    }
+
+    pub fn open_nexrad_editor(&mut self) {
+        self.model.nexrad_editor_open = true;
+        self.note_change();
+    }
+    pub fn close_nexrad_editor(&mut self) {
+        self.model.nexrad_editor_open = false;
+        self.note_change();
+    }
+
+    pub fn nexrad_editor_action(&mut self, action: &str) {
+        match action {
+            "internet" => self.model.nexrad_source = NexradSource::Internet,
+            "receiver" => self.model.nexrad_source = NexradSource::Receiver,
+            "animate" => self.model.nexrad_animation_mode = NexradAnimationMode::Animating,
+            "latest" => self.model.nexrad_animation_mode = NexradAnimationMode::HoldLatest,
+            "close" => self.model.nexrad_editor_open = false,
+            _ => return,
+        }
+        self.note_change();
+    }
+
+    pub fn nexrad_editor(&self) -> Option<app_ui_contracts::session::FlightDataEditor> {
+        self.model.nexrad_editor_open.then(|| app_ui_contracts::session::FlightDataEditor {
+            id: "nexrad_age".into(), title: Some("NEXRAD".into()),
+            show_input: false, label: "NEXRAD".into(), unit: String::new(), input: String::new(),
+            input_revision: 0, input_correction: None, error: None, warning: None, detail: None,
+            notice: match self.nexrad_source() {
+                NexradSource::Internet => "Internet radar. Receiver radar is not blended with this source.",
+                NexradSource::Receiver => "ADS-B receiver radar. Placement is experimental, not independently validated. Gray shading is no coverage, not clear weather.",
+            }.into(),
+            action_rows: vec![
+                vec![nexrad_choice("internet", "INTERNET", self.nexrad_source() == NexradSource::Internet),
+                    nexrad_choice("receiver", "ADS-B", self.nexrad_source() == NexradSource::Receiver)],
+                vec![nexrad_choice("animate", "ANIMATE", self.nexrad_animation_mode() == NexradAnimationMode::Animating),
+                    nexrad_choice("latest", "LATEST", self.nexrad_animation_mode() == NexradAnimationMode::HoldLatest)],
+            ], dismiss_action_id: "close".into(), close_label: "CLOSE".into(),
+        })
+    }
+
+    pub fn ingest_receiver_reports(
+        &mut self,
+        reports: impl IntoIterator<Item = crate::weather_sources::StationReport>,
+    ) -> Result<bool, &'static str> {
+        let changed = self
+            .runtime
+            .station_weather
+            .ingest_batch(crate::weather_sources::WeatherSource::Receiver, reports)?;
+        if changed {
+            self.note_change();
+        }
+        Ok(changed)
+    }
+
     pub fn revision(&self) -> u64 {
         self.model.revision
     }
@@ -174,14 +270,6 @@ impl WeatherController {
 
     pub fn nexrad_animation_mode(&self) -> NexradAnimationMode {
         self.model.nexrad_animation_mode
-    }
-
-    pub fn toggle_nexrad_animation_mode(&mut self) {
-        self.model.nexrad_animation_mode = match self.model.nexrad_animation_mode {
-            NexradAnimationMode::Animating => NexradAnimationMode::HoldLatest,
-            NexradAnimationMode::HoldLatest => NexradAnimationMode::Animating,
-        };
-        self.note_change();
     }
 
     pub fn checkpoint_model(&self) -> WeatherModelCheckpoint {
@@ -337,7 +425,11 @@ impl WeatherController {
             }
         }
         let projection = WeatherProjection {
-            nexrad_age_banner_value: nexrad_frame_age_banner_value(self, input),
+            nexrad_age_banner_value: format!(
+                "{} {}",
+                self.nexrad_source().label(),
+                nexrad_frame_age_banner_value(self, input)
+            ),
             nexrad_action: nexrad_animation_action(self, input),
         };
         self.projection_cache = Some(WeatherProjectionCache {
@@ -360,13 +452,37 @@ impl WeatherController {
 #[derive(Clone)]
 pub(crate) struct NexradFrameCandidate {
     pub version: String,
-    pub manifest: serde_json::Value,
+    pub manifests: Vec<serde_json::Value>,
     pub observed_at_utc: Option<DateTime<Utc>>,
 }
 
 pub(crate) fn nexrad_retained_frame_candidates(
     weather: &WeatherController,
 ) -> Vec<NexradFrameCandidate> {
+    nexrad_retained_frames_for_source(weather, weather.nexrad_source())
+}
+
+fn nexrad_retained_frames_for_source(
+    weather: &WeatherController,
+    source: NexradSource,
+) -> Vec<NexradFrameCandidate> {
+    if source == NexradSource::Receiver {
+        return weather
+            .model
+            .receiver_radar
+            .frames
+            .iter()
+            .map(|frame| NexradFrameCandidate {
+                version: frame.id.clone(),
+                manifests: frame
+                    .layers
+                    .iter()
+                    .map(|image| image.manifest.clone())
+                    .collect(),
+                observed_at_utc: frame.layers.iter().map(|image| image.observed).min(),
+            })
+            .collect();
+    }
     let mut frames = Vec::new();
     let mut identities = HashSet::new();
     for installed in weather.runtime.nexrad_installed.values() {
@@ -377,7 +493,7 @@ pub(crate) fn nexrad_retained_frame_candidates(
         frames.push(NexradFrameCandidate {
             version: installed.version.clone(),
             observed_at_utc: json_observed_at_utc(&installed.manifest),
-            manifest: installed.manifest.clone(),
+            manifests: vec![installed.manifest.clone()],
         });
     }
     for loaded in weather
@@ -389,7 +505,7 @@ pub(crate) fn nexrad_retained_frame_candidates(
             frames.push(NexradFrameCandidate {
                 version: loaded.version.to_string(),
                 observed_at_utc: json_observed_at_utc(loaded.manifest),
-                manifest: loaded.manifest.clone(),
+                manifests: vec![loaded.manifest.clone()],
             });
         }
     }
@@ -408,13 +524,29 @@ pub(crate) fn nexrad_displayable_frame_candidates(
     weather: &WeatherController,
     epoch_ms: i64,
 ) -> Vec<NexradFrameCandidate> {
+    nexrad_displayable_frames_for_source(weather, epoch_ms, weather.nexrad_source())
+}
+
+fn nexrad_displayable_frames_for_source(
+    weather: &WeatherController,
+    epoch_ms: i64,
+    source: NexradSource,
+) -> Vec<NexradFrameCandidate> {
     let oldest_displayable_epoch_ms = epoch_ms.saturating_sub(NEXRAD_MAX_DISPLAY_AGE_MS);
-    nexrad_retained_frame_candidates(weather)
+    nexrad_retained_frames_for_source(weather, source)
         .into_iter()
-        .filter(|frame| {
-            frame
-                .observed_at_utc
-                .is_some_and(|observed| observed.timestamp_millis() >= oldest_displayable_epoch_ms)
+        .filter_map(|mut frame| {
+            frame.manifests.retain(|manifest| {
+                json_observed_at_utc(manifest).is_some_and(|observed| {
+                    observed.timestamp_millis() >= oldest_displayable_epoch_ms
+                })
+            });
+            frame.observed_at_utc = frame
+                .manifests
+                .iter()
+                .filter_map(json_observed_at_utc)
+                .min();
+            (!frame.manifests.is_empty()).then_some(frame)
         })
         .collect()
 }
@@ -544,12 +676,13 @@ pub(crate) fn nexrad_frame_age_values(
 pub(crate) fn nexrad_frame_age_summary(
     weather: &WeatherController,
     input: WeatherProjectionInput,
+    source: NexradSource,
 ) -> String {
     if !input.nexrad_visible {
         return "off".to_string();
     }
     let labels = nexrad_frame_age_labels(
-        &nexrad_displayable_frame_candidates(weather, input.wall_clock_epoch_ms),
+        &nexrad_displayable_frames_for_source(weather, input.wall_clock_epoch_ms, source),
         input.wall_clock_epoch_ms,
     );
     if labels.is_empty() {
@@ -594,28 +727,31 @@ fn nexrad_frame_age_banner_value(
 }
 
 fn nexrad_animation_action(
-    weather: &WeatherController,
+    _weather: &WeatherController,
     input: WeatherProjectionInput,
 ) -> Option<FlightDataCellAction> {
-    input.nexrad_visible.then(|| {
-        let (action_id, accessibility_label, symbol_id) = match weather.nexrad_animation_mode() {
-            NexradAnimationMode::Animating => (
-                "pause_nexrad_animation",
-                "Hold latest NEXRAD frame",
-                "pause_nexrad_animation",
-            ),
-            NexradAnimationMode::HoldLatest => (
-                "resume_nexrad_animation",
-                "Animate NEXRAD history",
-                "resume_nexrad_animation",
-            ),
-        };
-        FlightDataCellAction {
-            action_id: action_id.to_string(),
-            accessibility_label: accessibility_label.to_string(),
-            symbol_id: Some(symbol_id.to_string()),
-        }
+    input.nexrad_visible.then(|| FlightDataCellAction {
+        action_id: "nexrad_options".into(),
+        accessibility_label: "Choose NEXRAD source and animation".into(),
+        symbol_id: None,
     })
+}
+
+fn nexrad_choice(
+    id: &str,
+    label: &str,
+    selected: bool,
+) -> app_ui_contracts::session::FlightDataEditorAction {
+    app_ui_contracts::session::FlightDataEditorAction {
+        id: id.into(),
+        label: label.into(),
+        enabled: true,
+        selected,
+        secondary_label: None,
+        symbol_feature: None,
+        weather_badge: None,
+        disabled_reason: None,
+    }
 }
 
 fn nexrad_manifest_identity(version: &str, manifest: &serde_json::Value) -> String {
@@ -681,7 +817,7 @@ mod tests {
             .map(|(index, age_minutes)| NexradFrameCandidate {
                 version: format!("frame-{index}"),
                 observed_at_utc: DateTime::<Utc>::from_timestamp_millis(now - age_minutes * 60_000),
-                manifest: serde_json::json!({"state_id": format!("frame-{index}")}),
+                manifests: vec![serde_json::json!({"state_id": format!("frame-{index}")})],
             })
             .collect::<Vec<_>>();
 
@@ -696,19 +832,19 @@ mod tests {
     }
 
     #[test]
-    fn nexrad_animation_mode_is_core_owned_and_toggles() {
+    fn nexrad_animation_mode_is_core_owned_and_explicit() {
         let mut controller = WeatherController::default();
 
         assert_eq!(
             controller.nexrad_animation_mode(),
             NexradAnimationMode::Animating
         );
-        controller.toggle_nexrad_animation_mode();
+        controller.nexrad_editor_action("latest");
         assert_eq!(
             controller.nexrad_animation_mode(),
             NexradAnimationMode::HoldLatest
         );
-        controller.toggle_nexrad_animation_mode();
+        controller.nexrad_editor_action("animate");
         assert_eq!(
             controller.nexrad_animation_mode(),
             NexradAnimationMode::Animating
@@ -746,7 +882,7 @@ mod tests {
         };
         let first = controller.project(hidden);
         assert!(first.rebuilt);
-        assert_eq!(first.projection.nexrad_age_banner_value, "off");
+        assert_eq!(first.projection.nexrad_age_banner_value, "NET off");
         assert!(!controller.project(hidden).rebuilt);
 
         let visible = WeatherProjectionInput {
@@ -757,7 +893,7 @@ mod tests {
         assert!(visible_projection.rebuilt);
         assert_eq!(
             visible_projection.projection.nexrad_age_banner_value,
-            "inop"
+            "NET inop"
         );
 
         controller.record_resource_error(42, "failed".to_string());

@@ -3173,21 +3173,29 @@ async function preparedLiveFeeds(runtime) {
 }
 
 export async function setNexradAnimationHeld(runtime, held, previousFrame = null) {
-  const control = "flight-data-cell:nexrad_age";
-  const nextAction = held ? "resume_nexrad_animation" : "pause_nexrad_animation";
-  return runtime.action(held ? "hold latest NEXRAD frame" : "resume NEXRAD animation", control, {
+  const choice = held ? "nexrad_age-latest" : "nexrad_age-animate";
+  await runtime.action("open NEXRAD source and animation tray", "flight-data-cell:nexrad_age", {
+    complete: () => runtime.driver.readElement(choice),
+  });
+  const result = await runtime.action(held ? "hold latest NEXRAD frame" : "resume NEXRAD animation", choice, {
     complete: async () => {
       // Animation itself visits the newest frame. Prove the core-owned mode
-      // through the rendered control's action as well as the painted frame.
-      const button = await runtime.driver.readElement(control);
-      if (button?.state !== nextAction) return null;
+      // through the selected tray choice as well as the painted frame.
+      const button = await runtime.driver.readElement(choice);
       const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
-      return state && state.tiles > 0 && state.frames >= 2 && state.frame !== null &&
-        (held ? state.frame === state.frames - 1 : state.frame !== previousFrame)
-        ? state
-        : null;
+      return { button, state };
     },
+    completionSatisfied: ({ button, state }) => Boolean(
+      selectedSemantic(button) && state && state.tiles > 0 && state.frames >= 2 && state.frame !== null &&
+        (held ? state.frame === state.frames - 1 : state.frame !== previousFrame)
+    ),
   });
+  await runtime.transition("dismiss NEXRAD options", {
+    ready: () => runtime.driver.readElement(choice),
+    act: () => runtime.driver.back(),
+    complete: async () => !await runtime.driver.readElement(choice),
+  });
+  return result.state;
 }
 
 export async function observeNexradFrameAdvance(runtime) {

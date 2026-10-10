@@ -1281,35 +1281,51 @@ for (const states of [
 
 for (const held of [true, false]) {
   test(`NEXRAD ${held ? "hold" : "resume"} proves mode and painted frame through the strict action contract`, async () => {
-    let action = held ? "pause_nexrad_animation" : "resume_nexrad_animation";
+    let selected = false;
+    let open = false;
     let frame = 2; // Normal animation may already be painting the newest frame.
-    let actions = 0;
+    const actions = [];
+    const choice = held ? "nexrad_age-latest" : "nexrad_age-animate";
     const runtime = boundedObservationRuntime({
-      async readElement() { return { enabled: true, state: action }; },
+      async readElement(id) {
+        if (id === "flight-data-cell:nexrad_age") return { enabled: true };
+        assert.equal(id, choice);
+        return open ? { enabled: true, selected } : null;
+      },
       async readProjection() {
         return [{ id: `parity:nexrad-state:tiles:184:frame:${frame}:frames:3` }];
       },
       async performAction(id) {
-        assert.equal(id, "flight-data-cell:nexrad_age");
-        actions += 1;
-        action = held ? "resume_nexrad_animation" : "pause_nexrad_animation";
+        actions.push(id);
+        if (id === "flight-data-cell:nexrad_age") { open = true; return; }
+        assert.equal(id, choice);
+        assert.equal(open, true);
+        selected = true;
         frame = held ? 2 : 0;
       },
+      async back() { actions.push("back"); open = false; },
     });
     await setNexradAnimationHeld(runtime, held, 2);
-    assert.equal(actions, 1);
+    assert.deepEqual(actions, ["flight-data-cell:nexrad_age", choice, "back"]);
   });
 }
 
 for (const changeMode of [false, true]) {
   test(`NEXRAD hold rejects ${changeMode ? "mode change without latest paint" : "latest paint without mode change"}`, async () => {
-    let action = "pause_nexrad_animation";
+    let selected = false;
+    let open = false;
     const runtime = boundedObservationRuntime({
-      async readElement() { return { enabled: true, state: action }; },
+      async readElement(id) {
+        if (id === "flight-data-cell:nexrad_age") return { enabled: true };
+        return open ? { enabled: true, selected } : null;
+      },
       async readProjection() {
         return [{ id: `parity:nexrad-state:tiles:184:frame:${changeMode ? 0 : 2}:frames:3` }];
       },
-      async performAction() { if (changeMode) action = "resume_nexrad_animation"; },
+      async performAction(id) {
+        if (id === "flight-data-cell:nexrad_age") open = true;
+        else if (changeMode) selected = true;
+      },
     });
     await assert.rejects(setNexradAnimationHeld(runtime, true), ObservationTimeoutError);
   });

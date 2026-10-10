@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{LatLon, MetarProductPayload};
+use crate::{weather_sources::WeatherQuery, LatLon};
 pub use app_ui_contracts::session::{FlightDataCommand, FlightDataEditor};
 
 const HPA_PER_INHG: f64 = 33.863_886_666_7;
@@ -31,43 +31,48 @@ impl NearbyAltimeter {
 
 pub(crate) fn nearest_altimeter(
     position: Option<LatLon>,
-    weather: Option<&MetarProductPayload>,
+    weather: Option<WeatherQuery<'_>>,
     now: i64,
 ) -> Option<NearbyAltimeter> {
     let position = position?;
-    weather?
-        .metars_by_station
-        .values()
-        .filter_map(|report| {
-            if !(-90.0..=90.0).contains(&report.latitude)
-                || !(-180.0..=180.0).contains(&report.longitude)
-            {
-                return None;
-            }
-            let distance_nm = crate::geodesy::great_circle_distance_nm(
-                position,
-                LatLon {
-                    lat: report.latitude,
-                    lon: report.longitude,
-                },
-            );
+    if !(-90.0..=90.0).contains(&position.lat) || !(-180.0..=180.0).contains(&position.lon) {
+        return None;
+    }
+    let weather = weather?;
+    let radius_degrees = (MAX_WEATHER_DISTANCE_NM / 3440.065).to_degrees();
+    let south = (position.lat - radius_degrees).max(-90.0);
+    let north = (position.lat + radius_degrees).min(90.0);
+    let longitude_span = radius_degrees / south.abs().max(north.abs()).to_radians().cos();
+    let (west, east) = if longitude_span >= 180.0 {
+        (-180.0, 180.0)
+    } else {
+        (
+            (position.lon - longitude_span + 180.0).rem_euclid(360.0) - 180.0,
+            (position.lon + longitude_span + 180.0).rem_euclid(360.0) - 180.0,
+        )
+    };
+    weather
+        .in_bounds(south, west, north, east)
+        .into_iter()
+        .filter_map(|id| {
+            let report = weather.metar(id.as_str())?;
+            let station_position = weather.station_position(id.as_str())?;
+            let station_position = LatLon {
+                lat: station_position.latitude,
+                lon: station_position.longitude,
+            };
+            let distance_nm = crate::geodesy::great_circle_distance_nm(position, station_position);
             if !distance_nm.is_finite() || distance_nm > MAX_WEATHER_DISTANCE_NM {
                 return None;
             }
             // Report age, not feed download time. Unknown or future dates are not usable.
-            let observed_epoch_ms =
-                chrono::DateTime::parse_from_rfc3339(report.observed_at_utc.as_deref()?)
-                    .ok()?
-                    .timestamp_millis();
+            let observed_epoch_ms = report.report_time?.timestamp_millis();
             if !(0..=MAX_WEATHER_AGE_MS).contains(&now.saturating_sub(observed_epoch_ms)) {
                 return None;
             }
             Some(NearbyAltimeter {
-                station: report.station_id.clone(),
-                position: LatLon {
-                    lat: report.latitude,
-                    lon: report.longitude,
-                },
+                station: report.station.as_str().to_string(),
+                position: station_position,
                 weather_badge: crate::map_overlay::weather_badge_for_metar(
                     report,
                     chrono::DateTime::from_timestamp_millis(now),
@@ -120,32 +125,87 @@ pub struct BarometerReading {
     pub warning: Option<String>,
 }
 
-/// Device pressure is deliberately separate from ownship's aviation pressure altitude.
-/// It must not become an input to terrain clearance, navigation, or traffic separation.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Barometer {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Source {
+    #[default]
+    Device,
+    Receiver,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PressureSensor {
     available: bool,
     sample: Option<(i64, f64)>,
+    history: std::collections::VecDeque<(i64, f64)>,
+}
+
+impl PressureSensor {
+    fn observe(&mut self, available: bool, pressure: Option<f64>, time: i64, now: i64) {
+        self.available = available;
+        let Some(pressure) =
+            pressure.filter(|p| available && p.is_finite() && (100.0..=1_200.0).contains(p))
+        else {
+            self.sample = None;
+            self.history.clear();
+            return;
+        };
+        if time > now || now.saturating_sub(time) >= SAMPLE_LIFETIME_MS {
+            return;
+        }
+        let filtered = match self.sample {
+            Some((previous_time, _)) if time <= previous_time => return,
+            Some((previous_time, previous_pressure))
+                if time - previous_time < SAMPLE_LIFETIME_MS =>
+            {
+                let weight =
+                    1.0 - (-((time - previous_time) as f64) / FILTER_TIME_CONSTANT_MS).exp();
+                previous_pressure + weight * (pressure - previous_pressure)
+            }
+            _ => {
+                self.history.clear();
+                pressure
+            }
+        };
+        self.sample = Some((time, filtered));
+        self.history
+            .push_back((time, pressure_altitude(pressure, 29.92)));
+        while self
+            .history
+            .front()
+            .is_some_and(|(old, _)| time - old > 20_000)
+            || self.history.len() > 64
+        {
+            self.history.pop_front();
+        }
+    }
+}
+
+/// Explicitly selected pressure source. Device cabin pressure never enters
+/// ownship navigation/terrain/traffic, and source histories never mix.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Barometer {
+    source: Source,
+    device: PressureSensor,
+    receiver: PressureSensor,
     setting_inhg: f64,
     editor: Option<FlightDataEditor>,
-    pressure_history: std::collections::VecDeque<(i64, f64)>,
 }
 
 impl Default for Barometer {
     fn default() -> Self {
         Self {
-            available: false,
-            sample: None,
+            source: Source::Device,
+            device: PressureSensor::default(),
+            receiver: PressureSensor::default(),
             setting_inhg: 29.92,
             editor: None,
-            pressure_history: Default::default(),
         }
     }
 }
 
 impl Barometer {
     pub fn reading(&self, now: i64, nearest: Option<&NearbyAltimeter>) -> Option<BarometerReading> {
-        self.available.then(|| BarometerReading {
+        self.available().then(|| BarometerReading {
             altitude_ft: self.altitude_ft(now),
             warning: self.setting_warning(now, nearest),
             editor: self.editor().map(|mut editor| {
@@ -167,7 +227,29 @@ impl Barometer {
     }
 
     pub fn available(&self) -> bool {
-        self.available
+        self.device.available || self.receiver.available
+    }
+
+    fn sensor(&self) -> &PressureSensor {
+        match self.source {
+            Source::Device => &self.device,
+            Source::Receiver => &self.receiver,
+        }
+    }
+
+    pub fn observe_receiver(
+        &mut self,
+        available: bool,
+        pressure_altitude_ft: Option<f64>,
+        time: i64,
+        now: i64,
+    ) {
+        // Inverse of the same standard-atmosphere altimetry equation. Only the
+        // verified, feet-valued enhanced-traffic field enters this path.
+        let pressure = pressure_altitude_ft
+            .filter(|feet| feet.is_finite() && (-2_000.0..=60_000.0).contains(feet))
+            .map(|feet| 29.92 * HPA_PER_INHG * (1.0 - feet * 0.3048 / 44_330.0).powf(5.255));
+        self.receiver.observe(available, pressure, time, now);
     }
 
     pub fn apply(
@@ -183,51 +265,10 @@ impl Barometer {
                 observed_epoch_ms,
                 ..
             } => {
-                self.available = available;
-                if !available {
-                    self.sample = None;
-                    self.pressure_history.clear();
+                self.device
+                    .observe(available, pressure_hpa, observed_epoch_ms, now);
+                if !self.available() {
                     self.editor = None;
-                    return;
-                }
-                let Some(pressure) =
-                    pressure_hpa.filter(|p| p.is_finite() && (100.0..=1_200.0).contains(p))
-                else {
-                    self.sample = None;
-                    self.pressure_history.clear();
-                    return;
-                };
-                if observed_epoch_ms > now
-                    || now.saturating_sub(observed_epoch_ms) >= SAMPLE_LIFETIME_MS
-                {
-                    return;
-                }
-                let filtered = match self.sample {
-                    Some((previous_time, _)) if observed_epoch_ms <= previous_time => return,
-                    Some((previous_time, previous_pressure))
-                        if observed_epoch_ms - previous_time < SAMPLE_LIFETIME_MS =>
-                    {
-                        let weight = 1.0
-                            - (-((observed_epoch_ms - previous_time) as f64)
-                                / FILTER_TIME_CONSTANT_MS)
-                                .exp();
-                        previous_pressure + weight * (pressure - previous_pressure)
-                    }
-                    _ => {
-                        self.pressure_history.clear();
-                        pressure
-                    }
-                };
-                self.sample = Some((observed_epoch_ms, filtered));
-                self.pressure_history
-                    .push_back((observed_epoch_ms, pressure_altitude(pressure, 29.92)));
-                while self
-                    .pressure_history
-                    .front()
-                    .is_some_and(|(time, _)| observed_epoch_ms - time > 20_000)
-                    || self.pressure_history.len() > 64
-                {
-                    self.pressure_history.pop_front();
                 }
             }
             FlightDataCommand::SetInput { editor_id, input } if editor_id == BAROMETER_CELL_ID => {
@@ -266,6 +307,17 @@ impl Barometer {
                     self.editor = None;
                     return;
                 }
+                match action_id.as_str() {
+                    "source_device" if self.device.available => {
+                        self.source = Source::Device;
+                        return;
+                    }
+                    "source_receiver" if self.receiver.available => {
+                        self.source = Source::Receiver;
+                        return;
+                    }
+                    _ => {}
+                }
                 if action_id != "nearest" {
                     return;
                 }
@@ -282,10 +334,11 @@ impl Barometer {
     }
 
     pub fn open_editor(&mut self) {
-        if self.available {
+        if self.available() {
             self.editor = Some(FlightDataEditor {
                 id: BAROMETER_CELL_ID.into(),
                 title: None,
+                show_input: true,
                 label: "Altimeter setting".into(),
                 unit: "inHg".into(),
                 input: format!("{:.2}", self.setting_inhg),
@@ -312,7 +365,17 @@ impl Barometer {
     }
 
     pub fn editor(&self) -> Option<FlightDataEditor> {
-        self.editor.clone()
+        self.editor.clone().map(|mut editor| {
+            editor.notice = match self.source {
+                Source::Device => "BARO ALT from device is cabin alt. Cross-check.",
+                Source::Receiver => "BARO ALT from receiver pressure altitude, adjusted by this setting. Cross-check.",
+            }.into();
+            editor.action_rows.push(vec![
+                source_action("source_device", "DEVICE", self.device.available, self.source == Source::Device),
+                source_action("source_receiver", "RECEIVER", self.receiver.available, self.source == Source::Receiver),
+            ]);
+            editor
+        })
     }
 
     pub fn close_editor(&mut self) {
@@ -320,8 +383,11 @@ impl Barometer {
     }
 
     pub fn altitude_ft(&self, now: i64) -> Option<f64> {
-        let (timestamp, pressure) = self.sample?;
-        if !self.available || now < timestamp || now.saturating_sub(timestamp) >= SAMPLE_LIFETIME_MS
+        let sensor = self.sensor();
+        let (timestamp, pressure) = sensor.sample?;
+        if !sensor.available
+            || now < timestamp
+            || now.saturating_sub(timestamp) >= SAMPLE_LIFETIME_MS
         {
             return None;
         }
@@ -334,10 +400,11 @@ impl Barometer {
     pub fn vertical_speed_fpm(&self, now: i64) -> Option<f64> {
         self.altitude_ft(now)?;
         crate::ownship::estimate_vertical_speed_fpm(
-            self.pressure_history
+            self.sensor()
+                .history
                 .iter()
                 .map(|&(time, altitude)| (time, altitude, Some(3.0))),
-            self.sample?.0,
+            self.sensor().sample?.0,
         )
     }
 
@@ -358,9 +425,29 @@ impl Barometer {
     }
 
     pub fn next_refresh(&self, now: i64) -> Option<i64> {
-        self.sample
+        self.sensor()
+            .sample
             .map(|(time, _)| time.saturating_add(SAMPLE_LIFETIME_MS))
             .filter(|deadline| *deadline > now)
+    }
+}
+
+fn source_action(
+    id: &str,
+    label: &str,
+    enabled: bool,
+    selected: bool,
+) -> app_ui_contracts::session::FlightDataEditorAction {
+    app_ui_contracts::session::FlightDataEditorAction {
+        id: id.into(),
+        label: label.into(),
+        enabled,
+        selected,
+        secondary_label: None,
+        symbol_feature: None,
+        weather_badge: None,
+        disabled_reason: (!enabled)
+            .then(|| "This pressure source is not available on this device.".into()),
     }
 }
 
@@ -370,6 +457,37 @@ fn pressure_altitude(pressure: f64, setting_inhg: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pressure_source_selection_is_explicit_and_never_blends_or_falls_back() {
+        let mut baro = Barometer::default();
+        observe(&mut baro, Some(1002.64), 10_000);
+        let device_altitude = baro.altitude_ft(10_000).unwrap();
+        baro.observe_receiver(true, Some(5000.0), 10_000, 10_000);
+        assert_eq!(baro.altitude_ft(10_000), Some(device_altitude));
+        baro.open_editor();
+        let choose = |source: &str| FlightDataCommand::EditorAction {
+            editor_id: BAROMETER_CELL_ID.into(),
+            action_id: source.into(),
+        };
+        baro.apply(choose("source_receiver"), 10_000, None);
+        assert!((baro.altitude_ft(10_000).unwrap() - 5000.0).abs() < 1e-6);
+        assert!(baro.editor().unwrap().action_rows[1][1].selected);
+        observe(&mut baro, Some(900.0), 16_000);
+        assert_eq!(
+            baro.altitude_ft(16_000),
+            None,
+            "fresh device pressure is not a receiver fallback"
+        );
+        baro.apply(choose("source_device"), 16_000, None);
+        assert!(baro.altitude_ft(16_000).unwrap() > 3000.0);
+        baro.apply(choose("source_receiver"), 16_000, None);
+        baro.observe_receiver(true, Some(5100.0), 16_000, 16_000);
+        assert!((baro.altitude_ft(16_000).unwrap() - 5100.0).abs() < 1e-6);
+        baro.observe_receiver(true, None, 16_001, 16_001);
+        assert_eq!(baro.altitude_ft(16_001), None);
+        assert!(baro.editor().unwrap().action_rows[1][1].selected);
+    }
+
     #[test]
     fn four_digit_setting_entry_inserts_decimal_before_applying() {
         let now = 2_000_000_000_000;
@@ -565,8 +683,8 @@ mod tests {
         assert!(baro.vertical_speed_fpm(time).is_none());
     }
 
-    fn weather(reports: &[(&str, f64, i64, &str)], now: i64) -> MetarProductPayload {
-        MetarProductPayload {
+    fn weather(reports: &[(&str, f64, i64, &str)], now: i64) -> crate::MetarProductPayload {
+        crate::MetarProductPayload {
             schema_version: 3,
             version_label: "test".into(),
             generated_at_utc: None,
@@ -616,17 +734,38 @@ mod tests {
             now,
         );
         let position = Some(LatLon { lat: 0.0, lon: 0.0 });
-        let nearest = nearest_altimeter(position, Some(&payload), now).unwrap();
+        let nearest = nearest_altimeter(
+            position,
+            Some(
+                crate::weather_sources::StationWeather::test_products(Some(&payload), None).query(),
+            ),
+            now,
+        )
+        .unwrap();
         assert_eq!(nearest.station, "CLOSE");
         assert_eq!(nearest.setting_inhg, 29.97);
         assert_eq!(nearest.expires_at(), now + 1);
         assert_eq!(
-            nearest_altimeter(position, Some(&payload), now + 1)
-                .unwrap()
-                .station,
+            nearest_altimeter(
+                position,
+                Some(
+                    crate::weather_sources::StationWeather::test_products(Some(&payload), None)
+                        .query()
+                ),
+                now + 1
+            )
+            .unwrap()
+            .station,
             "FUTURE"
         );
-        assert!(nearest_altimeter(None, Some(&payload), now).is_none());
+        assert!(nearest_altimeter(
+            None,
+            Some(
+                crate::weather_sources::StationWeather::test_products(Some(&payload), None).query()
+            ),
+            now
+        )
+        .is_none());
         assert!(nearest_altimeter(position, None, now).is_none());
     }
 
@@ -642,7 +781,15 @@ mod tests {
             let point = crate::ui_geometry::ui_project_ahead(position, 90.0, distance);
             let mut payload = weather(&[("TEST", point.lon, age, "A3000")], now);
             assert_eq!(
-                nearest_altimeter(Some(position), Some(&payload), now).is_some(),
+                nearest_altimeter(
+                    Some(position),
+                    Some(
+                        crate::weather_sources::StationWeather::test_products(Some(&payload), None)
+                            .query()
+                    ),
+                    now
+                )
+                .is_some(),
                 expected
             );
             for date in [None, Some("bad timestamp".to_string())] {
@@ -651,7 +798,15 @@ mod tests {
                     .get_mut("TEST")
                     .unwrap()
                     .observed_at_utc = date;
-                assert!(nearest_altimeter(Some(position), Some(&payload), now).is_none());
+                assert!(nearest_altimeter(
+                    Some(position),
+                    Some(
+                        crate::weather_sources::StationWeather::test_products(Some(&payload), None)
+                            .query()
+                    ),
+                    now
+                )
+                .is_none());
             }
         }
     }
@@ -692,7 +847,13 @@ mod tests {
             None,
         );
         let payload = weather(&[("TEST", 0.0, 60_000, "A2997")], now);
-        let nearest = nearest_altimeter(Some(LatLon { lat: 0.0, lon: 0.0 }), Some(&payload), now);
+        let nearest = nearest_altimeter(
+            Some(LatLon { lat: 0.0, lon: 0.0 }),
+            Some(
+                crate::weather_sources::StationWeather::test_products(Some(&payload), None).query(),
+            ),
+            now,
+        );
         let editor = baro.reading(now, nearest.as_ref()).unwrap().editor.unwrap();
         assert!(editor.action_rows[0][0].enabled);
         assert!(editor.action_rows[0][0].disabled_reason.is_none());

@@ -37,6 +37,11 @@ fn cloud_schema() -> Value {
 
 fn session_schema() -> Value {
     let mut root = schema::<session::UiSessionPageContracts>();
+    add_definition::<app_ui_contracts::receiver::ReceiverHostEvent>(&mut root, "ReceiverHostEvent");
+    add_definition::<app_ui_contracts::receiver::ReceiverHostOutput>(
+        &mut root,
+        "ReceiverHostOutput",
+    );
     add_definition::<session::UiGlideRing>(&mut root, "UiGlideRing");
     add_definition::<session::UiAirwayRouteDragPhase>(&mut root, "UiAirwayRouteDragPhase");
     add_definition::<session::UiInvalidation>(&mut root, "UiInvalidation");
@@ -253,6 +258,13 @@ fn main() {
                 "UiSettingsPageRow",
                 "UiSettingsPageSection",
                 "UiSettingsPageBlock",
+                "UiReceiverAction",
+                "UiReceiverPanel",
+                "ReceiverDevice",
+                "ReceiverIoFailure",
+                "ReceiverHostEvent",
+                "ReceiverHostEffect",
+                "ReceiverHostOutput",
                 "UiSettingsRowKind",
                 "UiSettingsPageState",
                 "UiServiceNoticeAction",
@@ -277,6 +289,8 @@ fn main() {
                 ("UiStatusPlatformEffect", "kind"),
                 ("FlightDataCommand", "kind"),
                 ("UiSettingsPageBlock", "kind"),
+                ("ReceiverHostEvent", "kind"),
+                ("ReceiverHostEffect", "kind"),
             ],
             schema: session_schema,
         },

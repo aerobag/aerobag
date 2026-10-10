@@ -405,6 +405,7 @@ struct SettingsProjectionCache {
 
 #[derive(Clone, Default)]
 pub(crate) struct SettingsController {
+    receiver_panel: Option<app_ui_contracts::receiver::UiReceiverPanel>,
     preferences: SettingsPreferences,
     external_power_connected: bool,
     debug_section_expanded: bool,
@@ -425,6 +426,17 @@ pub(crate) struct SettingsModelCheckpoint {
 }
 
 impl SettingsController {
+    pub fn set_receiver_panel(
+        &mut self,
+        panel: app_ui_contracts::receiver::UiReceiverPanel,
+    ) -> bool {
+        if self.receiver_panel.as_ref() == Some(&panel) {
+            return false;
+        }
+        self.receiver_panel = Some(panel);
+        self.note_change(true);
+        true
+    }
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -794,7 +806,7 @@ impl SettingsController {
             }
         }
 
-        let projection = SettingsProjection {
+        let mut projection = SettingsProjection {
             settings_page_state: project_settings_page_state(
                 &self.preferences,
                 display_policy_available,
@@ -813,6 +825,19 @@ impl SettingsController {
             disclaimer_state: project_disclaimer_state(&self.preferences),
             flight_data_banner: filtered_flight_data_banner(&self.preferences, flight_data_banner),
         };
+        if let Some(panel) = &self.receiver_panel {
+            let blocks = &mut projection.settings_page_state.blocks;
+            let index = blocks
+                .iter()
+                .position(|block| matches!(block, UiSettingsPageBlock::Section { .. }))
+                .unwrap_or(blocks.len());
+            blocks.insert(
+                index,
+                UiSettingsPageBlock::Receiver {
+                    panel: panel.clone(),
+                },
+            );
+        }
         self.projection_cache = Some(SettingsProjectionCache {
             settings_revision: self.revision,
             display_policy_available,
@@ -1197,7 +1222,7 @@ fn settings_action_is_cloud_synced(action_id: &str) -> bool {
             .is_some()
 }
 
-pub(crate) fn all_debug_flags() -> [DebugFlagId; 10] {
+pub(crate) fn all_debug_flags() -> [DebugFlagId; 9] {
     [
         DebugFlagId::TileLabels,
         DebugFlagId::NexradTileLabels,
@@ -1206,7 +1231,6 @@ pub(crate) fn all_debug_flags() -> [DebugFlagId; 10] {
         DebugFlagId::SequencingFinishLines,
         DebugFlagId::PlateFlightPlan,
         DebugFlagId::BadAutopilot,
-        DebugFlagId::InternetAdsb,
         DebugFlagId::GpsCapture,
         DebugFlagId::DebugLogToDeveloperServer,
     ]

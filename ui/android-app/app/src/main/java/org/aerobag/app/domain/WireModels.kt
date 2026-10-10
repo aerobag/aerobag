@@ -598,6 +598,7 @@ data class WireVisibleAdsbTraffic(
     val track_deg_true: Double? = null,
     val label: String,
     val detail_label: String,
+    val symbol_points: List<List<Double>>,
 )
 
 @Serializable

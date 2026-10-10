@@ -306,6 +306,7 @@ data class VisibleAdsbTraffic(
     val trackDegTrue: Double?,
     val label: String,
     val detailLabel: String,
+    val symbolPoints: List<List<Double>>,
 )
 
 data class MapSelectionQueryResult(
@@ -1816,6 +1817,11 @@ class NativeUiSession internal constructor(
                 System.currentTimeMillis(),
             )
         }
+    }
+
+    @RawUiSessionWorkApi
+    fun applyReceiverDelivery(id: Long): UiSessionSnapshot = runPagedSnapshot("applyReceiverDelivery") {
+        NativeBindings.applyReceiverDeliveryInSessionJson(handle, id, SystemClock.elapsedRealtime(), System.currentTimeMillis())
     }
 
     @RawUiSessionWorkApi
@@ -3503,6 +3509,7 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
             trackDegTrue = it.track_deg_true,
             label = it.label,
             detailLabel = it.detail_label,
+            symbolPoints = it.symbol_points,
         )
     },
     trafficNextRefreshEpochMs = traffic_next_refresh_epoch_ms,

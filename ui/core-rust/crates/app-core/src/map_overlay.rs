@@ -2171,7 +2171,8 @@ pub struct MapOverlayQuery<'a> {
     pub vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
     pub obstacle_tile_cache: &'a HashMap<String, PointTilePayload>,
     pub metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
-    pub metar_payload: Option<&'a MetarProductPayload>,
+    pub weather: Option<crate::weather_sources::WeatherQuery<'a>>,
+    pub important_metar_station_ids: Option<&'a HashSet<String>>,
     pub pirep_payload: Option<&'a PirepProductPayload>,
     pub airspace_feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
     pub tfr_payload: Option<&'a TfrProductPayload>,
@@ -2196,7 +2197,8 @@ impl<'a> MapOverlayQuery<'a> {
             vector_tile_cache,
             obstacle_tile_cache,
             metar_tile_cache,
-            metar_payload: None,
+            weather: None,
+            important_metar_station_ids: None,
             pirep_payload: None,
             airspace_feature_cache,
             tfr_payload: None,
@@ -2581,7 +2583,8 @@ pub fn query_map_overlay_for_surface(
         vector_tile_cache,
         obstacle_tile_cache,
         metar_tile_cache,
-        metar_payload,
+        weather,
+        important_metar_station_ids,
         pirep_payload,
         airspace_feature_cache,
         tfr_payload,
@@ -2691,7 +2694,9 @@ pub fn query_map_overlay_for_surface(
             MetarOverlayInput {
                 tile_zoom: decision.metar_tile_zoom,
                 tile_cache: metar_tile_cache,
-                metar_payload,
+                weather,
+                important_metar_station_ids,
+                min_zoom: config.metar_layer.as_ref().map(|layer| layer.min_zoom),
                 pirep_payload,
             },
         )
@@ -3170,8 +3175,79 @@ enum WorldXProjection {
 struct MetarOverlayInput<'a> {
     tile_zoom: Option<u32>,
     tile_cache: &'a HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&'a MetarProductPayload>,
+    weather: Option<crate::weather_sources::WeatherQuery<'a>>,
+    important_metar_station_ids: Option<&'a HashSet<String>>,
+    min_zoom: Option<u32>,
     pirep_payload: Option<&'a PirepProductPayload>,
+}
+
+struct VisibleStationMetar<'a> {
+    report: &'a crate::weather_sources::StationReport,
+    position: crate::weather_sources::StationPosition,
+    feature: VisibleMetarFeature,
+}
+
+fn visible_station_metars<'a>(
+    projection: &MapProjectionContext<'_>,
+    weather: crate::weather_sources::WeatherQuery<'a>,
+    zoom: u32,
+    important: Option<&'a HashSet<String>>,
+    min_zoom: Option<u32>,
+) -> impl Iterator<Item = VisibleStationMetar<'a>> {
+    let metrics = *projection.metrics;
+    let center_world = projection.center_world;
+    let scale = projection.scale;
+    let tiles = visible_layer_display_tile_window(
+        "metars",
+        zoom,
+        &metrics.viewport,
+        metrics.width_px,
+        metrics.height_px,
+    );
+    // Inclusive geographic queries overlap at tile edges. Deduplicate per world
+    // copy, while preserving repeated-world symbols on very wide viewports.
+    let mut seen = HashSet::new();
+    tiles
+        .into_iter()
+        .flat_map(move |tile| {
+            let bounds = tile_bounds_xyz(tile.request.z, tile.request.x, tile.request.y);
+            weather
+                .in_bounds(bounds.south, bounds.west, bounds.north, bounds.east)
+                .into_iter()
+                .map(move |id| (id, tile.world_x_offset))
+        })
+        .filter_map(move |(id, offset)| {
+            if Some(zoom) == min_zoom && !important.is_some_and(|ids| ids.contains(id.as_str())) {
+                return None;
+            }
+            if !seen.insert((id, offset.to_bits())) {
+                return None;
+            }
+            let report = weather.metar(id.as_str())?;
+            let position = weather
+                .station_position(id.as_str())
+                .expect("directory query station");
+            let feature = visible_metar_feature(
+                report,
+                position,
+                center_world,
+                scale,
+                metrics.width_px,
+                metrics.height_px,
+                WorldXProjection::DisplayCopyOffset(offset),
+            );
+            weather_feature_is_on_screen(
+                feature.screen_x,
+                feature.screen_y,
+                metrics.width_px,
+                metrics.height_px,
+            )
+            .then_some(VisibleStationMetar {
+                report,
+                position,
+                feature,
+            })
+        })
 }
 
 fn query_metar_overlay(
@@ -3187,7 +3263,9 @@ fn query_metar_overlay(
     let MetarOverlayInput {
         tile_zoom: metar_tile_zoom,
         tile_cache: metar_tile_cache,
-        metar_payload,
+        weather,
+        important_metar_station_ids,
+        min_zoom,
         pirep_payload,
     } = input;
     let Some(metar_zoom) = metar_tile_zoom else {
@@ -3199,12 +3277,27 @@ fn query_metar_overlay(
             data_status_records: Vec::new(),
         };
     };
-    let needed_metars = metar_payload.is_none();
+    let needed_metars = weather.is_none_or(|weather| !weather.has_metars());
     let mut needed_tiles = Vec::new();
-    let mut visible_metars = Vec::new();
+    let mut visible_metars = weather
+        .into_iter()
+        .flat_map(|weather| {
+            visible_station_metars(
+                projection,
+                weather,
+                metar_zoom,
+                important_metar_station_ids,
+                min_zoom,
+            )
+        })
+        .take(WEATHER_DISPLAY_FEATURE_LIMIT + 1)
+        .map(|candidate| candidate.feature)
+        .collect::<Vec<_>>();
+    let metars_over_budget = visible_metars.len() > WEATHER_DISPLAY_FEATURE_LIMIT;
+    visible_metars.truncate(WEATHER_DISPLAY_FEATURE_LIMIT);
     let mut visible_pireps = Vec::new();
     let display_pireps = full_weather_detail_visible(*metrics);
-    let mut limit_hit = false;
+    let mut limit_hit = metars_over_budget;
     let mut needed_seen = BTreeSet::new();
     for tile in
         visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
@@ -3226,30 +3319,7 @@ fn query_metar_overlay(
                 limit_hit = true;
                 break;
             }
-            if record_ref.kind == "metar" {
-                let Some(metars) = metar_payload else {
-                    continue;
-                };
-                let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
-                    continue;
-                };
-                let feature = visible_metar_feature(
-                    record,
-                    center_world,
-                    scale,
-                    width_px,
-                    height_px,
-                    WorldXProjection::DisplayCopyOffset(tile.world_x_offset),
-                );
-                if weather_feature_is_on_screen(
-                    feature.screen_x,
-                    feature.screen_y,
-                    width_px,
-                    height_px,
-                ) {
-                    visible_metars.push(feature);
-                }
-            } else if record_ref.kind == "pirep" && display_pireps {
+            if record_ref.kind == "pirep" && display_pireps {
                 let Some(pireps) = pirep_payload else {
                     continue;
                 };
@@ -3314,8 +3384,8 @@ fn weather_feature_is_on_screen(
         && screen_y <= height_px + 32.0
 }
 
-fn normalized_metar_flight_category(record: &MetarRecord) -> String {
-    match record.flight_category.as_deref().map(str::trim) {
+fn normalized_metar_flight_category(record: &crate::weather_sources::StationReport) -> String {
+    match record.flight_category().map(str::trim) {
         Some(value) if value.eq_ignore_ascii_case("VFR") => "vfr".to_string(),
         Some(value) if value.eq_ignore_ascii_case("MVFR") => "mvfr".to_string(),
         Some(value) if value.eq_ignore_ascii_case("IFR") => "ifr".to_string(),
@@ -3324,12 +3394,8 @@ fn normalized_metar_flight_category(record: &MetarRecord) -> String {
     }
 }
 
-fn normalized_metar_ceiling_amount(record: &MetarRecord) -> String {
-    let amount = record
-        .clouds
-        .as_ref()
-        .and_then(|clouds| clouds.symbol.as_deref())
-        .map(str::trim);
+fn normalized_metar_ceiling_amount(record: &crate::weather_sources::StationReport) -> String {
+    let amount = record.cloud_symbol().map(str::trim);
     match amount {
         Some(value) if value.eq_ignore_ascii_case("SKC") || value.eq_ignore_ascii_case("CLR") => {
             "skc".to_string()
@@ -3345,7 +3411,8 @@ fn normalized_metar_ceiling_amount(record: &MetarRecord) -> String {
 }
 
 fn visible_metar_feature(
-    record: &MetarRecord,
+    record: &crate::weather_sources::StationReport,
+    position: crate::weather_sources::StationPosition,
     center_world: WorldPoint,
     scale: f64,
     width_px: f64,
@@ -3358,13 +3425,13 @@ fn visible_metar_feature(
         width_px,
         height_px,
         LatLon {
-            lat: record.latitude,
-            lon: record.longitude,
+            lat: position.latitude,
+            lon: position.longitude,
         },
         projection,
     );
     VisibleMetarFeature {
-        station_id: record.station_id.clone(),
+        station_id: record.station.as_str().to_string(),
         screen_x: point.x,
         screen_y: point.y,
         flight_category: normalized_metar_flight_category(record),
@@ -3432,9 +3499,9 @@ pub struct MapSelectionQuery<'a> {
     pub obstacle_tile_cache: Option<&'a HashMap<String, PointTilePayload>>,
     pub obstacle_context: Option<&'a ObstacleOverlayContext>,
     pub metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
-    pub metar_payload: Option<&'a MetarProductPayload>,
+    pub weather: Option<crate::weather_sources::WeatherQuery<'a>>,
+    pub important_metar_station_ids: Option<&'a HashSet<String>>,
     pub pirep_payload: Option<&'a PirepProductPayload>,
-    pub taf_payload: Option<&'a TafProductPayload>,
     pub notam_payload: Option<&'a NotamDisplayIndex>,
     pub weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     pub offline_region_records: &'a [OfflineRegionRecord],
@@ -3466,9 +3533,9 @@ impl<'a> MapSelectionQuery<'a> {
             obstacle_tile_cache: None,
             obstacle_context: None,
             metar_tile_cache,
-            metar_payload: None,
+            weather: None,
+            important_metar_station_ids: None,
             pirep_payload: None,
-            taf_payload: None,
             notam_payload: None,
             weather_station_airport_aliases,
             offline_region_records: &[],
@@ -3531,9 +3598,9 @@ pub fn query_map_selection_for_surface_in_time_zone(
         obstacle_tile_cache,
         obstacle_context,
         metar_tile_cache,
-        metar_payload,
+        weather: station_weather,
+        important_metar_station_ids,
         pirep_payload,
-        taf_payload,
         notam_payload,
         weather_station_airport_aliases,
         offline_region_records,
@@ -3620,8 +3687,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
                 weather_detail_for_airport(
                     airport_id,
                     weather_station_airport_aliases,
-                    metar_payload,
-                    taf_payload,
+                    station_weather,
                     notam_payload,
                     weather_age_reference_utc,
                 )
@@ -3683,8 +3749,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
             matched_nav_refs: &matched_nav_refs,
             item_data: SelectionItemData {
                 plan,
-                metar_payload,
-                taf_payload,
+                weather: station_weather,
                 notam_payload,
                 weather_station_airport_aliases,
                 weather_age_reference_utc,
@@ -3727,13 +3792,13 @@ pub fn query_map_selection_for_surface_in_time_zone(
         }
     }
 
-    if let Some(metar_payload) = metar_payload {
+    if let Some(station_weather) = station_weather {
         weather.extend(query_metar_selection_matches(
             &selection_projection,
             MetarSelectionInput {
-                tile_cache: metar_tile_cache,
-                metar_payload,
-                taf_payload,
+                weather: station_weather,
+                important_metar_station_ids,
+                min_zoom: config.metar_layer.as_ref().map(|layer| layer.min_zoom),
                 notam_payload,
                 weather_station_airport_aliases,
                 weather_age_reference_utc,
@@ -3829,9 +3894,9 @@ pub fn query_map_selection_for_surface_in_time_zone(
 }
 
 struct MetarSelectionInput<'a> {
-    tile_cache: &'a HashMap<String, MetarTilePayload>,
-    metar_payload: &'a MetarProductPayload,
-    taf_payload: Option<&'a TafProductPayload>,
+    weather: crate::weather_sources::WeatherQuery<'a>,
+    important_metar_station_ids: Option<&'a HashSet<String>>,
+    min_zoom: Option<u32>,
     notam_payload: Option<&'a NotamDisplayIndex>,
     weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
@@ -3841,75 +3906,36 @@ fn query_metar_selection_matches(
     projection: &MapSelectionProjectionContext<'_>,
     input: MetarSelectionInput<'_>,
 ) -> Vec<MapSelectionPointMatch> {
-    let metrics = projection.map.metrics;
-    let viewport = &metrics.viewport;
-    let width_px = metrics.width_px;
-    let height_px = metrics.height_px;
-    let center_world = projection.map.center_world;
-    let scale = projection.map.scale;
-    let click_screen = projection.click_screen;
-    let hit_radius_px = projection.hit_radius_px;
-    let metar_tile_zoom = projection.metar_tile_zoom;
-    let MetarSelectionInput {
-        tile_cache: metar_tile_cache,
-        metar_payload,
-        taf_payload,
-        notam_payload,
-        weather_station_airport_aliases,
-        weather_age_reference_utc,
-    } = input;
-    let Some(metar_zoom) = metar_tile_zoom else {
+    let Some(zoom) = projection.metar_tile_zoom else {
         return Vec::new();
     };
-    let mut matches = Vec::new();
-    for tile in
-        visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
-    {
-        let Some(tile_payload) = metar_tile_cache.get(&tile_key(
-            &tile.request.layer,
-            tile.request.z,
-            tile.request.x,
-            tile.request.y,
-        )) else {
-            continue;
-        };
-        for record_ref in &tile_payload.records {
-            if record_ref.kind != "metar" {
-                continue;
-            }
-            let Some(record) = metar_payload.metars_by_station.get(&record_ref.id) else {
-                continue;
-            };
-            let feature = visible_metar_feature(
-                record,
-                center_world,
-                scale,
-                width_px,
-                height_px,
-                WorldXProjection::DisplayCopyOffset(tile.world_x_offset),
-            );
-            let distance_px = ((feature.screen_x - click_screen.x).powi(2)
-                + (feature.screen_y - click_screen.y).powi(2))
-            .sqrt();
-            if distance_px <= hit_radius_px {
-                matches.push(MapSelectionPointMatch {
-                    item: selection_item_for_metar(
-                        record,
-                        taf_payload.and_then(|payload| {
-                            payload.tafs_by_station.get(record.station_id.trim())
-                        }),
-                        feature,
-                        notam_payload,
-                        weather_station_airport_aliases,
-                        weather_age_reference_utc,
-                    ),
-                    distance_px,
-                    rendered_hit: false,
-                });
-            }
-        }
-    }
-    matches
+    visible_station_metars(
+        &projection.map,
+        input.weather,
+        zoom,
+        input.important_metar_station_ids,
+        input.min_zoom,
+    )
+    .take(WEATHER_DISPLAY_FEATURE_LIMIT)
+    .filter_map(|candidate| {
+        let distance_px = ((candidate.feature.screen_x - projection.click_screen.x).powi(2)
+            + (candidate.feature.screen_y - projection.click_screen.y).powi(2))
+        .sqrt();
+        (distance_px <= projection.hit_radius_px).then(|| MapSelectionPointMatch {
+            item: selection_item_for_metar(
+                candidate.report,
+                input.weather.taf(candidate.report.station.as_str()),
+                candidate.position,
+                candidate.feature,
+                input.notam_payload,
+                input.weather_station_airport_aliases,
+                input.weather_age_reference_utc,
+            ),
+            distance_px,
+            rendered_hit: false,
+        })
+    })
+    .collect()
 }
 
 fn query_pirep_selection_matches(
@@ -4142,8 +4168,7 @@ fn selection_item_for_weather_camera(
 
 struct SelectionItemData<'a> {
     plan: Option<&'a FlightPlan>,
-    metar_payload: Option<&'a MetarProductPayload>,
-    taf_payload: Option<&'a TafProductPayload>,
+    weather: Option<crate::weather_sources::WeatherQuery<'a>>,
     notam_payload: Option<&'a NotamDisplayIndex>,
     weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
@@ -4237,8 +4262,7 @@ fn selection_item_for_nav_ref_point(
         NavRef::Airport(airport_id) => weather_detail_for_airport(
             airport_id,
             data.weather_station_airport_aliases,
-            data.metar_payload,
-            data.taf_payload,
+            data.weather,
             data.notam_payload,
             data.weather_age_reference_utc,
         ),
@@ -4372,19 +4396,20 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
 }
 
 fn selection_item_for_metar(
-    record: &MetarRecord,
-    taf: Option<&TafRecord>,
+    record: &crate::weather_sources::StationReport,
+    taf: Option<&crate::weather_sources::StationReport>,
+    position: crate::weather_sources::StationPosition,
     feature: VisibleMetarFeature,
     notam_payload: Option<&NotamDisplayIndex>,
     weather_station_airport_aliases: &WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
-    let source_station_id = record.station_id.trim().to_ascii_uppercase();
+    let source_station_id = record.station.as_str();
     let airport_id = weather_station_airport_aliases.airport_id_for_station(
         &source_station_id,
         LatLon {
-            lat: record.latitude,
-            lon: record.longitude,
+            lat: position.latitude,
+            lon: position.longitude,
         },
     );
     let display_id = airport_id.unwrap_or(&source_station_id);
@@ -4398,20 +4423,20 @@ fn selection_item_for_metar(
     );
     MapSelectionItem {
         notam_badge: None,
-        id: format!("metar:{}", record.station_id.trim()),
+        id: format!("metar:{}", record.station.as_str()),
         label: display_id.to_string(),
         sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
-        description: record.observed_at_utc.clone(),
+        description: record.report_time.map(|time| time.to_rfc3339()),
         distance: None,
         secondary_description: None,
         position: Some(LatLon {
-            lat: record.latitude,
-            lon: record.longitude,
+            lat: position.latitude,
+            lon: position.longitude,
         }),
         elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::Metar {
-            station_id: record.station_id.clone(),
+            station_id: record.station.as_str().to_string(),
         },
         nav_ref: airport_id.map(|airport_id| NavRef::Airport(airport_id.to_string())),
         symbol_feature: None,
@@ -4480,8 +4505,7 @@ fn pirep_hazard_label(record: &PirepRecord) -> String {
 pub(crate) fn weather_detail_for_station(
     station_id: &str,
     aliases: &WeatherStationAirportAliases,
-    metar_payload: Option<&MetarProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
+    weather: Option<crate::weather_sources::WeatherQuery<'_>>,
     notam_index: Option<&NotamDisplayIndex>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
@@ -4489,18 +4513,13 @@ pub(crate) fn weather_detail_for_station(
     if station_id.is_empty() {
         return None;
     }
-    let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
-    let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
-    let station_position = metar
-        .map(|record| LatLon {
-            lat: record.latitude,
-            lon: record.longitude,
-        })
-        .or_else(|| {
-            taf.map(|record| LatLon {
-                lat: record.latitude,
-                lon: record.longitude,
-            })
+    let metar = weather.and_then(|weather| weather.metar(&station_id));
+    let taf = weather.and_then(|weather| weather.taf(&station_id));
+    let station_position = weather
+        .and_then(|weather| weather.station_position(&station_id))
+        .map(|position| LatLon {
+            lat: position.latitude,
+            lon: position.longitude,
         });
     let airport_id = station_position
         .and_then(|position| aliases.airport_id_for_station(&station_id, position))
@@ -4512,8 +4531,7 @@ pub(crate) fn weather_detail_for_station(
 pub(crate) fn weather_detail_for_airport(
     airport_id: &str,
     aliases: &WeatherStationAirportAliases,
-    metar_payload: Option<&MetarProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
+    weather: Option<crate::weather_sources::WeatherQuery<'_>>,
     notam_index: Option<&NotamDisplayIndex>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
@@ -4521,10 +4539,9 @@ pub(crate) fn weather_detail_for_airport(
     if airport_id.is_empty() {
         return None;
     }
-    let station_id =
-        weather_station_id_for_airport(&airport_id, aliases, metar_payload, taf_payload);
-    let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
-    let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
+    let station_id = weather_station_id_for_airport(&airport_id, aliases, weather);
+    let metar = weather.and_then(|weather| weather.metar(&station_id));
+    let taf = weather.and_then(|weather| weather.taf(&station_id));
     let notams = airport_notam_views(&airport_id, notam_index);
     weather_detail_from_records(&airport_id, metar, taf, notams, age_reference_utc)
 }
@@ -4532,35 +4549,22 @@ pub(crate) fn weather_detail_for_airport(
 fn weather_station_id_for_airport(
     airport_id: &str,
     aliases: &WeatherStationAirportAliases,
-    metar_payload: Option<&MetarProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
+    weather: Option<crate::weather_sources::WeatherQuery<'_>>,
 ) -> String {
     aliases
         .station_id_for_airport(airport_id)
         .filter(|station_id| {
-            let metar_matches = metar_payload
-                .and_then(|payload| payload.metars_by_station.get(*station_id))
-                .is_some_and(|record| {
+            weather
+                .and_then(|weather| weather.station_position(station_id))
+                .is_some_and(|position| {
                     aliases.airport_id_for_station(
                         station_id,
                         LatLon {
-                            lat: record.latitude,
-                            lon: record.longitude,
+                            lat: position.latitude,
+                            lon: position.longitude,
                         },
                     ) == Some(airport_id)
-                });
-            let taf_matches = taf_payload
-                .and_then(|payload| payload.tafs_by_station.get(*station_id))
-                .is_some_and(|record| {
-                    aliases.airport_id_for_station(
-                        station_id,
-                        LatLon {
-                            lat: record.latitude,
-                            lon: record.longitude,
-                        },
-                    ) == Some(airport_id)
-                });
-            metar_matches || taf_matches
+                })
         })
         .unwrap_or(airport_id)
         .to_string()
@@ -4569,26 +4573,23 @@ fn weather_station_id_for_airport(
 pub(crate) fn flight_plan_weather_badge_for_airport(
     airport_id: &str,
     aliases: &WeatherStationAirportAliases,
-    metar_payload: Option<&MetarProductPayload>,
+    weather: Option<crate::weather_sources::WeatherQuery<'_>>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<crate::planning::FlightPlanWeatherBadgeUiView> {
     let airport_id = airport_id.trim().to_ascii_uppercase();
     if airport_id.is_empty() {
         return None;
     }
-    let station_id = weather_station_id_for_airport(&airport_id, aliases, metar_payload, None);
-    let record = metar_payload?.metars_by_station.get(&station_id)?;
+    let station_id = weather_station_id_for_airport(&airport_id, aliases, weather);
+    let record = weather?.metar(&station_id)?;
     weather_badge_for_metar(record, age_reference_utc)
 }
 
 pub(crate) fn weather_badge_for_metar(
-    record: &MetarRecord,
+    record: &crate::weather_sources::StationReport,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<crate::planning::FlightPlanWeatherBadgeUiView> {
-    let observed_at = record
-        .observed_at_utc
-        .as_deref()
-        .and_then(crate::freshness::parse_utc_instant)?;
+    let observed_at = record.report_time?;
     let reference = age_reference_utc.filter(|value| *value > DateTime::<Utc>::UNIX_EPOCH)?;
     if reference
         .signed_duration_since(observed_at)
@@ -4610,20 +4611,20 @@ pub(crate) fn weather_badge_for_metar(
 
 fn weather_detail_from_records(
     station_id: &str,
-    metar: Option<&MetarRecord>,
-    taf: Option<&TafRecord>,
+    metar: Option<&crate::weather_sources::StationReport>,
+    taf: Option<&crate::weather_sources::StationReport>,
     notams: Vec<AirportNotamUiView>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let metar_text = metar.map(|record| record.raw_text.clone());
     let (metar_age_label, metar_age_warning) = weather_age_status(
-        metar.and_then(|record| record.observed_at_utc.as_deref()),
+        metar.and_then(|record| record.report_time),
         age_reference_utc,
         METAR_AGE_WARNING_MS,
     );
     let taf_text = taf.map(taf_detail_text);
     let (taf_age_label, taf_age_warning) = weather_age_status(
-        taf.and_then(|record| record.issued_at_utc.as_deref()),
+        taf.and_then(|record| record.report_time),
         age_reference_utc,
         TAF_AGE_WARNING_MS,
     );
@@ -4853,11 +4854,11 @@ const FLIGHT_PLAN_METAR_BADGE_MAX_AGE_MS: i64 = 90 * MINUTE_MS;
 const TAF_AGE_WARNING_MS: i64 = 6 * HOUR_MS;
 
 fn weather_age_status(
-    timestamp_utc: Option<&str>,
+    timestamp_utc: Option<DateTime<Utc>>,
     reference_utc: Option<DateTime<Utc>>,
     warning_after_ms: i64,
 ) -> (Option<String>, bool) {
-    let Some(timestamp) = timestamp_utc.and_then(crate::freshness::parse_utc_instant) else {
+    let Some(timestamp) = timestamp_utc else {
         return (None, false);
     };
     let Some(reference) = reference_utc else {
@@ -4889,7 +4890,7 @@ fn format_weather_age(age_ms: i64) -> String {
     format!("{days:.1}d")
 }
 
-fn taf_detail_text(record: &TafRecord) -> String {
+fn taf_detail_text(record: &crate::weather_sources::StationReport) -> String {
     let mut formatted = String::new();
     for token in record.raw_text.split_whitespace() {
         if token == "BECMG" || taf_token_is_from_time_group(token) {
@@ -7967,6 +7968,42 @@ fn destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatL
 
 #[cfg(test)]
 mod tests {
+    use crate::weather_sources::{StationReport, StationWeather};
+
+    fn test_metar_report(record: &MetarRecord) -> StationReport {
+        StationWeather::test_products(
+            Some(&MetarProductPayload {
+                schema_version: 3,
+                version_label: "test".into(),
+                generated_at_utc: None,
+                observed_at_utc: None,
+                metar_count: None,
+                metars_by_station: HashMap::from([(record.station_id.clone(), record.clone())]),
+            }),
+            None,
+        )
+        .query()
+        .metar(&record.station_id)
+        .unwrap()
+        .clone()
+    }
+
+    fn test_taf_report(record: &TafRecord) -> StationReport {
+        StationWeather::test_products(
+            None,
+            Some(&TafProductPayload {
+                schema_version: 1,
+                version_label: "test".into(),
+                generated_at_utc: None,
+                taf_count: None,
+                tafs_by_station: HashMap::from([(record.station_id.clone(), record.clone())]),
+            }),
+        )
+        .query()
+        .taf(&record.station_id)
+        .unwrap()
+        .clone()
+    }
     use super::*;
     use crate::RouteComponent;
 
@@ -8780,7 +8817,12 @@ mod tests {
                 metrics,
                 MapOverlayQuery {
                     display_metars: true,
-                    metar_payload: Some(&metar_payload),
+                    weather: Some(
+                        StationWeather::test_products(Some(&metar_payload), None).query(),
+                    ),
+                    important_metar_station_ids: Some(&HashSet::from([
+                        important_station.to_string()
+                    ])),
                     ..MapOverlayQuery::new(
                         &config,
                         &empty_vector_tiles,
@@ -8813,7 +8855,12 @@ mod tests {
             query_map_selection_for_surface(
                 metrics,
                 MapSelectionQuery {
-                    metar_payload: Some(&metar_payload),
+                    weather: Some(
+                        StationWeather::test_products(Some(&metar_payload), None).query(),
+                    ),
+                    important_metar_station_ids: Some(&HashSet::from([
+                        important_station.to_string()
+                    ])),
                     ..MapSelectionQuery::new(
                         &config,
                         position,
@@ -9367,7 +9414,8 @@ mod tests {
                 400.0,
                 MapOverlayQuery {
                     display_metars: true,
-                    metar_payload: Some(&metars),
+                    weather: Some(StationWeather::test_products(Some(&metars), None).query()),
+                    important_metar_station_ids: Some(&HashSet::from(["KAAA".to_string()])),
                     pirep_payload: Some(&pireps),
                     ..MapOverlayQuery::new(&config, &vectors, &obstacles, &tile_cache, &airspaces)
                 },
@@ -9421,7 +9469,7 @@ mod tests {
             400.0,
             MapOverlayQuery {
                 display_metars: true,
-                metar_payload: Some(&metars),
+                weather: Some(StationWeather::test_products(Some(&metars), None).query()),
                 ..MapOverlayQuery::new(&config, &vectors, &obstacles, &tile_cache, &airspaces)
             },
         );
@@ -9720,7 +9768,7 @@ mod tests {
             240.0,
             MapOverlayQuery {
                 display_metars: true,
-                metar_payload: Some(&metars),
+                weather: Some(StationWeather::test_products(Some(&metars), None).query()),
                 ..MapOverlayQuery::new(
                     &config,
                     &vector_tiles,
@@ -10045,7 +10093,9 @@ mod tests {
                     display_vectors: true,
                     display_metars: true,
                     offline_region_records: &offline_regions,
-                    metar_payload: metar_product.as_ref(),
+                    weather: Some(
+                        StationWeather::test_products(metar_product.as_ref(), None).query(),
+                    ),
                     tfr_payload: tfr_product.as_ref(),
                     ..MapOverlayQuery::new(
                         &config,
@@ -10087,8 +10137,8 @@ mod tests {
                     .visible_metars
                     .iter()
                     .any(|metar| metar.station_id == "KMT1"),
-                mask.metar_tile && mask.metar_product,
-                "{case}: METARs should require the tile index and product payload"
+                mask.metar_product,
+                "{case}: METARs use the station directory, independently of the legacy tile cache"
             );
             assert_eq!(
                 result
@@ -10206,8 +10256,7 @@ mod tests {
             240.0,
             240.0,
             MapSelectionQuery {
-                metar_payload: Some(&metars),
-                taf_payload: Some(&tafs),
+                weather: Some(StationWeather::test_products(Some(&metars), Some(&tafs)).query()),
                 ..MapSelectionQuery::new(
                     &config,
                     viewport.center,
@@ -10284,8 +10333,8 @@ mod tests {
         };
         let detail = weather_detail_from_records(
             "KAAA",
-            Some(&metar),
-            Some(&taf),
+            Some(&test_metar_report(&metar)),
+            Some(&test_taf_report(&taf)),
             Vec::new(),
             crate::freshness::parse_utc_instant("2026-05-03T01:12:00Z"),
         )
@@ -10295,6 +10344,195 @@ mod tests {
         assert!(detail.metar_age_warning);
         assert_eq!(detail.taf_age_label.as_deref(), Some("14m old"));
         assert!(!detail.taf_age_warning);
+    }
+
+    #[test]
+    fn every_weather_consumer_selects_the_same_report_across_sources_and_offline_restart() {
+        use crate::weather_sources::{StationReportKind, WeatherSource};
+        let now = crate::freshness::parse_utc_instant("2026-10-06T01:58:00Z").unwrap();
+        let position = LatLon { lat: 0.0, lon: 0.0 }; // An exact tile boundary.
+        let mut internet = MetarProductPayload {
+            schema_version: 3,
+            version_label: "v1".into(),
+            generated_at_utc: Some(now),
+            observed_at_utc: None,
+            metar_count: Some(1),
+            metars_by_station: HashMap::from([(
+                "KAAA".into(),
+                MetarRecord {
+                    raw_text: "METAR KAAA 060100Z 00000KT 10SM CLR 10/08 A3000".into(),
+                    observed_at_utc: Some("2026-10-06T01:00:00Z".into()),
+                    station_id: "KAAA".into(),
+                    flight_category: Some("VFR".into()),
+                    clouds: None,
+                    latitude: position.lat,
+                    longitude: position.lon,
+                },
+            )]),
+        };
+        let mut weather = StationWeather::test_products(Some(&internet), None);
+        let receiver = StationReport::from_receiver(
+            StationReportKind::Metar,
+            &crate::receiver::TextReport {
+                text: "METAR KAAA 060140Z 00000KT 1SM OVC004 10/08 A3012".into(),
+                station: Some("KAAA".into()),
+                notam_identifier: None,
+                record_type_raw: None,
+            },
+            now,
+        )
+        .unwrap();
+        let receiver_taf = StationReport::from_receiver(
+            StationReportKind::Taf,
+            &crate::receiver::TextReport {
+                text: "TAF KAAA 060140Z 0602/0702 00000KT P6SM SCT020".into(),
+                station: Some("KAAA".into()),
+                notam_identifier: None,
+                record_type_raw: None,
+            },
+            now,
+        )
+        .unwrap();
+        let aliases = WeatherStationAirportAliases::default();
+        let config = test_map_overlay_config();
+        let vectors = HashMap::new();
+        let obstacles = HashMap::new();
+        let tiles = HashMap::new(); // No legacy METAR tile index, NAVDB or network.
+        let airspaces = HashMap::new();
+        let viewport = MapViewport {
+            center: position,
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let assert_consumers =
+            |weather: &StationWeather, expected: &str, category: &str, setting: &str| {
+                let query = weather.query();
+                let overlay = super::query_map_overlay(
+                    &viewport,
+                    400.0,
+                    400.0,
+                    MapOverlayQuery {
+                        weather: Some(query),
+                        display_metars: true,
+                        ..MapOverlayQuery::new(&config, &vectors, &obstacles, &tiles, &airspaces)
+                    },
+                );
+                assert_eq!(overlay.visible_metars.len(), 1, "no duplicate at tile edge");
+                assert_eq!(overlay.visible_metars[0].flight_category, category);
+                let mut availability = |_: &str| AirportPlateAvailability::default();
+                let selection = query_map_selection(
+                    &viewport,
+                    400.0,
+                    400.0,
+                    MapSelectionQuery {
+                        weather: Some(query),
+                        ..MapSelectionQuery::new(
+                            &config,
+                            position,
+                            &vectors,
+                            &tiles,
+                            &airspaces,
+                            &aliases,
+                            &mut availability,
+                        )
+                    },
+                );
+                let item = selection
+                    .categories
+                    .iter()
+                    .find(|category| category.id == "weather")
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.id == "metar:KAAA")
+                    .unwrap();
+                assert_eq!(
+                    item.weather_detail.as_ref().unwrap().metar_text.as_deref(),
+                    Some(expected)
+                );
+                let detail =
+                    weather_detail_for_airport("KAAA", &aliases, Some(query), None, Some(now))
+                        .unwrap();
+                assert_eq!(detail.metar_text.as_deref(), Some(expected));
+                let badge =
+                    flight_plan_weather_badge_for_airport("KAAA", &aliases, Some(query), Some(now));
+                assert_eq!(
+                    badge.as_ref().map(|badge| badge.flight_category.as_str()),
+                    (category != "missing").then_some(category)
+                );
+                let nearest = crate::barometer::nearest_altimeter(
+                    Some(position),
+                    Some(query),
+                    now.timestamp_millis(),
+                )
+                .unwrap();
+                let mut barometer = crate::barometer::Barometer::default();
+                barometer.apply(
+                    crate::FlightDataCommand::Observe {
+                        available: true,
+                        pressure_hpa: Some(1000.0),
+                        observed_epoch_ms: now.timestamp_millis(),
+                        received_epoch_ms: now.timestamp_millis(),
+                    },
+                    now.timestamp_millis(),
+                    None,
+                );
+                barometer.open_editor();
+                barometer.apply(
+                    crate::FlightDataCommand::EditorAction {
+                        editor_id: "barometer".into(),
+                        action_id: "nearest".into(),
+                    },
+                    now.timestamp_millis(),
+                    Some(&nearest),
+                );
+                assert_eq!(barometer.editor().unwrap().input, setting);
+            };
+        assert_consumers(
+            &weather,
+            &internet.metars_by_station["KAAA"].raw_text,
+            "vfr",
+            "30.00",
+        );
+        weather
+            .ingest(WeatherSource::Receiver, receiver.clone())
+            .unwrap();
+        weather
+            .ingest(WeatherSource::Receiver, receiver_taf.clone())
+            .unwrap();
+        // No stale VFR badge/cloud symbol may be borrowed from the old report.
+        assert_consumers(&weather, &receiver.raw_text, "missing", "30.12");
+        let mut updated = internet.metars_by_station["KAAA"].clone();
+        updated.raw_text = "METAR KAAA 060150Z 00000KT 1SM OVC003 10/08 A3007".into();
+        updated.observed_at_utc = Some("2026-10-06T01:50:00Z".into());
+        updated.flight_category = Some("IFR".into());
+        internet
+            .metars_by_station
+            .insert("KAAA".into(), updated.clone());
+        weather.install_metars(internet, now).unwrap();
+        assert_consumers(&weather, &updated.raw_text, "ifr", "30.07");
+        assert_eq!(weather.query().taf("KAAA").unwrap(), &receiver_taf);
+        weather.clear_internet_product(StationReportKind::Metar);
+        let restored = StationWeather::restore(&weather.snapshot().unwrap()).unwrap();
+        assert_consumers(&restored, &receiver.raw_text, "missing", "30.12");
+        assert_eq!(
+            weather_detail_for_airport("KAAA", &aliases, Some(restored.query()), None, Some(now))
+                .unwrap()
+                .metar_age_label
+                .as_deref(),
+            Some("18m old")
+        );
+    }
+
+    #[test]
+    fn future_weather_age_displays_zero_minutes_without_modifying_the_timestamp() {
+        let time = crate::freshness::parse_utc_instant("2026-10-06T01:00:22Z").unwrap();
+        let now = time - chrono::Duration::seconds(22);
+        assert_eq!(
+            weather_age_status(Some(time), Some(now), METAR_AGE_WARNING_MS),
+            (Some("0m old".into()), false)
+        );
     }
 
     #[test]
@@ -10325,14 +10563,24 @@ mod tests {
             metars_by_station: HashMap::from([("K1S5".to_string(), metar.clone())]),
         };
 
-        let detail = weather_detail_for_airport("1S5", &aliases, Some(&payload), None, None, None)
-            .expect("1S5 should find its K1S5 weather station");
+        let detail = weather_detail_for_airport(
+            "1S5",
+            &aliases,
+            Some(StationWeather::test_products(Some(&payload), None).query()),
+            None,
+            None,
+        )
+        .expect("1S5 should find its K1S5 weather station");
         assert_eq!(detail.station_id, "1S5");
         assert_eq!(detail.metar_text.as_deref(), Some(metar.raw_text.as_str()));
 
         let item = selection_item_for_metar(
-            &metar,
+            &test_metar_report(&metar),
             None,
+            crate::weather_sources::StationPosition {
+                latitude: metar.latitude,
+                longitude: metar.longitude,
+            },
             VisibleMetarFeature {
                 station_id: "K1S5".to_string(),
                 screen_x: 10.0,
@@ -10357,8 +10605,12 @@ mod tests {
         distant_metar.latitude = 40.0;
         distant_metar.longitude = -100.0;
         let distant_item = selection_item_for_metar(
-            &distant_metar,
+            &test_metar_report(&distant_metar),
             None,
+            crate::weather_sources::StationPosition {
+                latitude: distant_metar.latitude,
+                longitude: distant_metar.longitude,
+            },
             item.metar_feature.expect("METAR feature"),
             None,
             &aliases,
@@ -10380,8 +10632,12 @@ mod tests {
             latitude: 47.286,
         };
         let item = selection_item_for_metar(
-            &metar,
+            &test_metar_report(&metar),
             None,
+            crate::weather_sources::StationPosition {
+                latitude: metar.latitude,
+                longitude: metar.longitude,
+            },
             VisibleMetarFeature {
                 station_id: "KSMP".to_string(),
                 screen_x: 10.0,
@@ -10470,7 +10726,6 @@ mod tests {
         let detail = weather_detail_for_station(
             "KAAA",
             &WeatherStationAirportAliases::default(),
-            None,
             None,
             Some(&index),
             None,
@@ -10575,7 +10830,6 @@ mod tests {
         let detail = weather_detail_for_station(
             "KAAA",
             &WeatherStationAirportAliases::default(),
-            None,
             None,
             Some(&index),
             None,
@@ -10924,7 +11178,7 @@ mod tests {
 
         assert!(
             !weather_age_status(
-                Some("2026-05-03T11:00:00Z"),
+                crate::freshness::parse_utc_instant("2026-05-03T11:00:00Z"),
                 reference,
                 METAR_AGE_WARNING_MS,
             )
@@ -10932,16 +11186,28 @@ mod tests {
         );
         assert!(
             weather_age_status(
-                Some("2026-05-03T10:59:59Z"),
+                crate::freshness::parse_utc_instant("2026-05-03T10:59:59Z"),
                 reference,
                 METAR_AGE_WARNING_MS,
             )
             .1
         );
         assert!(
-            !weather_age_status(Some("2026-05-03T06:00:00Z"), reference, TAF_AGE_WARNING_MS,).1
+            !weather_age_status(
+                crate::freshness::parse_utc_instant("2026-05-03T06:00:00Z"),
+                reference,
+                TAF_AGE_WARNING_MS,
+            )
+            .1
         );
-        assert!(weather_age_status(Some("2026-05-03T05:59:59Z"), reference, TAF_AGE_WARNING_MS,).1);
+        assert!(
+            weather_age_status(
+                crate::freshness::parse_utc_instant("2026-05-03T05:59:59Z"),
+                reference,
+                TAF_AGE_WARNING_MS,
+            )
+            .1
+        );
     }
 
     #[test]
@@ -10979,7 +11245,7 @@ mod tests {
         let fresh = flight_plan_weather_badge_for_airport(
             "1S5",
             &aliases,
-            Some(&payload),
+            Some(StationWeather::test_products(Some(&payload), None).query()),
             crate::freshness::parse_utc_instant("2026-08-15T16:30:00Z"),
         )
         .expect("90-minute-old METAR remains eligible");
@@ -10989,7 +11255,7 @@ mod tests {
         assert!(flight_plan_weather_badge_for_airport(
             "1S5",
             &aliases,
-            Some(&payload),
+            Some(StationWeather::test_products(Some(&payload), None).query()),
             crate::freshness::parse_utc_instant("2026-08-15T16:30:00.001Z"),
         )
         .is_none());
@@ -11064,7 +11330,8 @@ mod tests {
             width_px,
             256.0,
             MapSelectionQuery {
-                metar_payload: Some(&metars),
+                weather: Some(StationWeather::test_products(Some(&metars), None).query()),
+                important_metar_station_ids: Some(&HashSet::from(["KAAA".to_string()])),
                 ..MapSelectionQuery::new(
                     &config,
                     LatLon {

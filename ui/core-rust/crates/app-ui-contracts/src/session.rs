@@ -169,6 +169,7 @@ pub struct FlightDataBannerModel {
 pub struct FlightDataEditor {
     pub id: String,
     pub title: Option<String>,
+    pub show_input: bool,
     /// Accessible input name, not another visible heading.
     pub label: String,
     pub unit: String,
@@ -654,9 +655,18 @@ pub struct UiSettingsPageState {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiSettingsPageBlock {
-    Controls { rows: Vec<UiSettingsPageRow> },
-    AircraftLibrary { library: UiAircraftLibraryState },
-    Section { section: UiSettingsPageSection },
+    Receiver {
+        panel: crate::receiver::UiReceiverPanel,
+    },
+    Controls {
+        rows: Vec<UiSettingsPageRow>,
+    },
+    AircraftLibrary {
+        library: UiAircraftLibraryState,
+    },
+    Section {
+        section: UiSettingsPageSection,
+    },
 }
 
 impl UiSettingsPageState {

@@ -40,6 +40,7 @@ pub(crate) struct PlanPreviewPointer {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct SituationModel {
+    receiver: std::sync::Arc<crate::receiver::live::LiveSnapshot>,
     barometer: crate::barometer::Barometer,
     altitude_target: crate::altitude_target::AltitudeTarget,
     ownship: OwnshipState,
@@ -82,6 +83,15 @@ pub(crate) struct SituationController {
 }
 
 impl SituationController {
+    pub fn receiver(&self) -> &std::sync::Arc<crate::receiver::live::LiveSnapshot> {
+        &self.model.receiver
+    }
+
+    pub fn set_receiver(&mut self, snapshot: std::sync::Arc<crate::receiver::live::LiveSnapshot>) {
+        self.model.receiver = snapshot;
+        self.note_change();
+    }
+
     pub fn altitude_target(&self) -> &crate::altitude_target::AltitudeTarget {
         &self.model.altitude_target
     }

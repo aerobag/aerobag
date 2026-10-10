@@ -2,9 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use app_core::map_overlay::{MetarTileRecord, PointTileLayerConfig};
+use app_core::weather_sources::StationWeather;
 use app_core::{
     query_map_overlay, tile_key, AirspaceFeaturePayload, LatLon, MapOverlayConfig, MapOverlayQuery,
     MapOverlayQueryResult, MapViewport, MetarProductPayload, MetarRecord, MetarTilePayload,
@@ -81,18 +82,20 @@ fn add_tile_record(
 
 struct WeatherDensityFixture {
     tiles: HashMap<String, MetarTilePayload>,
-    metars: MetarProductPayload,
+    weather: StationWeather,
+    important_stations: HashSet<String>,
     pireps: PirepProductPayload,
 }
 
 fn weather_density_fixture() -> WeatherDensityFixture {
     let mut tiles = HashMap::new();
+    let mut important_stations = HashSet::new();
     let mut metars_by_station = HashMap::new();
     let mut pireps_by_id = HashMap::new();
 
     // Preserve the two production density shapes that exposed the regression:
     // clustered CONUS stations and a busy North Atlantic report corridor.
-    // Every 24th station models the nav-db importance filter in the z5 tiles.
+    // Every 24th station models the nav-db importance filter at sparse zoom.
     for row in 0..36 {
         for column in 0..72 {
             let index = row * 72 + column;
@@ -114,10 +117,8 @@ fn weather_density_fixture() -> WeatherDensityFixture {
                 },
             );
             if index % 24 == 0 {
-                add_tile_record(&mut tiles, 5, position, "metar", &id);
+                important_stations.insert(id);
             }
-            add_tile_record(&mut tiles, 6, position, "metar", &id);
-            add_tile_record(&mut tiles, 7, position, "metar", &id);
         }
     }
     for row in 0..36 {
@@ -148,16 +149,24 @@ fn weather_density_fixture() -> WeatherDensityFixture {
         }
     }
 
+    let mut weather = StationWeather::default();
+    weather
+        .install_metars(
+            MetarProductPayload {
+                schema_version: 3,
+                version_label: "density-fixture".to_string(),
+                generated_at_utc: None,
+                observed_at_utc: None,
+                metar_count: Some(metars_by_station.len() as u32),
+                metars_by_station,
+            },
+            chrono::DateTime::UNIX_EPOCH,
+        )
+        .unwrap();
     WeatherDensityFixture {
         tiles,
-        metars: MetarProductPayload {
-            schema_version: 3,
-            version_label: "density-fixture".to_string(),
-            generated_at_utc: None,
-            observed_at_utc: None,
-            metar_count: Some(metars_by_station.len() as u32),
-            metars_by_station,
-        },
+        weather,
+        important_stations,
         pireps: PirepProductPayload {
             schema_version: 3,
             version_label: "density-fixture".to_string(),
@@ -191,7 +200,8 @@ fn query_fixture(
         height_px,
         MapOverlayQuery {
             display_metars: true,
-            metar_payload: Some(&fixture.metars),
+            weather: Some(fixture.weather.query()),
+            important_metar_station_ids: Some(&fixture.important_stations),
             pirep_payload: Some(&fixture.pireps),
             ..MapOverlayQuery::new(&config, &vectors, &obstacles, &fixture.tiles, &airspaces)
         },

@@ -35,9 +35,13 @@ qrcode = "0.14.1"
 thiserror.workspace = true
 zip.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Mandated by the observed receiver challenge protocol, not used for app security.
+md-5 = "0.10"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite.workspace = true
+# std File locks do not support Android in the pinned Rust toolchain.
+fs2 = "0.4"
 
 [dev-dependencies]
 app-fixtures = { path = "../app-fixtures" }

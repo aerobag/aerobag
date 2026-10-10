@@ -67,6 +67,7 @@ pub(crate) struct NavDataProjectionDependencies {
 pub(crate) struct MapProjectionDependencies {
     pub map_revision: u64,
     pub internet_adsb_enabled: bool,
+    pub receiver_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +280,7 @@ mod tests {
             map: MapProjectionDependencies {
                 map_revision: 0,
                 internet_adsb_enabled: false,
+                receiver_available: false,
             },
             status: StatusProjectionDependencies {
                 service_projection_revision: 0,

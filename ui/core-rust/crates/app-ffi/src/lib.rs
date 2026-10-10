@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub use app_core::*;
+#[path = "receiver.rs"]
+mod receiver_bridge;
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::jstring;
 use jni::sys::{jboolean, jbyteArray};

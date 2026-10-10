@@ -27,8 +27,14 @@ const COVERAGE_MARGIN: f64 = 1.15;
 const MAX_TRAFFIC_RECORDS: usize = 5_000;
 const MAX_TRAFFIC_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_OWNSHIP_RESPONSE_BYTES: u64 = 512 * 1024;
-const MAX_VISIBLE_POSITION_AGE_MS: i64 = 15_000;
+pub(crate) const MAX_VISIBLE_POSITION_AGE_MS: i64 = 15_000;
 const MAX_RELATIVE_ALTITUDE_FT: f64 = 10_000.0;
+
+/// Source-independent projection. Transport owners supply normalized tracks;
+/// map rendering and hit testing must use exactly the same visibility policy.
+pub(crate) struct TrafficView<'a> {
+    pub aircraft: &'a [AdsbAircraft],
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AdsbAircraft {
@@ -55,6 +61,8 @@ pub struct VisibleAdsbTraffic {
     pub track_deg_true: Option<f64>,
     pub label: String,
     pub detail_label: String,
+    /// Closed outline in logical pixels, centered on the reported position.
+    pub symbol_points: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -533,49 +541,100 @@ impl AdsbSessionState {
         ownship: TrafficOwnshipAltitude,
         epoch_ms: i64,
     ) -> Vec<VisibleAdsbTraffic> {
+        TrafficView {
+            aircraft: &self.aircraft,
+        }
+        .visible_traffic(metrics, ownship, epoch_ms)
+    }
+
+    pub(crate) fn traffic_selection_category(
+        &self,
+        metrics: MapSurfaceMetrics,
+        ownship: TrafficOwnshipAltitude,
+        click: LatLon,
+        epoch_ms: i64,
+    ) -> MapSelectionCategory {
+        TrafficView {
+            aircraft: &self.aircraft,
+        }
+        .traffic_selection_category(metrics, ownship, click, epoch_ms)
+    }
+}
+
+impl TrafficView<'_> {
+    pub(crate) fn next_expiry_epoch_ms(&self, now: i64) -> Option<i64> {
         self.aircraft
             .iter()
             .filter_map(|aircraft| {
-                let position = aircraft.position?;
-                let position_epoch_ms = aircraft.position_epoch_ms?;
-                if epoch_ms.saturating_sub(position_epoch_ms) > MAX_VISIBLE_POSITION_AGE_MS {
-                    return None;
-                }
-                let (screen_x, screen_y) = metrics.project_position(position);
-                if screen_x < -64.0
-                    || screen_x > metrics.width_px + 64.0
-                    || screen_y < -64.0
-                    || screen_y > metrics.height_px + 64.0
-                {
-                    return None;
-                }
-                let altitude_label = if aircraft.on_ground {
-                    "GND".to_string()
-                } else {
+                aircraft
+                    .position_epoch_ms?
+                    .checked_add(MAX_VISIBLE_POSITION_AGE_MS + 1)
+            })
+            .filter(|deadline| *deadline > now)
+            .min()
+    }
+
+    pub(crate) fn visible_traffic(
+        &self,
+        metrics: MapSurfaceMetrics,
+        ownship: TrafficOwnshipAltitude,
+        epoch_ms: i64,
+    ) -> Vec<VisibleAdsbTraffic> {
+        self.projected(metrics, ownship, epoch_ms)
+            .map(|(_, visible)| visible)
+            .collect()
+    }
+
+    fn projected(
+        &self,
+        metrics: MapSurfaceMetrics,
+        ownship: TrafficOwnshipAltitude,
+        epoch_ms: i64,
+    ) -> impl Iterator<Item = (&AdsbAircraft, VisibleAdsbTraffic)> {
+        self.aircraft.iter().filter_map(move |aircraft| {
+            let position = aircraft.position?;
+            let position_epoch_ms = aircraft.position_epoch_ms?;
+            if !(0..=MAX_VISIBLE_POSITION_AGE_MS)
+                .contains(&epoch_ms.saturating_sub(position_epoch_ms))
+            {
+                return None;
+            }
+            let (screen_x, screen_y) = metrics.project_position(position);
+            if screen_x < -64.0
+                || screen_x > metrics.width_px + 64.0
+                || screen_y < -64.0
+                || screen_y > metrics.height_px + 64.0
+            {
+                return None;
+            }
+            let altitude_label = if aircraft.on_ground {
+                "GND".to_string()
+            } else {
+                aircraft
+                    .pressure_altitude_ft
+                    .or(aircraft.altitude_msl_ft)
+                    .map(format_altitude)
+                    .unwrap_or_else(|| "---".to_string())
+            };
+            let relative_altitude_ft = aircraft
+                .altitude_msl_ft
+                .zip(ownship.altitude_msl_ft)
+                .map(|(traffic, ownship)| traffic - ownship)
+                .or_else(|| {
                     aircraft
                         .pressure_altitude_ft
-                        .or(aircraft.altitude_msl_ft)
-                        .map(format_altitude)
-                        .unwrap_or_else(|| "---".to_string())
-                };
-                let relative_altitude_ft = aircraft
-                    .altitude_msl_ft
-                    .zip(ownship.altitude_msl_ft)
-                    .map(|(traffic, ownship)| traffic - ownship)
-                    .or_else(|| {
-                        aircraft
-                            .pressure_altitude_ft
-                            .zip(ownship.pressure_altitude_ft)
-                            .map(|(traffic, ownship)| traffic - ownship)
-                    });
-                if relative_altitude_ft.is_some_and(|delta| delta.abs() > MAX_RELATIVE_ALTITUDE_FT)
-                {
-                    return None;
-                }
-                let detail_label = relative_altitude_ft
-                    .map(format_relative_altitude)
-                    .unwrap_or(altitude_label);
-                Some(VisibleAdsbTraffic {
+                        .zip(ownship.pressure_altitude_ft)
+                        .map(|(traffic, ownship)| traffic - ownship)
+                });
+            if relative_altitude_ft.is_some_and(|delta| delta.abs() > MAX_RELATIVE_ALTITUDE_FT) {
+                return None;
+            }
+            let detail_label = relative_altitude_ft
+                .map(format_relative_altitude)
+                .unwrap_or(altitude_label);
+            Some((
+                aircraft,
+                VisibleAdsbTraffic {
                     id: aircraft.id.clone(),
                     screen_x,
                     screen_y,
@@ -586,9 +645,14 @@ impl AdsbSessionState {
                         .or_else(|| aircraft.registration.clone())
                         .unwrap_or_else(|| aircraft.id.to_uppercase()),
                     detail_label,
-                })
-            })
-            .collect()
+                    symbol_points: if aircraft.track_deg_true.is_some() {
+                        vec![(0.0, -11.0), (8.0, 9.0), (0.0, 5.0), (-8.0, 9.0)]
+                    } else {
+                        vec![(0.0, -9.0), (9.0, 0.0), (0.0, 9.0), (-9.0, 0.0)]
+                    },
+                },
+            ))
+        })
     }
 
     pub(crate) fn traffic_selection_category(
@@ -600,19 +664,14 @@ impl AdsbSessionState {
     ) -> MapSelectionCategory {
         let (click_x, click_y) = metrics.project_position(click);
         let mut matches = self
-            .visible_traffic(metrics, ownship, epoch_ms)
-            .into_iter()
-            .filter_map(|visible| {
+            .projected(metrics, ownship, epoch_ms)
+            .filter_map(|(aircraft, visible)| {
                 let distance_px = ((visible.screen_x - click_x).powi(2)
                     + (visible.screen_y - click_y).powi(2))
                 .sqrt();
                 if distance_px > metrics.inspector_hit_radius_px() {
                     return None;
                 }
-                let aircraft = self
-                    .aircraft
-                    .iter()
-                    .find(|aircraft| aircraft.id == visible.id)?;
                 let registration = aircraft.registration.clone();
                 let follow_action = registration.as_ref().map(|registration| {
                     serde_json::to_string(&MapSelectionSessionAction::FollowAdsbRegistration {

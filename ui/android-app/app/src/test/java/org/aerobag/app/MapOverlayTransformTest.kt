@@ -133,6 +133,7 @@ class MapOverlayTransformTest {
                     trackDegTrue = 90.0,
                     label = "N12345",
                     detailLabel = "+02",
+                    symbolPoints = listOf(listOf(0.0, -9.0), listOf(9.0, 0.0), listOf(0.0, 9.0), listOf(-9.0, 0.0)),
                 ),
             ),
             airspacePaths = listOf(airspacePath("airspace", 180.0)),

@@ -2,11 +2,23 @@
 
 ## Contract
 
-An approved image records the chart at the last manual cutline/georeference
-review. Comparing successive cycles is not sufficient: small displacements
+An approved image records the chart at an explicit manual cutline/georeference
+review. Approval histories retain those images with an effective-from FAA cycle.
+The build chooses the latest approval effective at or before its **source cycle**,
+not the newest review timestamp or whichever image happens to match best.
+Comparing successive cycles is not sufficient: small displacements
 must not become accepted by accumulation. Builds NEVER create or update approved
 references. Approval is an explicit operator action against a rendered candidate,
 and requires that the candidate's cutline/georeference still matches the repo.
+
+For example, approving changed 2611 pixels does not revoke the 2610 reference.
+Building 2610 and 2611 in either order uses their respective approved images.
+2612 continues to compare against the 2611 approval until another human review.
+Changed bytes in the same cycle still get checked. A late 2610 review cannot
+replace the 2611 baseline; a second explicit approval within 2611 supersedes its
+earlier one. Selection happens before metadata validation: there is no fallback
+to an older reference whose metadata or pixels match better. No eligible approval
+means unreviewed, never comparison against a future cycle.
 
 References live with `product/chart-metadata`, not in the disposable source cache.
 They include PNG views, sampling windows, source geometry/provenance, and a
@@ -47,7 +59,14 @@ overlay order, including duplicate filenames shipped in multiple FAA archives.
 
 ## Publication Quarantine
 
-The report protocol is schema 2; approved image references remain schema 1.
+The report protocol is schema 3, requiring `publication_id` and `cycle`.
+Each reference file is a schema-2 history with an `approvals` array of
+`{effective_from_cycle, reference}` records. The inner approved image remains
+schema 1, preserving its original digest, pixels, and review provenance.
+Undated bootstrap reviews have a null effective-from cycle: they retain their
+original unbounded applicability without inventing a source date. New approvals
+require a dated cycle. The Milwaukee bootstrap approval was restored from
+`a7d09db7^` alongside the 2611 approval in `a7d09db7`; no image was auto-approved.
 Every consuming family checks **all enabled manual insets on each source it
 uses**, including siblings targeting other layers. A critical manual-inset result
 quarantines that source TIFF: the parent cutline, all sibling overlays, and its
@@ -74,8 +93,22 @@ manual-inset source, still block publication: there is no safe quarantine scope.
 
 Pipeline Health reports unresolved warnings and criticals, not increases over the
 last build. Alerts remain until a new check passes with an explicitly approved
-reference. The latest attempt for each family is shown, including its cycle and
-build identity; this is a build-quality signal, not a claim about deployed charts.
+reference. The latest attempt for each publication/family/cycle is shown. A green
+upcoming cycle cannot hide an unresolved current cycle, and a retry can reuse only
+its own scope's completed result. The FAA calendar labels current, upcoming, and
+historical cycles; the date alone never clears an unresolved result. Explicitly
+GC-retired releases are excluded from active alarms using observed release state;
+unknown or unpublished failing builds are not treated as retired. This is a
+build-quality signal, not a claim about deployed charts.
+
+The publication identity is the producer's `publish_label` (ref plus commit in
+multi-version builds), independent of build timestamp. Scoped pointers live at
+`<family>/scopes/<digest-of-publication-and-cycle>/current.json`. The family-level
+`current.json` is only the invocation/cache convenience result, not the schema-3
+monitoring source. Older deployed producers' schema-2 reports remain explicitly
+unscoped; they cannot overwrite schema-3 results from another release.
+Schema-3 evidence is stored under `reports-v3/`, isolated from old producers'
+unscoped `reports/` garbage collectors while releases coexist.
 
 ## Calibration And Limits
 
@@ -101,10 +134,19 @@ read-only Pipeline Health service:
 /usr/bin/python3 tools/chart_cutline_audit.py --review-server \
   --report-root /path/to/artifact-root/state/chart-quality \
   --state-dir /path/to/persistent/chart-review \
+  --publication-id RELEASE-COMMIT --cycle 2611 \
   --metadata-root product/chart-metadata --reviewed-by 'operator name' \
   --editor-url http://localhost:8093 --port 8094 \
   --family-work SEC=/path/to/charts-sec-fetch/fingerprint/source
 ```
+
+Use the publication label and cycle from Pipeline Health. A review queue stays
+bound to that pair across imports and restarts; use a separate state directory to
+review another pair. When more than one pair exists, selection must be explicit.
+`--family-work` requires `--cycle`: supply TIFF trees from that exact cycle, not
+whatever source cache happens to be newest. The pinned candidate remains the
+approval evidence. Rejecting an accidental approval removes only that candidate,
+not the approvals for other cycles.
 
 Supply additional `--family-work FAMILY=SOURCE_DIR` arguments for TAC, FLY,
 ENR_L and ENR_H to enable their editor links and rerender buttons. FLY uses the
@@ -211,22 +253,26 @@ For example, from the repository root (substitute the retained source path):
   --source-id fingerprint --output /tmp/chart-review/SEC
 ```
 
-Open `reports/<report-id>/index.html` below that output directory. Each region
-page includes the exact approval command for its candidate:
+Open `reports-v3/<report-id>/index.html` below that output directory. Each region
+page includes the exact approval command for its candidate. That path is local
+to the build machine. When reviewing production reports from another machine,
+download `candidate.json` from the report and use its local downloaded path:
 
 ```sh
 /usr/bin/python3 tools/chart_cutline_audit.py \
-  --approve-reference /tmp/chart-review/SEC/reports/REPORT/REGION/candidate.json \
+  --approve-reference /tmp/chart-review/SEC/reports-v3/REPORT/REGION/candidate.json \
   --reviewed-by 'operator name'
 ```
 
-That writes `product/chart-metadata/SEC/visual-references/<region-id>.json`.
+That appends to `product/chart-metadata/SEC/visual-references/<region-id>.json`.
 Commit that file alongside any metadata edits. Changing the cutline after
 generating the candidate invalidates the candidate; rerender before approving.
 Approval records reviewer, timestamp, source identity, cycle, metadata hash,
 and a hash of the full reference. Rechecking the same pixels in a new cycle
 does not change it. This bootstrap requires actual review of the retained
 source; it does not claim to recover a GC'd historical reference.
+For an old undated candidate, explicitly supply `--effective-from-cycle YYCC`.
+A dated candidate cannot be backdated with this option.
 
 The official product build invokes this same checker before each chart process,
 even on a tile-cache hit. Reports go to
@@ -234,9 +280,17 @@ even on a tile-cache hit. Reports go to
 review link via `/pipeline-health/chart-quality/`. The check needs the existing
 GDAL Python bindings and NumPy, not any additional image-comparison package.
 
-Reports retain the latest and previous two completed attempts per family. The
+Reports retain the latest and previous two completed attempts per
+publication/family/cycle, plus an interrupted attempt. Different cycles do not
+garbage-collect each other's review evidence. The
 approved references are not subject to artifact GC. A checker crash leaves a
 visible incomplete attempt rather than the previous successful status.
+
+The timeline regressions were run red before the implementation: the old checker
+compared 2610 against the new 2611 approval, and the old monitor/reviewer lost
+2610 when 2611 finished. Tests also cover late older-cycle approval, unchanged
+builds never advancing references, future-only references, same-cycle changes,
+scoped retry evidence, and the checked-in Milwaukee history.
 
 Regression tests:
 

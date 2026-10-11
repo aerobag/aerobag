@@ -70,7 +70,7 @@ if mode == 'approve':
     output = root / 'fixture-review'
     report = quality.run_check(sources, metadata, 'SEC', output, 'fixture', '2605')
     for region in report['regions']:
-        quality.approve(output / 'reports' / report['report_id'] / region['id'] / 'candidate.json',
+        quality.approve(output / 'reports-v3' / report['report_id'] / region['id'] / 'candidate.json',
                         metadata, 'fixture reviewer')
 elif mode == 'move':
     # Rewrite rather than modify a cached hard link in place.

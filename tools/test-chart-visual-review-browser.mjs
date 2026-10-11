@@ -78,6 +78,7 @@ try {
   const serverState = () => fetch(`${origin}/api/state`).then(r => r.json());
   const indexText = chart => page.evaluate(`([...document.querySelectorAll('.jump')].find(b => b.querySelector('span').textContent === ${JSON.stringify(chart)}))?.innerText || ''`);
   await ready();
+  assert.equal(await page.evaluate('document.querySelector("#scope").textContent'), "Cycle 2610 / manual");
   await waitFor(() => page.evaluate('document.querySelector("article.selected .accounted") && !document.querySelector("article.selected .accounted").disabled'),3000,"whole sheet did not render");
   await writeFile(resolve(artifacts,"first-candidate.png"),Buffer.from((await page.send("Page.captureScreenshot",{format:"png"})).data,"base64"));
   const first = await page.evaluate('document.querySelector("article.selected").dataset.id');

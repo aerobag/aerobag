@@ -170,6 +170,81 @@ class ChartQualityMetricTests(unittest.TestCase):
                                 'quarantined_sources': ['Test SEC.tif'] if status == 'critical' else [],
                                 'excluded_metadata': ['SEC/Test SEC.geojson'] if status == 'critical' else []}}
 
+    def test_scoped_cycles_are_reported_separately_and_order_cannot_hide_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family = root / "state/chart-quality/SEC"
+            for cycle, status in [("2610", "warning"), ("2611", "ok")]:
+                report = {**self.report(status), "schema_version": 3, "publication_id": "release-a", "cycle": cycle}
+                path = family / "scopes" / cycle / "current.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(report))
+            # A newer future-cycle convenience pointer must not conceal current warnings.
+            (family / "current.json").write_text(json.dumps(report))
+            reports = pipeline_health.collect_chart_quality(root)
+            self.assertEqual({r["payload"]["cycle"] for r in reports}, {"2610", "2611"})
+            metrics = []
+            pipeline_health.add_chart_quality_metrics(metrics, {"inputs": {"chart_quality": reports}}, self.now)
+            unresolved = [m for m in metrics if m["id"].endswith(".unresolved")]
+            self.assertEqual(len({m["id"] for m in unresolved}), 2)
+            self.assertEqual({m["details"]["cycle"]: m["severity"] for m in unresolved},
+                             {"2610": "warning", "2611": "ok"})
+
+    def test_scoped_retry_cannot_borrow_another_cycles_completed_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            family = root / "state/chart-quality/SEC"
+            pending = {**self.report("checking"), "schema_version": 3,
+                       "publication_id": "release-a", "cycle": "2610"}
+            path = family / "scopes/current-cycle/current.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(pending))
+            other = {**self.report("ok"), "schema_version": 3,
+                     "publication_id": "release-a", "cycle": "2611"}
+            completed = family / "reports-v3" / other["report_id"] / "report.json"
+            completed.parent.mkdir(parents=True)
+            completed.write_text(json.dumps(other))
+            reports = pipeline_health.collect_chart_quality(root)
+            self.assertEqual(len(reports), 1)
+            self.assertIsNone(reports[0]["last_completed"])
+
+    def test_scoped_metrics_name_current_upcoming_and_historical_cycles(self):
+        facts = {"inputs": {"faa_cycle_calendar": {"payload": {"cycles": [
+            {"cycle": "2609", "effective_date": "2026-09-03"},
+            {"cycle": "2610", "effective_date": "2026-10-01"},
+            {"cycle": "2611", "effective_date": "2026-10-29"}]}}, "chart_quality": [
+                {"family": "SEC", "payload": {**self.report(), "schema_version": 3,
+                                               "publication_id": "release-a", "cycle": c}}
+                for c in ("2609", "2610", "2611")]}}
+        metrics = []
+        pipeline_health.add_chart_quality_metrics(metrics, facts, datetime(2026, 10, 11, tzinfo=timezone.utc))
+        rows = {m["details"]["cycle"]: m for m in metrics if m["id"].endswith(".unresolved")}
+        for cycle, phase in (("2609", "historical"), ("2610", "current"), ("2611", "upcoming")):
+            self.assertIn(phase, rows[cycle]["message"])
+            self.assertEqual(rows[cycle]["details"]["cycle_phase"], phase)
+        # Labeling history must not silently clear an unresolved result.
+        self.assertTrue(all(row["severity"] == "warning" for row in rows.values()))
+
+    def test_explicitly_retired_release_does_not_keep_alarming(self):
+        retired = {**self.report("critical"), "schema_version": 3,
+                   "publication_id": "2026-09-18.2-" + "a" * 12}
+        unknown = {**retired, "publication_id": "unpublished-failing-build"}
+        facts = {"channels": {"production": {"tag": "2026-10-11.3"}}, "inputs": {
+            "release_state": {"payload": {"releases": {"2026-09-18.2": {
+                "commit": "a" * 40, "live_feed_status": "stopped",
+                "release_root": None, "product_manifest": None}}}},
+            "chart_quality": [{"family": "SEC", "payload": r} for r in (retired, unknown)]}}
+        metrics = []
+        pipeline_health.add_chart_quality_metrics(metrics, facts, self.now)
+        alarms = [m for m in metrics if m["severity"] == "critical"]
+        self.assertEqual(len(alarms), 1)
+        self.assertEqual(alarms[0]["details"]["publication_id"], "unpublished-failing-build")
+        facts["channels"]["production"]["tag"] = "2026-09-18.2"
+        metrics = []
+        pipeline_health.add_chart_quality_metrics(metrics, facts, self.now)
+        self.assertEqual(sum(m["severity"] == "critical" for m in metrics), 2,
+                         "an active channel must override stale retirement state")
+
     def test_partial_publication_is_still_critical_and_names_omissions(self):
         report = self.report('critical')
         metric = self.metrics(report)['chart_quality.SEC.unresolved']

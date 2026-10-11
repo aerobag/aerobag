@@ -258,6 +258,7 @@ function renderReviewSummary(element, summary) {
 }
 
 function render() {
+  $("scope").textContent = `Cycle ${state.scope.cycle} / ${state.scope.publication_id}`;
   const shown = new Set(visible().map(s => s.id)), c = state.counts, sc = state.sheet_counts;
   for (const [id, n] of nodes) if (!sheet(id)) {
     observer.unobserve(n.card); n.card.remove(); n.jump.remove(); nodes.delete(id);

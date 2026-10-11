@@ -75,7 +75,7 @@ class ChartFixture(unittest.TestCase):
         report = self.check()
         self.assertEqual(report["status"], "warning", report)
         for region in report["regions"]:
-            candidate = self.output / "reports" / report["report_id"] / region["id"] / "candidate.json"
+            candidate = self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json"
             quality.approve(candidate, self.metadata, "test operator")
         return report
 
@@ -84,6 +84,96 @@ class ChartFixture(unittest.TestCase):
 
 
 class ChartVisualReferencesTest(ChartFixture):
+    def test_no_eligible_approval_warns_and_never_borrows_from_future(self):
+        report = self.check("2611")
+        for region in report["regions"]:
+            quality.approve(self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json",
+                            self.metadata, "reviewer")
+        old = self.check("2610")
+        self.assertEqual(old["status"], "warning")
+        self.assertTrue(all(r["unreviewed"] for r in old["regions"]))
+
+    def test_latest_applicable_reference_cannot_fall_back_to_matching_old_pixels(self):
+        self.approve_all()
+        self.write_source(np.roll(self.original, 30, axis=2))
+        report = self.check("2611")
+        for region in report["regions"]:
+            quality.approve(self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json",
+                            self.metadata, "reviewer")
+        self.write_source(self.original)
+        self.assertEqual(self.inset(self.check("2611"))["status"], "critical")
+        self.assertEqual(self.inset(self.check("2612"))["status"], "critical")
+
+    def test_approval_rejects_backdating_a_dated_candidate(self):
+        report = self.check("2611")
+        region = report["regions"][0]
+        candidate = self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json"
+        with self.assertRaisesRegex(ValueError, "candidate's source cycle"):
+            quality.approve(candidate, self.metadata, "reviewer", "2610")
+
+    def test_history_cannot_relabel_a_dated_approval_as_earlier_or_undated(self):
+        self.approve_all()
+        for path in (self.metadata / "SEC/visual-references").glob("*.json"):
+            document = json.loads(path.read_text())
+            for effective in ("2609", None):
+                document["approvals"][0]["effective_from_cycle"] = effective
+                path.write_text(json.dumps(document))
+                with self.assertRaisesRegex(ValueError, "source cycle"):
+                    quality.reference_history(path)
+
+    def test_future_approval_does_not_unapprove_older_cycle_in_either_build_order(self):
+        self.approve_all()
+        updated = np.roll(self.original, 30, axis=2)
+        self.write_source(updated)
+        report = self.check("2611")
+        self.assertEqual(self.inset(report)["status"], "critical")
+        for region in report["regions"]:
+            quality.approve(self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json",
+                            self.metadata, "second reviewer")
+        for order in [("2610", "2611"), ("2611", "2610")]:
+            for cycle in order:
+                with self.subTest(order=order, cycle=cycle):
+                    self.write_source(self.original if cycle == "2610" else updated)
+                    checked = self.check(cycle)
+                    self.assertEqual(checked["status"], "ok", checked)
+
+    def test_late_review_of_older_cycle_does_not_replace_future_approval(self):
+        self.approve_all()
+        updated = np.roll(self.original, 30, axis=2)
+        self.write_source(updated)
+        report = self.check("2611")
+        for region in report["regions"]:
+            quality.approve(self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json",
+                            self.metadata, "future reviewer")
+        self.write_source(self.original)
+        report = self.check("2610")
+        for region in report["regions"]:
+            quality.approve(self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json",
+                            self.metadata, "older-cycle reviewer")
+        self.write_source(updated)
+        self.assertEqual(self.check("2611")["status"], "ok")
+
+    def test_cycle_is_not_an_approval_and_success_never_advances_reference(self):
+        self.approve_all()
+        references = {p: p.read_bytes() for p in (self.metadata / "SEC/visual-references").glob("*.json")}
+        self.assertEqual(self.check("2611")["status"], "ok")
+        self.write_source(np.roll(self.original, 30, axis=2))
+        for cycle in ("2610", "2611", "2612"):
+            self.assertEqual(self.inset(self.check(cycle))["status"], "critical")
+        self.assertEqual(references, {p: p.read_bytes() for p in references})
+
+    def test_monitor_preserves_each_cycle_when_builds_finish_in_either_order(self):
+        self.approve_all()
+        for order in [("2610", "2611"), ("2611", "2610")]:
+            for cycle in order:
+                self.write_source(self.original if cycle == "2610" else np.roll(self.original, 30, axis=2))
+                self.check(cycle)
+            reports = [json.loads(p.read_text()) for p in self.output.rglob("current.json")]
+            by_cycle = {r["cycle"]: r for r in reports}
+            self.assertEqual(set(by_cycle), {"2610", "2611"})
+            self.assertEqual(by_cycle["2610"]["status"], "ok")
+            self.assertEqual(by_cycle["2611"]["status"], "critical")
+
     def test_real_cache_miss_preserves_visible_attempt_and_last_completed_report(self):
         previous = self.check()
         check_region = quality.check_region
@@ -91,7 +181,7 @@ class ChartVisualReferencesTest(ChartFixture):
         def observe_attempt(*args, **kwargs):
             progress = json.loads((self.output / "current.json").read_text())
             self.assertEqual(progress["status"], "checking")
-            self.assertTrue((self.output / "reports" / previous["report_id"] / "report.json").is_file())
+            self.assertTrue((self.output / "reports-v3" / previous["report_id"] / "report.json").is_file())
             return check_region(*args, **kwargs)
 
         cached = self.root / "cached"
@@ -100,7 +190,7 @@ class ChartVisualReferencesTest(ChartFixture):
                                        "new-inputs", "2611", monitor_output=self.output)
         self.assertEqual(json.loads((self.output / "current.json").read_text()), report)
         self.assertEqual(json.loads((cached / "current.json").read_text()), report)
-        self.assertTrue((self.output / "reports" / report["report_id"] / "index.html").is_file())
+        self.assertTrue((self.output / "reports-v3" / report["report_id"] / "index.html").is_file())
 
     def test_interrupted_cache_miss_keeps_pending_attempt_visible_for_overdue_alarm(self):
         previous = self.check()
@@ -109,7 +199,7 @@ class ChartVisualReferencesTest(ChartFixture):
                 quality.run_check(self.sources, self.metadata, "SEC", self.root / "cached",
                                   "new-inputs", "2611", monitor_output=self.output)
         self.assertEqual(json.loads((self.output / "current.json").read_text())["status"], "checking")
-        self.assertTrue((self.output / "reports" / previous["report_id"] / "report.json").is_file())
+        self.assertTrue((self.output / "reports-v3" / previous["report_id"] / "report.json").is_file())
 
     def test_cached_verdict_republishes_completed_evidence_without_checking(self):
         report = self.check()
@@ -121,8 +211,8 @@ class ChartVisualReferencesTest(ChartFixture):
             self.assertEqual(quality.publish_cached_report(cached, self.output), report)
         self.assertEqual((self.output / "current.json").read_bytes(), original)
         self.assertEqual(
-            (self.output / "reports" / report["report_id"] / "index.html").read_bytes(),
-            (cached / "reports" / report["report_id"] / "index.html").read_bytes(),
+            (self.output / "reports-v3" / report["report_id"] / "index.html").read_bytes(),
+            (cached / "reports-v3" / report["report_id"] / "index.html").read_bytes(),
         )
 
     def test_cached_verdict_copy_failure_does_not_publish_partial_evidence(self):
@@ -137,9 +227,19 @@ class ChartVisualReferencesTest(ChartFixture):
             with self.assertRaisesRegex(OSError, "interrupted copy"):
                 quality.publish_cached_report(cached, self.output)
         self.assertFalse((self.output / "current.json").exists())
-        self.assertEqual(list((self.output / "reports").iterdir()), [])
+        self.assertEqual(list((self.output / "reports-v3").iterdir()), [])
         quality.publish_cached_report(cached, self.output)
-        self.assertTrue((self.output / "reports" / report["report_id"] / "index.html").is_file())
+        self.assertTrue((self.output / "reports-v3" / report["report_id"] / "index.html").is_file())
+
+    def test_older_deployed_checker_gc_cannot_remove_scoped_report_evidence(self):
+        report = self.check()
+        # Schema-2 producers prune everything except their last three reports
+        # in this directory, without knowing about other releases or cycles.
+        legacy_reports = self.output / "reports"
+        if legacy_reports.exists():
+            for directory in legacy_reports.iterdir():
+                shutil.rmtree(directory)
+        self.assertEqual(quality.publish_cached_report(self.output, self.root / "republished"), report)
 
     def test_cached_verdict_rejects_pending_and_retains_bounded_review_assets(self):
         cached = self.root / "cached"
@@ -147,17 +247,19 @@ class ChartVisualReferencesTest(ChartFixture):
         for index in range(5):
             report_id = f"{index:032x}"
             report = {"schema_version": quality.REPORT_SCHEMA, "report_id": report_id,
-                      "status": "ok", "completed_at": "2026-09-15T00:00:00Z"}
+                      "status": "ok", "completed_at": f"2026-09-15T00:00:0{index}Z",
+                      "cycle": "2610", "publication_id": "manual"}
             (cached / "current.json").write_text(json.dumps(report))
-            assets = cached / "reports" / report_id
+            assets = cached / "reports-v3" / report_id
             assets.mkdir(parents=True)
             (assets / "index.html").write_text("evidence")
+            (assets / "report.json").write_text(json.dumps(report))
             assets.chmod(0o555)
             try:
                 quality.publish_cached_report(cached, self.output)
             finally:
                 assets.chmod(0o755)
-        self.assertEqual(len(list((self.output / "reports").iterdir())), 3)
+        self.assertEqual(len(list((self.output / "reports-v3").iterdir())), 3)
         current = (self.output / "current.json").read_bytes()
         report["status"] = "checking"
         (cached / "current.json").write_text(json.dumps(report))
@@ -168,7 +270,7 @@ class ChartVisualReferencesTest(ChartFixture):
     def test_approval_cli_initializes_its_own_metadata_reader(self):
         report = self.check()
         region = self.inset(report)
-        candidate = self.output / 'reports' / report['report_id'] / region['id'] / 'candidate.json'
+        candidate = self.output / 'reports-v3' / report['report_id'] / region['id'] / 'candidate.json'
         cli = Path(__file__).resolve().parents[1] / 'tools/chart_cutline_audit.py'
         result = subprocess.run([sys.executable, str(cli), '--approve-reference', str(candidate),
                                  '--metadata-root', str(self.metadata), '--reviewed-by', 'test operator'],
@@ -286,7 +388,7 @@ class ChartVisualReferencesTest(ChartFixture):
         self.assertEqual(self.check()['publication'], report['publication'])
         # This stands for explicit operator correction/review, never a build action.
         for region in report['regions']:
-            quality.approve(self.output / 'reports' / report['report_id'] / region['id'] / 'candidate.json',
+            quality.approve(self.output / 'reports-v3' / report['report_id'] / region['id'] / 'candidate.json',
                             self.metadata, 'test operator')
         restored = self.check()
         self.assertEqual(restored['status'], 'ok')
@@ -317,7 +419,7 @@ class ChartVisualReferencesTest(ChartFixture):
     def test_stale_candidate_cannot_be_approved(self):
         report = self.check()
         region = self.inset(report)
-        candidate = self.output / "reports" / report["report_id"] / region["id"] / "candidate.json"
+        candidate = self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json"
         layout = json.loads(self.inset_file.read_text())
         layout["insets"][0]["control_points"][0]["latitude"] = 44
         self.inset_file.write_text(json.dumps(layout))
@@ -333,7 +435,7 @@ class ChartVisualReferencesTest(ChartFixture):
 
     def test_inset_projection_change_invalidates_approval_and_stale_candidates(self):
         report = self.approve_all()
-        candidate = self.output / "reports" / report["report_id"] / self.inset(report)["id"] / "candidate.json"
+        candidate = self.output / "reports-v3" / report["report_id"] / self.inset(report)["id"] / "candidate.json"
         layout = json.loads(self.inset_file.read_text())
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(26916)
@@ -363,7 +465,7 @@ class ChartVisualReferencesTest(ChartFixture):
         report = self.approve_all()
         path = quality.reference_path(self.metadata, "SEC", self.inset(report)["id"])
         value = json.loads(path.read_text())
-        value["views"][0]["pixels"] = "corrupt"
+        value["approvals"][0]["reference"]["views"][0]["pixels"] = "corrupt"
         path.write_text(json.dumps(value))
         result = self.check()
         self.assertEqual(self.inset(result)["status"], "critical")
@@ -381,9 +483,9 @@ class ChartVisualReferencesTest(ChartFixture):
     def test_reports_are_bounded_but_references_are_not_garbage_collected(self):
         self.approve_all()
         for i in range(4):
-            report = self.check(str(2610 + i))
-        self.assertEqual(len(list((self.output / "reports").iterdir())), 3)
-        self.assertTrue((self.output / "reports" / report["report_id"] / "index.html").is_file())
+            report = self.check("2610")
+        self.assertEqual(len(list((self.output / "reports-v3").iterdir())), 3)
+        self.assertTrue((self.output / "reports-v3" / report["report_id"] / "index.html").is_file())
         self.assertEqual(len(list((self.metadata / "SEC/visual-references").glob("*.json"))), 2)
 
     def test_missing_native_dependency_replaces_previous_success_with_failure(self):
@@ -435,6 +537,32 @@ class ChartVisualReferencesTest(ChartFixture):
         with patch.object(quality, "sample", wraps=quality.sample) as reader:
             self.assertEqual(self.check()["status"], "ok")
         self.assertEqual(reader.call_count, 6, "two overviews and four control patches, not duplicate decodes")
+
+
+class CheckedInApprovalHistoryTests(unittest.TestCase):
+    metadata = Path(__file__).resolve().parents[1] / "product/chart-metadata"
+
+    def test_every_checked_in_approval_retains_valid_content_identity(self):
+        paths = list(self.metadata.glob("*/visual-references/*.json"))
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(path=path):
+                entries = quality.reference_history(path)
+                self.assertTrue(entries)
+                for entry in entries:
+                    quality.validate_reference(entry["reference"], {"id": path.stem})
+                    self.assertEqual(entry["reference"]["family"], path.parents[1].name)
+
+    def test_milwaukee_preserves_both_pre_2611_and_2611_approvals(self):
+        identity = "4b703c9991430518ae55f954"
+        old = quality.reference_for(self.metadata, "SEC", identity, "2610")
+        new = quality.reference_for(self.metadata, "SEC", identity, "2611")
+        self.assertIsNotNone(old)
+        self.assertIsNotNone(new)
+        self.assertEqual(old["source"]["cycle"], "retained FAA source")
+        self.assertEqual(new["source"]["cycle"], "2611")
+        self.assertNotEqual(old["approval"]["digest"], new["approval"]["digest"])
+        self.assertEqual(old["definition_hash"], new["definition_hash"])
 
 
 if __name__ == "__main__":

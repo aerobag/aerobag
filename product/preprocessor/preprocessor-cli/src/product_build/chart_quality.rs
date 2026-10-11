@@ -10,6 +10,7 @@ struct ChartQualityReport {
     family: String,
     cycle: String,
     source_id: String,
+    publication_id: String,
     publication: PublicationDecision,
 }
 
@@ -121,7 +122,7 @@ pub(super) fn check_chart_visual_references(
         inputs,
         &[
             verdict_root.join("current.json"),
-            verdict_root.join("reports"),
+            verdict_root.join("reports-v3"),
         ],
         |_| {
             run_chart_visual_references(
@@ -140,10 +141,11 @@ pub(super) fn check_chart_visual_references(
     )?;
     let report: ChartQualityReport =
         serde_json::from_slice(&fs::read(verdict_root.join("current.json"))?)?;
-    if report.schema_version != 2
+    if report.schema_version != 3
         || report.family != manifest_chart_name(family)
         || report.cycle != cycle
         || report.source_id != source_id
+        || report.publication_id != config.publish_label
     {
         bail!("cached chart verdict does not match this build");
     }
@@ -195,6 +197,7 @@ fn chart_quality_inputs(
     Ok(BTreeMap::from([
         ("family".into(), manifest_chart_name(family).into()),
         ("cycle".into(), cycle.into()),
+        ("publication_id".into(), config.publish_label.clone()),
         ("source_content".into(), source_id.into()),
         (
             "source_files".into(),
@@ -298,6 +301,8 @@ fn run_chart_visual_references(
         manifest_chart_name(family).to_string(),
         "--cycle".to_string(),
         cycle.to_string(),
+        "--publication-id".to_string(),
+        config.publish_label.clone(),
         "--source-id".to_string(),
         source_id.to_string(),
         "--output".to_string(),
@@ -334,10 +339,11 @@ fn run_chart_visual_references(
     )?;
     let report: ChartQualityReport = serde_json::from_slice(&fs::read(&outcome.logs.stdout)?)
         .context("invalid chart publication decision")?;
-    if report.schema_version != 2
+    if report.schema_version != 3
         || report.family != manifest_chart_name(family)
         || report.cycle != cycle
         || report.source_id != source_id
+        || report.publication_id != config.publish_label
     {
         bail!("chart publication decision does not match this build");
     }

@@ -729,20 +729,32 @@ def add_service_bulletin_metrics(metrics: list[dict[str, Any]], facts: dict[str,
 def collect_chart_quality(artifact_root: Path) -> list[dict[str, Any]]:
     root = artifact_root / "state/chart-quality"
     entries = []
+    paths = [(p, p.parents[2]) for p in sorted(root.glob("*/scopes/*/current.json"))]
+    # Older deployed producer revisions still emit schema 2. Show their
+    # explicitly unscoped result, never treat it as a schema-3 cycle result.
     for path in sorted(root.glob("*/current.json")):
+        payload, error = read_json_file(path)
+        if error or not isinstance(payload, dict) or payload.get("schema_version") != 3:
+            paths.append((path, path.parent))
+    for path, family_root in paths:
         payload, error = read_json_file(path)
         if not error:
             error = chart_quality_report_error(payload)
-        entry = {"family": path.parent.name, "payload": payload, "error": error}
+        entry = {"family": family_root.name, "payload": payload, "error": error,
+                 "scope": path.parent.name if path.parent.parent.name == "scopes" else None}
         if not error and payload.get("status") == "checking":
             # current.json is attempt progress, not a replacement result. The
             # producer retains completed reports separately (bounded by its GC).
             completed = []
-            for report_path in path.parent.glob("reports/*/report.json"):
+            directory = "reports-v3" if payload["schema_version"] == 3 else "reports"
+            for report_path in family_root.glob(f"{directory}/*/report.json"):
                 report, read_error = read_json_file(report_path)
                 if (not read_error and not chart_quality_report_error(report)
                         and report.get("status") != "checking"
-                        and report.get("family") == path.parent.name
+                        and report.get("family") == family_root.name
+                        and (payload.get("schema_version") == 2 or
+                             (report.get("publication_id"), report.get("cycle")) ==
+                             (payload.get("publication_id"), payload.get("cycle")))
                         and parse_time(report.get("completed_at")) is not None):
                     completed.append(report)
             entry["last_completed"] = max(
@@ -753,8 +765,13 @@ def collect_chart_quality(artifact_root: Path) -> list[dict[str, Any]]:
 
 
 def chart_quality_report_error(payload: Any) -> str | None:
-    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in {2, 3}:
         return "Unsupported chart quality report"
+    if payload["schema_version"] == 3 and (
+            not isinstance(payload.get("publication_id"), str) or not payload["publication_id"]
+            or not isinstance(payload.get("cycle"), str)
+            or not re.fullmatch(r"[0-9]{2}(0[1-9]|1[0-4])", payload["cycle"])):
+        return "Invalid chart quality publication/cycle scope"
     if payload.get("status") not in {"checking", "ok", "warning", "critical"}:
         return "Invalid chart quality status"
     if payload["status"] != "checking":
@@ -797,6 +814,42 @@ def attempt_age_seconds(started_at: Any, now: datetime) -> float | None:
     return (now - started).total_seconds()
 
 
+def chart_cycle_phase(facts: dict[str, Any], cycle: Any, now: datetime) -> str:
+    calendar = facts.get("inputs", {}).get("faa_cycle_calendar", {}).get("payload")
+    entries = calendar.get("cycles", []) if isinstance(calendar, dict) else []
+    dates = {entry.get("cycle"): parse_date(entry.get("effective_date"))
+             for entry in entries if isinstance(entry, dict)}
+    effective = dates.get(cycle)
+    if effective is None:
+        return "unknown"
+    if effective > now.date():
+        return "upcoming"
+    if any(effective < other <= now.date() for other in dates.values() if other is not None):
+        return "historical"
+    return "current"
+
+
+def retired_chart_publications(facts: dict[str, Any]) -> set[str]:
+    channels = facts.get("channels", {})
+    state = facts.get("inputs", {}).get("release_state", {}).get("payload")
+    if not channels or not isinstance(state, dict) or not isinstance(state.get("releases"), dict):
+        return set()
+    active = {channel.get("tag") for channel in channels.values()}
+    retired = set()
+    for tag, record in state["releases"].items():
+        # These are the explicit post-GC values from forget_removed_artifacts,
+        # not an inference that an unknown/unpublished build must be retired.
+        if (tag not in active and isinstance(record, dict)
+                and record.get("live_feed_status") == "stopped"
+                and "release_root" in record and record["release_root"] is None
+                and "product_manifest" in record and record["product_manifest"] is None
+                and re.fullmatch(r"[A-Za-z0-9_.-]+", tag)
+                and re.fullmatch(r"[0-9a-f]{40}", str(record.get("commit")))):
+            # Release tags already satisfy safe_ref_name's character policy.
+            retired.add(f"{tag}-{record['commit'][:12]}")
+    return retired
+
+
 def add_chart_quality_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime | None = None,
 ) -> None:
@@ -808,16 +861,27 @@ def add_chart_quality_metrics(
         add_metric(metrics, metric_id="chart_quality.available", label="Chart visual checks",
                    value=0, unit="reports", severity="warning",
                    message="No chart visual-reference check has completed yet")
+    retired = retired_chart_publications(facts)
     for entry in reports:
         family = entry["family"]
         report = entry.get("payload")
+        scoped = isinstance(report, dict) and report.get("schema_version") == 3
+        cycle = report.get("cycle") if isinstance(report, dict) else None
+        publication_id = report.get("publication_id") if scoped else None
+        if publication_id in retired:
+            continue
+        phase = chart_cycle_phase(facts, cycle, now)
+        scope = (hashlib.sha256(str(publication_id).encode()).hexdigest()[:12] + "." + str(cycle)
+                 if scoped else entry.get("scope"))
+        metric_prefix = f"chart_quality.{family}" + (f".{scope}" if scope else "")
+        label = f"{family} / {publication_id} / {phase} cycle {cycle}" if scoped else family
         error = entry.get("error") or chart_quality_report_error(report)
         if error:
             report = {"status": "critical", "error": error, "critical_count": 1}
         if report.get("status") == "checking":
             age = attempt_age_seconds(report.get("started_at"), now)
             overdue = age is None or age >= CHART_CHECK_BUDGET_SECONDS
-            add_metric(metrics, metric_id=f"chart_quality.{family}.attempt", label=f"{family} chart check attempt",
+            add_metric(metrics, metric_id=f"{metric_prefix}.attempt", label=f"{label} chart check attempt",
                        value="overdue" if overdue else "checking", severity="warning" if overdue else "unknown",
                        message=(f"{family}: chart check has no valid start time" if age is None else
                                 f"{family}: chart check {'overdue' if overdue else 'in progress'} ({int(age)} seconds)"),
@@ -826,13 +890,13 @@ def add_chart_quality_metrics(
             previous = entry.get("last_completed")
             if (previous is None or chart_quality_report_error(previous)
                     or previous.get("status") == "checking"):
-                add_metric(metrics, metric_id=f"chart_quality.{family}.unresolved", label=f"{family} chart visual checks",
+                add_metric(metrics, metric_id=f"{metric_prefix}.unresolved", label=f"{label} chart visual checks",
                            value=None, severity="unknown",
                            message=f"{family}: no completed result yet; next check in progress")
                 continue
             report = previous
         elif not error:
-            add_metric(metrics, metric_id=f"chart_quality.{family}.attempt", label=f"{family} chart check attempt",
+            add_metric(metrics, metric_id=f"{metric_prefix}.attempt", label=f"{label} chart check attempt",
                        value="completed", message=f"{family}: chart check completed",
                        details={"completed_at": report.get("completed_at")})
         status = report.get("status")
@@ -841,26 +905,29 @@ def add_chart_quality_metrics(
         severity = "critical" if status == "critical" or status not in {"ok", "warning"} else status
         report_id = report.get("report_id", "")
         valid_id = isinstance(report_id, str) and len(report_id) == 32 and all(c in "0123456789abcdef" for c in report_id)
-        review_url = f"/pipeline-health/chart-quality/{family}/reports/{report_id}/index.html" if valid_id else None
+        directory = "reports-v3" if scoped else "reports"
+        review_url = f"/pipeline-health/chart-quality/{family}/{directory}/{report_id}/index.html" if valid_id else None
         decision = report.get('publication', {})
         quarantined = decision.get('quarantined_sources', [])
         disposition = ('; OMITTED source sheets and all derived layers/references: ' + ', '.join(quarantined)
                        if quarantined else '; publication blocked' if decision.get('state') == 'blocked' else '')
-        add_metric(metrics, metric_id=f"chart_quality.{family}.unresolved", label=f"{family} chart visual checks",
+        add_metric(metrics, metric_id=f"{metric_prefix}.unresolved", label=f"{label} chart visual checks",
                    value=critical + warnings, unit="regions", severity=severity, warning_threshold=1,
-                   message=f"{family}: last completed check: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}{disposition}",
+                   message=f"{label}: last completed check: {critical} critical, {warnings} need review; cycle {report.get('cycle', '?')}{disposition}",
                    details={"review_url": review_url, "last_error": report.get("error"),
+                            "publication_id": publication_id, "cycle": cycle,
+                            "cycle_phase": phase,
                             "regions": report.get("regions", []), "policy": report.get("policy"),
                             "source_id": report.get("source_id"), "completed_at": report.get("completed_at"),
                             "publication": decision})
-        add_metric(metrics, metric_id=f"chart_quality.{family}.unreviewed", label=f"{family} missing visual references",
+        add_metric(metrics, metric_id=f"{metric_prefix}.unreviewed", label=f"{label} missing visual references",
                    value=report.get("unreviewed_count", 0), unit="regions",
                    severity="warning" if report.get("unreviewed_count", 0) else "ok", warning_threshold=1,
                    message=f"{family}: {report.get('unreviewed_count', 0)} regions have no approved visual reference")
         scores = [value for region in report.get("regions", []) for view in region.get("scores", {}).values()
                   for value in view.values() if isinstance(value, (int, float))]
         if scores:
-            add_metric(metrics, metric_id=f"chart_quality.{family}.max_changed_fraction", label=f"{family} maximum visual change",
+            add_metric(metrics, metric_id=f"{metric_prefix}.max_changed_fraction", label=f"{label} maximum visual change",
                        value=max(scores), unit="fraction", severity="ok",
                        message="Largest changed fraction in a sampled region; see per-view policy in review report")
 

@@ -73,7 +73,7 @@ class ChartVisualReviewTests(ChartFixture):
         item = self.main_item()
         self.decision(item)
         path = quality.reference_path(self.metadata, item["family"], item["id"])
-        reference = json.loads(path.read_text())
+        reference = quality.reference_for(self.metadata, item["family"], item["id"], "2610")
         self.assertEqual(reference["approval"]["digest"], item["digest"])
         self.assertEqual(reference["approval"]["reviewed_by"], "test reviewer")
         self.assertEqual(self.open_store().snapshot()["counts"]["approved"], 1)
@@ -81,11 +81,51 @@ class ChartVisualReviewTests(ChartFixture):
         self.decision(item)
         self.assertEqual(path.read_bytes(), before, "repeat requests must not rewrite an approval timestamp")
 
+    def test_future_approval_keeps_old_review_status_and_rejection_preserves_other_cycles(self):
+        item = self.main_item()
+        self.decision(item)
+        self.write_source(np.roll(self.original, 30, axis=2))
+        report = self.check("2611")
+        candidate = self.output / "reports-v3" / report["report_id"] / item["id"] / "candidate.json"
+        quality.approve(candidate, self.metadata, "future reviewer")
+        self.assertEqual(self.main_item()["status"], "approved")
+        self.decision(item, "disapproved")
+        future = quality.reference_for(self.metadata, "SEC", item["id"], "2611")
+        self.assertEqual(future["approval"]["reviewed_by"], "future reviewer")
+        self.assertIsNone(quality.reference_for(self.metadata, "SEC", item["id"], "2610"))
+
+    def test_review_stays_on_selected_cycle_after_later_build_and_restart(self):
+        item = self.main_item()
+        self.check("2611")
+        self.store.import_reports()
+        self.assertEqual(self.main_item()["digest"], item["digest"])
+        reopened = self.open_store()
+        self.assertEqual(reopened.snapshot()["items"][0]["source"]["cycle"], "2610")
+        with self.assertRaisesRegex(review.ReviewError, "Select.*publication.*cycle"):
+            review.ReviewStore(self.output.parent, self.root / "fresh-review", self.metadata, "reviewer")
+        future = review.ReviewStore(self.output.parent, self.root / "future-review", self.metadata,
+                                   "reviewer", publication_id="manual", cycle="2611")
+        self.assertEqual(future.snapshot()["scope"], {"publication_id": "manual", "cycle": "2611"})
+        self.assertTrue(all(i["source"]["cycle"] == "2611" for i in future.snapshot()["items"]))
+        with self.assertRaisesRegex(review.ReviewError, "different.*state directory"):
+            review.ReviewStore(self.output.parent, self.state_dir, self.metadata,
+                              "reviewer", publication_id="manual", cycle="2611")
+
+    def test_review_rejects_candidate_with_wrong_source_cycle(self):
+        report = self.check("2610")
+        region = report["regions"][0]
+        path = self.output / "reports-v3" / report["report_id"] / region["id"] / "candidate.json"
+        candidate = json.loads(path.read_text())
+        candidate["source"]["cycle"] = "2611"
+        path.write_text(json.dumps(candidate))
+        with self.assertRaisesRegex(review.ReviewError, "candidate.*cycle"):
+            self.store.import_reports()
+
     def test_rejection_notes_and_pinned_images_survive_report_gc_and_restart(self):
         item = self.main_item()
         self.decision(item, "disapproved", "legend leaked at north edge")
         self.store.set_cursor(item["id"])
-        shutil.rmtree(self.output / "reports")
+        shutil.rmtree(self.output / "reports-v3")
         # Unchanged report pointers do not need their now-GC'd contents.
         reopened = self.open_store()
         self.assertEqual(reopened.snapshot()["cursor"], item["id"])
@@ -105,7 +145,7 @@ class ChartVisualReviewTests(ChartFixture):
         changed = self.original.copy()
         changed[:, 400:420, 450:480] = 20
         self.write_source(changed)
-        self.check("2611")
+        self.check("2610")
         self.store.import_reports()
         self.decision(self.main_item(), "disapproved")
         self.assertEqual(path.read_bytes(), approved, "rejecting a newer candidate preserves the old trusted reference")

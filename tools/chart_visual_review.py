@@ -237,7 +237,8 @@ def hex_id(value, length):
 
 
 class ReviewStore:
-    def __init__(self, report_root, state_dir, metadata_root, reviewer, source_trees=None, editor_url=None):
+    def __init__(self, report_root, state_dir, metadata_root, reviewer, source_trees=None, editor_url=None,
+                 publication_id=None, cycle=None):
         if not reviewer.strip():
             raise ReviewError("A reviewer name is required")
         self.report_root = Path(report_root).resolve()
@@ -254,6 +255,9 @@ class ReviewStore:
                       else {"schema_version": 1, "items": {}, "imported_reports": {}, "cursor": None})
         if self.state["schema_version"] != 1:
             raise ReviewError("Unsupported review state; do not discard it")
+        self.requested_scope = {"publication_id": publication_id, "cycle": cycle}
+        if cycle is not None:
+            quality.cycle_key(cycle)
         self.inventory = SheetInventory(self)
         quality.initialize_rendering()
         self.import_reports()
@@ -270,6 +274,8 @@ class ReviewStore:
             raise ReviewError("Report region identity does not match its candidate")
         if candidate["family"] not in FAMILIES:
             raise ReviewError("Unknown candidate family")
+        if candidate["source"]["cycle"] != self.state["scope"]["cycle"]:
+            raise ReviewError("Report candidate belongs to a different source cycle")
         digest = quality.digest(candidate)
         destination = self.directory / "items" / region["id"] / digest
         if not destination.exists():
@@ -296,22 +302,39 @@ class ReviewStore:
 
     def import_reports(self):
         with self.lock:
+            available = []
+            for family in FAMILIES:
+                directory = self.report_root / family
+                for path in sorted(directory.glob("scopes/*/current.json")):
+                    report = json.loads(path.read_text())
+                    if report["schema_version"] != quality.REPORT_SCHEMA or not hex_id(report["report_id"], 32):
+                        raise ReviewError(f"Invalid {family} report")
+                    available.append((family, directory, report))
+            scopes = {(r["publication_id"], r["cycle"]) for _, _, r in available}
+            saved = self.state.get("scope")
+            requested = {k: self.requested_scope[k] or (saved or {}).get(k) for k in self.requested_scope}
+            choices = [s for s in scopes if all(requested[k] is None or requested[k] == v
+                                               for k, v in zip(("publication_id", "cycle"), s))]
+            if len(choices) != 1:
+                raise ReviewError("Select a publication and cycle with --publication-id and --cycle; available: "
+                                  + ", ".join(f"{p}/{c}" for p, c in sorted(scopes)))
+            scope = dict(zip(("publication_id", "cycle"), choices[0]))
+            if ((saved and saved != scope) or any(i["source"]["cycle"] != scope["cycle"]
+                                                 for i in self.state["items"].values())):
+                raise ReviewError("This queue belongs to a different cycle/publication; use a different state directory")
+            self.state["scope"] = scope
             reports = {}
             chosen = {}
-            for family in FAMILIES:
-                path = self.report_root / family / "current.json"
-                if not path.exists():
+            for family, directory, report in available:
+                if any(report[k] != v for k, v in scope.items()):
                     continue
-                report = json.loads(path.read_text())
                 if report["status"] == "checking":
                     raise ReviewError(f"{family} is still rendering; retry importing when it finishes")
-                if report["schema_version"] != quality.REPORT_SCHEMA or not hex_id(report["report_id"], 32):
-                    raise ReviewError(f"Invalid {family} report")
                 reports[family] = report["report_id"]
                 for region in report["regions"]:
                     if not hex_id(region["id"], 24):
                         raise ReviewError("Invalid region ID")
-                    folder = path.parent / "reports" / report["report_id"] / region["id"]
+                    folder = directory / "reports-v3" / report["report_id"] / region["id"]
                     # Origin family comes first: SEC insets need one decision,
                     # not separate approvals in SEC, TAC and Flyway queues.
                     chosen.setdefault(region["id"], (family, region, folder))
@@ -335,9 +358,11 @@ class ReviewStore:
         signature = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         cached = self.reference_cache.get(path)
         if cached is None or cached[0] != signature:
-            reference = json.loads(path.read_text())
-            quality.validate_reference(reference, item)
-            cached = signature, reference["approval"]["digest"]
+            reference = quality.reference_for(self.metadata_root, item["family"], item["id"],
+                                              item["source"]["cycle"])
+            if reference is not None:
+                quality.validate_reference(reference, item)
+            cached = signature, reference["approval"]["digest"] if reference else None
             self.reference_cache[path] = cached
         return cached[1]
 
@@ -395,6 +420,7 @@ class ReviewStore:
             if cursor is None:
                 cursor = next((s["id"] for s in sheets if any(r["id"] == self.state["cursor"] for r in s["regions"])), None)
             return {"items": items, "counts": counts, "cursor": self.state["cursor"], "reviewer": self.reviewer,
+                    "scope": self.state["scope"],
                     "sheets": sheets, "sheet_cursor": cursor,
                     "sheet_counts": {status: sum(s["status"] == status for s in sheets)
                                      for status in ("complete", "incomplete", "pending", "stale")}}
@@ -464,7 +490,7 @@ class ReviewStore:
             elif self.reference_digest(item) == item["digest"]:
                 # Correct an accidental approval of THIS candidate only.
                 # Rejecting a new cycle does not erase its older trusted reference.
-                quality.reference_path(self.metadata_root, item["family"], item["id"]).unlink()
+                quality.revoke_reference(self.metadata_root, item["family"], item["id"], item["digest"])
             item["decision"] = {"verdict": verdict, "note": note, "digest": item["digest"],
                                 "reviewed_by": self.reviewer, "reviewed_at": quality.now()}
             self.state["cursor"] = item["id"]
@@ -515,7 +541,7 @@ class ReviewStore:
             elif body.get('digest') != quality.digest(region['definition']):
                 raise ReviewError("New region changed; reload the source inventory")
             old_digest = item['digest'] if item else None
-            provenance = item['source'] if item else {'identity': 'local-review', 'cycle': 'editor-preview'}
+            provenance = item['source'] if item else {'identity': 'local-review', 'cycle': self.state['scope']['cycle']}
             roots = [self.source_trees[region["family"]]]
             if region["family"] in {"TAC", "FLY"}:
                 roots.append(self.source_trees["SEC"])
@@ -678,11 +704,15 @@ def main(argv=None):
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--metadata-root", type=Path, default=Path("product/chart-metadata"))
     parser.add_argument("--reviewed-by", required=True)
+    parser.add_argument("--publication-id", help="Publication label to review; required if selection is ambiguous")
+    parser.add_argument("--cycle", help="FAA cycle to review (YYCC); also declares the cycle of --family-work sources")
     parser.add_argument("--family-work", action="append", default=[], metavar="FAMILY=SOURCE_DIR")
     parser.add_argument("--editor-url")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8094)
     args = parser.parse_args(argv)
+    if args.family_work and not args.cycle:
+        parser.error("--family-work requires --cycle to identify the supplied FAA sources")
     sources = {}
     for value in args.family_work:
         family, path = value.split("=", 1)
@@ -696,7 +726,8 @@ def main(argv=None):
     args.state_dir.mkdir(parents=True, exist_ok=True)
     with (args.state_dir / ".server.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        store = ReviewStore(args.report_root, args.state_dir, args.metadata_root, args.reviewed_by, sources, args.editor_url)
+        store = ReviewStore(args.report_root, args.state_dir, args.metadata_root, args.reviewed_by, sources, args.editor_url,
+                            args.publication_id, args.cycle)
         server = make_server(store, (args.host, args.port))
         print(f"Chart review at http://{args.host}:{server.server_port}/; decisions: {store.state_path}", flush=True)
         server.serve_forever()

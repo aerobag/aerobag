@@ -15,13 +15,15 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
 import uuid
 
 SCHEMA = 1
-REPORT_SCHEMA = 2
+HISTORY_SCHEMA = 2
+REPORT_SCHEMA = 3
 RECIPE = 1
 POLICY = {
     "overview_pixels": 512,
@@ -330,6 +332,57 @@ def reference_path(metadata_root, family, region_id):
     return Path(metadata_root) / family / "visual-references" / f"{region_id}.json"
 
 
+def cycle_key(cycle):
+    if not isinstance(cycle, str) or not re.fullmatch(r"[0-9]{2}(0[1-9]|1[0-4])", cycle):
+        raise ValueError(f"Expected a YYCC cycle, got {cycle!r}")
+    return int(cycle)
+
+
+def reference_history(path):
+    if not path.exists():
+        return []
+    history = json.loads(path.read_text())
+    if (not isinstance(history, dict) or history.get("schema_version") != HISTORY_SCHEMA
+            or not isinstance(history.get("approvals"), list)):
+        raise ValueError("Expected a versioned chart approval history; migrate old reference files explicitly")
+    for entry in history["approvals"]:
+        if entry["effective_from_cycle"] is not None:
+            cycle_key(entry["effective_from_cycle"])
+        if not isinstance(entry["reference"], dict):
+            raise ValueError("Invalid approval history entry")
+        source_cycle = entry["reference"]["source"]["cycle"]
+        if re.fullmatch(r"[0-9]{4}", source_cycle) and entry["effective_from_cycle"] != source_cycle:
+            raise ValueError("Dated approval applicability must match its source cycle")
+    return history["approvals"]
+
+
+def select_reference(history, cycle):
+    at = cycle_key(cycle)
+    eligible = [(cycle_key(entry["effective_from_cycle"]) if entry["effective_from_cycle"] else -1, i, entry)
+                for i, entry in enumerate(history)
+                if entry["effective_from_cycle"] is None or cycle_key(entry["effective_from_cycle"]) <= at]
+    # Select by applicability BEFORE checking metadata. Never fall back to a
+    # different approval merely because its pixels or definition match better.
+    return max(eligible, default=(None, None, None), key=lambda item: item[:2])[2]
+
+
+def reference_for(metadata_root, family, region_id, cycle):
+    entry = select_reference(reference_history(reference_path(metadata_root, family, region_id)), cycle)
+    return entry["reference"] if entry else None
+
+
+def revoke_reference(metadata_root, family, region_id, candidate_digest):
+    path = reference_path(metadata_root, family, region_id)
+    entries = reference_history(path)
+    retained = [entry for entry in entries if entry["reference"]["approval"]["digest"] != candidate_digest]
+    if retained == entries:
+        return
+    if retained:
+        atomic_json(path, {"schema_version": HISTORY_SCHEMA, "approvals": retained})
+    else:
+        path.unlink()
+
+
 def capture(region, samples, family, source_id, cycle, geometry):
     source = samples.source
     window, size = window_for(geometry)
@@ -430,7 +483,7 @@ def render_region(region, candidate, reference, samples, output):
     title = f'{region["chart"]}: {region["name"]}'
     text = "; ".join(reasons) if reasons else "Matches the approved reference"
     command = f'python3 tools/chart_cutline_audit.py --approve-reference {output / "candidate.json"} --reviewed-by YOUR_NAME'
-    body.insert(0, f'<p class="{severity}">{html.escape(text)}</p><p>Fixed source-pixel windows; no alignment correction. A match does not prove the georeference.</p><p>After inspecting (and correcting the metadata in the cutline editor if needed), approve this exact candidate:</p><pre>{html.escape(command)}</pre>')
+    body.insert(0, f'<p class="{severity}">{html.escape(text)}</p><p>Candidate cycle: {html.escape(candidate["source"]["cycle"])}. Fixed source-pixel windows; no alignment correction. A match does not prove the georeference.</p><p>After inspecting (and correcting the metadata in the cutline editor if needed), approve this exact candidate, effective from its cycle:</p><p><a href="candidate.json" download="candidate.json">Download this candidate</a> to the checkout where you will record the approval. The following path is local to the build machine:</p><pre>{html.escape(command)}</pre>')
     if reference and reference["definition_hash"] != candidate["definition_hash"]:
         body.append(f'<h2>New candidate after metadata changes</h2><p>The comparison above always uses approved windows. The candidate below follows the current metadata.</p><img src="data:image/png;base64,{candidate["views"][0]["pixels"]}">')
     (output / "index.html").write_text(html_page(title, "".join(body)))
@@ -452,35 +505,85 @@ def check_region(region, source_root, metadata_root, source_id, cycle, output):
         samples = ChartSamples(source)
         candidate = capture(region, samples, family, source_id, cycle, geometry)
         atomic_json(output / "candidate.json", candidate)
-        path = reference_path(metadata_root, family, region["id"])
-        reference = json.loads(path.read_text()) if path.exists() else None
+        entry = select_reference(reference_history(reference_path(metadata_root, family, region["id"])), cycle)
+        reference = entry["reference"] if entry else None
         status, message, scores = render_region(region, candidate, reference, samples, output)
-        result.update(status=status, message=message, scores=scores, unreviewed=reference is None)
+        result.update(status=status, message=message, scores=scores, unreviewed=reference is None,
+                      reference_from_cycle=entry["effective_from_cycle"] if entry else None,
+                      reference_digest=reference["approval"]["digest"] if reference else None)
     except (RuntimeError, ValueError, KeyError, TypeError, OSError) as error:
         result.update(status="critical", message=f"Check failed: {error}", scores={}, unreviewed=False)
         (output / "index.html").write_text(html_page(region["chart"], f'<p class="critical">{html.escape(result["message"])}</p>'))
     return result
 
 
-def approve(candidate_path, metadata_root, reviewer):
+def approve(candidate_path, metadata_root, reviewer, effective_from_cycle=None):
     if not reviewer.strip():
         raise ValueError("Approval needs the reviewer's name")
     initialize_rendering()
     candidate = json.loads(Path(candidate_path).read_text())
+    effective_from_cycle = effective_from_cycle or candidate["source"]["cycle"]
+    cycle_key(effective_from_cycle)
+    if re.fullmatch(r"[0-9]{4}", candidate["source"]["cycle"]) and effective_from_cycle != candidate["source"]["cycle"]:
+        raise ValueError("Approval must start at the candidate's source cycle")
     matches = [region for region in regions(metadata_root, candidate["family"])
                if region["id"] == candidate["region_id"]]
     if len(matches) != 1 or digest(matches[0]["definition"]) != candidate["definition_hash"]:
         raise ValueError("Candidate is stale: cutline/georeference changed or region was removed")
     if candidate["schema_version"] != SCHEMA or candidate["recipe"] != RECIPE or "approval" in candidate:
         raise ValueError("Expected an unapproved candidate from this rendering recipe")
-    candidate["approval"] = {"digest": digest(candidate), "reviewed_by": reviewer.strip(), "reviewed_at": now()}
     path = reference_path(metadata_root, candidate["family"], candidate["region_id"])
-    atomic_json(path, candidate)
+    entries = reference_history(path)
+    candidate_digest = digest(candidate)
+    current = select_reference(entries, effective_from_cycle)
+    if current and current["reference"]["approval"]["digest"] == candidate_digest:
+        validate_reference(current["reference"], matches[0])
+        return path
+    candidate["approval"] = {"digest": candidate_digest, "reviewed_by": reviewer.strip(), "reviewed_at": now()}
+    entries.append({"effective_from_cycle": effective_from_cycle, "reference": candidate})
+    atomic_json(path, {"schema_version": HISTORY_SCHEMA, "approvals": entries})
     return path
 
 
+def scope_id(publication_id, cycle):
+    if not isinstance(publication_id, str) or not publication_id or len(publication_id) > 256:
+        raise ValueError("Invalid chart-check publication identity")
+    cycle_key(cycle)
+    return digest([publication_id, cycle])[:24]
+
+
+def scope_pointer(output, report):
+    return Path(output) / "scopes" / scope_id(report["publication_id"], report["cycle"]) / "current.json"
+
+
+def publish_pointer(output, report):
+    atomic_json(scope_pointer(output, report), report)
+    # The cache/CLI invocation result remains convenient to read. Monitoring
+    # reads scoped pointers, never this last-writer-wins convenience pointer.
+    atomic_json(Path(output) / "current.json", report)
+
+
+def prune_reports(output):
+    output = Path(output)
+    keep = set()
+    completed = {}
+    for path in (output / "reports-v3").glob("*/report.json"):
+        report = json.loads(path.read_text())
+        key = (report["publication_id"], report["cycle"])
+        completed.setdefault(key, []).append((report["completed_at"], report["report_id"]))
+    for pointer in (output / "scopes").glob("*/current.json"):
+        current = json.loads(pointer.read_text())
+        keep.add(current["report_id"])
+        history = completed.get((current["publication_id"], current["cycle"]), [])
+        keep.update(report_id for _, report_id in sorted(history, reverse=True)[:3])
+    for folder in (output / "reports-v3").iterdir():
+        if not folder.name.startswith(".") and folder.name not in keep:
+            shutil.rmtree(folder)
+
+
 def run_check(source_root, metadata_root, family, output, source_id, cycle, charts=None,
-              monitor_output=None):
+              monitor_output=None, publication_id="manual"):
+    scope_id(publication_id, cycle)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     # Serializes attempts for one family, including the report's atomic current pointer.
@@ -492,14 +595,15 @@ def run_check(source_root, metadata_root, family, output, source_id, cycle, char
     with (monitor_output / ".lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         report_id = uuid.uuid4().hex
-        report_root = output / "reports" / report_id
+        report_root = output / "reports-v3" / report_id
         report_root.mkdir(parents=True)
         report = {"schema_version": REPORT_SCHEMA, "family": family, "cycle": cycle,
+                  "publication_id": publication_id,
                   "source_id": source_id, "report_id": report_id, "started_at": now(),
                   "status": "checking", "policy": POLICY, "regions": []}
-        atomic_json(output / "current.json", report)
+        publish_pointer(output, report)
         if monitor_output != output:
-            atomic_json(monitor_output / "current.json", report)
+            publish_pointer(monitor_output, report)
         try:
             initialize_rendering()
             selected = publication_regions(metadata_root, family, charts)
@@ -528,11 +632,8 @@ def run_check(source_root, metadata_root, family, output, source_id, cycle, char
             disposition = 'No source sheets quarantined.'
         (report_root / "index.html").write_text(html_page(title, f'<p class="{report["status"]}">{html.escape(disposition)}</p><p>References require explicit review; these images are never auto-approved.</p><table><tr><th>Status</th><th>Region</th><th>Reason</th></tr>{rows}</table><details><summary>Publication decision</summary><pre>{html.escape(json.dumps(decision, indent=2))}</pre></details><details><summary>Scoring policy</summary><pre>{html.escape(json.dumps(POLICY, indent=2))}</pre></details>'))
         atomic_json(report_root / "report.json", report)
-        atomic_json(output / "current.json", report)
-        retained = sorted((p for p in (output / "reports").iterdir() if p != report_root),
-                          key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in retained[2:]:
-            shutil.rmtree(old)
+        publish_pointer(output, report)
+        prune_reports(output)
         if monitor_output != output:
             _publish_cached_report_locked(output, monitor_output, report)
         return report
@@ -548,6 +649,7 @@ def publish_cached_report(cached_output, output):
             or not report.get("completed_at") or len(report_id) != 32
             or any(c not in "0123456789abcdef" for c in report_id)):
         raise ValueError("Cannot publish an incomplete cached chart verdict")
+    scope_pointer(output, report)
     output.mkdir(parents=True, exist_ok=True)
     with (output / ".lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -559,7 +661,7 @@ def _publish_cached_report_locked(cached_output, output, report):
     """Caller holds output/.lock across the report copy and pointer switch."""
     import tempfile
     report_id = report["report_id"]
-    reports = output / "reports"
+    reports = output / "reports-v3"
     reports.mkdir(exist_ok=True)
     target = reports / report_id
     if not target.exists():
@@ -567,7 +669,7 @@ def _publish_cached_report_locked(cached_output, output, report):
         # confines review assets to state/chart-quality.
         pending = Path(tempfile.mkdtemp(prefix=".publishing-", dir=reports))
         try:
-            shutil.copytree(cached_output / "reports" / report_id, pending,
+            shutil.copytree(cached_output / "reports-v3" / report_id, pending,
                             dirs_exist_ok=True)
             # Node-cache directories are immutable; the monitoring copy
             # must remain removable by the producer during retention GC.
@@ -579,11 +681,8 @@ def _publish_cached_report_locked(cached_output, output, report):
                 for directory, _, _ in os.walk(pending):
                     Path(directory).chmod(0o755)
                 shutil.rmtree(pending)
-    atomic_json(output / "current.json", report)
-    retained = sorted((p for p in reports.iterdir() if p != target),
-                      key=lambda p: p.stat().st_mtime, reverse=True)
-    for old in retained[2:]:
-        shutil.rmtree(old)
+    publish_pointer(output, report)
+    prune_reports(output)
 
 
 def main(argv=None):
@@ -597,10 +696,12 @@ def main(argv=None):
     parser.add_argument("--monitor-output", type=Path,
                         help="Publish attempt progress and completed evidence here while caching output separately")
     parser.add_argument("--source-id", default="manual-review")
-    parser.add_argument("--cycle", default="manual-review")
+    parser.add_argument("--cycle", help="YYCC of the source being checked, required for a new check")
+    parser.add_argument("--publication-id", default="manual", help="Producer publication label, independent of build completion order")
     parser.add_argument("--chart", action="append")
     parser.add_argument("--approve-reference", type=Path)
     parser.add_argument("--reviewed-by")
+    parser.add_argument("--effective-from-cycle", help="Required for undated editor candidates; never inferred from today's date")
     args = parser.parse_args(argv)
     if args.publish_cached:
         if not args.output:
@@ -610,12 +711,12 @@ def main(argv=None):
     if args.approve_reference:
         if not args.reviewed_by:
             parser.error("--reviewed-by is required for approval")
-        print(approve(args.approve_reference, args.metadata_root, args.reviewed_by))
+        print(approve(args.approve_reference, args.metadata_root, args.reviewed_by, args.effective_from_cycle))
         return 0
-    if not all((args.family, args.source_root, args.output)):
-        parser.error("--family, --source-root and --output are required for checks")
+    if not all((args.family, args.source_root, args.output, args.cycle)):
+        parser.error("--family, --source-root, --output and --cycle are required for checks")
     report = run_check(args.source_root, args.metadata_root, args.family, args.output,
-                       args.source_id, args.cycle, args.chart, args.monitor_output)
+                       args.source_id, args.cycle, args.chart, args.monitor_output, args.publication_id)
     # stdout is the result of THIS invocation, not the racy monitoring current.json.
     print(json.dumps(report))
     return 2 if report['publication']['state'] == 'blocked' else 0

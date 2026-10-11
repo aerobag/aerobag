@@ -46,6 +46,16 @@ their sources and configuration. Changing `archive_enabled` to false disables
 collection and the store timer. No production deployment was performed as part
 of implementing this feature.
 
+Both units retain `ProtectSystem=strict` and use `PrivateTmp=true`, so Borg's
+startup self-tests have writable temporary space. The collector can write only
+the archive and health trees (plus its private temporary directories); production
+artifacts remain read-only. The store worker additionally has a single writable
+mount of the artifact tree to make hardlinks from `published/` into
+`state/archive-cycle-pending/`. Separate writable mounts of `state/` or `locks/`
+would break those hardlinks with `EXDEV`, even on the same underlying filesystem.
+The store code still treats published bytes as immutable; there is no copy fallback
+or change to publication GC/retention.
+
 ## Live-feed capture
 
 The collector discovers the providers serving production and sunset releases
@@ -208,6 +218,14 @@ expired chains, equal-timestamp full frames, quotas, and independent restore.
 Real Borg integration tests archive/extract/delete/compact actual repositories,
 including shared chunks, failure after create, and another rotation during
 verification. Hosted Python CI installs Borg so these tests execute there.
+`tools/test_archive_sandbox.py` also boots the generated systemd units against
+isolated synthetic artifacts and a private archive mount. It checks temporary
+space, collector read-only boundaries, real hardlinks surviving publication GC,
+both Borg repositories' create/verify/restore paths, recovery of an incomplete
+pin, and unchanged-publication idempotence. It never uses production paths or
+units. Hosted Python CI runs this test explicitly as root and fails if its
+prerequisites are missing; ordinary non-root discovery reports it as skipped.
+Local root discovery runs it automatically when systemd and Borg are available.
 Rust helper tests prove NOTAM checkpoint/suffix replay, updates/removals, and
 rejection of missing or reordered deltas. Monitor tests cover missing promises,
 bad claims, stale workers, persistent gaps, and explicit disablement.
@@ -215,5 +233,6 @@ bad claims, stale workers, persistent gaps, and explicit disablement.
 ```sh
 python3 -m unittest discover -s tools -p 'test_*archive*.py'
 python3 -m unittest discover -s product/preprocessor/scripts -p 'test_archive_health.py'
+sudo env AEROBAG_REQUIRE_ARCHIVE_SANDBOX_TEST=1 /usr/bin/python3 -m pytest tools/test_archive_sandbox.py
 cargo test --manifest-path crates/notam-state/Cargo.toml --bin aerobag-archive-notam
 ```

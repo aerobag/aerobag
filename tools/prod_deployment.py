@@ -2004,6 +2004,13 @@ def archive_unit(config: dict[str, Any], mode: str) -> str:
         raise ValueError("invalid archive service mode")
     kind = "simple" if mode == "collect" else "oneshot"
     restart = "Restart=on-failure\nRestartSec=15\n" if mode == "collect" else "TimeoutStartSec=4h\n"
+    writable = [config['archive_root'], f"{config['data_root']}/health"]
+    if mode == "store":
+        # Hardlinking published bytes into state/archive-cycle-pending requires
+        # one writable mount, not separate ReadWritePaths bind mounts for state
+        # and locks (EXDEV even when both paths have the same st_dev). Only the
+        # store worker needs this access; the collector only reads artifacts.
+        writable.append(config['artifact_root'])
     return f"""[Unit]
 Description=Aerobag product archive {mode}
 After=local-fs.target
@@ -2018,7 +2025,8 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths={config['archive_root']} {config['artifact_root']}/state {config['artifact_root']}/locks {config['data_root']}/health
+PrivateTmp=true
+ReadWritePaths={' '.join(writable)}
 Environment=BORG_CACHE_DIR={config['archive_root']}/borg-cache
 Environment=BORG_SECURITY_DIR={config['archive_root']}/borg-security
 

@@ -415,14 +415,18 @@ jobs:
           mkdir -p test-results/python
           mapfile -t tests < <(find tools product/preprocessor/scripts product/preprocessor/preprocessor-tpp/scripts -type f -name 'test_*.py' -print | sort)
           /usr/bin/python3 -m pytest "${tests[@]}" --junitxml=test-results/python/junit.xml
+      - name: Exercise archive workers inside their systemd sandbox
+        run: |
+          sudo env AEROBAG_REQUIRE_ARCHIVE_SANDBOX_TEST=1 /usr/bin/python3 -m pytest \
+            tools/test_archive_sandbox.py --junitxml=test-results/python/archive-sandbox.xml
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Python tool tests" "test-results/python/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Python tool tests" "test-results/python/*.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: python-test-results
-          path: test-results/python/junit.xml
+          path: test-results/python/*.xml
           if-no-files-found: ignore
           retention-days: 14

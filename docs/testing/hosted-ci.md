@@ -603,6 +603,17 @@ uses them. For example, only the plate screenshot journey installs
 `python3-pil` in ordinary E2E; the heavy NEXRAD replay also declares it because
 the source-grid tiler imports Pillow.
 
+Service sandbox configuration needs real service-boundary tests. Archive Python
+and Borg tests passed outside systemd, but the deployed unit made all temporary
+paths read-only and placed hardlink source/destination across separate mounts.
+`test_archive_sandbox.py` boots the generated units with tiny private fixtures,
+checks filesystem restrictions and hardlinks, and commits/restores both Borg
+repositories. Python CI runs this narrow suite explicitly with sudo and
+`AEROBAG_REQUIRE_ARCHIVE_SANDBOX_TEST=1`: missing prerequisites fail that step,
+not silently skip it. Ordinary non-root discovery reports these cases as skipped;
+root local preflight runs them when Borg and systemd are present. Test services,
+mounts, and data have unique names and are cleaned up without production access.
+
 The named `Live-feed controller proxy cutover` CI job installs nginx and pytest
 and explicitly runs `tools/ci/live_feed_proxy_smoke.py`. It exercises real
 controller activation, generated routing, direct provider revalidation, nginx

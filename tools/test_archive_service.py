@@ -110,6 +110,13 @@ class ArchiveServiceTests(unittest.TestCase):
             self.assertIn(f"--mode {mode}", unit)
             self.assertIn("IOSchedulingClass=idle", unit)
             self.assertIn("ProtectSystem=strict", unit)
+            self.assertIn("PrivateTmp=true", unit)
+            writable = next(line.split("=", 1)[1].split() for line in unit.splitlines()
+                            if line.startswith("ReadWritePaths="))
+            self.assertEqual(set(writable), {
+                str(self.archive), f"{self.config['data_root']}/health",
+                *([str(self.artifacts)] if mode == "store" else []),
+            })
         with mock.patch.object(prod_deployment, "run_ssh") as ssh:
             prod_deployment.install_archive_tools(self.config, dry_run=True)
         command = ssh.call_args.args[1]

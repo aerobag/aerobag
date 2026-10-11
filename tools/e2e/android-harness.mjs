@@ -850,18 +850,23 @@ export function androidInteractiveRuntime(state, home) {
 export async function waitForAndroidInteractiveRuntime(
   serial,
   timeoutMs = E2E_TIMING.startupMs,
+  { requirePreservedDisclaimer = false } = {},
 ) {
   const observed = await observeUntil("painted interactive Android runtime", () => {
     const state = queryAndroidStartupState(serial);
-    if (state?.disclaimer_required !== "false") return null;
+    if (requirePreservedDisclaimer && state?.disclaimer_required === "true") {
+      throw new Error(`durably saved disclaimer acceptance was lost after restart: ${JSON.stringify(state)}`);
+    }
+    if (state?.disclaimer_required !== "false") return { state, home: null };
     const home = queryAndroidExactProjection(
       serial,
       "parity:button:HOME",
       { verifyReachable: true },
     )[0] ?? null;
-    return androidInteractiveRuntime(state, home);
+    return { state, home };
   }, {
     timeoutMs,
+    accept: ({ state, home }) => Boolean(androidInteractiveRuntime(state, home)),
     intervalMs: E2E_TIMING.pollIntervalMs,
     consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
     waitForNextProbe: (intervalMs) => waitForAndroidSemanticEvent(serial, intervalMs),

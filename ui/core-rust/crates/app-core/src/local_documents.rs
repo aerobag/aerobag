@@ -40,10 +40,21 @@ struct Document {
     value: Option<Vec<u8>>,
     persisted: Option<Vec<u8>>,
     revision: u64,
+    saved_revision: u64,
     active: Option<u64>,
     error: Option<String>,
     read_failed: bool,
     retry_at: i64,
+}
+
+/// Read-only completion receipts, scoped to this storage owner. In-memory
+/// acceptance of an edit is not acknowledgement of a durable write.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DocumentSaveStatus {
+    pub revision: u64,
+    pub saved_revision: u64,
+    pub pending: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Default)]
@@ -127,6 +138,12 @@ impl LocalDocuments {
                 document.value = value;
                 document.revision += 1;
             }
+            if document.active.is_none()
+                && document.error.is_none()
+                && document.value == document.persisted
+            {
+                document.saved_revision = document.revision;
+            }
         }
         self.pump(key);
         Ok(())
@@ -164,6 +181,11 @@ impl LocalDocuments {
                     match result {
                         Ok(()) => {
                             document.persisted = written;
+                            document.saved_revision = if document.value == document.persisted {
+                                document.revision
+                            } else {
+                                revision
+                            };
                             if !document.read_failed {
                                 document.error = None;
                                 document.retry_at = 0;
@@ -205,6 +227,26 @@ impl LocalDocuments {
             .documents
             .iter()
             .filter_map(|(key, doc)| doc.error.as_ref().map(|error| format!("{key}: {error}")))
+            .collect()
+    }
+
+    pub fn save_status(&self) -> BTreeMap<String, DocumentSaveStatus> {
+        self.state
+            .lock()
+            .unwrap()
+            .documents
+            .iter()
+            .map(|(key, doc)| {
+                (
+                    key.clone(),
+                    DocumentSaveStatus {
+                        revision: doc.revision,
+                        saved_revision: doc.saved_revision,
+                        pending: doc.active.is_some() || doc.value != doc.persisted,
+                        error: doc.error.clone(),
+                    },
+                )
+            })
             .collect()
     }
 
@@ -274,6 +316,66 @@ mod tests {
             complete(result);
         }
     }
+    #[test]
+    fn save_receipts_acknowledge_only_completed_revisions() {
+        let host = Arc::new(Host::default());
+        let store = LocalDocuments::new(host.clone());
+        store.replace(SESSION_DOCUMENT, b"accepted").unwrap();
+        let pending = store.save_status();
+        assert_eq!(pending[SESSION_DOCUMENT].revision, 1);
+        assert_eq!(pending[SESSION_DOCUMENT].saved_revision, 0);
+        assert!(pending[SESSION_DOCUMENT].pending);
+        // Observing readiness must not flush, retry, or perform a backend read.
+        assert_eq!(pending, store.save_status());
+        assert_eq!(host.writes.lock().unwrap().len(), 1);
+        store
+            .replace(SESSION_DOCUMENT, b"accepted plus new setting")
+            .unwrap();
+        host.finish(0, Ok(()));
+        let newer = &store.save_status()[SESSION_DOCUMENT];
+        assert_eq!((newer.revision, newer.saved_revision), (2, 1));
+        assert!(newer.pending);
+        host.finish(0, Ok(()));
+        let saved = &store.save_status()[SESSION_DOCUMENT];
+        assert_eq!((saved.revision, saved.saved_revision), (2, 2));
+        assert!(!saved.pending);
+        assert!(saved.error.is_none());
+    }
+
+    #[test]
+    fn save_receipts_do_not_hide_errors_or_unrelated_completions() {
+        let host = Arc::new(Host::default());
+        let store = LocalDocuments::new(host.clone());
+        store.replace(SESSION_DOCUMENT, b"accepted").unwrap();
+        store.replace(TOUR_DOCUMENT, b"offered").unwrap();
+        host.finish(1, Ok(()));
+        assert!(store.save_status()[SESSION_DOCUMENT].pending);
+        host.finish(0, Err("disk full".into()));
+        let failed = &store.save_status()[SESSION_DOCUMENT];
+        assert_eq!(failed.saved_revision, 0);
+        assert_eq!(failed.error.as_deref(), Some("disk full"));
+        assert!(host.writes.lock().unwrap().is_empty());
+        store.save_status();
+        assert!(
+            host.writes.lock().unwrap().is_empty(),
+            "observation cannot trigger a retry"
+        );
+    }
+
+    #[test]
+    fn reverting_to_in_flight_bytes_acknowledges_the_latest_equivalent_revision() {
+        let host = Arc::new(Host::default());
+        let store = LocalDocuments::new(host.clone());
+        store.replace("a", b"first").unwrap();
+        store.replace("a", b"second").unwrap();
+        store.replace("a", b"first").unwrap();
+        host.finish(0, Ok(()));
+        let saved = &store.save_status()["a"];
+        assert_eq!((saved.revision, saved.saved_revision), (3, 3));
+        assert!(!saved.pending);
+        assert!(host.writes.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn serializes_each_document_and_coalesces_pending_versions() {
         let host = Arc::new(Host::default());

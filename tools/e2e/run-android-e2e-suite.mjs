@@ -54,9 +54,11 @@ import {
   shutdownAndroidSemanticDrivers,
   waitFor,
   waitForAndroidInteractiveRuntime,
+  waitForAndroidSemanticEvent,
   waitForAndroidOrientation,
 } from "./android-harness.mjs";
 import { loadAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
+import { LOCAL_PERSISTENCE_PROJECTION, persistenceReceiptFromNode, restartAndroidAfterPersistence } from "./android-persistence.mjs";
 import { clampDragEndpoint } from "./gesture-geometry.mjs";
 import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
@@ -393,8 +395,16 @@ async function waitForRuntime(serial, result) {
 }
 
 async function launchInteractiveAndroidApp(serial, launch) {
-  await launch();
-  await waitForAndroidInteractiveRuntime(serial);
+  await restartAndroidAfterPersistence({
+    readStartup: () => queryAndroidStartupProjection(serial),
+    readPersistence: () => {
+      const node = queryAndroidExactProjection(serial, LOCAL_PERSISTENCE_PROJECTION)[0];
+      return persistenceReceiptFromNode(node);
+    },
+    restart: launch,
+    waitForInteractive: (options) => waitForAndroidInteractiveRuntime(serial, E2E_TIMING.startupMs, options),
+    waitForObservation: (intervalMs) => waitForAndroidSemanticEvent(serial, intervalMs),
+  });
 }
 
 async function ensurePlanPage(serial, result) {

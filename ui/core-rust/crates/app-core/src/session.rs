@@ -3184,6 +3184,21 @@ pub fn accept_disclaimer_in_session(
     })
 }
 
+/// Operational observation only: does not flush, retry, project or mutate.
+/// The session lock binds receipts to all commands through session_revision.
+pub fn local_persistence_status_in_session(handle: u32) -> AppResult<serde_json::Value> {
+    let slot = session_slot(handle)?;
+    let session = slot.lock_running()?;
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "owner": handle,
+        "session_revision": session.coordinator.session_revision,
+        "available": session.coordinator.persistence_storage.is_some(),
+        "blocked_reason": session.coordinator.persistence_write_block_reason,
+        "documents": session.coordinator.persistence_storage.as_ref().map(|store| store.save_status()),
+    }))
+}
+
 pub fn set_installed_package_ids_in_session(
     handle: u32,
     package_ids: Vec<String>,
@@ -19470,6 +19485,95 @@ mod tests {
         )
         .expect("configure platform capabilities");
         assert!(!next_snapshot.disclaimer_state.required);
+    }
+
+    #[test]
+    fn disclaimer_durability_receipt_waits_for_the_real_backend_completion() {
+        #[derive(Default)]
+        struct DeferredDocuments {
+            files: Mutex<BTreeMap<String, Vec<u8>>>,
+            writes: Mutex<
+                std::collections::VecDeque<(
+                    String,
+                    Option<Vec<u8>>,
+                    crate::local_documents::DocumentCompletion,
+                )>,
+            >,
+        }
+        impl LocalDocumentBackend for DeferredDocuments {
+            fn read(&self, key: &str) -> AppResult<Option<Vec<u8>>> {
+                Ok(self.files.lock().unwrap().get(key).cloned())
+            }
+            fn write(
+                &self,
+                key: &str,
+                bytes: Option<Vec<u8>>,
+                complete: crate::local_documents::DocumentCompletion,
+            ) {
+                self.writes
+                    .lock()
+                    .unwrap()
+                    .push_back((key.into(), bytes, complete));
+            }
+        }
+        let storage = Arc::new(DeferredDocuments::default());
+        let open = || {
+            let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+            let snapshot = configure_platform_capabilities_in_session(
+                init.handle,
+                PlatformCapabilities::default(),
+                Some(storage.clone()),
+            )
+            .unwrap();
+            (init.handle, snapshot)
+        };
+        let (handle, _) = open();
+        let accepted = accept_disclaimer_in_session(handle, "no-warranty-v1").unwrap();
+        assert!(
+            !accepted.disclaimer_state.required,
+            "UI acceptance intentionally precedes durable completion"
+        );
+        let pending = local_persistence_status_in_session(handle).unwrap();
+        assert!(pending["session_revision"].as_u64().unwrap() >= accepted.session_revision);
+        let key = crate::local_documents::SESSION_DOCUMENT;
+        assert_eq!(pending["documents"][key]["pending"], true);
+        assert_eq!(pending["documents"][key]["saved_revision"], 0);
+        let queued = storage.writes.lock().unwrap().len();
+        assert_eq!(
+            local_persistence_status_in_session(handle).unwrap(),
+            pending
+        );
+        assert_eq!(
+            storage.writes.lock().unwrap().len(),
+            queued,
+            "reading a receipt cannot flush or retry"
+        );
+        loop {
+            let next = storage.writes.lock().unwrap().pop_front();
+            let Some((key, bytes, complete)) = next else {
+                break;
+            };
+            if let Some(bytes) = bytes {
+                storage.files.lock().unwrap().insert(key, bytes);
+            } else {
+                storage.files.lock().unwrap().remove(&key);
+            }
+            complete(Ok(()));
+        }
+        let saved = local_persistence_status_in_session(handle).unwrap();
+        assert_eq!(
+            saved["session_revision"], pending["session_revision"],
+            "completion is observable without mutating the session"
+        );
+        assert_eq!(saved["documents"][key]["pending"], false);
+        assert_eq!(
+            saved["documents"][key]["saved_revision"],
+            saved["documents"][key]["revision"]
+        );
+        let (reopened, snapshot) = open();
+        assert!(!snapshot.disclaimer_state.required);
+        destroy_session(handle);
+        destroy_session(reopened);
     }
 
     struct TestObstacleHad {

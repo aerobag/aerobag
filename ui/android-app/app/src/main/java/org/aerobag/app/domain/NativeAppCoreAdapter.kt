@@ -1190,6 +1190,12 @@ class NativeUiSession internal constructor(
         invalidationListener?.invoke(invalidations)
     }
 
+    // Pure operational observation, serialized after commands. Do not use the
+    // command wrapper: its rejected-command recovery refreshes/mutates state.
+    fun localPersistenceStatusJson(): String = synchronized(sessionMutationLock) {
+        bridge.getLocalPersistenceStatusJson(handle)
+    }
+
     private fun updateSnapshot(
         nextSnapshot: UiSessionSnapshot,
         changedGroups: Set<UiSessionUpdateGroup> = UiSessionUpdateGroup.entries.toSet(),

@@ -4594,6 +4594,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnap
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getLocalPersistenceStatusJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = u32::try_from(handle)
+        .map_err(|error| error.to_string())
+        .and_then(|handle| {
+            app_core::local_persistence_status_in_session(handle)
+                .map(|status| status.to_string())
+                .map_err(|error| error.to_string())
+        });
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnapshotAtPlatformTimePagedJson(
     mut env: JNIEnv,
     _class: JClass,

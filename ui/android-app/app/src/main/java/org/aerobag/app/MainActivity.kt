@@ -3684,6 +3684,11 @@ internal fun AerobagApp(
                     .offset(x = 1.dp)
                     .size(1.dp),
             )
+            E2eLocalPersistenceProjection(uiSession, { listener ->
+                uiSession.subscribeSnapshots { listener(it.sessionRevision) }
+            }) {
+                withContext(Dispatchers.IO) { uiSession.localPersistenceStatusJson() }
+            }
             E2eProjectionView(
                 viewId = R.id.e2e_flight_plan_state_projection,
                 state = flightPlanStateProjection(sessionPlanUiState),

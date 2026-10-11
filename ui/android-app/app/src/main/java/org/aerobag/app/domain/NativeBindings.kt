@@ -395,6 +395,8 @@ interface NativeBridge {
 
     fun getSessionSnapshotPagedJson(handle: Long): String
 
+    fun getLocalPersistenceStatusJson(handle: Long): String
+
     fun getSessionSnapshotAtPlatformTimePagedJson(handle: Long, epochMs: Long, localTimeZone: String): String
 
     fun maintainNavDbInSessionAtEpochMsJson(handle: Long, epochMs: Long): String
@@ -1084,6 +1086,8 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun getSessionSnapshotPagedJson(handle: Long): String
+
+    external override fun getLocalPersistenceStatusJson(handle: Long): String
 
     external override fun getSessionSnapshotAtPlatformTimePagedJson(handle: Long, epochMs: Long, localTimeZone: String): String
 

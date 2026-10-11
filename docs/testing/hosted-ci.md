@@ -35,6 +35,24 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+Android state-preserving reset/reload waits for local-document durability, not
+just disappearance of the disclaimer. The October 11 main E2E run accepted the
+disclaimer, stopped the process, then found the disclaimer back on restart.
+Core's read-only persistence receipt reports the current document revisions,
+completed revisions, pending writes and errors. Android publishes it through
+the existing rendered index, off the input thread, including revision-only
+snapshot refreshes. Receipts are keyed to the session/revision and cannot be
+borrowed across replacement or remount. No storage bytes are exposed.
+
+The restart boundary requires a receipt at least as new as the rendered startup
+state and all observed documents saved. Missing/busy observations remain bounded;
+storage errors fail before stopping the app. It never flushes, replays acceptance,
+or waits an arbitrary grace period. After restart, loss of acknowledged acceptance
+is an immediate application failure. `android-persistence.test.mjs` runs the real
+runtime/driver with held save completions, stale receipts and failures. Core tests
+hold the actual backend callbacks; Compose tests cover pending/replacement/remount.
+These checks distinguish a synchronization mistake from real persistence loss.
+
 Product surface coverage must inventory exposed controls, not every variant
 retained in a compatibility wire enum. The October 11 release journeys failed
 deterministically on both platforms because receiver integration retired the

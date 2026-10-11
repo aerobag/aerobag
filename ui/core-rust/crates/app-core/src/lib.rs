@@ -291,6 +291,7 @@ pub use raster_tiles::{
     RasterResourceMode, RasterTileBounds, RasterTileDraw, RasterTileLevel, RasterTilePlan,
     RasterTilePlanOptions, RasterTileResource, RasterTileSource,
 };
+pub use session::local_persistence_status_in_session;
 pub use session::WindsAloftAcquisitionPhase;
 pub use session::{
     accept_disclaimer_in_session, advance_nav_kv_store_in_session_with_open_result,

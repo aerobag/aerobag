@@ -1578,12 +1578,12 @@ async function runSharedReleaseJourney(args, journey) {
           { clearUiPrefs: true, clearCoreSettings: false },
         ),
       ),
-      reloadApp: () => launchInteractiveAndroidApp(
+      reloadApp: ({ whileStopped } = {}) => launchInteractiveAndroidApp(
         args.serial,
         () => launchReleaseJourneyAndroidApp(
           args,
           fixture,
-          { clearUiPrefs: false, clearCoreSettings: false },
+          { clearUiPrefs: false, clearCoreSettings: false, whileStopped },
         ),
       ),
       resetApplicationData: async () => {
@@ -1641,11 +1641,11 @@ async function runOfflineColdStart(args) {
           { clearUiPrefs: true, clearCoreSettings: false },
         ),
       ),
-      reloadApp: () => launchInteractiveAndroidApp(
+      reloadApp: ({ whileStopped } = {}) => launchInteractiveAndroidApp(
         args.serial,
         () => launchFreshAndroidApp(
           args.serial,
-          { clearUiPrefs: false, clearCoreSettings: false },
+          { clearUiPrefs: false, clearCoreSettings: false, whileStopped },
         ),
       ),
     });

@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import {
@@ -12,7 +14,9 @@ import {
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll, establishRevealedElement,
   androidPageTag,
   androidProjectionMayRequireVerticalScan,
+  androidActionCandidates,
 } from "./semantic-journey-driver.mjs";
+import { createJourneyRuntime } from "./release-journey-runtime.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 import { performTransition, TransientObservationError } from "./transition-contract.mjs";
@@ -35,6 +39,8 @@ function device() {
     androidObservationBackend, rejectObservationOverrides,
     URLSearchParams, TransientObservationError, androidElementSemanticTag, androidSemanticTag, androidPageTag,
     androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
+    androidActionCandidates,
+    clickAndroidSemanticNode: () => assert.fail("unexpected physical input"),
     chooseUnobscuredMapPoint, androidMapInspectionPoint,
     androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
     androidProjectionMayRequireVerticalScan,
@@ -75,15 +81,63 @@ function device() {
   context.queryAndroidSemanticNodes = runInNewContext(`(${queryAndroidSemanticNodes})`, context);
   context.queryFirstAndroidSemanticNode = helper("queryFirstAndroidSemanticNode", "readinessEvidenceMatchesTag");
   context.androidProjectedElement = helper("androidProjectedElement", "queryFirstAndroidSemanticNode");
+  context.readinessEvidenceMatchesTag = runInNewContext(`(${source.slice(
+    source.indexOf("function readinessEvidenceMatchesTag("), source.indexOf("export async function establishRevealedElement("),
+  ).trim()})`, context);
+  context.activateAndroidSemanticTag = runInNewContext(`(${source.slice(
+    source.indexOf("function activateAndroidSemanticTag("), source.indexOf("export function androidPageIdFromStartupStateTag("),
+  ).trim()})`, context);
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readScalarProjection", "readProjection", "scanProjection", "revealProjectionMatching", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
+  for (const name of ["readAction", "performAction", "readScalarProjection", "readProjection", "scanProjection", "revealProjectionMatching", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
   return {
     driver, snapshots, requests,
     respondWith(value) { responseOverride = value; },
     onTraversal(callback) { context.scrollUntilTag = callback; },
+    onTap(callback) { context.clickAndroidSemanticNode = callback; },
   };
+}
+
+for (const outcome of ["ready", "unfocused", "disabled", "absent", "rejected", "lost"]) {
+  test(`Android action near the readiness deadline: ${outcome}`, async t => {
+    const { driver, snapshots, onTap } = device();
+    const tag = "parity:ownship-source:__playback_trace__";
+    const node = { "resource-id": tag, text: "REPLAY", enabled: "true", visible: "true",
+      "center-reachable": "false", bounds: "[771,400][918,547]", "semantic-path": "projection-provider:process:75" };
+    snapshots.set(tag, node);
+    let clock = 0, taps = 0, completed = false;
+    driver.readSessionRevision = async () => 28;
+    driver.waitForObservation = async () => {
+      clock = clock === 0 ? 2755 : clock + 200;
+      if (outcome === "absent") snapshots.delete(tag);
+      else if (outcome === "disabled") snapshots.set(tag, { ...node, enabled: "false", "center-reachable": "true" });
+      else if (outcome !== "unfocused") snapshots.set(tag, { ...node, "center-reachable": "true" });
+    };
+    onTap((_serial, id, bounds, path) => {
+      assert.ok(clock >= 2755 && clock < 3000, "use actual readiness within the existing budget");
+      assert.equal(id, tag); assert.equal(bounds, node.bounds); assert.equal(path, node["semantic-path"]);
+      taps++;
+      if (outcome === "rejected") throw new Error("physical tap target rejected");
+      completed = outcome !== "lost";
+      return true;
+    });
+    const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-action-ready-"));
+    t.after(() => rmSync(artifactDir, { recursive: true, force: true }));
+    const runtime = createJourneyRuntime({ journey: { id: "test.action-ready", assertions: [] },
+      platform: "android", driver, artifactDir });
+    const action = runtime.action("select Replay", tag, {
+      complete: () => completed,
+      scheduler: { now: () => clock, setTimeout, clearTimeout },
+    });
+    if (outcome === "ready") {
+      await action;
+      assert.equal(taps, 1);
+    } else {
+      await assert.rejects(action, /timed out|physical tap target rejected/);
+      assert.equal(taps, ["rejected", "lost"].includes(outcome) ? 1 : 0, "never retry input");
+    }
+  });
 }
 
 test("indexed controls own absence without caller hints, for exact and collection observations", async () => {

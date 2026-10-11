@@ -125,5 +125,6 @@ test("real Android reset and reload wiring shares the durable restart boundary",
   assert.match(helper, /restartAndroidAfterPersistence/);
   assert.match(helper, /queryAndroidExactProjection\(serial, LOCAL_PERSISTENCE_PROJECTION\)/);
   assert.match(source, /resetApp: \(\) => launchInteractiveAndroidApp/);
-  assert.match(source, /reloadApp: \(\) => launchInteractiveAndroidApp/);
+  assert.match(source, /reloadApp: \(\{ whileStopped \} = \{\}\) => launchInteractiveAndroidApp/);
+  assert.equal((source.match(/clearCoreSettings: false, whileStopped/g) ?? []).length, 2);
 });

@@ -3111,7 +3111,7 @@ test("plate journeys rendezvous with the selected chart instead of arbitrary vie
   assert.doesNotMatch(implementations, /settled (?:initial plate|legend) viewport/);
 });
 
-test("Android coordinate actions settle geometry while atomic web actions use one readiness sample", () => {
+test("actions use rendered readiness once and retain input-time validation", () => {
   const source = readFileSync(new URL("./release-journey-runtime.mjs", import.meta.url), "utf8");
   const actionBody = source.slice(
     source.indexOf("async action(description"),
@@ -3122,7 +3122,7 @@ test("Android coordinate actions settle geometry while atomic web actions use on
     source.indexOf("async openOption(description"),
   );
   assert.match(actionBody, /readinessSamples: semanticActionReadinessSamples\(driver\)/);
-  assert.equal(semanticActionReadinessSamples({ platform: "android" }), E2E_TIMING.stableObservationSamples);
+  assert.equal(semanticActionReadinessSamples({ platform: "android" }), 1);
   assert.equal(semanticActionReadinessSamples({ platform: "web" }), 1);
   assert.equal(semanticTransitionCompletionSamples({ platform: "android" }), 1);
   assert.equal(
@@ -4092,7 +4092,7 @@ test("Android horizontal reveals and actions share target ownership and require 
   );
   const reveal = driver.slice(
     driver.lastIndexOf("  async revealElement(elementId)"),
-    driver.lastIndexOf("  async reload()"),
+    driver.lastIndexOf("  async reload("),
   );
   assert.match(readAction, /queryFirstAndroidSemanticNode/);
   assert.doesNotMatch(readAction, /renderedOnly|providerOnly/);
@@ -5700,7 +5700,7 @@ test("Android reveal requires reachability and traverses only known scroll colle
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const revealMethod = source.slice(
     source.lastIndexOf("  async revealElement(elementId)"),
-    source.indexOf("\n  async reload()", source.lastIndexOf("  async revealElement(elementId)")),
+    source.indexOf("\n  async reload(", source.lastIndexOf("  async revealElement(elementId)")),
   );
   assert.match(revealMethod, /establishRevealedElement/);
   assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true, true\)/);

@@ -70,8 +70,11 @@ export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "back", "captureFrame", "injectRasterLoadFault",
 ]);
 
-export function semanticActionReadinessSamples(driver) {
-  return driver.platform === "android" ? E2E_TIMING.stableObservationSamples : 1;
+export function semanticActionReadinessSamples(_driver) {
+  // The rendered publisher owns readiness; Android revalidates its process,
+  // revision, bounds and reachability immediately before physical input.
+  // Repeated equal geometry reads cannot establish any stronger guarantee.
+  return 1;
 }
 
 export function semanticTransitionCompletionSamples(driver) {
@@ -1535,11 +1538,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     });
   }
 
-  async reload() {
+  async reload({ whileStopped = null } = {}) {
     if (this.reloadAppCallback) {
-      await this.reloadAppCallback();
+      await this.reloadAppCallback({ whileStopped });
       return;
     }
+    if (whileStopped) throw new Error("offline Android update requires the managed restart lifecycle");
     adb(this.serial, ["shell", "am", "force-stop", "org.aerobag.app"]);
     adb(this.serial, ["shell", "am", "start", "-n", "org.aerobag.app/.MainActivity"]);
   }

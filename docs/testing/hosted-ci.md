@@ -53,6 +53,24 @@ runtime/driver with held save completions, stale receipts and failures. Core tes
 hold the actual backend callbacks; Compose tests cover pending/replacement/remount.
 These checks distinguish a synchronization mistake from real persistence loss.
 
+The next release exposed a restart caller that stopped Android itself before
+calling the guarded reload: cloud-client update simulation. Offline fixture
+edits now run inside the managed restart's `whileStopped` phase, after durable
+save acknowledgement and confirmed OS teardown, before replacement startup.
+Never bypass the guard because the process is absent. The controlled update
+test executes the real helper, driver, save barrier, launcher and lifecycle,
+and verifies that save/stop/edit failures cannot proceed to a replacement.
+
+Action readiness uses one rendered sample, followed by the driver's input-time
+revalidation of process/revision, bounds, enabled state and reachability. The
+same release saw Replay become ready at 2.755 seconds but fail the old three-
+sample requirement at three seconds without sending input. Repeated matching
+geometry is not an additional readiness guarantee. Controlled runtime tests
+reproduce late readiness and retain failures for absent/disabled/unfocused
+targets, rejected input and missing semantic results. JVM tests exercise the
+actual driver's validation against focus loss, movement and owner replacement.
+The existing readiness/response deadlines and one-action contract are unchanged.
+
 Product surface coverage must inventory exposed controls, not every variant
 retained in a compatibility wire enum. The October 11 release journeys failed
 deterministically on both platforms because receiver integration retired the

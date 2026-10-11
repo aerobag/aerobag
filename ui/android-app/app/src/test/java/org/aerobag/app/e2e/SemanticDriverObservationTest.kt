@@ -103,6 +103,36 @@ class SemanticDriverObservationTest {
         assertEquals(0, ImeProbe.reads)
     }
 
+    @Test fun tapRevalidatesTheRenderedOwnerAtInputTime() {
+        val tag = "parity:test-replay"
+        val state = "enabled:true:window-focus:true"
+        fun target(evidence: String): Rect? = ReflectionHelpers.callInstanceMethod(
+            driver, "renderedTapBounds",
+            ClassParameter.from(String::class.java, tag),
+            ClassParameter.from(Rect::class.java, Rect(20, 20, 60, 60)),
+            ClassParameter.from(String::class.java, evidence))
+        publish(tag, state)
+        val evidence = read(tag).getJSONObject(0).getString("semantic-path")
+        assertEquals(Rect(20, 20, 60, 60), target(evidence))
+        assertNull(target(evidence.replace("projection-provider:", "projection-provider:other-process-")))
+        for (unready in listOf("enabled:false:window-focus:true", "enabled:true:window-focus:false")) {
+            publish(tag, unready)
+            assertNull(target(evidence))
+            assertNull(target(read(tag).getJSONObject(0).getString("semantic-path")))
+        }
+        E2eProjectionRegistry.remove(tag, owner)
+        assertNull(target(evidence))
+        publish(tag, state)
+        assertNull(target(evidence)) // remount is not the former owner/revision
+        val replacement = read(tag).getJSONObject(0).getString("semantic-path")
+        assertNotNull(target(replacement))
+        E2eProjectionRegistry.publish(tag, state, owner, "[80,20][120,60]")
+        assertNull(target(replacement))
+        assertNull(target(read(tag).getJSONObject(0).getString("semantic-path")))
+        assertEquals(0, ImeProbe.reads)
+        assertTrue(GestureProbe.gestures.isEmpty())
+    }
+
     private fun progress(tag: String, value: Float, evidence: String): Boolean =
         ReflectionHelpers.callInstanceMethod(driver, "setRenderedProgress",
             ClassParameter.from(String::class.java, tag),

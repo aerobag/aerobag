@@ -1443,6 +1443,7 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
   stopApp,
   prepareSemanticDriver,
   startApp,
+  whileStopped = null,
   readProcessNode,
   readStoppedState = async () => (await readProcessNode()) === null,
   timeoutMs = E2E_TIMING.startupMs,
@@ -1459,6 +1460,9 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
       consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
     },
   );
+  // Offline fixture changes belong inside the proven stopped lifetime, never
+  // before a caller's durability check or after the replacement process starts.
+  if (whileStopped) await whileStopped();
   await startApp();
   const observed = await observeUntil(
     "new Aerobag semantic UI visible",
@@ -1475,7 +1479,7 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
 
 export async function launchFreshAndroidApp(
   serial,
-  { clearUiPrefs = true, clearCoreSettings = false, armLayerNavKvFault = false } = {},
+  { clearUiPrefs = true, clearCoreSettings = false, armLayerNavKvFault = false, whileStopped = null } = {},
 ) {
   adb(serial, ["wait-for-device"]);
   wakeAndUnlock(serial);
@@ -1505,6 +1509,7 @@ export async function launchFreshAndroidApp(
     // The semantic projection provider lives in the target process. Querying it
     // after `stop-app` would restart the process that this phase is proving gone.
     readStoppedState: async () => !androidAppLifecyclePresent(serial),
+    whileStopped,
   });
 }
 

@@ -36,12 +36,16 @@ export async function simulateCloudClientUpdate(driver) {
     const adb = (args, options = {}) => execFileSync("adb", ["-s", driver.serial, ...args], {
       encoding: "utf8", timeout: 30_000, ...options,
     });
-    adb(["shell", "am", "force-stop", "org.aerobag.app"]);
-    const settings = adb(["exec-out", "run-as", "org.aerobag.app", "cat", "files/core-settings-v1.json"]);
-    adb(["shell", "-T", "run-as org.aerobag.app sh -c 'cat > files/core-settings-v1.json'"], {
-      input: selectNextTestClient(settings),
+    // reload owns durability -> stop -> offline modification -> start. Stopping
+    // here would leave reload waiting for receipts from an already-dead app.
+    await driver.reload({
+      whileStopped: () => {
+        const settings = adb(["exec-out", "run-as", "org.aerobag.app", "cat", "files/core-settings-v1.json"]);
+        adb(["shell", "-T", "run-as org.aerobag.app sh -c 'cat > files/core-settings-v1.json'"], {
+          input: selectNextTestClient(settings),
+        });
+      },
     });
-    await driver.reload();
   } else {
     throw new Error(`Unsupported cloud journey platform: ${driver.platform}`);
   }

@@ -12,7 +12,7 @@ use super::{
     connection::{
         Connection, ConnectionId, ConnectionPhase, Effect, Event, IoFailure, Output, WriteId,
     },
-    Credentials, Product, ProtocolPhase, Weather, WeatherKind,
+    Product, ProtocolPhase, VendorProtocolBlobs, Weather, WeatherKind,
 };
 use crate::weather_sources::{StationId, StationReport, StationReportKind};
 use app_ui_contracts::receiver::*;
@@ -176,7 +176,7 @@ pub struct Runtime {
     inventory_generation: u64,
     error: Option<String>,
     host_failed: bool,
-    credentials_ready: bool,
+    vendor_blobs_ready: bool,
     import_generation: u64,
     pending_import: Option<(String, &'static str)>,
     normalized: u64,
@@ -214,7 +214,7 @@ impl Runtime {
             inventory_generation: 0,
             error: None,
             host_failed: false,
-            credentials_ready: false,
+            vendor_blobs_ready: false,
             import_generation: 0,
             pending_import: None,
             normalized: 0,
@@ -286,18 +286,48 @@ impl Runtime {
         }
     }
 
-    fn credentials(&self) -> Result<Credentials, String> {
+    fn vendor_blobs(&self) -> Result<VendorProtocolBlobs, String> {
+        self.rename_legacy_blob_files()
+            .map_err(|error| format!("Cannot update vendor blob filenames: {error}"))?;
         let read = |name: &str| -> Result<Vec<u8>, String> {
             let file = fs::File::open(self.root.join(name))
-                .map_err(|_| "Private receiver credentials not installed")?;
+                .map_err(|_| "Vendor protocol blobs not installed")?;
             let mut bytes = Vec::new();
             file.take(4097)
                 .read_to_end(&mut bytes)
-                .map_err(|_| "Cannot read receiver credentials")?;
+                .map_err(|_| "Cannot read vendor protocol blobs")?;
             Ok(bytes)
         };
-        Credentials::new(&read("auth-token.bin")?, &read("auth-user.bin")?)
-            .map_err(|e| e.to_string())
+        VendorProtocolBlobs::new(
+            &read("vendor-challenge-seed.bin")?,
+            &read("vendor-setup-payload.bin")?,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// One-time storage-name migration, not alternative blob sources. Preserve
+    /// existing tablet setup and imported blob contents.
+    fn rename_legacy_blob_files(&self) -> std::io::Result<()> {
+        for (old, new) in [
+            ("auth-token.bin", "vendor-challenge-seed.bin"),
+            ("auth-user.bin", "vendor-setup-payload.bin"),
+        ] {
+            let old = self.root.join(old);
+            let new = self.root.join(new);
+            if !old.try_exists()? {
+                continue;
+            }
+            // The receiver worker is the sole writer. Rename is atomic and a
+            // restart between the two files resumes with the remaining old name.
+            if new.try_exists()? {
+                return Err(std::io::Error::other(
+                    "conflicting vendor blob files; originals retained",
+                ));
+            }
+            fs::rename(old, new)?;
+            fs::File::open(&self.root)?.sync_all()?;
+        }
+        Ok(())
     }
 
     pub fn update(
@@ -341,10 +371,10 @@ impl Runtime {
                 {
                     let (_, name) = self.pending_import.take().unwrap();
                     if succeeded && !self.active() {
-                        self.error = self.install_credentials_file(name, bytes).err();
-                        self.credentials_ready = self.credentials().is_ok();
+                        self.error = self.install_vendor_blobs_file(name, bytes).err();
+                        self.vendor_blobs_ready = self.vendor_blobs().is_ok();
                     } else if !succeeded {
-                        self.error = Some("Receiver credential file was not read; select a local file and try again".into());
+                        self.error = Some("Receiver vendor blob file was not read; select a local file and try again".into());
                     }
                 }
             }
@@ -381,7 +411,7 @@ impl Runtime {
                             )
                         },
                     };
-                    self.credentials_ready = self.credentials().is_ok();
+                    self.vendor_blobs_ready = self.vendor_blobs().is_ok();
                 }
             }
             ReceiverHostEvent::Action { action_id } => {
@@ -392,7 +422,7 @@ impl Runtime {
                     self.refresh_inventory(clock, &mut effects);
                 } else if matches!(
                     action_id.as_str(),
-                    "receiver:import-token" | "receiver:import-bundle"
+                    "receiver:import-seed" | "receiver:import-payload"
                 ) && !self.active()
                 {
                     self.import_generation = self
@@ -400,10 +430,10 @@ impl Runtime {
                         .checked_add(1)
                         .expect("receiver import generation exhausted");
                     let request_id = format!("receiver-import:{}", self.import_generation);
-                    let name = if action_id == "receiver:import-token" {
-                        "auth-token.bin"
+                    let name = if action_id == "receiver:import-seed" {
+                        "vendor-challenge-seed.bin"
                     } else {
-                        "auth-user.bin"
+                        "vendor-setup-payload.bin"
                     };
                     self.pending_import = Some((request_id.clone(), name));
                     effects.push(ReceiverHostEffect::ReadPrivateFile {
@@ -437,12 +467,12 @@ impl Runtime {
                     if let Some(device) = device.filter(|_| !self.active()) {
                         // Blocked owners must release the file lock before opening a new archive.
                         self.connection = None;
-                        match self.credentials().and_then(|credentials| {
+                        match self.vendor_blobs().and_then(|vendor_blobs| {
                             CaptureArchive::open(
                                 &self.root.join("captures"),
                                 CapturePolicy::default(),
                             )
-                            .map(|archive| Connection::new(credentials, archive, clock))
+                            .map(|archive| Connection::new(vendor_blobs, archive, clock))
                             .map_err(|e| format!("Cannot open private receiver capture: {e}"))
                         }) {
                             Ok(mut connection) => {
@@ -613,11 +643,14 @@ impl Runtime {
         })
     }
 
-    fn install_credentials_file(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        if (name == "auth-token.bin" && bytes.len() != 48)
-            || (name == "auth-user.bin" && (!bytes.starts_with(b"GRM_SALT") || bytes.len() > 4096))
+    fn install_vendor_blobs_file(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.rename_legacy_blob_files()
+            .map_err(|error| format!("Cannot update vendor blob filenames: {error}"))?;
+        if (name == "vendor-challenge-seed.bin" && bytes.len() != 48)
+            || (name == "vendor-setup-payload.bin"
+                && (!bytes.starts_with(b"GRM_SALT") || bytes.len() > 4096))
         {
-            return Err("Not a valid receiver credential file".into());
+            return Err("Not a valid receiver vendor blob file".into());
         }
         let write = || -> std::io::Result<()> {
             use std::io::Write;
@@ -649,7 +682,7 @@ impl Runtime {
             fs::rename(temporary, self.root.join(name))?;
             fs::File::open(&self.root)?.sync_all()
         };
-        write().map_err(|_| "Cannot save private receiver credentials".into())
+        write().map_err(|_| "Cannot save vendor protocol blobs".into())
     }
     fn device_action(&self, index: usize) -> String {
         format!("receiver:device:{}:{index}", self.inventory_generation)
@@ -718,7 +751,7 @@ impl Runtime {
                 Some(ConnectionPhase::Protocol(ProtocolPhase::Receiving)) => {
                     "Receiving and recording".into()
                 }
-                Some(ConnectionPhase::Protocol(_)) => "Authenticating receiver".into(),
+                Some(ConnectionPhase::Protocol(_)) => "Setting up receiver protocol".into(),
                 Some(ConnectionPhase::WaitingToRetry { .. }) => {
                     "Connection interrupted; retrying automatically".into()
                 }
@@ -761,15 +794,18 @@ impl Runtime {
             panel
                 .actions
                 .push(action("receiver:export", "Export private capture"));
-            if !self.credentials_ready {
-                panel.detail.push_str(" Import the private auth-token.bin and auth-user.bin files before connecting. They are kept only on this device, never cloud-synced.");
+            if !self.vendor_blobs_ready {
+                panel.detail.push_str(
+                    " Import the vendor challenge seed and setup payload before connecting.",
+                );
             }
+            panel.actions.push(action(
+                "receiver:import-seed",
+                "Import challenge seed (48 bytes)",
+            ));
             panel
                 .actions
-                .push(action("receiver:import-token", "Import receiver token"));
-            panel
-                .actions
-                .push(action("receiver:import-bundle", "Import receiver bundle"));
+                .push(action("receiver:import-payload", "Import setup payload"));
             if matches!(
                 self.inventory,
                 InventoryState::Checked {
@@ -800,10 +836,9 @@ impl Runtime {
                                 &self.device_action(index),
                                 &format!("Connect {} ({})", device.name, device.address),
                             );
-                            button.enabled = self.credentials_ready;
-                            button.disabled_reason = (!self.credentials_ready).then(|| {
-                                "Import both private receiver credential files first".into()
-                            });
+                            button.enabled = self.vendor_blobs_ready;
+                            button.disabled_reason = (!self.vendor_blobs_ready)
+                                .then(|| "Import both vendor protocol blobs first".into());
                             button
                         }),
                 );
@@ -935,9 +970,9 @@ mod tests {
     fn root() -> Temp {
         let root = Temp::new();
         drop(WeatherCache::open(root.path()).unwrap());
-        fs::write(root.path().join("auth-token.bin"), [7; 48]).unwrap();
+        fs::write(root.path().join("vendor-challenge-seed.bin"), [7; 48]).unwrap();
         fs::write(
-            root.path().join("auth-user.bin"),
+            root.path().join("vendor-setup-payload.bin"),
             b"GRM_SALT synthetic test only",
         )
         .unwrap();
@@ -1145,17 +1180,73 @@ mod tests {
     }
 
     #[test]
-    fn credential_import_is_bounded_private_validated_and_old_picker_results_are_ignored() {
+    fn installed_vendor_blobs_survive_filename_update_and_restart() {
+        let root = Temp::new();
+        drop(WeatherCache::open(root.path()).unwrap());
+        fs::write(root.path().join("auth-token.bin"), [7; 48]).unwrap();
+        fs::write(root.path().join("auth-user.bin"), b"GRM_SALTsynthetic").unwrap();
+        let runtime = Runtime::new(root.path().into());
+        runtime.vendor_blobs().unwrap();
+        assert_eq!(
+            fs::read(root.path().join("vendor-challenge-seed.bin")).unwrap(),
+            [7; 48]
+        );
+        assert_eq!(
+            fs::read(root.path().join("vendor-setup-payload.bin")).unwrap(),
+            b"GRM_SALTsynthetic"
+        );
+        assert!(!root.path().join("auth-token.bin").exists());
+        assert!(!root.path().join("auth-user.bin").exists());
+        drop(runtime);
+        Runtime::new(root.path().into()).vendor_blobs().unwrap();
+    }
+
+    #[test]
+    fn interrupted_vendor_blob_filename_update_resumes_without_replacing_data() {
+        let root = Temp::new();
+        drop(WeatherCache::open(root.path()).unwrap());
+        fs::write(root.path().join("vendor-challenge-seed.bin"), [7; 48]).unwrap();
+        fs::write(root.path().join("auth-user.bin"), b"GRM_SALTsynthetic").unwrap();
+        let runtime = Runtime::new(root.path().into());
+        runtime.vendor_blobs().unwrap();
+        assert!(!root.path().join("auth-token.bin").exists());
+        assert!(!root.path().join("auth-user.bin").exists());
+    }
+
+    #[test]
+    fn conflicting_vendor_blob_files_are_reported_without_overwriting_either() {
+        let root = Temp::new();
+        drop(WeatherCache::open(root.path()).unwrap());
+        fs::write(root.path().join("auth-token.bin"), [7; 48]).unwrap();
+        fs::write(root.path().join("vendor-challenge-seed.bin"), [8; 48]).unwrap();
+        let runtime = Runtime::new(root.path().into());
+        assert!(runtime
+            .vendor_blobs()
+            .err()
+            .unwrap()
+            .contains("conflicting vendor blob files"));
+        assert_eq!(
+            fs::read(root.path().join("auth-token.bin")).unwrap(),
+            [7; 48]
+        );
+        assert_eq!(
+            fs::read(root.path().join("vendor-challenge-seed.bin")).unwrap(),
+            [8; 48]
+        );
+    }
+
+    #[test]
+    fn vendor_blob_import_is_bounded_validated_and_old_picker_results_are_ignored() {
         let root = Temp::new();
         let mut runtime = Runtime::new(root.path().into());
-        let requested = runtime.update(action("receiver:import-token"), &[], clock(0));
+        let requested = runtime.update(action("receiver:import-seed"), &[], clock(0));
         let ReceiverHostEffect::ReadPrivateFile {
             request_id: old, ..
         } = &requested.effects[0]
         else {
             panic!()
         };
-        let requested = runtime.update(action("receiver:import-token"), &[], clock(1));
+        let requested = runtime.update(action("receiver:import-seed"), &[], clock(1));
         let ReceiverHostEffect::ReadPrivateFile { request_id, .. } = &requested.effects[0] else {
             panic!()
         };
@@ -1167,7 +1258,7 @@ mod tests {
             &[7; 48],
             clock(2),
         );
-        assert!(!root.path().join("auth-token.bin").exists());
+        assert!(!root.path().join("vendor-challenge-seed.bin").exists());
         runtime.update(
             ReceiverHostEvent::FileRead {
                 request_id: request_id.clone(),
@@ -1177,14 +1268,14 @@ mod tests {
             clock(3),
         );
         assert_eq!(
-            fs::read(root.path().join("auth-token.bin")).unwrap(),
+            fs::read(root.path().join("vendor-challenge-seed.bin")).unwrap(),
             vec![7; 48]
         );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                fs::metadata(root.path().join("auth-token.bin"))
+                fs::metadata(root.path().join("vendor-challenge-seed.bin"))
                     .unwrap()
                     .permissions()
                     .mode()
@@ -1192,7 +1283,7 @@ mod tests {
                 0o600
             );
         }
-        let requested = runtime.update(action("receiver:import-bundle"), &[], clock(4));
+        let requested = runtime.update(action("receiver:import-payload"), &[], clock(4));
         let ReceiverHostEffect::ReadPrivateFile { request_id, .. } = &requested.effects[0] else {
             panic!()
         };
@@ -1204,9 +1295,9 @@ mod tests {
             &[0; 4097],
             clock(5),
         );
-        assert!(!root.path().join("auth-user.bin").exists());
-        assert!(!runtime.credentials_ready);
-        let requested = runtime.update(action("receiver:import-bundle"), &[], clock(6));
+        assert!(!root.path().join("vendor-setup-payload.bin").exists());
+        assert!(!runtime.vendor_blobs_ready);
+        let requested = runtime.update(action("receiver:import-payload"), &[], clock(6));
         let ReceiverHostEffect::ReadPrivateFile { request_id, .. } = &requested.effects[0] else {
             panic!()
         };
@@ -1218,7 +1309,7 @@ mod tests {
             b"GRM_SALT synthetic",
             clock(7),
         );
-        assert!(runtime.credentials_ready);
+        assert!(runtime.vendor_blobs_ready);
         assert!(
             !result.keep_alive,
             "import never initiates an unsolicited connection"
@@ -1328,7 +1419,7 @@ mod tests {
             let mut file = zip.by_index(index).unwrap();
             assert!(
                 file.name().ends_with(".abrc"),
-                "do not export credential source files"
+                "do not export vendor blob source files"
             );
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).unwrap();

@@ -18,28 +18,32 @@ const MAX_RETRIES: usize = 3;
 const MAX_PENDING: usize = 32;
 const NEGOTIATION: &[u8] = &[0x40, 0x0a, 1, 0, 4, 0xf4, 1, 0x96, 0, 0xb8, 0xab, 3, 0];
 
-/// Intentionally neither Debug nor Serialize: never put authentication material
-/// in app state snapshots, telemetry, or public fixtures.
-pub struct Credentials {
-    token: [u8; 48],
-    bundle: Vec<u8>,
+/// Shared vendor protocol data. See
+/// docs/receiver-vendor-blobs.md for provenance and the payload experiment.
+/// Kept out of UI snapshots to avoid copying binary setup data into presentation.
+pub struct VendorProtocolBlobs {
+    challenge_seed: [u8; 48],
+    setup_payload: Vec<u8>,
 }
 
-impl Credentials {
+impl VendorProtocolBlobs {
     pub(super) fn for_connection(&self) -> Self {
         Self {
-            token: self.token,
-            bundle: self.bundle.clone(),
+            challenge_seed: self.challenge_seed,
+            setup_payload: self.setup_payload.clone(),
         }
     }
 
-    pub fn new(token: &[u8], bundle: &[u8]) -> Result<Self> {
-        if token.len() != 48 || !bundle.starts_with(b"GRM_SALT") || bundle.len() > 4096 {
-            return Err(DecodeError("invalid private receiver credentials"));
+    pub fn new(challenge_seed: &[u8], setup_payload: &[u8]) -> Result<Self> {
+        if challenge_seed.len() != 48
+            || !setup_payload.starts_with(b"GRM_SALT")
+            || setup_payload.len() > 4096
+        {
+            return Err(DecodeError("invalid vendor protocol blobs"));
         }
         Ok(Self {
-            token: token.try_into().unwrap(),
-            bundle: bundle.to_vec(),
+            challenge_seed: challenge_seed.try_into().unwrap(),
+            setup_payload: setup_payload.to_vec(),
         })
     }
 }
@@ -50,7 +54,7 @@ pub enum ProtocolPhase {
     Negotiating,
     Capabilities,
     Challenge,
-    ServerAuthentication,
+    VerifyResponse,
     Product,
     Receiving,
     Failed,
@@ -80,7 +84,7 @@ struct Pending {
 /// Protocol on reconnect; no assembly, sequence, or nonce survives a connection.
 pub struct Protocol {
     phase: ProtocolPhase,
-    credentials: Credentials,
+    vendor_blobs: VendorProtocolBlobs,
     nonce: [u8; 16],
     expected_response: Option<[u8; 16]>,
     framer: Framer,
@@ -95,21 +99,24 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    pub fn connect(credentials: Credentials, now_ms: u64) -> Result<(Self, ProtocolOutput)> {
+    pub fn connect(
+        vendor_blobs: VendorProtocolBlobs,
+        now_ms: u64,
+    ) -> Result<(Self, ProtocolOutput)> {
         let mut nonce = [0u8; 16];
         getrandom::getrandom(&mut nonce)
             .map_err(|_| DecodeError("receiver nonce generation failed"))?;
-        Self::with_nonce(credentials, now_ms, nonce)
+        Self::with_nonce(vendor_blobs, now_ms, nonce)
     }
 
     fn with_nonce(
-        credentials: Credentials,
+        vendor_blobs: VendorProtocolBlobs,
         now_ms: u64,
         nonce: [u8; 16],
     ) -> Result<(Self, ProtocolOutput)> {
         let mut state = Self {
             phase: ProtocolPhase::Negotiating,
-            credentials,
+            vendor_blobs,
             nonce,
             expected_response: None,
             framer: Framer::default(),
@@ -135,7 +142,7 @@ impl Protocol {
     }
 
     /// Raw RX must already be recorded by the IO owner. Product errors are
-    /// diagnostic events; framing/auth/order errors require a fresh connection.
+    /// diagnostic events; framing/handshake/order errors require a fresh connection.
     pub fn receive(&mut self, bytes: &[u8], now_ms: u64) -> Result<ProtocolOutput> {
         let result = self.receive_inner(bytes, now_ms);
         if result.is_err() {
@@ -179,8 +186,8 @@ impl Protocol {
                 return Err(DecodeError("unexpected repeated negotiation"));
             }
             let records = self.application.feed(&frame.payload)?;
-            // Inspect the complete batch before acting on auth: the post-auth
-            // supported-ID list can occur later in this same transport payload.
+            // Inspect the complete batch before processing the handshake: a
+            // supported-ID list can follow the response in this same payload.
             for record in &records {
                 if let ApplicationRecord::Message {
                     message_id: 0,
@@ -238,10 +245,10 @@ impl Protocol {
                         data,
                     } if self.phase == ProtocolPhase::Challenge => {
                         if data.len() != 16 {
-                            return Err(DecodeError("authentication challenge length"));
+                            return Err(DecodeError("handshake challenge length"));
                         }
                         let mut digest = Md5::new();
-                        digest.update(self.credentials.token);
+                        digest.update(self.vendor_blobs.challenge_seed);
                         digest.update(&data);
                         let response = [
                             1u32.to_le_bytes().as_slice(),
@@ -250,21 +257,21 @@ impl Protocol {
                         ]
                         .concat();
                         let mut digest = Md5::new();
-                        digest.update(self.credentials.token);
+                        digest.update(self.vendor_blobs.challenge_seed);
                         digest.update(self.nonce);
                         self.expected_response = Some(digest.finalize().into());
                         self.send(2, message(3, &response), now_ms, &mut output)?;
-                        self.transition(ProtocolPhase::ServerAuthentication, now_ms);
+                        self.transition(ProtocolPhase::VerifyResponse, now_ms);
                     }
                     ApplicationRecord::Message {
                         message_id: 4,
                         attributes: 0,
                         data,
-                    } if self.phase == ProtocolPhase::ServerAuthentication => {
+                    } if self.phase == ProtocolPhase::VerifyResponse => {
                         let expected = self
                             .expected_response
                             .take()
-                            .ok_or(DecodeError("authentication state"))?;
+                            .ok_or(DecodeError("handshake response state"))?;
                         if data.len() != expected.len()
                             || data
                                 .iter()
@@ -272,7 +279,7 @@ impl Protocol {
                                 .fold(0u8, |diff, (a, b)| diff | (*a ^ b))
                                 != 0
                         {
-                            return Err(DecodeError("receiver authentication failed"));
+                            return Err(DecodeError("receiver challenge response mismatch"));
                         }
                         let requests = [
                             (0x1000, 1),
@@ -293,7 +300,7 @@ impl Protocol {
                             [
                                 control(&requests),
                                 supported_ids(),
-                                message(1, &self.credentials.bundle),
+                                message(1, &self.vendor_blobs.setup_payload),
                             ]
                             .concat(),
                             now_ms,
@@ -328,7 +335,7 @@ impl Protocol {
                             self.send(2, control(&subscriptions), now_ms, &mut output)?;
                             self.transition(ProtocolPhase::Receiving, now_ms);
                         }
-                        // Authentication/control payloads do not enter public diagnostics.
+                        // Setup/control payloads do not enter public diagnostics.
                         if message_id > 4 && self.phase == ProtocolPhase::Receiving {
                             let product = if attributes != 0 {
                                 Err(DecodeError("unverified application file attributes"))
@@ -488,7 +495,7 @@ mod tests {
 
     fn client() -> Protocol {
         Protocol::with_nonce(
-            Credentials::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
+            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
             0,
             [9; 16],
         )
@@ -507,7 +514,7 @@ mod tests {
             seq as u64,
         )
     }
-    fn authenticate() -> Protocol {
+    fn complete_handshake() -> Protocol {
         let mut client = client();
         rx(&mut client, 3, 1, NEGOTIATION.to_vec()).unwrap();
         rx(
@@ -524,7 +531,7 @@ mod tests {
         )
         .unwrap();
         rx(&mut client, 2, 3, message(2, &[8; 16])).unwrap();
-        assert_eq!(client.phase(), ProtocolPhase::ServerAuthentication);
+        assert_eq!(client.phase(), ProtocolPhase::VerifyResponse);
         let response = client.expected_response.unwrap();
         let ids = [0u32, 0x1000, 0x2100, 0x2200, 0x20000010, 0x20000000];
         rx(
@@ -548,8 +555,8 @@ mod tests {
     }
 
     #[test]
-    fn same_packet_capabilities_are_used_before_authentication_response() {
-        let mut client = authenticate();
+    fn same_packet_capabilities_are_used_before_handshake_response() {
+        let mut client = complete_handshake();
         let output = rx(&mut client, 2, 5, message(0x1000, &[0x47, 6])).unwrap();
         assert_eq!(client.phase(), ProtocolPhase::Receiving);
         let frames = Framer::default()
@@ -577,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn authentication_failure_never_sends_the_user_bundle() {
+    fn challenge_response_failure_stops_setup() {
         let mut client = client();
         rx(&mut client, 3, 1, NEGOTIATION.to_vec()).unwrap();
         rx(
@@ -600,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn unauthenticated_sensor_payloads_are_not_application_inputs() {
+    fn sensor_payloads_before_setup_are_not_application_inputs() {
         let mut client = client();
         rx(&mut client, 3, 1, NEGOTIATION.to_vec()).unwrap();
         let output = rx(&mut client, 2, 2, message(0x2100, &[0; 16])).unwrap();
@@ -610,7 +617,7 @@ mod tests {
 
     #[test]
     fn duplicates_do_not_repeat_products_and_sequence_gaps_fail_closed() {
-        let mut client = authenticate();
+        let mut client = complete_handshake();
         rx(&mut client, 2, 5, message(0x1000, &[0x47, 6])).unwrap();
         let output = rx(&mut client, 2, 6, message(0x2100, &[0; 16])).unwrap();
         assert_eq!(output.messages.len(), 1);
@@ -629,7 +636,7 @@ mod tests {
             assert_eq!(stalled.tick(now).unwrap().transmissions.len(), 1);
         }
         assert!(stalled.tick(4000).is_err());
-        let mut ready = authenticate();
+        let mut ready = complete_handshake();
         rx(&mut ready, 2, 5, message(0x1000, &[0x47, 6])).unwrap();
         rx(&mut ready, 2, 6, Vec::new()).unwrap();
         assert!(ready.tick(1_000_000).unwrap().transmissions.is_empty());

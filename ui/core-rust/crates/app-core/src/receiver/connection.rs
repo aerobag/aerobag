@@ -10,7 +10,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::capture::{CaptureClock, CaptureKind, CaptureProgress, Recorder, MAX_CHUNK_BYTES};
-use super::{Credentials, Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage, SERVICE_UUID};
+use super::{
+    Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage, VendorProtocolBlobs, SERVICE_UUID,
+};
 
 const CONNECT_TIMEOUT_MS: u64 = 15_000;
 const WRITE_TIMEOUT_MS: u64 = 5_000;
@@ -100,7 +102,7 @@ pub struct ConnectionStatus {
     pub ignored_stale_callbacks: u64,
 }
 
-// Neither Debug nor Serialize: commands contain authentication and raw data.
+// Keep raw transmissions out of UI snapshots and routine diagnostic output.
 pub enum Effect {
     Connect {
         id: ConnectionId,
@@ -139,7 +141,7 @@ struct PendingWrite {
 }
 
 pub struct Connection<R: Recorder> {
-    credentials: Credentials,
+    vendor_blobs: VendorProtocolBlobs,
     recorder: R,
     device: Option<String>,
     active: Option<ConnectionId>,
@@ -158,10 +160,10 @@ pub struct Connection<R: Recorder> {
 }
 
 impl<R: Recorder> Connection<R> {
-    pub fn new(credentials: Credentials, recorder: R, clock: CaptureClock) -> Self {
+    pub fn new(vendor_blobs: VendorProtocolBlobs, recorder: R, clock: CaptureClock) -> Self {
         let captured = recorder.progress();
         Self {
-            credentials,
+            vendor_blobs,
             recorder,
             device: None,
             active: None,
@@ -262,7 +264,8 @@ impl<R: Recorder> Connection<R> {
                 if self.status.phase != ConnectionPhase::Connecting {
                     self.fail(Fault::UnexpectedCompletion, clock, &mut output);
                 } else if self.record(CaptureKind::Connected, clock, &[], &mut output) {
-                    match Protocol::connect(self.credentials.for_connection(), clock.monotonic_ms) {
+                    match Protocol::connect(self.vendor_blobs.for_connection(), clock.monotonic_ms)
+                    {
                         Ok((protocol, batch)) => {
                             self.protocol = Some(protocol);
                             self.protocol_output(batch, clock, &mut output);
@@ -597,7 +600,7 @@ mod tests {
     fn connection() -> (Connection<Memory>, Memory) {
         let memory = Memory::default();
         let connection = Connection::new(
-            Credentials::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
+            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
             memory.clone(),
             clock(0),
         );
@@ -640,7 +643,7 @@ mod tests {
         sequence: u8,
         acknowledgement: u8,
         now: u64,
-        auth_response: Vec<u8>,
+        handshake_response: Vec<u8>,
     }
     impl Peer {
         fn settle(
@@ -675,7 +678,7 @@ mod tests {
                                 let mut digest = Md5::new();
                                 digest.update([7; 48]);
                                 digest.update(&data[20..]);
-                                self.auth_response = digest.finalize().to_vec();
+                                self.handshake_response = digest.finalize().to_vec();
                             }
                         }
                     }
@@ -709,14 +712,14 @@ mod tests {
             }
             messages
         }
-        fn authenticated(connection: &mut Connection<Memory>) -> Self {
+        fn ready(connection: &mut Connection<Memory>) -> Self {
             let id = open(connection, 0);
             let mut peer = Self {
                 id,
                 sequence: 0,
                 acknowledgement: 0,
                 now: 0,
-                auth_response: Vec::new(),
+                handshake_response: Vec::new(),
             };
             let output = connection.update(Event::Connected(id), clock(0));
             peer.settle(connection, output);
@@ -733,12 +736,12 @@ mod tests {
                 ),
             );
             peer.receive(connection, 2, message(2, &[8; 16]));
-            assert!(!peer.auth_response.is_empty());
+            assert!(!peer.handshake_response.is_empty());
             peer.receive(
                 connection,
                 2,
                 [
-                    message(4, &peer.auth_response),
+                    message(4, &peer.handshake_response),
                     message(
                         0,
                         &[0u32, 0x1000, 0x2200]
@@ -774,7 +777,7 @@ mod tests {
     #[test]
     fn real_handshake_split_reads_and_sensor_delivery_are_captured_before_consumption() {
         let (mut connection, memory) = connection();
-        let mut peer = Peer::authenticated(&mut connection);
+        let mut peer = Peer::ready(&mut connection);
         let messages = peer.receive(&mut connection, 2, message(0x2200, &1234f32.to_le_bytes()));
         assert!(matches!(
             messages[0].product,
@@ -802,7 +805,7 @@ mod tests {
     #[test]
     fn quiet_weather_does_not_disconnect_receiving_but_malformed_products_remain_diagnostic() {
         let (mut connection, _) = connection();
-        let mut peer = Peer::authenticated(&mut connection);
+        let mut peer = Peer::ready(&mut connection);
         let messages = peer.receive(&mut connection, 2, message(0x2200, &[1]));
         assert!(messages[0].product.is_err());
         for now in [1000, 60_000, 120_000, 3_600_000] {

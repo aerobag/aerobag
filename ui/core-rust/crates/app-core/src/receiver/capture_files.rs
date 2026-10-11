@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn real_archive_quota_stops_connection_without_claiming_transmission_or_retrying() {
         use super::super::connection::{Connection, ConnectionPhase, Effect, Event, Fault};
-        use super::super::Credentials;
+        use super::super::VendorProtocolBlobs;
         let temp = Temp::new();
         let policy = CapturePolicy {
             segment_bytes: 256,
@@ -434,7 +434,7 @@ mod tests {
         };
         let archive = CaptureArchive::open(&temp.0, policy).unwrap();
         let mut connection = Connection::new(
-            Credentials::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
+            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
             archive,
             clock(0),
         );

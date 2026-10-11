@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Aerobag contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Passive replay of an app-exported private archive. No extraction, credentials,
-//! radio access, or writes. Authentication is observed, not independently verified.
+//! Passive replay of an app-exported private archive. No extraction, vendor-blob
+//! inputs, radio access, or writes. The handshake is observed, not rerun.
 
 use std::{
     collections::BTreeMap,

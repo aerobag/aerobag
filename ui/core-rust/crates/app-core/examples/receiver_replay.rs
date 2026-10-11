@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Private corpus validator. Prints aggregate counts only, never identities,
-//! coordinates, report bodies, or authentication material.
+//! coordinates, report bodies, or raw protocol payloads.
 use std::{collections::BTreeMap, io::BufRead, path::Path};
 
 use app_core::receiver::{

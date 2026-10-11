@@ -27,7 +27,7 @@ mod weather_cache;
 
 pub use framing::{ApplicationRecord, ApplicationStream, Frame, Framer};
 pub use products::{decode_product, Attitude, Product, Traffic, TrafficOwnship, TrafficTarget};
-pub use protocol::{Credentials, Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage};
+pub use protocol::{Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage, VendorProtocolBlobs};
 pub use weather::{PartialUtc, Radar, TextReport, Weather, WeatherKind};
 
 pub const MAX_PRODUCT_BYTES: usize = 32 * 1024 * 1024;

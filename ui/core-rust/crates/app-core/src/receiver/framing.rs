@@ -82,7 +82,7 @@ fn checksum(bytes: &[u8]) -> u8 {
 }
 
 /// Incomplete input is bounded to one frame. A framing error poisons the stream
-/// until reconnect/reset, rather than guessing where an authenticated stream resumes.
+/// until reconnect/reset, rather than guessing where an established stream resumes.
 #[derive(Default)]
 pub struct Framer {
     buffer: Vec<u8>,
@@ -176,8 +176,8 @@ pub enum ApplicationRecord {
 
 impl std::fmt::Debug for ApplicationRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Application bodies can include authentication bundles. Keep ordinary
-        // diagnostics safe even when an assertion prints a mismatched record.
+        // Application bodies can include flight/device data. Keep ordinary
+        // diagnostics bounded even when an assertion prints a mismatched record.
         match self {
             Self::Control {
                 message_id,

@@ -5,9 +5,11 @@
 - Android supplies Classic Bluetooth RFCOMM, permissions, paired-device
   discovery, private file IO, and monotonic/wall clocks. Rust core owns the
   protocol, subscriptions, decoding, source selection, status, and UI actions.
-- Use the established mutual authentication unchanged. Credentials and flight
-  captures remain private, outside source control. Send no transponder
-  configuration, firmware, or calibration commands.
+- Use the established challenge-response setup unchanged. The two vendor protocol
+  blobs are shared setup data. Flight captures remain private because they contain
+  flight/device information. Send no transponder
+  configuration, firmware, or calibration commands. See
+  [vendor blob evidence and experiment](receiver-vendor-blobs.md).
 - Live input and replay use the same bounded incremental decoder. Capture raw
   RX/TX before interpretation, including unknown and malformed messages, with
   clock context. Capture must not depend on successful rendering or decoding.
@@ -45,7 +47,7 @@
    migration of every existing METAR/TAF consumer. Test feed-only stations,
    report ordering, disconnection, persistence/restart, and expiry.
 3. Receive-only protocol controller with supported-ID-filtered subscriptions,
-   unchanged mutual authentication, bounded transport state, and diagnostics.
+   unchanged challenge-response setup, bounded transport state, and diagnostics.
 4. Android RFCOMM/private capture plumbing and core-owned connection UI. Verify
    recording/export, failure handling, lifecycle, and replay without avionics.
 5. Traffic/ownship and verified pressure inputs; source-selected radar history
@@ -54,6 +56,14 @@
    parked validation before the next flight.
 
 ## Evidence And Limits
+
+**Current hardware evidence:** the October 10 Aerobag cockpit test captured one
+24.3-second connected session: 112 attitude reports, 112 pressure messages,
+22 traffic snapshots (no position fix/targets), and empty responses from all 11
+weather channels. Export/replay passed with no decoding errors or torn records.
+The test was intentionally short and stationary; it does not establish live
+nonempty weather delivery or radar geographic accuracy. Earlier dated entries
+below describe the evidence available at their respective checkpoints.
 
 The private October 6 handoff is the protocol reference. Its independent parked
 client received attitude, pressure, and traffic; nonempty weather is demonstrated
@@ -68,10 +78,11 @@ than guessed. Do not describe offline replay as live validation.
 - [x] Shared weather query/directory foundation and local cache format
 - [x] Migrate existing weather consumers and source ingestion to that boundary
 - [x] Protocol controller and reconnect handling
-- [x] Android transport and durable automatic capture (application wiring; hardware verification pending)
+- [x] Android transport and durable automatic capture (parked reception verified October 10)
 - [x] Core-owned source controls and platform rendering
 - [x] Offline integration validation and Android release build (not hardware validation)
-- [ ] Independent parked connection (requires hardware)
+- [x] Independent parked connection (October 10; sensors and empty weather responses)
+- [ ] Independent nonempty weather, valid GPS/traffic, radar placement, and sustained reception validation
 
 ### Implemented Foundation (October 9)
 
@@ -82,7 +93,7 @@ Airplanes.live activation checkbox is removed; its persisted flag is also
 ignored, so restoring preferences cannot restart that experiment.
 
 - `app-core/src/receiver/` owns incremental framing/reassembly, bounded product
-  decoding, supported-ID subscriptions and the unchanged mutual authentication.
+  decoding, supported-ID subscriptions and the unchanged challenge-response setup.
   The connection protocol has bounded outstanding writes/retransmission and
   setup deadlines; it does not disconnect a receiving session just for quiet
   weather.
@@ -115,11 +126,11 @@ ignored, so restoring preferences cannot restart that experiment.
   catalog, wiring the local weather-cache envelope into platform persistence,
   and receiver classification remain followups. Reports with no known station
   location are readable by ID, but are not falsely placed on the map.
-- Synthetic tests cover fragmentation, corruption, authentication ordering,
+- Synthetic tests cover fragmentation, corruption, handshake ordering,
   unsupported subscriptions, duplicate delivery, sequence gaps, retry bounds,
   sensor validity, decompression limits, UTC month rollover, report selection,
   source isolation, dateline geography, offline cache restart, and torn capture
-  recovery. No private credentials or captured flight records are test fixtures.
+  recovery. Tests use synthetic vendor blobs; recorded flight data is not in fixtures.
 
 ### Offline Evidence
 
@@ -136,7 +147,7 @@ completed Rust application message to the archive extractor, decodes products,
 normalizes station weather, and checks weather-cache restart. Output contains
 counts/rejection reasons only. Reconstructed frame checksums are not independent
 validation of original HCI checksums; those belong to the archive extractor.
-This is not a replay of the active authentication/retransmission controller or
+This is not a replay of the active handshake/retransmission controller or
 an end-to-end application rendering test.
 
 The captured corpus passes product decoding/reassembly: 1,493 traffic snapshots,
@@ -191,12 +202,12 @@ recording, and releases it on stop. Settings receives a typed panel from core.
 Kotlin renders labels and forwards opaque action IDs;
 generated contracts carry Bluetooth/file effects and completions. Permission and
 document selection are OS plumbing. Core owns selection, stale action rejection,
-credential validation/storage, retries, status and export contents.
+vendor-blob validation/storage, retries, status and export contents.
 
-Credentials are imported using the two document-picker actions (`auth-token.bin`
-and `auth-user.bin`). Core bounds and validates them before atomically storing
-private copies beneath `files/receiver/`. They are never compiled into the APK,
-persisted in normal preferences, or cloud-synchronized. Pairing the device remains
+Vendor blobs are imported using the two document-picker actions for the challenge
+seed and setup payload. Core bounds and validates them before atomically storing
+device-local copies beneath `files/receiver/`, separate from preferences and cloud
+state. This build imports them rather than bundling them in the APK. Pairing remains
 an Android system-settings operation. No connection starts without an explicit
 device selection.
 
@@ -212,9 +223,10 @@ Disconnect releases the socket and closes/checkpoints the capture. Export then
 streams immutable segments into a private ZIP and invokes Android sharing with
 a URI grant restricted to the exports directory. It never deletes evidence;
 an operator must archive/remove old segments when the 256 MiB quota is reached.
-Only one export ZIP is retained locally. The ZIP excludes credential *files*,
-but raw captures include protocol authentication exchanges: captures/exports
-are sensitive and must not enter source control or public artifact serving.
+Only one export ZIP is retained locally. The ZIP contains captured exchanges,
+not extra copies of the vendor blob source files. Capture privacy protects flight
+locations and device identifiers. Review recordings before placing them in source
+control or public artifact serving.
 
 ### Receiver Weather Durability (October 10)
 
@@ -255,7 +267,7 @@ retained session and does not reset the worker. A process restart deliberately
 does not automatically reconnect. Browser Classic RFCOMM is not implemented;
 web does not receive the native receiver Settings block.
 
-Component checks cover private credential import and stale picker results,
+Component checks cover vendor-blob import and stale picker results,
 real archive/export identity, socket callbacks after disconnect, bounded/retried
 session deliveries while capture continues, and physical taps on the Settings
 receiver controls. The existing session test now enters via the production
@@ -363,21 +375,21 @@ GPS fixes, and exercises MSL fusion without decoder or normalization failures.
 ### First Parked Validation
 
 Use the release preview APK built from this work; do not treat synthetic replay
-or component tests as independent avionics validation. No credentials are built
+or component tests as independent avionics validation. No vendor blobs are built
 into the APK. No Bluetooth connection starts automatically on process restart.
 
 1. Pair the tablet and GTX 345 in Android system settings while parked.
-2. In Settings / experimental receiver, import the private `auth-token.bin` and
-   `auth-user.bin` files, grant Bluetooth permission, then explicitly connect to
-   the paired receiver. Capture starts before interpretation.
+2. In Settings / experimental receiver, import `vendor-challenge-seed.bin` and
+   `vendor-setup-payload.bin`, grant Bluetooth permission, then explicitly connect
+   to the paired receiver. Capture starts before interpretation.
 3. Confirm receiving/message/capture counters advance. Select Receiver for
    ownship, enable ADS-B Traffic, and explicitly choose receiver pressure/radar
    in their grid trays if desired. Compare GPS/MSL and pressure with the panel;
    do not infer verified standalone-pressure units from a plausible number.
-4. Disconnect and export the sealed private capture. Treat the export as secret:
-   raw protocol authentication exchanges are included. Preserve it outside Git
-   and public artifact serving. The capture quota is 256 MiB; reaching it stops
-   the connection rather than silently discarding evidence.
+4. Disconnect and export the sealed capture. It includes flight locations and
+   device identifiers; preserve it outside Git and public artifact serving. The
+   capture quota is 256 MiB; reaching it stops the connection rather than silently
+   discarding evidence.
 5. Replay the capture for protocol ordering and data validation, then compare a
    future radar capture against independent archived government imagery. Live
    nonempty weather reception and radar geographic accuracy are not yet proven
@@ -397,8 +409,8 @@ with the live protocol. Random capture-session IDs are not chronological; each
 session resets live sensor clocks. A torn final record preserves the complete
 prefix and is reported, while corrupt complete records, missing segments, and
 data after a torn segment fail. Requested and completed writes have distinct
-counts. Output contains aggregate diagnostics only, not credentials, locations,
-or weather bodies. Passive replay cannot prove mutual authentication succeeded.
+counts. Output contains aggregate diagnostics only, not locations, weather
+bodies, or raw setup exchanges. Passive replay does not rerun the handshake.
 Tests cover the production runtime's actual export in addition to fragmented,
 retransmitted, reconnected, truncated, corrupted, and out-of-order input.
 
@@ -480,16 +492,15 @@ correction. Original failed UI-run evidence is retained under
 
 ### Maximize The Next Hardware Experiment (October 10)
 
-Credentials come from the private October 6 handoff's `reference/auth-token.bin`
-and `reference/auth-user.bin`. They are application-level Connext material
-recovered from the user's installed Pilot build, not a Garmin account login or
-Bluetooth PIN. They worked with the independently tested receiver/firmware; this
-does not establish compatibility with every receiver. Durable development copies
-are in `/root/aerobag-credentials/gtx345/` (directory 0700, files 0600). Import
-both through the existing receiver Settings file pickers. Never embed them in
-an APK, a public artifact, Git, or cloud state. Delete any shared-storage transfer
-copies from the tablet after import. Exported captures also remain private
-because they contain authentication exchanges.
+The October 6 handoff supplied two vendor protocol blobs. On October 11, a
+second user's installed Pilot copy produced identical lengths and SHA-256 hashes
+for both. They are shared protocol setup data. The full hashes, observed wire
+roles, and second-blob experiment are recorded in [the evidence note](receiver-vendor-blobs.md).
+Development copies use the descriptive filenames `vendor-challenge-seed.bin`
+and `vendor-setup-payload.bin` under `/root/aerobag-vendor/gtx345/`. Import through
+the existing receiver Settings file pickers. Existing tablet installs receive a
+one-time storage-name migration; no reimport or change of wire bytes is required.
+Flight recordings retain ordinary privacy protections independently of the blobs.
 
 Before installation, complete these software followups and their validation:
 
@@ -520,9 +531,9 @@ Before installation, complete these software followups and their validation:
 
 One airport visit should collect more than a connection-success anecdote:
 
-- At home: install the matching app/data, import credentials, warm Internet
+- At home: install the matching app/data, import vendor blobs, warm Internet
   weather, confirm offline packages, and verify recording space. No need to
-  discover credential/file-picker problems at the airport.
+  discover vendor-blob/file-picker problems at the airport.
 - Refresh paired devices only rereads Android's bonded-device list; it neither
   scans for nearby devices nor connects. Core shows refresh progress, a UTC
   completion time/count (including unchanged and empty lists), or the specific
@@ -542,7 +553,7 @@ One airport visit should collect more than a connection-success anecdote:
   sealed sessions and preserve the ZIP privately. Pair the radar portion with the
   independently collected imagery from the separate archival project.
 
-No simulator/replay result establishes live authentication, nonempty independent
+No simulator/replay result establishes live handshake, nonempty independent
 weather reception, or geographic accuracy of the provisional radar decoder.
 
 Software evidence for these followups:

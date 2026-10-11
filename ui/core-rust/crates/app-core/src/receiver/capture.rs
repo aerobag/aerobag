@@ -4,8 +4,8 @@
 
 //! Private append-only capture format. A complete record has a length, clocks,
 //! kind, bytes, and SHA-256. Recovery accepts a torn final record, never a corrupt
-//! complete record. Files may include authentication material and must not be
-//! sent to normal application logging or public artifact storage.
+//! complete record. Files contain flight/device data and must not be sent to
+//! normal application logging or public artifact storage without review.
 
 use std::io::{self, Read, Write};
 
@@ -179,7 +179,7 @@ impl<S: CaptureSink> CaptureWriter<S> {
     }
 }
 
-// Deliberately no Debug: the payload can contain secrets and flight locations.
+// Deliberately no Debug: payloads contain flight locations and device identifiers.
 pub struct CaptureRecord {
     pub sequence: u64,
     pub kind: CaptureKind,

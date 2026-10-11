@@ -46,6 +46,18 @@ journey and coverage declaration together. The receiver-free map fixture checks
 that traffic is absent from a ready layer chooser and projection; it does not
 claim connected-receiver traffic coverage or enable archived debug state.
 
+NEXRAD frame indices belong to the currently painted history, not a fixed
+fixture-wide array. The next October 11 release passed the retired-control
+checks, then failed Android's hold assertion when LATEST correctly changed
+from index 1 of 2 to index 2 of 3. Holding latest must stay on a painted newest
+frame through acquisition/expiry; it must not freeze an old index. Conversely,
+resuming animation requires an older painted frame within the current history,
+not merely a different index after history growth. Controlled tests in
+`nexrad-animation-journey.test.mjs` reproduce both the false failure and the
+false success through the real runtime, without sleeps or action retries.
+Every observed older/blank/missing frame while held remains a failure even if
+the final sample recovers. The bounded dwell and mode-selection checks remain.
+
 Android progress input follows the same publisher-to-physical-input contract as
 taps and scrolling. Protocol 33 reads a slider's current linear pointer range
 and bounds in one published frame, validates the original process/revision,

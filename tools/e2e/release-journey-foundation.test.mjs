@@ -1308,7 +1308,7 @@ for (const held of [true, false]) {
       },
       async back() { actions.push("back"); open = false; },
     });
-    await setNexradAnimationHeld(runtime, held, 2);
+    await setNexradAnimationHeld(runtime, held);
     assert.deepEqual(actions, ["flight-data-cell:nexrad_age", choice, "back"]);
   });
 }

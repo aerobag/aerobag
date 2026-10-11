@@ -107,6 +107,11 @@ function nexradState(entries) {
   } : null;
 }
 
+function nexradFrameIsPainted(state) {
+  return Boolean(state && state.tiles > 0 && Number.isInteger(state.frame) &&
+    state.frame >= 0 && state.frame < state.frames);
+}
+
 async function waitForPage(runtime, pageId) {
   return runtime.eventually(
     `${pageId} page`,
@@ -3173,7 +3178,7 @@ async function preparedLiveFeeds(runtime) {
   );
 }
 
-export async function setNexradAnimationHeld(runtime, held, previousFrame = null) {
+export async function setNexradAnimationHeld(runtime, held) {
   const choice = held ? "nexrad_age-latest" : "nexrad_age-animate";
   await runtime.action("open NEXRAD source and animation tray", "flight-data-cell:nexrad_age", {
     complete: () => runtime.driver.readElement(choice),
@@ -3187,8 +3192,10 @@ export async function setNexradAnimationHeld(runtime, held, previousFrame = null
       return { button, state };
     },
     completionSatisfied: ({ button, state }) => Boolean(
-      selectedSemantic(button) && state && state.tiles > 0 && state.frames >= 2 && state.frame !== null &&
-        (held ? state.frame === state.frames - 1 : state.frame !== previousFrame)
+      selectedSemantic(button) && nexradFrameIsPainted(state) && state.frames >= 2 &&
+        // Frame indices are relative to the currently painted history. A
+        // larger history's newest index is not evidence of resumed animation.
+        (held ? state.frame === state.frames - 1 : state.frame < state.frames - 1)
     ),
   });
   await runtime.transition("dismiss NEXRAD options", {
@@ -3233,6 +3240,31 @@ export async function observeNexradFrameAdvance(runtime) {
   }
 }
 
+export async function observeNexradHeldLatest(runtime, held, now = () => performance.now()) {
+  const holdStartedAt = now();
+  let remainedLatest = true;
+  const samples = [];
+  runtime.result.diagnostics.nexrad_hold_samples = samples;
+  const heldAfterDwell = await runtime.eventually("NEXRAD remains held past an old-frame dwell", async () => {
+    const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+    if (JSON.stringify(samples.at(-1)?.state) !== JSON.stringify(state)) {
+      samples.push({ elapsed_ms: Math.round(now() - holdStartedAt), state });
+      if (samples.length > 32) samples.shift();
+    }
+    // LATEST follows acquisition/expiry, not the index observed at the click.
+    // Require a painted newest frame on every observation, so an older/blank
+    // frame cannot recover into a pass at the end of the observation window.
+    if (!nexradFrameIsPainted(state) || state.frame !== state.frames - 1) remainedLatest = false;
+    return now() - holdStartedAt >= 3_500 ? state : null;
+  }, E2E_TIMING.userTransitionDeadlineMs, 100);
+  runtime.check(
+    "livefeed.nexrad-hold",
+    Boolean(heldAfterDwell && remainedLatest),
+    JSON.stringify({ initial: held, final: heldAfterDwell, samples }),
+  );
+  return heldAfterDwell;
+}
+
 async function nexradFrames(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
@@ -3242,20 +3274,9 @@ async function nexradFrames(runtime) {
   runtime.check("livefeed.nexrad-frames", Boolean(next), `${JSON.stringify(first)} -> ${JSON.stringify(next)}`);
 
   const held = await setNexradAnimationHeld(runtime, true);
-  const holdStartedAt = performance.now();
-  let changedWhileHeld = false;
-  const heldAfterDwell = await runtime.eventually("NEXRAD remains held past an old-frame dwell", async () => {
-    const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
-    if (state?.frame !== held.frame) changedWhileHeld = true;
-    return performance.now() - holdStartedAt >= 3_500 ? state : null;
-  }, E2E_TIMING.userTransitionDeadlineMs, 100);
-  runtime.check(
-    "livefeed.nexrad-hold",
-    Boolean(heldAfterDwell && !changedWhileHeld && heldAfterDwell.frame === held.frame),
-    `${JSON.stringify(held)} -> ${JSON.stringify(heldAfterDwell)}`,
-  );
+  await observeNexradHeldLatest(runtime, held);
 
-  const resumed = await setNexradAnimationHeld(runtime, false, held.frame);
+  const resumed = await setNexradAnimationHeld(runtime, false);
   runtime.check(
     "livefeed.nexrad-resume",
     Boolean(resumed),

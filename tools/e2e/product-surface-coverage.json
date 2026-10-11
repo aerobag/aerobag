@@ -37,7 +37,7 @@
       "vectors": "layer.vectors",
       "metars": "layer.metars",
       "nexrad": "layer.nexrad",
-      "traffic": "layer.traffic",
+      "traffic": "layer.traffic-unavailable-without-receiver",
       "terrain_warning": "layer.terrain-warning",
       "glide_ring": "layer.glide-ring",
       "offline_regions": "layer.offline-regions"
@@ -89,7 +89,6 @@
       "sequencing_finish_lines": "settings.debug.sequencing-finish-lines",
       "plate_flight_plan": "settings.debug.plate-flight-plan",
       "bad_autopilot": "settings.debug.bad-autopilot",
-      "internet_adsb": "settings.debug.internet-adsb",
       "gps_capture": "settings.debug.gps-capture",
       "debug_log_to_developer_server": "settings.debug.developer-log"
     },

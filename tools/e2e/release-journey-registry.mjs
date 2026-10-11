@@ -57,7 +57,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
   journey("shared.map-modes-and-overlays", "p1", shared, [
     "raster.none", "raster.sec", "raster.tac", "raster.flyway", "raster.enr-l",
     "raster.enr-h", "raster.shaded-relief", "layer.world-basemap", "layer.vectors",
-    "layer.metars", "layer.nexrad", "layer.traffic", "layer.terrain-warning", "layer.glide-ring",
+    "layer.metars", "layer.nexrad", "layer.traffic-unavailable-without-receiver", "layer.terrain-warning", "layer.glide-ring",
     "layer.offline-regions", "map.n-up", "map.trk-up", "map.track-gap",
     "map.warning", "map.chart-reference",
   ], { live_feed_profile: "mixed" }),
@@ -98,7 +98,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "settings.debug.nexrad-tile-labels", "settings.debug.fast-tiles",
     "settings.debug.offline-clock", "settings.debug.sequencing-finish-lines",
     "settings.debug.plate-flight-plan", "settings.debug.bad-autopilot",
-    "settings.debug.internet-adsb", "settings.debug.gps-capture",
+    "settings.debug.gps-capture",
     "settings.debug.developer-log", "status.client", "status.publication",
     "status.contracts", "status.nav-db", "status.cycle-charts",
     "status.cycle-airport-docs", "status.static-base-data", "status.live-feed-connection",

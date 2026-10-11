@@ -1879,7 +1879,7 @@ async function androidPackageMaintenance(runtime) {
   }
 }
 
-const DEBUG_ASSERTIONS = Object.freeze({
+export const DEBUG_ASSERTIONS = Object.freeze({
   tile_labels: "settings.debug.tile-labels",
   nexrad_tile_labels: "settings.debug.nexrad-tile-labels",
   fast_tiles: "settings.debug.fast-tiles",
@@ -1887,7 +1887,6 @@ const DEBUG_ASSERTIONS = Object.freeze({
   sequencing_finish_lines: "settings.debug.sequencing-finish-lines",
   plate_flight_plan: "settings.debug.plate-flight-plan",
   bad_autopilot: "settings.debug.bad-autopilot",
-  internet_adsb: "settings.debug.internet-adsb",
   gps_capture: "settings.debug.gps-capture",
   debug_log_to_developer_server: "settings.debug.developer-log",
 });
@@ -2034,7 +2033,6 @@ const LAYER_ASSERTIONS = Object.freeze({
   vectors: "layer.vectors",
   metars: "layer.metars",
   nexrad: "layer.nexrad",
-  traffic: "layer.traffic",
   terrain_warning: "layer.terrain-warning",
   glide_ring: "layer.glide-ring",
   offline_regions: "layer.offline-regions",
@@ -2080,32 +2078,34 @@ async function setLayerVisible(runtime, layerId, visible) {
   });
 }
 
+export async function checkTrafficUnavailableWithoutReceiver(runtime) {
+  // This fixture has no attached receiver. Internet ADS-B was retired; do not
+  // enable archived debug state to manufacture a traffic source. Prove the
+  // chooser and layer projection are ready before checking traffic's absence.
+  await runtime.openOption("receiver-free layer availability", "layers-button", "vectors");
+  const layers = await runtime.eventually("available map layers", async () => {
+    const values = await runtime.driver.readProjection("parity:map-layer:");
+    return values.some((value) => projectionId(value).startsWith(
+      `parity:map-layer:${layerProbeId(runtime, "vectors")}:`,
+    )) ? values : null;
+  });
+  const options = await visibleTrayOptions(runtime);
+  const trafficOption = runtime.platform === "web"
+    ? "tray-option-traffic"
+    : `parity:tray-option:${layerProbeId(runtime, "traffic")}`;
+  runtime.check(
+    "layer.traffic-unavailable-without-receiver",
+    !options.some((value) => projectionId(value) === trafficOption) &&
+      !layers.some((value) => projectionId(value).startsWith(
+        `parity:map-layer:${layerProbeId(runtime, "traffic")}:`,
+      )),
+    JSON.stringify({ options: options.map(projectionId), layers: layers.map(projectionId) }),
+  );
+}
+
 async function mapModesAndOverlays(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
-  await runtime.openPage("settings");
-  const debugSection = await revealRequiredElement(
-    runtime, "settings-section-debug_diagnostics", "Debug Diagnostics settings section",
-  );
-  if (debugSection.expanded !== true) {
-    await runtime.action("expand Debug Diagnostics for map modes", "settings-section-debug_diagnostics", {
-      complete: async () => {
-        const section = await runtime.driver.readElement("settings-section-debug_diagnostics");
-        return section?.expanded === true ? section : null;
-      },
-    });
-  }
-  const adsb = await revealRequiredElement(
-    runtime, "settings-toggle-debug_internet_adsb", "internet ADS-B setting",
-  );
-  if (!adsb.checked) {
-    await runtime.action("enable internet ADS-B", "settings-toggle-debug_internet_adsb", {
-      complete: async () => {
-        const value = await runtime.driver.readElement("settings-toggle-debug_internet_adsb");
-        return value?.checked ? value : null;
-      },
-    });
-  }
   await runtime.openPage("map");
 
   const rasterFamilies = runtime.capability("raster_families");
@@ -2148,6 +2148,7 @@ async function mapModesAndOverlays(runtime) {
     }
   }
 
+  await checkTrafficUnavailableWithoutReceiver(runtime);
   const changedLayers = [];
   for (const [layerId, assertionId] of Object.entries(LAYER_ASSERTIONS)) {
     const probeName = layerProbeId(runtime, layerId);

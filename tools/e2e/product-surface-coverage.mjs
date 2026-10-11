@@ -36,6 +36,20 @@ export function settingsRowIds(source) {
     .map((entry) => entry[1]);
 }
 
+export function settingsDebugFlagIds(source) {
+  // Wire enums retain retired variants for compatibility. Journey coverage
+  // must follow the list that actually projects controls into Settings.
+  const match = /fn all_debug_flags\(\)\s*->\s*\[DebugFlagId;\s*(\d+)\]\s*\{\s*\[([\s\S]*?)\]\s*\}/m.exec(source);
+  if (!match) throw new Error("cannot find all_debug_flags settings inventory");
+  const variants = [...match[2].matchAll(/DebugFlagId::([A-Za-z0-9_]+)/g)];
+  const remainder = match[2].replace(/DebugFlagId::[A-Za-z0-9_]+|[\s,]/g, "");
+  const ids = variants.map((entry) => snakeCase(entry[1]));
+  if (remainder || ids.length !== Number(match[1]) || new Set(ids).size !== ids.length) {
+    throw new Error("cannot enumerate all_debug_flags settings inventory");
+  }
+  return ids;
+}
+
 export function statusRowIds(statusSource, policySource) {
   const fixed = [
     "client", "publication:current_artifacts", "contracts:expected", "nav_db",
@@ -71,7 +85,9 @@ export function sourceProductSurfaces() {
     settings_rows: settingsRowIds(
       read("ui/core-rust/crates/app-core/src/settings_controller.rs"),
     ),
-    debug_flags: rustEnumVariants(contracts, "DebugFlagId"),
+    debug_flags: settingsDebugFlagIds(
+      read("ui/core-rust/crates/app-core/src/settings_controller.rs"),
+    ),
     status_rows: statusRowIds(
       read("ui/core-rust/crates/app-core/src/data_status_controller.rs"),
       read("crates/product-contracts/src/live_feed_policy.rs"),

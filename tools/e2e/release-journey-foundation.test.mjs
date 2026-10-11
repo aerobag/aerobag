@@ -21,11 +21,14 @@ import {
   createJourneyRuntime, releaseJourneyFixtureUrl, semanticOptionSelected,
   summarizeFixtureRequests,
 } from "./release-journey-runtime.mjs";
-import { verifyProductSurfaceCoverage } from "./product-surface-coverage.mjs";
+import {
+  loadCoverageManifest, settingsDebugFlagIds, sourceProductSurfaces, verifyProductSurfaceCoverage,
+} from "./product-surface-coverage.mjs";
 import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-registry.mjs";
 import { validateAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
+  DEBUG_ASSERTIONS, checkTrafficUnavailableWithoutReceiver,
   chooseForecastWindModel, dismissMapSelectionIfPresent, dismissPlanRowTray,
   openAndDismissDataStatus,
   openPlateGeometryDetail,
@@ -3820,6 +3823,60 @@ test("map warning coverage uses deterministic mixed live-feed health", () => {
   assert.equal(journey?.live_feed_profile, "mixed");
 });
 
+for (const platform of ["web", "android"]) {
+  for (const leak of ["none", "option", "projection"]) {
+    test(`receiver-free traffic check observes a ready chooser (${platform}, ${leak})`, async (t) => {
+      const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-traffic-contract-"));
+      t.after(() => rmSync(artifactDir, { recursive: true, force: true }));
+      let open = false;
+      let opens = 0;
+      const vectors = platform === "web" ? "vectors" : "Vectors";
+      const traffic = platform === "web" ? "traffic" : "Traffic";
+      const optionPrefix = platform === "web" ? "tray-option-" : "parity:tray-option:";
+      const driver = {
+        platform,
+        async readAction(id) { return { test_id: id, enabled: true }; },
+        async openChooser(id) {
+          assert.equal(id, "layers-button");
+          open = true;
+          opens += 1;
+        },
+        async readOption(launcher, id) {
+          assert.equal(launcher, "layers-button");
+          assert.equal(id, "vectors");
+          return open ? { test_id: optionPrefix + vectors, enabled: true } : null;
+        },
+        async readProjection(prefix) {
+          assert.ok(open, "absence cannot pass before the chooser is ready");
+          if (prefix === "parity:map-layer:") {
+            return [vectors, ...(leak === "projection" ? [traffic] : [])].map((id) => ({
+              id: `parity:map-layer:${id}:visible:false:enabled:false`,
+            }));
+          }
+          assert.equal(prefix, optionPrefix);
+          return [vectors, ...(leak === "option" ? [traffic] : [])].map((id) => ({
+            id: optionPrefix + id, enabled: false,
+          }));
+        },
+      };
+      const runtime = createJourneyRuntime({
+        journey: {
+          id: "test.receiver-free-traffic",
+          assertions: ["layer.traffic-unavailable-without-receiver"],
+        },
+        platform, driver, artifactDir,
+      });
+      if (leak === "none") {
+        await checkTrafficUnavailableWithoutReceiver(runtime);
+        assert.equal(runtime.result.checks[0].pass, true);
+      } else {
+        await assert.rejects(checkTrafficUnavailableWithoutReceiver(runtime), /traffic-unavailable.*failed/);
+      }
+      assert.equal(opens, 1);
+    });
+  }
+}
+
 test("Android keeps the playback editor above the software keyboard", () => {
   const source = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
@@ -4019,7 +4076,7 @@ test("Android semantic discovery scrolls horizontally for clipped control strips
   assert.equal(androidElementMayRequireHorizontalScroll("plan-control:undo"), true);
   assert.equal(androidElementMayRequireHorizontalScroll("altitude-planner-control:wind_model"), true);
   assert.equal(androidElementMayRequireHorizontalScroll("altitude-planner-departure-basis"), true);
-  assert.equal(androidElementMayRequireHorizontalScroll("settings-toggle-debug_internet_adsb"), false);
+  assert.equal(androidElementMayRequireHorizontalScroll("settings-toggle-debug_gps_capture"), false);
 });
 
 test("Android horizontal reveals and actions share target ownership and require rendered reachability", () => {
@@ -4601,6 +4658,43 @@ test("product surface manifest exactly follows core-projected branches", () => {
   const summary = verifyProductSurfaceCoverage();
   assert.ok(summary.categories >= 10);
   assert.ok(summary.branches >= 80);
+});
+
+test("debug coverage inventories exposed settings, not archived wire enum variants", () => {
+  const flags = sourceProductSurfaces().debug_flags;
+  assert.ok(flags.includes("bad_autopilot"));
+  assert.ok(!flags.includes("internet_adsb"), "Internet ADS-B is archived, not a settings control");
+});
+
+test("settings inventory extraction fails closed if its declaration changes", () => {
+  const declaration = "pub(crate) fn all_debug_flags() -> [DebugFlagId; 2] { [DebugFlagId::GpsCapture, DebugFlagId::BadAutopilot,] }";
+  assert.deepEqual(settingsDebugFlagIds(declaration), ["gps_capture", "bad_autopilot"]);
+  for (const invalid of [
+    "", declaration.replace("; 2", "; 3"),
+    declaration.replace("BadAutopilot", "GpsCapture"),
+    declaration.replace("DebugFlagId::BadAutopilot", "other_flags()"),
+  ]) {
+    assert.throws(() => settingsDebugFlagIds(invalid), /all_debug_flags/);
+  }
+});
+
+test("settings journey toggles exactly the exposed debug coverage inventory", () => {
+  const coverage = loadCoverageManifest().surfaces.debug_flags;
+  assert.deepEqual(DEBUG_ASSERTIONS, coverage);
+  assert.deepEqual(Object.keys(DEBUG_ASSERTIONS).sort(), sourceProductSurfaces().debug_flags.sort());
+  const journey = RELEASE_JOURNEYS.find(({ id }) => id === "shared.status-and-settings");
+  assert.deepEqual(
+    journey.assertions.filter((id) => id.startsWith("settings.debug.")).sort(),
+    Object.values(DEBUG_ASSERTIONS).sort(),
+  );
+});
+
+test("journey debug control references belong to exposed settings", () => {
+  const flags = new Set(sourceProductSurfaces().debug_flags);
+  const source = readFileSync(new URL("./release-journey-implementations.mjs", import.meta.url), "utf8");
+  for (const [, flag] of source.matchAll(/["'`]settings-toggle-debug_([a-z_]+)["'`]/g)) {
+    assert.ok(flags.has(flag), `journey references unexposed debug setting: ${flag}`);
+  }
 });
 
 test("coverage verification rejects newly exposed and stale branches", () => {

@@ -35,6 +35,17 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+Product surface coverage must inventory exposed controls, not every variant
+retained in a compatibility wire enum. The October 11 release journeys failed
+deterministically on both platforms because receiver integration retired the
+Internet ADS-B debug control but the journeys still tried to enable it.
+`product-surface-coverage.mjs` now reads the settings controller's exposed flag
+list, and foundation tests check the settings journey's assertion table and
+literal debug-control references against it. Retiring a control must update its
+journey and coverage declaration together. The receiver-free map fixture checks
+that traffic is absent from a ready layer chooser and projection; it does not
+claim connected-receiver traffic coverage or enable archived debug state.
+
 Android progress input follows the same publisher-to-physical-input contract as
 taps and scrolling. Protocol 33 reads a slider's current linear pointer range
 and bounds in one published frame, validates the original process/revision,

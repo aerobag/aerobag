@@ -32,6 +32,12 @@ const fixtureMetrics = [
   {id:"missing.status", scope:"global", value:null, severity:"critical"},
   {id:"channel.release-old.cycle_product.weather_camera_site_count", scope:"release-old", value:null, severity:"not_instrumented", message:"Not instrumented in this release (product-facts-v1)"},
   {id:"unknown.telemetry", scope:"global", value:null, severity:"unknown"},
+  {id:"chart_quality.SEC.unresolved", scope:"global", value:1, severity:"warning", actionable_severity:"ok",
+   message:"Old chart comparison warning", disposition:{id:"old-chart", kind:"invalid-finding",
+     reason:"Wrong cycle compared", evidence:["Corrected check passed"]}},
+  {id:"chart_quality.OLD.unresolved", scope:"release-old", value:1, severity:"warning", actionable_severity:"ok",
+   message:"Known old defect", disposition:{id:"old-defect", kind:"accepted-on-sunset",
+     reason:"Fixed in promoted release; accepted for old clients", evidence:["Passing production check"]}},
 ];
 const fixtureRecord = {
   sampled_at_utc:"2026-09-07T15:00:00Z",
@@ -39,7 +45,8 @@ const fixtureRecord = {
   evaluation: {
     top_line_status:"critical",
     metrics:fixtureMetrics,
-    alerts:fixtureMetrics.filter(metric => ["warning", "critical"].includes(metric.severity)).map(metric => ({
+    dispositioned_findings:fixtureMetrics.filter(metric => metric.disposition),
+    alerts:fixtureMetrics.filter(metric => !metric.disposition && ["warning", "critical"].includes(metric.severity)).map(metric => ({
       metric_id:metric.id, scope:metric.scope, severity:metric.severity, message:String(metric.value),
     })),
     scopes: {
@@ -63,8 +70,11 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
 (async () => {
   await refresh(true);
   clearTimeout(dashboard.refreshTimer);
-  check(dashboard.rows.size === fixtureMetrics.length, "every metric must have a row");
-  for (const metric of fixtureMetrics) {
+  check(dashboard.rows.size === fixtureMetrics.length - 2, "dispositioned rows belong in the collapsed group");
+  check(!document.getElementById("knownFindings").open, "known findings start collapsed");
+  check(document.querySelectorAll("#knownFindings tbody tr").length === 2, "both kinds of disposition remain visible");
+  check(!document.querySelector('#alerts a[href*="chart_quality"]'), "known findings are not active alerts");
+  for (const metric of fixtureMetrics.filter(m => !m.disposition)) {
     const row = rowFor(metric.id);
     check(row, `missing row ${metric.id}`);
     check(row.querySelector(".pill").textContent === metric.severity.replaceAll("_", " "), "row severity");
@@ -89,6 +99,17 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
   const reusedRow = rowFor(fixtureMetrics[0].id);
   ensureMetricRows(fixtureRecord);
   check(rowFor(fixtureMetrics[0].id) === reusedRow, "unchanged rows are reused");
+
+  document.querySelector("#knownFindings summary").click();
+  check(document.getElementById("knownFindings").open, "operator can expand known findings");
+  document.querySelector("#invalidFindings a").click();
+  await pause();
+  const invalidated = rowFor("chart_quality.SEC.unresolved");
+  check(invalidated === document.activeElement, "known finding link exposes and focuses its raw metric");
+  check(invalidated.querySelector(".pill.unknown").textContent === "invalidated (warning)", "raw warning is not painted green");
+  check(invalidated.textContent.includes("Corrected check passed"), "supporting evidence remains readable");
+  location.hash = "";
+  await pause();
 
   // Follow real links and allow the real hashchange handler to apply the scope.
   const links = [...document.querySelectorAll("#alerts a")].map(link => ({id:link.textContent, href:link.getAttribute("href")}));

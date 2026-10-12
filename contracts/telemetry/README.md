@@ -75,6 +75,12 @@ exemption: an instrumented sunset release must satisfy its promises just like
 production. Monitoring policy still owns thresholds, such as the 960-site
 minimum; publishers cannot lower them by sending a threshold field.
 
+[Alarm dispositions](../../docs/pipeline-health-alarm-dispositions.md) separately
+record operator decisions about exact, evidence-bound findings. They preserve raw
+measurements and severity while controlling actionable alarms. Coverage/identity
+failures and missing required telemetry are not eligible. Dispositions do not
+alter producer promises or replace the coverage exceptions described below.
+
 Transport/source availability and publication freshness checks remain separate.
 This contract mechanism neither suppresses them nor introduces an FAA request
 on every monitoring poll. Intentionally disabling a feature is not inferred

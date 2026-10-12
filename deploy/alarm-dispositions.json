@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "dispositions": [
+    {
+      "id": "sec-2610-milwaukee-wrong-cycle-reference",
+      "kind": "invalid-finding",
+      "reason": "The schema-2 checker compared the cycle 2610 Milwaukee inset with its cycle 2611 approval. The cycle-aware checker validates the same source with zero warnings; this is not an unreviewed chart change.",
+      "evidence": [
+        "Fix: bc50eb0ac8db7041d2d66aecee5a05c2bb6ad316",
+        "Original SEC report f745d23b6507405b8f4f1dcec9d74c20; region 4b703c9991430518ae55f954",
+        "Production 2026-10-11.5-f4fd455d9dd3, cycle 2610: report a0cff43384264b40b50ac0b60c9a9cd3, zero warnings on identical source_id",
+        "Captured evidence: product/preprocessor/scripts/fixtures/chart_quality_legacy_2610.json; see docs/pipeline-health-alarm-dispositions.md"
+      ],
+      "match": {
+        "metric_id": "chart_quality.SEC.unresolved",
+        "fingerprint": "151b813b1ac2235e5f7cab27a953a7309de5a41b75225024efe62d17926153b8"
+      }
+    },
+    {
+      "id": "tac-2610-milwaukee-wrong-cycle-reference",
+      "kind": "invalid-finding",
+      "reason": "The TAC check includes the Milwaukee inset from Chicago SEC. Its schema-2 checker compared cycle 2610 against the cycle 2611 approval. The corrected checker validates the same source with zero warnings.",
+      "evidence": [
+        "Fix: bc50eb0ac8db7041d2d66aecee5a05c2bb6ad316",
+        "Original TAC report 64c2b0711159421aa6150f8ece56b333; region 4b703c9991430518ae55f954",
+        "Production 2026-10-11.5-f4fd455d9dd3, cycle 2610: report 75e89cf4d19d4076af7d915000d23c9b, zero warnings on identical source_id",
+        "Captured evidence: product/preprocessor/scripts/fixtures/chart_quality_legacy_2610.json; see docs/pipeline-health-alarm-dispositions.md"
+      ],
+      "match": {
+        "metric_id": "chart_quality.TAC.unresolved",
+        "fingerprint": "79109241d83055920fa99675f6e5e22c51c0233d4c4a286e627b020a3a5b378e"
+      }
+    }
+  ]
+}

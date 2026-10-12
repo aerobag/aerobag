@@ -107,6 +107,9 @@ multi-version builds), independent of build timestamp. Scoped pointers live at
 `current.json` is only the invocation/cache convenience result, not the schema-3
 monitoring source. Older deployed producers' schema-2 reports remain explicitly
 unscoped; they cannot overwrite schema-3 results from another release.
+They cannot be automatically retired by release identity either. Verified false
+positives use [evidence-bound alarm dispositions](pipeline-health-alarm-dispositions.md),
+not deletion of reports or a blanket legacy exemption.
 Schema-3 evidence is stored under `reports-v3/`, isolated from old producers'
 unscoped `reports/` garbage collectors while releases coexist.
 

@@ -41,6 +41,8 @@ PIPELINE_HEALTH_SCRIPT = (
 FAA_CYCLE_CALENDAR = REPO_ROOT / "deploy" / "faa-cycle-calendar.json"
 TELEMETRY_CONTRACT_ROOT = REPO_ROOT / "contracts/telemetry"
 TELEMETRY_CONTRACT_HELPER = REPO_ROOT / "product/preprocessor/scripts/telemetry_contracts.py"
+ALARM_DISPOSITIONS_HELPER = REPO_ROOT / "product/preprocessor/scripts/alarm_dispositions.py"
+ALARM_DISPOSITIONS_POLICY = REPO_ROOT / "deploy/alarm-dispositions.json"
 
 SYSTEMD_DIR = "/etc/systemd/system"
 NGINX_SITE = "/etc/nginx/sites-available/aerobag.conf"
@@ -75,8 +77,10 @@ RUNTIME_SOURCE_PATHS = (
     "crates/product-contracts/contracts/client-data-contracts.json",
     "product/preprocessor/scripts/pipeline_health.py",
     "product/preprocessor/scripts/telemetry_contracts.py",
+    "product/preprocessor/scripts/alarm_dispositions.py",
     "product/preprocessor/scripts/watch_build_log.py",
     "deploy/faa-cycle-calendar.json",
+    "deploy/alarm-dispositions.json",
     *(str(path.relative_to(REPO_ROOT)) for path in sorted(TELEMETRY_CONTRACT_ROOT.glob("*.json"))),
 )
 CARGO_TARGET_PRUNE_SCRIPT = "/usr/local/bin/aerobag-prune-cargo-target"
@@ -2118,6 +2122,14 @@ WantedBy=timers.target
     write_remote_file(
         config, "/usr/local/bin/telemetry_contracts.py",
         TELEMETRY_CONTRACT_HELPER.read_text(encoding="utf-8"), dry_run=dry_run,
+    )
+    write_remote_file(
+        config, "/usr/local/bin/alarm_dispositions.py",
+        ALARM_DISPOSITIONS_HELPER.read_text(encoding="utf-8"), dry_run=dry_run,
+    )
+    write_remote_file(
+        config, "/etc/aerobag/alarm-dispositions.json",
+        ALARM_DISPOSITIONS_POLICY.read_text(encoding="utf-8"), dry_run=dry_run,
     )
     for descriptor in sorted(TELEMETRY_CONTRACT_ROOT.glob("*.json")):
         write_remote_file(

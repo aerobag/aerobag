@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
 import telemetry_contracts
+import alarm_dispositions
 
 SCHEMA_VERSION = 2
 HISTORY_SCHEMA_VERSION = 4
@@ -197,6 +198,7 @@ class MonitorConfig:
     listen: str
     poll_seconds: float
     archive_enabled: bool = False
+    alarm_dispositions_path: Path | None = None
 
 
 def default_config_from_env() -> MonitorConfig:
@@ -228,6 +230,7 @@ def default_config_from_env() -> MonitorConfig:
     )
     return MonitorConfig(
         archive_enabled=os.environ.get("AEROBAG_ARCHIVE_ENABLED", env.get("AEROBAG_ARCHIVE_ENABLED", "0")) == "1",
+        alarm_dispositions_path=Path("/etc/aerobag/alarm-dispositions.json"),
         artifact_root=artifact_root,
         data_root=data_root,
         health_root=health_root,
@@ -557,6 +560,9 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
         cloud_status.pop("top_contributors", None)
     build_watch, build_watch_error = fetch_json_url(config.build_watch_url)
     calendar, calendar_error = read_json_file(config.calendar_path)
+    disposition_policy, disposition_error = (
+        read_json_file(config.alarm_dispositions_path) if config.alarm_dispositions_path else (None, None)
+    )
     live_status_cache: dict[str, tuple[Any, str | None]] = {}
     return {
         "schema_version": SCHEMA_VERSION,
@@ -580,6 +586,9 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
             ]
         },
         "inputs": {
+            "alarm_dispositions": ({"payload": disposition_policy, "error": disposition_error,
+                                    "path": str(config.alarm_dispositions_path)}
+                                   if config.alarm_dispositions_path else None),
             "release_channels": channel_source_status,
             "release_state": {
                 "path": str(release_state_path),
@@ -876,6 +885,7 @@ def add_chart_quality_metrics(
         metric_prefix = f"chart_quality.{family}" + (f".{scope}" if scope else "")
         label = f"{family} / {publication_id} / {phase} cycle {cycle}" if scoped else family
         error = entry.get("error") or chart_quality_report_error(report)
+        complete = not error and report.get("status") != "checking"
         if error:
             report = {"status": "critical", "error": error, "critical_count": 1}
         if report.get("status") == "checking":
@@ -920,6 +930,24 @@ def add_chart_quality_metrics(
                             "regions": report.get("regions", []), "policy": report.get("policy"),
                             "source_id": report.get("source_id"), "completed_at": report.get("completed_at"),
                             "publication": decision})
+        if (complete and isinstance(report.get("source_id"), str) and report["source_id"]
+                and parse_time(report.get("completed_at")) is not None
+                and parse_time(report["completed_at"]) <= now):
+            # Semantic report evidence excludes attempt IDs and timestamps, so
+            # replaying an identical cached result cannot reactivate an alarm.
+            metrics[-1]["finding"] = {"producer": "chart-quality", **{
+                key: report.get(key) for key in (
+                    "schema_version", "publication_id", "family", "cycle", "source_id", "policy",
+                    "publication", "warning_count", "critical_count", "unreviewed_count")},
+                "regions": sorted((r for r in report["regions"] if r.get("status") != "ok"),
+                                  key=alarm_dispositions.canonical_json)}
+            for channel in facts.get("channels", {}).values():
+                state = channel.get("release_state") or {}
+                commit = state.get("commit")
+                if (scoped and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit)
+                        and publication_id == f"{channel.get('tag')}-{commit[:12]}"):
+                    metrics[-1].update(release_tag=channel["tag"], producer_commit=commit,
+                                       channel_role=channel.get("role"))
         add_metric(metrics, metric_id=f"{metric_prefix}.unreviewed", label=f"{label} missing visual references",
                    value=report.get("unreviewed_count", 0), unit="regions",
                    severity="warning" if report.get("unreviewed_count", 0) else "ok", warning_threshold=1,
@@ -1049,8 +1077,14 @@ def evaluate_health(
         metric.setdefault("scope", "global")
         metric.setdefault("scope_label", "Global")
 
+    disposition_error = alarm_dispositions.apply(metrics, facts)
+    if disposition_error:
+        add_metric(metrics, metric_id="alarm_dispositions.policy", label="Alarm disposition policy",
+                   value=None, severity="critical", message=f"No dispositions applied: {disposition_error}")
+        metrics[-1].update(scope="global", scope_label="Global")
+
     for metric in metrics:
-        severity = metric.get("severity", "ok")
+        severity = metric.get("actionable_severity", metric.get("severity", "ok"))
         if severity in {"warning", "critical"}:
             alerts.append(
                 {
@@ -1073,7 +1107,7 @@ def evaluate_health(
                 "release_tag": metric.get("release_tag"),
             },
         )
-        severity = metric.get("severity", "ok")
+        severity = metric.get("actionable_severity", metric.get("severity", "ok"))
         if SEVERITY_RANK.get(severity, 0) > SEVERITY_RANK.get(status["status"], 0):
             status["status"] = severity
     operational_scopes = {
@@ -1106,6 +1140,7 @@ def evaluate_health(
         "scopes": scope_statuses,
         "metrics": metrics,
         "alerts": alerts,
+        "dispositioned_findings": [metric for metric in metrics if metric.get("disposition")],
     }
 
 
@@ -2496,9 +2531,12 @@ def alert_transitions(
             event = "changed" if before else "observed" if prior is None else "opened"
             detail = after
         else:
-            event = "cleared" if metric_id in metrics else "unavailable"
+            disposition = metrics.get(metric_id, {}).get("disposition")
+            event = "dispositioned" if disposition else "cleared" if metric_id in metrics else "unavailable"
             detail = {"previous": before, "severity": metrics.get(metric_id, {}).get("severity", "unknown"),
                       "message": metrics.get(metric_id, {}).get("message", "Metric no longer present")}
+            if disposition:
+                detail["disposition"] = disposition
         transitions.append({"metric_id": metric_id, "event": event, **detail})
     return transitions
 
@@ -2528,7 +2566,7 @@ def compact_existing_history_record(record: dict[str, Any]) -> dict[str, Any] | 
         if "alerts" in evaluation:
             compact["active_alerts"] = compact_active_alerts(evaluation)
     # Old numeric-only samples cannot reconstruct the lost states/events.
-    for key in ("states", "active_alerts", "alert_transitions"):
+    for key in ("states", "active_alerts", "alert_transitions", "dispositions"):
         if key in record:
             compact[key] = record[key]
     return compact
@@ -2690,6 +2728,8 @@ def compact_history_record(
         "states": compact_evaluation_states(evaluation),
         "active_alerts": compact_active_alerts(evaluation),
         "alert_transitions": alert_transitions(evaluation, previous),
+        "dispositions": {metric["id"]: metric["disposition"] for metric in evaluation.get("metrics", [])
+                         if metric.get("disposition")},
     }
     channel_states = channel_product_states(facts)
     if channel_states:
@@ -3056,6 +3096,17 @@ def dashboard_html() -> str:
     th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
     th { color:var(--muted); font-weight:600; }
     .alerts { margin-bottom:12px; }
+    .alerts table { table-layout:fixed; }
+    .alerts th:first-child { width:90px; }
+    .alerts th, .alerts td { overflow-wrap:anywhere; }
+    #knownFindings { margin:12px 0; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    #knownFindings summary { cursor:pointer; font-weight:600; }
+    #knownFindings h3 { font-size:15px; }
+    #knownFindings table { table-layout:fixed; }
+    #knownFindings th:first-child { width:100px; }
+    #knownFindings td, .metric-details-host li { overflow-wrap:anywhere; }
+    #knownFindings a { color:inherit; }
+    #knownFindings ul, .metric-details-host ul { padding-left:20px; }
     .scope-nav { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
     .scope-nav a { text-decoration:none; }
     .scope-nav a.selected { background:var(--panel); box-shadow:inset 0 0 0 1px currentColor; }
@@ -3064,7 +3115,7 @@ def dashboard_html() -> str:
     .metric-row.status-only { grid-template-columns:1fr; }
     .alerts a { color:inherit; }
     .metric-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
-    .metric-title h3 { margin:0; font-size:15px; }
+    .metric-title h3 { margin:0; min-width:0; overflow-wrap:anywhere; font-size:15px; }
     .metric-id { color:var(--muted); overflow-wrap:anywhere; font-size:12px; margin-bottom:10px; }
     .metric-value { font-size:24px; font-weight:700; margin-bottom:6px; }
     .metric-message { color:var(--muted); overflow-wrap:anywhere; }
@@ -3101,6 +3152,11 @@ def dashboard_html() -> str:
     <h2>Alerts</h2>
     <div id="alerts"></div>
   </section>
+  <details id="knownFindings" hidden>
+    <summary>Known findings (<span id="knownCount">0</span>)</summary>
+    <div id="knownSunset"></div>
+    <div id="invalidFindings"></div>
+  </details>
   <div id="metricRows" class="metric-list"></div>
 </main>
 <script>
@@ -3175,6 +3231,12 @@ function formatAge(seconds) {
   return `${hours}h ${minutes}m`;
 }
 function renderMetricDetails(metric) {
+  if (metric.disposition) {
+    const { disposition, ...raw } = metric;
+    return `<div class="metric-message">${esc(disposition.reason)}</div>
+      <ul>${disposition.evidence.map(e => `<li>${esc(e)}</li>`).join("")}</ul>
+      ${renderMetricDetails(raw)}`;
+  }
   if (metric.breakdown) {
     return `<table class="metric-details"><thead><tr><th>Category</th><th>Excluded</th></tr></thead><tbody>${Object.entries(metric.breakdown).map(([category, count]) => `<tr><td>${esc(category)}</td><td>${esc(count)}</td></tr>`).join("")}</tbody></table>`;
   }
@@ -3236,13 +3298,27 @@ function renderCurrent(record) {
   document.getElementById("alerts").innerHTML = alerts.length
     ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td><a href="${esc(metricLink(a))}">${esc(a.metric_id)}</a></td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">No alerts.</div>`;
+  const known = (evaln.dispositioned_findings || []).filter(m => scope === "all" || m.scope === scope);
+  document.getElementById("knownFindings").hidden = known.length === 0;
+  document.getElementById("knownCount").textContent = known.length;
+  for (const [host, kind, heading] of [["knownSunset", "accepted-on-sunset", "Known sunset issues"],
+                                      ["invalidFindings", "invalid-finding", "Invalidated findings"]]) {
+    const rows = known.filter(m => m.disposition.kind === kind);
+    document.getElementById(host).innerHTML = rows.length ? `<h3>${heading}</h3>
+      <table><thead><tr><th>Measured</th><th>Finding</th><th>Disposition</th></tr></thead><tbody>
+      ${rows.map(m => `<tr><td>${esc(m.severity)}</td><td><a href="${esc(metricLink(m))}">${esc(m.message)}</a></td>
+        <td>${esc(m.disposition.reason)}<ul>${m.disposition.evidence.map(e => `<li>${esc(e)}</li>`).join("")}</ul></td></tr>`).join("")}
+      </tbody></table>` : "";
+  }
 }
 function updateMetricRow(row, metric) {
   row.metric = metric;
   row.element.classList.toggle("has-breakdown", Boolean(metric.breakdown));
   row.title.textContent = metric.label || metric.id;
-  row.pill.textContent = (metric.severity || "ok").replaceAll("_", " ");
-  row.pill.className = `pill ${cls(metric.severity)}`;
+  row.pill.textContent = metric.disposition
+    ? `${metric.disposition.kind === "invalid-finding" ? "invalidated" : "accepted on sunset"} (${metric.severity})`
+    : (metric.severity || "ok").replaceAll("_", " ");
+  row.pill.className = `pill ${metric.disposition ? "unknown" : cls(metric.severity)}`;
   row.value.innerHTML = `${esc(formatValue(metric))}${metric.unit ? ` <span class="muted">${esc(metric.unit)}</span>` : ""}`;
   row.message.textContent = metric.message || "";
   row.details.innerHTML = renderMetricDetails(metric);
@@ -3305,8 +3381,9 @@ function buildMetricRows(metrics) {
 }
 function ensureMetricRows(current) {
   const scope = selectedScope();
+  const selectedMetric = decodeURIComponent(location.hash.split("/metric/")[1] || "");
   const metrics = (current.evaluation?.metrics || []).filter(
-    (metric) => scope === "all" || metric.scope === scope
+    (metric) => (scope === "all" || metric.scope === scope) && (!metric.disposition || metric.id === selectedMetric)
   ).sort((a, b) => {
     const severity = (severityRank[b.severity || "ok"] || 0) - (severityRank[a.severity || "ok"] || 0);
     return severity || String(a.id).localeCompare(String(b.id));
@@ -3551,6 +3628,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--build-watch-url", default=defaults.build_watch_url)
     parser.add_argument("--calendar", type=Path, default=defaults.calendar_path)
+    parser.add_argument("--alarm-dispositions", type=Path, default=defaults.alarm_dispositions_path)
     parser.add_argument("--listen", default=defaults.listen)
     parser.add_argument("--poll-seconds", type=float, default=defaults.poll_seconds)
     parser.add_argument("--once", action="store_true")
@@ -3574,6 +3652,7 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         listen=args.listen,
         poll_seconds=args.poll_seconds,
         archive_enabled=getattr(args, "archive_enabled", False),
+        alarm_dispositions_path=getattr(args, "alarm_dispositions", None),
     )
 
 

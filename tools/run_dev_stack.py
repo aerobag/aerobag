@@ -537,6 +537,8 @@ class DevStack:
             f"http://{self.config.build_watch_listen}/api/state",
             "--calendar",
             str(FAA_CYCLE_CALENDAR),
+            "--alarm-dispositions",
+            str(REPO_ROOT / "deploy/alarm-dispositions.json"),
             "--listen",
             self.config.pipeline_health_listen,
             "--poll-seconds",

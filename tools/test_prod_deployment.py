@@ -1035,6 +1035,106 @@ class AerobagCloudProductionTests(unittest.TestCase):
                 deploy_prod.install_cloud_server_secret(config, dry_run=False)
 
 
+class HealthServiceStateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.namespace = {"__name__": "health_test"}
+        exec(compile(deploy_prod.health_script(), "generated-health", "exec"), self.namespace)
+
+    def service(self, output: str) -> dict:
+        with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)) as run:
+            result = self.namespace["service_state"]("example.service")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["systemctl", "show", "example.service"])
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        return result
+
+    def test_successful_idle_oneshot_keeps_result_and_timestamps(self) -> None:
+        state = self.service(
+            "LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=static\n"
+            "Type=oneshot\nResult=success\nExecMainStatus=0\n"
+            "ExecMainStartTimestamp=Mon 2026-10-12 20:44:45 UTC\n"
+            "ExecMainExitTimestamp=Mon 2026-10-12 20:48:10 UTC\n"
+        )
+        self.assertEqual(state["active"], "inactive")
+        self.assertEqual(state["enabled"], "static")
+        self.assertEqual(state["type"], "oneshot")
+        self.assertEqual(state["result"], "success")
+        self.assertEqual(state["exit_status"], "0")
+        self.assertEqual(state["last_finished_at"], "Mon 2026-10-12 20:48:10 UTC")
+        self.assertNotIn("error", state)
+
+    def test_failed_and_disabled_are_observations_not_query_failures(self) -> None:
+        state = self.service(
+            "LoadState=loaded\nActiveState=failed\nSubState=failed\nUnitFileState=disabled\n"
+            "Type=oneshot\nResult=exit-code\nExecMainStatus=2\n"
+        )
+        self.assertEqual(state["active"], "failed")
+        self.assertEqual(state["enabled"], "disabled")
+        self.assertEqual(state["result"], "exit-code")
+        self.assertEqual(state["exit_status"], "2")
+        self.assertNotIn("error", state)
+
+    def test_never_run_job_has_no_success_timestamp(self) -> None:
+        state = self.service(
+            "LoadState=loaded\nActiveState=inactive\nType=oneshot\nResult=success\n"
+            "ExecMainStatus=0\nExecMainExitTimestamp=\n"
+        )
+        self.assertIsNone(state["last_finished_at"])
+
+    def test_missing_and_unreadable_units_remain_unknown(self) -> None:
+        for output in ["LoadState=not-found\nActiveState=inactive\n", ""]:
+            with self.subTest(output=output):
+                state = self.service(output)
+                self.assertEqual(state["active"], "unknown")
+                self.assertIn("error", state)
+        for error in [FileNotFoundError("systemctl"), subprocess.TimeoutExpired("systemctl", 10),
+                      subprocess.CalledProcessError(1, "systemctl")]:
+            with self.subTest(error=error), mock.patch.object(subprocess, "run", side_effect=error):
+                state = self.namespace["service_state"]("example.service")
+                self.assertEqual(state["active"], "unknown")
+                self.assertIn("error", state)
+
+    def test_timer_schedule_is_attached_to_timer_and_activated_service(self) -> None:
+        services = {"job.timer": {}, "job.service": {}, "other.service": {}}
+        rows = [{"unit": "job.timer", "activates": "job.service", "next": 1791843295283015}]
+        with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(rows))) as run:
+            self.namespace["add_timer_schedules"](services)
+        self.assertEqual(services["job.service"], {
+            "timer": "job.timer", "next_run_at_utc": "2026-10-12T22:14:55.283015Z",
+        })
+        self.assertEqual(services["job.timer"], services["job.service"])
+        self.assertEqual(services["other.service"], {})
+        self.assertEqual(run.call_args.args[0][-1], "job.timer")
+
+    def test_unscheduled_timer_and_unreadable_schedule_are_distinct(self) -> None:
+        for value in [None, 0, 2**64 - 1]:
+            with self.subTest(value=value):
+                services = {"job.timer": {}, "job.service": {}}
+                rows = [{"unit": "job.timer", "activates": "job.service", "next": value}]
+                with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(rows))):
+                    self.namespace["add_timer_schedules"](services)
+                self.assertIsNone(services["job.service"]["next_run_at_utc"])
+                self.assertNotIn("schedule_error", services["job.timer"])
+        for output in ["not json", "{}", "[null]"]:
+            services = {"job.timer": {}}
+            with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)):
+                self.namespace["add_timer_schedules"](services)
+            self.assertIn("schedule_error", services["job.timer"])
+            self.assertNotIn("next_run_at_utc", services["job.timer"])
+
+    def test_timer_query_failure_does_not_hide_service_observations(self) -> None:
+        for error in [FileNotFoundError("systemctl"), subprocess.TimeoutExpired("systemctl", 10),
+                      subprocess.CalledProcessError(1, "systemctl")]:
+            with self.subTest(error=error):
+                services = {"job.timer": {"active": "active"}, "job.service": {"active": "failed"}}
+                with mock.patch.object(subprocess, "run", side_effect=error):
+                    self.namespace["add_timer_schedules"](services)
+                self.assertEqual(services["job.service"], {"active": "failed"})
+                self.assertEqual(services["job.timer"]["active"], "active")
+                self.assertIn("schedule_error", services["job.timer"])
+
+
 class ResolvedLiveFeedRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -1116,7 +1216,9 @@ class ResolvedLiveFeedRuntimeTests(unittest.TestCase):
         namespace["DEPLOY_CONFIG_FILE"] = self.root / "absent-config"
         service = mock.Mock(return_value={"active": "active", "enabled": "enabled"})
         namespace["service_state"] = service
+        namespace["add_timer_schedules"] = mock.Mock()
         self.assertEqual(namespace["main"](), 0)
+        namespace["add_timer_schedules"].assert_called_once()
         return json.loads((self.root / "health/status.json").read_text()), service
 
     def test_repair_starts_each_bound_provider_once_without_redundant_or_retired_daemons(self) -> None:

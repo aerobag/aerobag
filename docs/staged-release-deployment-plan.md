@@ -492,6 +492,17 @@ admin or Pipeline Health applications would duplicate state and policy, so
 they are not deployed; admin links select the relevant scope in the shared
 Pipeline Health UI.
 
+The admin service table reads explicit systemd properties, distinguishing an
+idle one-shot job from a failed service or an unreadable/missing unit. A completed
+one-shot is labeled successful only with a successful result, zero exit status,
+and a completion timestamp. Last completion and the timer's next invocation are
+shown separately; normal daemon inactivity is not treated as healthy idleness.
+Channel live-feed runtime comes from the activated generation's provider mapping
+and that provider's current service observation, not the legacy per-release
+`live_feed_status` or a pending replacement instance. Shared sunsets name their
+actual provider. Missing or inconsistent ownership remains explicitly unknown.
+These admin/collector changes deploy via `--reconcile`; no app release is needed.
+
 Pipeline Health resolves `channel-current` once per sample and reads both the
 release assignments and live-feed endpoints from that generation. It then
 reads authoritative release lifecycle state from

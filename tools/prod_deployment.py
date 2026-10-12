@@ -1333,22 +1333,61 @@ def age_seconds(path: Path) -> int | None:
         return None
 
 
-def systemctl(*args: str) -> str:
-    result = subprocess.run(
-        ["systemctl", *args],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "unknown"
-
-
-def service_state(unit: str) -> dict[str, str]:
-    return {
-        "active": systemctl("is-active", unit),
-        "enabled": systemctl("is-enabled", unit),
+def service_state(unit: str) -> dict[str, str | None]:
+    # is-active/is-enabled use nonzero exits for valid states such as inactive,
+    # failed and disabled. Read properties instead; a failed query is different
+    # from a successfully observed failed service.
+    properties = {
+        "active": "ActiveState", "enabled": "UnitFileState", "load": "LoadState",
+        "sub": "SubState", "type": "Type", "result": "Result",
+        "exit_status": "ExecMainStatus", "last_started_at": "ExecMainStartTimestamp",
+        "last_finished_at": "ExecMainExitTimestamp",
     }
+    state = {name: None for name in properties}
+    state.update(active="unknown", enabled="unknown")
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", unit, "--property=" + ",".join(properties.values())],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=10,
+        )
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        state.update({name: values.get(prop) or state[name] for name, prop in properties.items()})
+        if state["load"] != "loaded":
+            state["active"] = "unknown"
+            state["error"] = "unit load state: " + str(state["load"] or "unknown")
+    except (OSError, subprocess.SubprocessError) as exc:
+        state["error"] = str(exc)
+    return state
+
+
+def add_timer_schedules(services: dict) -> None:
+    timers = [unit for unit in services if unit.endswith(".timer")]
+    if not timers:
+        return
+    try:
+        result = subprocess.run(
+            ["systemctl", "list-timers", "--all", "--output=json", "--no-pager", *timers],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=10,
+        )
+        rows = json.loads(result.stdout)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError("invalid systemctl timer list")
+        for row in rows:
+            if row.get("unit") not in timers:
+                continue
+            value = row.get("next")
+            # list-timers resolves monotonic as well as calendar timers to Unix
+            # microseconds. Zero and UINT64_MAX mean no scheduled invocation.
+            next_run = (
+                datetime.fromtimestamp(value / 1_000_000, timezone.utc).isoformat().replace("+00:00", "Z")
+                if isinstance(value, int) and 0 < value < 2**64 - 1 else None
+            )
+            for unit in [row["unit"], row.get("activates")]:
+                if unit in services:
+                    services[unit].update(timer=row["unit"], next_run_at_utc=next_run)
+    except (OSError, subprocess.SubprocessError, ValueError, OverflowError) as exc:
+        for unit in timers:
+            services[unit]["schedule_error"] = str(exc)
 
 
 def current_artifacts_summary(path: Path) -> dict[str, object]:
@@ -1458,6 +1497,7 @@ def main() -> int:
         },
         "latest_build_log": latest_build_log(artifact_root),
     }
+    add_timer_schedules(payload["services"])
 
     target = health_root / "status.json"
     tmp = target.with_suffix(".json.tmp")

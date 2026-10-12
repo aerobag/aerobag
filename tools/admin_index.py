@@ -92,8 +92,32 @@ function channelLinks(role, tag) {{
 }}
 function stateClass(value) {{
   if (["passed","running","active"].includes(value)) return "ok";
-  if (["pending","building","qualifying","draining"].includes(value)) return "warning";
+  if (["pending","building","qualifying","draining","activating","deactivating","reloading"].includes(value)) return "warning";
   return value ? "critical" : "muted";
+}}
+function serviceRuntime(state) {{
+  const runtime = state?.active ?? (state?.alive === true ? "active" : state?.alive === false ? "failed" : "unknown");
+  if (state?.error) return {{ label:"Unknown", css:"critical" }};
+  if (state?.type === "oneshot" && runtime === "inactive") {{
+    if (state.result && state.result !== "success") return {{ label:`Failed — ${{state.result}}`, css:"critical" }};
+    if (!state.last_finished_at) return {{ label:"Idle — not yet run", css:"muted" }};
+    if (state.result === "success" && state.exit_status === "0") return {{ label:"Idle — last run succeeded", css:"ok" }};
+    return {{ label:"Idle — last result unknown", css:"warning" }};
+  }}
+  return {{ label:runtime, css:stateClass(runtime) }};
+}}
+function liveFeedRuntime(health, tag) {{
+  const live = health.live_feeds;
+  const matches = Object.entries(live?.providers || {{}}).filter(([, provider]) => provider.releases?.includes(tag));
+  if (live?.error || matches.length !== 1) return {{
+    label:"Unknown", css:"critical", detail:live?.error || "No unique activated provider is available",
+  }};
+  const [unit, provider] = matches[0];
+  const service = health.services?.[unit];
+  const runtime = service?.error ? "unknown" : (service?.active || "unknown");
+  const label = runtime === "active" ? "Running" : runtime[0].toUpperCase() + runtime.slice(1);
+  const shared = provider.provider_tag !== tag ? ` — shared with ${{provider.provider_tag}}` : "";
+  return {{ label:label + shared, css:stateClass(runtime), detail:service?.error || unit }};
 }}
 function renderServices(services) {{
   const host = document.getElementById("services");
@@ -101,13 +125,19 @@ function renderServices(services) {{
   if (!entries.length) {{ host.innerHTML = `<span class="muted">No shared service state is available.</span>`; return; }}
   host.className = "";
   host.innerHTML = `<table><thead><tr><th>Service</th><th>Runtime</th><th>Startup</th></tr></thead><tbody>${{entries.sort(([a],[b]) => a.localeCompare(b)).map(([name, state]) => {{
-    const runtime = state?.active ?? (state?.alive === true ? "active" : state?.alive === false ? "failed" : "unknown");
+    const runtime = serviceRuntime(state);
     const startup = state?.enabled ?? (state?.returncode == null ? "managed by stack" : `exit ${{state.returncode}}`);
-    return `<tr><td>${{esc(name)}}</td><td class="${{stateClass(runtime)}}">${{esc(runtime)}}</td><td>${{esc(startup)}}</td></tr>`;
+    const timing = [
+      state?.last_finished_at ? `Last finished: ${{state.last_finished_at}}` : null,
+      state?.timer ? `Next run: ${{state.next_run_at_utc || "not scheduled"}}` : null,
+    ].filter(Boolean).map(esc).join("<br>");
+    const error = state?.error || state?.schedule_error;
+    return `<tr><td>${{esc(name)}}</td><td class="${{runtime.css}}">${{esc(runtime.label)}}${{timing ? `<div class="muted">${{timing}}</div>` : ""}}${{error ? `<div class="critical">${{esc(error)}}</div>` : ""}}</td><td>${{esc(startup)}}</td></tr>`;
   }}).join("")}}</tbody></table>`;
 }}
-function card(role, tag, record) {{
+function card(role, tag, record, health) {{
   const links = channelLinks(role, tag);
+  const liveFeeds = liveFeedRuntime(health, tag);
   const deployedChecks = record && "deployment_status" in record ? record.deployment_status : record?.qualification_status;
   const heading = role === "sunset" ? `Sunset ${{tag}}` : role[0].toUpperCase() + role.slice(1);
   return `<article id="${{role === "sunset" ? `release-${{esc(tag)}}` : role}}" class="card ${{role}}">
@@ -116,7 +146,7 @@ function card(role, tag, record) {{
       <dt>Commit</dt><dd><code>${{esc(record?.commit || "unknown")}}</code></dd>
       <dt>Build</dt><dd class="${{stateClass(record?.build_status)}}">${{esc(record?.build_status || "unknown")}}</dd>
       <dt>Deployed checks</dt><dd class="${{stateClass(deployedChecks)}}">${{esc(deployedChecks || "unknown")}}</dd>
-      <dt>Live feeds</dt><dd class="${{stateClass(record?.live_feed_status)}}">${{esc(record?.live_feed_status || "unknown")}}</dd>
+      <dt>Live feeds</dt><dd class="${{liveFeeds.css}}" title="${{esc(liveFeeds.detail)}}">${{esc(liveFeeds.label)}}</dd>
       ${{record?.deployment_error ? `<dt>Deployment check error</dt><dd class="critical">${{esc(record.deployment_error)}}</dd>` : ""}}
       ${{record?.last_error ? `<dt>Last error</dt><dd class="critical">${{esc(record.last_error)}}</dd>` : ""}}
     </dl>
@@ -136,9 +166,9 @@ async function render() {{
       return;
     }}
     const records = state.releases || {{}};
-    const cards = [card("production", state.production, records[state.production])];
-    if (state.staging) cards.push(card("staging", state.staging, records[state.staging]));
-    for (const tag of state.sunset || []) cards.push(card("sunset", tag, records[tag]));
+    const cards = [card("production", state.production, records[state.production], health)];
+    if (state.staging) cards.push(card("staging", state.staging, records[state.staging], health));
+    for (const tag of state.sunset || []) cards.push(card("sunset", tag, records[tag], health));
     host.innerHTML = cards.join("");
   }} catch (error) {{
     host.innerHTML = `<div class="empty critical">Could not load deployment state: ${{esc(error)}}</div>`;

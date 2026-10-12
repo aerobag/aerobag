@@ -400,6 +400,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Install Node for generated-page and editor tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Verify telemetry promises against the integration base
         env:
           TELEMETRY_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}

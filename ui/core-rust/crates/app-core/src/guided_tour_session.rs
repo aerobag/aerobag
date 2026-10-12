@@ -140,12 +140,16 @@ pub fn perform_guided_tour_action_in_session(
         .offline_packages
         .is_some();
     let all = guided_tour::steps(android);
-    let index = s
-        .coordinator
-        .guided_tour
-        .as_ref()
-        .map(|t| t.position as usize - 1)
-        .unwrap_or(0);
+    let index = match s.coordinator.guided_tour.as_ref() {
+        Some(tour) => all
+            .iter()
+            .position(|step| step.id == tour.step_id)
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("Unknown guided tour step: {}", tour.step_id),
+            })?,
+        None => 0,
+    };
     let closing =
         action == UiTourAction::Close || (action == UiTourAction::Next && index + 1 == all.len());
     let previous_versions = s.projection_versions.versions();
@@ -283,9 +287,11 @@ fn prepare_step(s: &mut UiSession, step: &Step) -> Result<(), SessionModelTransa
     if let Some(catalog) = s.map.raster_catalog_mut() {
         crate::select_map_family_in_catalog(catalog, if regions { "shaded-relief" } else { "sec" });
     }
-    if step.page == UiTourPage::Charts {
-        prepare_plate(s, step.subject)?;
-    }
+    let chart_uid = if step.page == UiTourPage::Charts {
+        Some(prepare_plate(s, step.subject)?)
+    } else {
+        None
+    };
     let row_uid = if step.surface == app_ui_contracts::tour::UiTourSurface::FlightPlanRow {
         let projected = crate::project_ui_state(&session_plan(s)?);
         Some(
@@ -313,7 +319,7 @@ fn prepare_step(s: &mut UiSession, step: &Step) -> Result<(), SessionModelTransa
             &cardinal_selection(s)?,
         ))
     } else {
-        None
+        chart_uid
     };
     if let Some(tour) = s.coordinator.guided_tour.as_mut() {
         tour.row_uid = row_uid;
@@ -382,7 +388,7 @@ fn prepare_plan(s: &mut UiSession, demo: Demo) -> Result<(), SessionModelTransac
     }
     let input = match demo {
         Empty => "",
-        Primary | Activated => "KRNT SEA OLM UBG KUAO",
+        Primary | Activated => guided_tour::QUICK_START_ROUTE,
         Waypoints => "KRNT BANDR ELN YKM S40",
         AirwayEndpoints | AirwayEntry | AirwayExit | AirwayAdded => "KRNT S40",
         _ => "KRNT KMWC",
@@ -555,7 +561,7 @@ fn prepare_airway(
     Err(missing("The demonstration airway was not inserted.").into())
 }
 
-fn prepare_plate(s: &mut UiSession, subject: &str) -> Result<(), SessionModelTransactionError> {
+fn prepare_plate(s: &mut UiSession, subject: &str) -> Result<String, SessionModelTransactionError> {
     let (airport, desired) = subject.split_once(':').unwrap_or((subject, ""));
     let plan = session_plan(s)?;
     let derived = crate::had_ops::chart_page_state(
@@ -600,5 +606,5 @@ fn prepare_plate(s: &mut UiSession, subject: &str) -> Result<(), SessionModelTra
             candidate_chart_id: Some(&chart.id),
             suggested_chart_ids: &[],
         });
-    Ok(())
+    Ok(chart.id.clone())
 }

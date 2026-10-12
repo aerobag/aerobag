@@ -108,7 +108,7 @@ private val tourAnchorIds = mapOf(
     "plan-remove-all-above" to listOf("parity:plan-row-action:remove_all_above"),
     "plan-add-airway" to listOf("parity:plan-row-action:add_airway"), "plan-find-route" to listOf("parity:plan-row-action:find_route"),
     "plate-airport-menu" to listOf("parity:plate-airport-button:tray", "parity:plate-airport-button"),
-    "plate-folder" to listOf("parity:plate-folder-button"), "plate-folder-content" to listOf("tour:plate-folder"),
+    "plate-folder" to listOf("parity:plate-folder-button"),
     "home-guided-tour" to listOf("parity:home-button:GuidedTour"),
     "home-cloud" to listOf("parity:home-button:Cloud"),
     "home-about" to listOf("parity:home-button:About"), "home-settings" to listOf("parity:home-button:Settings"), "home-status" to listOf("parity:home-button:DataStatus"),
@@ -177,7 +177,12 @@ private fun TourOverlay(tour: UiGuidedTour, registry: TourAnchors, busy: Boolean
     var panelBounds by remember { mutableStateOf(Rect.Zero) }
     var rootScreenOrigin by remember { mutableStateOf(Offset.Zero) }
     val targets = tour.targets.mapNotNull { target ->
-        (if (target == "aircraft-model-option" && tour.optionUid != null) listOf("parity:altitude-planner-option:aircraft:${tour.optionUid}") else tourAnchorIds[target] ?: listOf(target)).firstNotNullOfOrNull { registry.bounds[it]?.takeIf { b -> b.width > 0 && b.height > 0 }?.translate(-rootScreenOrigin) }
+        val ids = when {
+            target == "aircraft-model-option" && tour.optionUid != null -> listOf("parity:altitude-planner-option:aircraft:${tour.optionUid}")
+            target == "plate-selected-thumbnail" && tour.optionUid != null -> listOf("parity:plate-folder-tile:${tour.optionUid}")
+            else -> tourAnchorIds[target] ?: listOf(target)
+        }
+        ids.firstNotNullOfOrNull { registry.bounds[it]?.takeIf { b -> b.width > 0 && b.height > 0 }?.translate(-rootScreenOrigin) }
     }
     val preparing = busy || (error == null && targets.size < tour.targets.size)
     val handleKey: (KeyEvent) -> Boolean = handler@{ event ->
@@ -265,13 +270,16 @@ private fun TourOverlay(tour: UiGuidedTour, registry: TourAnchors, busy: Boolean
             .background(Color(0xff17242c),RoundedCornerShape(14.dp)).border(2.dp,color,RoundedCornerShape(14.dp))
             .padding(14.dp)) {
             Column(Modifier.weight(1f,fill=false).observedVerticalScroll(rememberScrollState())) {
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                    Text(if(tour.presentation == UiTourPresentation.TitleCard) "" else tour.chapter,color=color,fontSize=12.sp)
+                    Text("${tour.position} / ${tour.total}",color=color,fontSize=12.sp)
+                }
                 if (tour.presentation == UiTourPresentation.TitleCard) {
                     Box(Modifier.fillMaxWidth().heightIn(min=160.dp).testTag("guided-tour-title-content"),contentAlignment=Alignment.Center) {
                         Text(tour.title,color=Color.White,fontSize=28.sp,textAlign=androidx.compose.ui.text.style.TextAlign.Center,
                             modifier=Modifier.testTag("guided-tour-title"))
                     }
                 } else {
-                    Text("${tour.chapter} · ${tour.position} / ${tour.total}",color=color,fontSize=12.sp)
                     Text(tour.title,color=Color.White,fontSize=20.sp,modifier=Modifier.padding(vertical=8.dp))
                     if (tour.body.isNotEmpty()) Text(tour.body,color=Color.White,fontSize=15.sp)
                 }
@@ -294,8 +302,9 @@ private fun TourRestartButton(tour: UiGuidedTour, busy: Boolean, focus: List<Foc
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun TourNavigationButtons(tour: UiGuidedTour, busy: Boolean, preparing: Boolean, focus: List<FocusRequester>, onAction: (UiTourAction) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(top=8.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+    FlowRow(Modifier.fillMaxWidth().padding(top=8.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Button(onClick={onAction(UiTourAction.Close)},modifier=Modifier.focusRequester(focus[0]).e2eIndexedControl("parity:guided-tour-close",enabled=true,text=tour.closeLabel)) { Text(tour.closeLabel) }
         Button(onClick={onAction(UiTourAction.Back)},enabled=tour.backEnabled&&!busy,modifier=Modifier.focusRequester(focus[1]).e2eIndexedControl("parity:guided-tour-back",enabled=tour.backEnabled&&!busy,text="Back")) { Text("Back") }
         Button(onClick={onAction(UiTourAction.Next)},enabled=!preparing,modifier=Modifier.focusRequester(focus[2]).e2eIndexedControl("parity:guided-tour-next",enabled=!preparing,text=if(preparing) "Loading…" else tour.nextLabel)) { Text(if(preparing) "Loading…" else tour.nextLabel) }

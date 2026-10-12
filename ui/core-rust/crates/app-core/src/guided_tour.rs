@@ -7,6 +7,8 @@ use app_ui_contracts::tour::{
     UiTourShortcut, UiTourSurface, UiTourViewport,
 };
 
+pub(crate) const QUICK_START_ROUTE: &str = "KRNT SEA V23 BTG KUAO";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Demo {
     Empty,
@@ -49,7 +51,7 @@ pub(crate) fn steps(android: bool) -> Vec<Step> {
     use UiTourPage::*;
     use UiTourSurface as S;
     let mut result = Vec::new();
-    let mut current_chapter = "Primary functions";
+    let mut current_chapter = "Quick start";
     macro_rules! step {
         ($id:expr, $title:expr, $body:expr, $page:ident, $surface:ident, $subject:expr, $demo:ident, [$($target:expr),*]) => {
             result.push(Step { id: $id, chapter: current_chapter, title: $title, body: $body,
@@ -98,61 +100,29 @@ pub(crate) fn steps(android: bool) -> Vec<Step> {
         ["layers-menu"]
     );
     step!(
-        "cdi",
-        "The CDI opens Flight Plan",
-        "The course guidance display is also a shortcut to your flight plan. Next takes you there.",
-        Map,
-        None,
-        "",
-        Empty,
-        ["cdi"]
-    );
-    step!(
         "enter-primary",
         "Enter a flight plan",
-        "To enter a flight plan, you type waypoints into this route field. Here we’ve typed KRNT SEA OLM UBG KUAO for you. Next adds them to the plan.",
+        "Tapping the CDI opens Flight Plan from other pages.\n\nType a flight plan into the route field.",
         FlightPlan,
         RouteEntry,
-        "KRNT SEA OLM UBG KUAO",
+        QUICK_START_ROUTE,
         Empty,
-        ["route-entry"]
+        ["cdi", "route-entry"]
     );
     step!(
         "primary-plan",
         "Your route, one row at a time",
-        "The waypoints now form a flight plan. Select SEA to open its action tray.",
+        "The waypoints now form a flight plan. Select SEA to open its action tray. Next will tap Activate Leg.",
         FlightPlan,
         FlightPlanRow,
         "SEA",
         Primary,
         ["plan-row", "plan-row-activate"]
     );
-    step!("activate", "Activate course guidance", "SEA is now active. The CDI shows guidance for the active leg; you can tap it from other pages to return here.", FlightPlan, None, "", Activated, ["cdi"]);
-    step!(
-        "chart-return",
-        "Return to the Chart",
-        "The Chart/Plate button brings you back to the chart. Next demonstrates that tap.",
-        FlightPlan,
-        None,
-        "",
-        Activated,
-        ["chart-plate"]
-    );
-    step!("chart-plate-toggle", "Tap again to switch to Plates", "Now you’re back on the Chart. Tap the same button again to switch to Plates. Next demonstrates that second tap.", Map, None, "", Activated, ["chart-plate"]);
-    step!(
-        "plate-airport",
-        "Choose the arrival airport",
-        "The airport menu includes airports from your flight plan. Choose KUAO to see its plates.",
-        Charts,
-        PlateAirports,
-        "KUAO",
-        Activated,
-        ["plate-airport-menu"]
-    );
-    step!("plate-folder", "Browse the plate folder", "FLDR shows approach plates, arrival and departure procedures, and the airport diagram. Next opens KUAO’s diagram.", Charts, PlateFolder, "KUAO", Activated, ["plate-folder", "plate-folder-content"]);
-    step!("diagram", "Keep a plate at hand", "This is KUAO’s airport diagram. The Chart/Plate button lets you switch between the chart and the plate you’re using.", Charts, None, "KUAO:diagram", Activated, ["chart-plate"]);
-    step!("three-pages", "Chart, Plates and Flight Plan", "You’ve seen the three places where you’ll spend most of your time. Everything else is under Home.", Map, None, "", Activated, ["home"]);
-    step!("home", "Everything else starts here", "Home opens planning tools, offline packages, Cloud, settings and status. Guided Tour is here whenever you want to start again.", Home, None, "", Activated, ["home-guided-tour"]);
+    step!("activate", "Course guidance activated", "The leg leading to SEA is now active. The CDI shows guidance for the active leg; you can tap it from other pages to return here.", FlightPlan, None, "", Activated, ["cdi"]);
+    step!("chart-plate-toggle", "Switch between Chart and Plates", "The Chart/Plate button returns you here from Flight Plan. Tap it again to toggle to Plates; Next takes us there.", Map, None, "", Activated, ["chart-plate"]);
+    step!("plate-folder", "Selecting Plates", "The airport menu selects the set of plates, the FLDR page shows the plates associated with that airport. Tap a tile, like Airport Diagram, to bring up that plate.", Charts, PlateFolder, "KUAO:diagram", Activated, ["plate-airport-menu", "plate-folder", "plate-selected-thumbnail"]);
+    step!("home", "Quick start complete", "That's the quick start: Chart, Flight Plan and Plates. Home holds everything else. Close to explore, or continue the complete tour to meet all the features. Guided Tour is here whenever you want to return.", Home, None, "", Activated, ["home", "home-guided-tour"]);
     chapter!("planning-title", "Flight Planning", Activated);
     step!("clear-plan", "Start a new plan", "The final waypoint’s Remove All Above action clears the flight plan. We’ll use a fresh example next.", FlightPlan, FlightPlanRow, "KUAO", Activated, ["plan-remove-all-above"]);
     step!("enter-waypoints", "Type your waypoints", "You can type named waypoints to describe a route you already have in mind. Here we’ve entered KRNT BANDR ELN YKM S40; Next shows that route on the chart.", FlightPlan, RouteEntry, "KRNT BANDR ELN YKM S40", Empty, ["route-entry"]);
@@ -349,6 +319,17 @@ pub(crate) const TOUR_SPOT: crate::LatLon = crate::LatLon {
 pub(crate) fn view(index: usize, generation: u64, android: bool) -> UiGuidedTour {
     let all = steps(android);
     let step = &all[index];
+    // The introductory chapter has its own progress; all later chapters form
+    // one complete tour. Keep these display counters independent of navigation.
+    let quick_start_len = all
+        .iter()
+        .take_while(|s| s.chapter == all[0].chapter)
+        .count();
+    let (position, total) = if index < quick_start_len {
+        (index + 1, quick_start_len)
+    } else {
+        (index - quick_start_len + 1, all.len() - quick_start_len)
+    };
     let (lat, lon, zoom) = match step.demo {
         Demo::Empty | Demo::Primary | Demo::Activated => (46.56, -122.64, 7.0),
         Demo::Waypoints
@@ -405,8 +386,8 @@ pub(crate) fn view(index: usize, generation: u64, android: bool) -> UiGuidedTour
         body: step.body.into(),
         placement: step.placement,
         presentation: step.presentation,
-        position: index as u32 + 1,
-        total: all.len() as u32,
+        position: position as u32,
+        total: total as u32,
         page: step.page,
         surface: step.surface,
         subject: step.subject.into(),
@@ -419,7 +400,9 @@ pub(crate) fn view(index: usize, generation: u64, android: bool) -> UiGuidedTour
             lon: TOUR_SPOT.lon,
         }),
         back_enabled: index > 0,
-        next_label: if index + 1 == all.len() {
+        next_label: if index + 1 == quick_start_len {
+            "Continue to complete tour"
+        } else if index + 1 == all.len() {
             "Finish"
         } else {
             "Next"
@@ -444,6 +427,136 @@ pub(crate) fn view(index: usize, generation: u64, android: bool) -> UiGuidedTour
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guided_tour_plate_selection_points_to_controls_and_the_selected_diagram() {
+        for android in [false, true] {
+            let all = steps(android);
+            let chart = all
+                .iter()
+                .find(|step| step.id == "chart-plate-toggle")
+                .unwrap();
+            assert!(chart
+                .body
+                .ends_with("Tap it again to toggle to Plates; Next takes us there."));
+            assert!(!all.iter().any(|step| step.id == "plate-airport"));
+            let folder = all.iter().find(|step| step.id == "plate-folder").unwrap();
+            assert_eq!(folder.title, "Selecting Plates");
+            assert!(folder
+                .body
+                .ends_with("Tap a tile, like Airport Diagram, to bring up that plate."));
+            let folder_index = all
+                .iter()
+                .position(|step| step.id == "plate-folder")
+                .unwrap();
+            assert_eq!(all[folder_index + 1].id, "home");
+            assert!(!all.iter().any(|step| step.id == "diagram"));
+            assert_eq!(folder.page, UiTourPage::Charts);
+            assert_eq!(folder.surface, UiTourSurface::PlateFolder);
+            assert_eq!(folder.subject, "KUAO:diagram");
+            assert_eq!(
+                folder.targets,
+                [
+                    "plate-airport-menu",
+                    "plate-folder",
+                    "plate-selected-thumbnail"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn guided_tour_quick_start_has_its_own_progress_and_an_explicit_continuation() {
+        for android in [false, true] {
+            let all = steps(android);
+            let boundary = all
+                .iter()
+                .position(|step| step.id == "planning-title")
+                .unwrap();
+            assert_eq!(boundary, 10);
+            for index in 0..all.len() {
+                let tour = view(index, 7, android);
+                let (position, total) = if index < boundary {
+                    assert_eq!(tour.chapter, "Quick start");
+                    (index + 1, boundary)
+                } else {
+                    (index - boundary + 1, all.len() - boundary)
+                };
+                assert_eq!(
+                    (tour.position, tour.total),
+                    (position as u32, total as u32),
+                    "{}",
+                    tour.step_id
+                );
+                assert_eq!(
+                    tour.next_label,
+                    if index + 1 == boundary {
+                        "Continue to complete tour"
+                    } else if index + 1 == all.len() {
+                        "Finish"
+                    } else {
+                        "Next"
+                    }
+                );
+            }
+            let last = view(boundary - 1, 7, android);
+            assert_eq!(last.step_id, "home");
+            assert_eq!(last.title, "Quick start complete");
+            assert!(last.body.contains("Guided Tour"));
+            assert_eq!(last.targets, ["home", "home-guided-tour"]);
+            assert!(view(boundary, 7, android).back_enabled);
+        }
+    }
+
+    #[test]
+    fn guided_tour_quick_start_keeps_navigation_levels_separate_and_combines_transitions() {
+        for android in [false, true] {
+            let all = steps(android);
+            let quick_start: Vec<_> = all
+                .iter()
+                .take_while(|s| s.chapter == "Quick start")
+                .collect();
+            assert_eq!(
+                quick_start.iter().map(|s| s.id).collect::<Vec<_>>(),
+                [
+                    "welcome",
+                    "chart",
+                    "base-map",
+                    "layers",
+                    "enter-primary",
+                    "primary-plan",
+                    "activate",
+                    "chart-plate-toggle",
+                    "plate-folder",
+                    "home",
+                ]
+            );
+            assert_eq!(quick_start[0].targets, ["chart-plate", "cdi"]);
+            assert_eq!(quick_start[1].targets, ["base-map", "layers"]);
+            let entry = quick_start[4];
+            assert_eq!(entry.page, UiTourPage::FlightPlan);
+            assert_eq!(entry.surface, UiTourSurface::RouteEntry);
+            assert_eq!(entry.subject, "KRNT SEA V23 BTG KUAO");
+            assert_eq!(entry.body, "Tapping the CDI opens Flight Plan from other pages.\n\nType a flight plan into the route field.");
+            assert_eq!(entry.targets, ["cdi", "route-entry"]);
+            assert_eq!(entry.demo, Demo::Empty);
+            assert_eq!(quick_start[5].demo, Demo::Primary);
+            assert!(quick_start[5].body.ends_with("Next will tap Activate Leg."));
+            assert_eq!(quick_start[6].title, "Course guidance activated");
+            assert!(quick_start[6]
+                .body
+                .starts_with("The leg leading to SEA is now active. The CDI shows"));
+            assert_eq!(quick_start[6].demo, Demo::Activated);
+            let chart = quick_start[7];
+            assert_eq!(chart.page, UiTourPage::Map);
+            assert_eq!(chart.targets, ["chart-plate"]);
+            assert_eq!(chart.demo, Demo::Activated);
+            assert_eq!(quick_start[8].page, UiTourPage::Charts);
+            let home = quick_start[9];
+            assert_eq!(home.page, UiTourPage::Home);
+            assert_eq!(home.targets, ["home", "home-guided-tour"]);
+        }
+    }
+
     #[test]
     fn guided_tour_platform_steps_and_navigation_are_complete() {
         for android in [false, true] {

@@ -7,8 +7,8 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { GuidedTourOverlay, guidedTourTargets, guidedTourPosition } from "./GuidedTour";
 import type { UiGuidedTour } from "./generated/sessionPageWire";
 
-const tour: UiGuidedTour = { generation: 2, step_id: "chart",chapter:"Primary functions",title:"The chart",body:"Choose a base map.",
-  placement:"auto",presentation:"callout",restart_label:"Start over",page:"map",surface:"none",subject:"",row_uid:null,option_uid:null,targets:["base-map"],position:2,total:45,back_enabled:true,next_label:"Next",close_label:"Close tour",
+const tour: UiGuidedTour = { generation: 2, step_id: "chart",chapter:"Quick start",title:"The chart",body:"Choose a base map.",
+  placement:"auto",presentation:"callout",restart_label:"Start over",page:"map",surface:"none",subject:"",row_uid:null,option_uid:null,targets:["base-map"],position:2,total:10,back_enabled:true,next_label:"Next",close_label:"Close tour",
   shortcuts:[{key:"enter",action:"next"},{key:"n",action:"next"},{key:"b",action:"back"}],
   map_point:null,viewport:{lat:47,lon:-122,zoom:7,centered:false,track_up:false} };
 let root: Root, container: HTMLDivElement;
@@ -18,6 +18,23 @@ beforeEach(()=>{
   container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);
 });
 afterEach(async()=>{await act(async()=>root.unmount());container.remove();document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();});
+
+it("renders core's section progress and continuation label, including the first complete-tour title card",async()=>{
+  let measure!: FrameRequestCallback;
+  vi.mocked(requestAnimationFrame).mockImplementation(callback=>{ measure=callback; return 1; });
+  const action=vi.fn();
+  await act(async()=>root.render(<GuidedTourOverlay tour={{...tour,step_id:"home",title:"Quick start complete",
+    position:10,targets:[],next_label:"Continue to complete tour"}} busy={false} error={null} onAction={action}/>));
+  await act(async()=>measure(0));
+  expect(document.querySelector('.guidedTourChapter')?.textContent).toContain('10 / 10');
+  const next=document.querySelector<HTMLButtonElement>('[data-testid=guided-tour-next]')!;
+  expect(next.textContent).toBe('Continue to complete tour');
+  await act(async()=>next.click());
+  expect(action).toHaveBeenCalledExactlyOnceWith('next');
+  await act(async()=>root.render(<GuidedTourOverlay tour={{...tour,generation:3,step_id:"planning-title",chapter:"Flight Planning",
+    title:"Flight Planning",body:"",presentation:"title_card",targets:[],position:1,total:38}} busy={false} error={null} onAction={action}/>));
+  expect(document.querySelector('.guidedTourChapter')?.textContent).toContain('1 / 38');
+});
 
 it("captures app keyboard shortcuts, traps focus, and dispatches only tour actions",async()=>{
   const action=vi.fn(), appShortcut=vi.fn();
@@ -95,6 +112,21 @@ it("clips callout geometry to the visible viewport instead of outlining offscree
   vi.spyOn(el,'getBoundingClientRect').mockReturnValue(new DOMRect(20,-200,100,3000));
   const [bounds]=guidedTourTargets(tour);
   expect(bounds.top).toBe(0);expect(bounds.bottom).toBe(innerHeight);expect(bounds.left).toBe(20);
+});
+
+it("targets the core-selected plate thumbnail, not the entire folder or the first plate",()=>{
+  vi.stubGlobal('CSS',{escape:(value:string)=>value});
+  const ids=['plate-airport-button','plate-folder-button','plate-folder-tile:other','plate-folder-tile:diagram'];
+  const bounds=ids.map((id,index)=>{
+    const el=document.createElement('button');el.dataset.testid=id;document.body.appendChild(el);
+    el.checkVisibility=()=>true;
+    const rect=new DOMRect(20+index*100,100,70,80);
+    vi.spyOn(el,'getBoundingClientRect').mockReturnValue(rect);
+    return rect;
+  });
+  const scene={...tour,option_uid:'diagram',targets:['plate-airport-menu','plate-folder','plate-selected-thumbnail']};
+  expect(guidedTourTargets(scene)).toEqual([bounds[0],bounds[1],bounds[3]]);
+  expect(guidedTourTargets({...scene,option_uid:'missing'})).toEqual([bounds[0],bounds[1]]);
 });
 
 it("honors explicit placement and renders a title card without narration", async()=>{

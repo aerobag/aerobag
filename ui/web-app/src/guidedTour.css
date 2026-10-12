@@ -10,8 +10,8 @@
 .guidedTourChapter { display: flex; justify-content: space-between; gap: 16px; color: #3e6373; font-size: 12px; font-weight: 600; }
 .guidedTourPanel h2 { margin: 9px 0; font-size: 21px; line-height: 1.2; }
 .guidedTourPanel p { margin: 10px 0 18px; white-space: pre-line; }
-.guidedTourButtons { display: flex; gap: 8px; align-items: center; }
-.guidedTourButtons button { min-height: 44px; padding: 8px 12px; border: 1px solid #9db3bc; border-radius: 8px; background: white; color: #17313d; cursor: pointer; }
+.guidedTourButtons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.guidedTourButtons button { flex-shrink: 0; max-width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid #9db3bc; border-radius: 8px; background: white; color: #17313d; cursor: pointer; }
 .guidedTourButtons button:first-child { margin-right: auto; }
 .guidedTourButtons button:last-child { background: #086a8b; color: white; border-color: #086a8b; font-weight: 600; }
 .guidedTourButtons button:disabled { opacity: .45; cursor: default; }

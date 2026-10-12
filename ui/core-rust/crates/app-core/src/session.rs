@@ -15859,6 +15859,84 @@ mod tests {
         destroy_session(init.handle);
     }
 
+    #[test]
+    fn guided_tour_navigation_uses_step_identity_not_section_progress() {
+        use app_ui_contracts::tour::UiTourAction;
+        let init = create_ui_session(FlightPlan::empty(), &[], None, None).unwrap();
+        session_update_from_outcome(
+            perform_guided_tour_action_in_session(init.handle, UiTourAction::Start, None).unwrap(),
+        );
+        let all = crate::guided_tour::steps(false);
+        let boundary = all
+            .iter()
+            .position(|step| step.id == "planning-title")
+            .unwrap();
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.coordinator.guided_tour =
+                Some(crate::guided_tour::view(boundary - 1, 100, false));
+            // These scenes share the same plan; navigation does not need NAVDB fixtures.
+            session.coordinator.tour_demo = Some(crate::guided_tour::Demo::Activated);
+        }
+        for (action, expected_id) in [
+            (UiTourAction::Next, Some("planning-title")),
+            (UiTourAction::Back, Some("home")),
+            (UiTourAction::Next, Some("planning-title")),
+            (UiTourAction::Close, None),
+            (UiTourAction::Start, Some("planning-title")),
+            (UiTourAction::Back, Some("home")),
+        ] {
+            if action == UiTourAction::Start {
+                let slot = session_slot(init.handle).unwrap();
+                slot.lock_running().unwrap().coordinator.tour_demo =
+                    Some(crate::guided_tour::Demo::Activated);
+            }
+            let generation = get_session_snapshot(init.handle)
+                .unwrap()
+                .guided_tour
+                .map(|t| t.generation);
+            session_update_from_outcome(
+                perform_guided_tour_action_in_session(init.handle, action, generation).unwrap(),
+            );
+            let tour = get_session_snapshot(init.handle).unwrap().guided_tour;
+            assert_eq!(
+                tour.as_ref().map(|t| t.step_id.as_str()),
+                expected_id,
+                "{action:?}"
+            );
+            if let Some(tour) = tour {
+                assert_eq!(
+                    tour.position,
+                    if tour.step_id == "home" {
+                        boundary as u32
+                    } else {
+                        1
+                    }
+                );
+            }
+        }
+        let generation = 200;
+        {
+            let slot = session_slot(init.handle).unwrap();
+            slot.lock_running().unwrap().coordinator.guided_tour =
+                Some(crate::guided_tour::view(all.len() - 1, generation, false));
+        }
+        session_update_from_outcome(
+            perform_guided_tour_action_in_session(
+                init.handle,
+                UiTourAction::Next,
+                Some(generation),
+            )
+            .unwrap(),
+        );
+        assert!(get_session_snapshot(init.handle)
+            .unwrap()
+            .guided_tour
+            .is_none());
+        destroy_session(init.handle);
+    }
+
     // Page delivery broadcasts by store ID, so unrelated test databases need distinct identities.
     static NEXT_TEST_NAV_KV_STORE_ID: AtomicU32 = AtomicU32::new(1_000_000);
 

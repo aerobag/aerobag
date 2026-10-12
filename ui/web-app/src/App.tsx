@@ -12173,6 +12173,16 @@ export function ChartsPage(props: {
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedCollection?.charts ?? [];
+  useLayoutEffect(() => {
+    if (!folderOpen || !tour?.option_uid || !tour.targets.includes("plate-selected-thumbnail")) return;
+    const tile = containerRef.current?.querySelector<HTMLElement>(`[data-testid="plate-folder-tile:${CSS.escape(tour.option_uid)}"]`);
+    const folder = tile?.closest(".plateFolderGrid");
+    if (!tile || !folder) return;
+    const bounds = tile.getBoundingClientRect(), visible = folder.getBoundingClientRect();
+    if (bounds.top < visible.top || bounds.bottom > visible.bottom) {
+      tile.scrollIntoView({ block: "start", inline: "nearest", behavior: "instant" });
+    }
+  }, [folderOpen, tour?.generation, tour?.option_uid, sortedCharts, surfaceSize.width, surfaceSize.height]);
   const planProcedureLoadKey = props.flightPlanRouteRevision;
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const selectedChartAssetUrl = selectedChart ? resolvedChartUrls[selectedChart.id]?.assetUrl ?? null : null;

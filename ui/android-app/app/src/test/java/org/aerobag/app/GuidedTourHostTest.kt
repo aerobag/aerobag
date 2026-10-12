@@ -27,6 +27,9 @@ import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.material3.Text
@@ -41,6 +44,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34])
@@ -56,6 +60,55 @@ class GuidedTourHostTest {
     @Test fun portraitScrimBlocksPhysicalTouchesAndButtonsReceiveThem() = verifyInput(400,700)
     @Config(qualifiers="w700dp-h400dp-land")
     @Test fun landscapeScrimBlocksPhysicalTouchesAndButtonsReceiveThem() = verifyInput(700,400)
+
+    @Test fun plateSelectionWaitsForTheCoreSelectedThumbnail() {
+        val actions=mutableListOf<UiTourAction>()
+        var showDiagram by mutableStateOf(false)
+        val tour=step().copy(page=UiTourPage.Charts,surface=UiTourSurface.PlateFolder,optionUid="diagram",
+            targets=listOf("plate-airport-menu","plate-folder","plate-selected-thumbnail"))
+        compose.setContent {
+            GuidedTourHost(tour,false,null,{actions.add(it)},Modifier.size(700.dp,700.dp)) {
+                androidx.compose.foundation.layout.Row {
+                    for (id in listOf("parity:plate-airport-button","parity:plate-folder-button","parity:plate-folder-tile:other")) {
+                        Box(Modifier.size(60.dp).e2eIndexedControl(id,true))
+                    }
+                    if (showDiagram) Box(Modifier.size(60.dp).e2eIndexedControl("parity:plate-folder-tile:diagram",true))
+                }
+            }
+        }
+        compose.onNodeWithTag("parity:guided-tour-next").assertIsNotEnabled()
+        compose.runOnIdle { showDiagram=true }
+        compose.onNodeWithTag("parity:guided-tour-next").assertIsEnabled().performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf(UiTourAction.Next),actions) }
+    }
+
+    @Config(qualifiers="w320dp-h640dp-port-mdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun quickStartContinuationFitsAndReceivesTouchesOnNarrowScreens() {
+        val actions=mutableListOf<UiTourAction>()
+        var tour by mutableStateOf(step().copy(chapter="Quick start",title="Quick start complete",position=10,total=10,
+            nextLabel="Continue to complete tour"))
+        compose.setContent {
+            GuidedTourHost(tour,false,null,{actions.add(it)},Modifier.size(320.dp,640.dp)) {}
+        }
+        val panel=compose.onNodeWithTag("parity:guided-tour-panel").fetchSemanticsNode().boundsInRoot
+        val buttons=listOf("close","back","next").map { name ->
+            val node=compose.onNodeWithTag("parity:guided-tour-$name")
+            node.assertIsDisplayed()
+            val bounds=node.fetchSemanticsNode().boundsInRoot
+            assertTrue("$name must fit inside panel",bounds.left >= panel.left && bounds.right <= panel.right)
+            node.performTouchInput { click() }
+            bounds
+        }
+        assertTrue(buttons[0].right <= buttons[1].left)
+        assertTrue("Continue must wrap below Back: $buttons",buttons[1].bottom <= buttons[2].top)
+        compose.runOnIdle {
+            assertEquals(listOf(UiTourAction.Close,UiTourAction.Back,UiTourAction.Next),actions)
+            tour=tour.copy(generation=3,chapter="Flight Planning",title="Flight Planning",body="",
+                presentation=UiTourPresentation.TitleCard,position=1,total=38)
+        }
+        compose.onNodeWithText("1 / 38").assertIsDisplayed()
+    }
 
     @OptIn(ExperimentalTestApi::class)
     @Test fun keyboardShortcutsUseTourActionsAndRespectReadiness() {

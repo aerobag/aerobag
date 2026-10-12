@@ -1825,7 +1825,16 @@ internal fun PlateFolderGrid(
     onOpenProcedureNotams: (NotamDetailUiView) -> Unit,
 ) {
     val context = LocalContext.current
+    val tour = LocalGuidedTour.current
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    LaunchedEffect(tour?.generation, tour?.optionUid, charts) {
+        if (tour?.targets?.contains("plate-selected-thumbnail") == true) {
+            val index = charts.indexOfFirst { it.id == tour.optionUid }
+            if (index >= 0) gridState.scrollToItem(index)
+        }
+    }
     ObservedLazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Adaptive(minSize = PlateFolderTileWidth),
         modifier = modifier.padding(top = ThumbSize + (ThumbGap * 2f), start = FolderThumbGutter, end = FolderThumbGutter, bottom = FolderThumbGutter),
         horizontalArrangement = Arrangement.spacedBy(FolderThumbGutter),
@@ -1867,7 +1876,7 @@ internal fun PlateFolderGrid(
             ) {
                 Surface(
                     modifier = Modifier
-                        .fillMaxSize().guidedTourAnchor("tour:plate-folder")
+                        .fillMaxSize()
                         .e2eIndexedControl(
                             semanticTag = "parity:plate-folder-tile:${chart.id}",
                             enabled = true,

@@ -32,7 +32,7 @@ const anchors: Record<string, string> = {
   "plan-add-airway": '[data-testid="plan-row-action-add_airway"]',
   "plan-find-route": '[data-testid="plan-row-action-find_route"]',
   "plate-airport-menu": '[data-testid="plate-airport-button-tray"], [data-testid="plate-airport-button"]',
-  "plate-folder": '[data-testid="plate-folder-button"]', "plate-folder-content": '.plateFolderGrid',
+  "plate-folder": '[data-testid="plate-folder-button"]',
   "home-guided-tour": '[data-testid="home-button-guided_tour"]',
   "home-cloud": '[data-testid="home-button-cloud"]',
   "home-about": '[data-testid="home-button-about"]', "home-settings": '[data-testid="home-button-settings"]', "home-status": '[data-testid="home-button-data_status"]',
@@ -56,6 +56,11 @@ const anchors: Record<string, string> = {
   "cloud-create": '[data-testid="cloud-action-begin_create"]',
 };
 
+const optionPrefixes: Record<string, string> = {
+  "aircraft-model-option": "tray-option-",
+  "plate-selected-thumbnail": "plate-folder-tile:",
+};
+
 function clippedBounds(el: Element): DOMRect | null {
   if (!el.checkVisibility({ checkVisibilityCSS: true })) return null;
   const b = el.getBoundingClientRect();
@@ -70,8 +75,8 @@ function clippedBounds(el: Element): DOMRect | null {
 
 export function guidedTourTargets(tour: UiGuidedTour): DOMRect[] {
   return tour.targets.flatMap(target => {
-    const selector = target === "aircraft-model-option" && tour.option_uid
-      ? `[data-testid="tray-option-${CSS.escape(tour.option_uid)}"]` : anchors[target];
+    const selector = optionPrefixes[target] && tour.option_uid
+      ? `[data-testid="${optionPrefixes[target]}${CSS.escape(tour.option_uid)}"]` : anchors[target];
     if (!selector) return [];
     const visible=[...document.querySelectorAll(selector)].map(clippedBounds).filter((b): b is DOMRect=>b!==null);
     return visible.slice(0,1);
@@ -166,7 +171,7 @@ export function GuidedTourOverlay(props: {
       })}
     </svg>
     <div ref={panel} className={`guidedTourPanel${tour.presentation === "title_card" ? " isTitleCard" : ""}`} role="dialog" aria-modal="true" aria-labelledby="guided-tour-title" tabIndex={-1} style={position} data-testid="guided-tour-panel" data-tour-step={tour.step_id} data-tour-target-count={tour.targets.length}>
-      {tour.presentation !== "title_card" ? <div className="guidedTourChapter">{tour.chapter} <span>{tour.position} / {tour.total}</span></div> : null}
+      <div className="guidedTourChapter"><span>{tour.presentation !== "title_card" ? tour.chapter : null}</span><span>{tour.position} / {tour.total}</span></div>
       <h2 id="guided-tour-title">{tour.title}</h2>
       {tour.body ? <p>{tour.body}</p> : null}
       {props.error ? <p role="alert" className="guidedTourError">{props.error}</p> : null}

@@ -5081,7 +5081,7 @@ button {
   position: sticky;
   left: var(--plan-structured-left-gutter, 0px);
   z-index: 2;
-  background: var(--theme-panel-bg);
+  background: transparent;
 }
 
 .plateProcedureNotamBadge-inline {

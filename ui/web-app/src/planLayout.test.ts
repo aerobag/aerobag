@@ -11,6 +11,15 @@ const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
 describe("flight plan layout CSS", () => {
+  it("leaves waypoint wrapper corners transparent over page and procedure-group backgrounds", () => {
+    const wrapperBlocks = [...styles.matchAll(/\.planTable\s*>\s*\.notamBadgedControl\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(wrapperBlocks).toMatch(/background:\s*transparent\s*;/);
+    expect(wrapperBlocks).not.toContain("var(--theme-panel-bg)");
+    expect(wrapperBlocks).toContain("position: sticky");
+  });
+
   it("keeps the table header sticky to the vertical scroll viewport", () => {
     const headerBlocks = [...styles.matchAll(/\.planHeader\s*\{([^}]*)\}/g)].map((match) => match[1] ?? "").join("\n");
     expect(headerBlocks).toContain("position: sticky");

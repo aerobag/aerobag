@@ -216,6 +216,10 @@ class OperationLogTests(unittest.TestCase):
             (2, subprocess.CalledProcessError(1, ["ssh", "prod"]), "\x1b[1;31mPromotion FAILED\x1b[0m"),
             (2, prod_manage.ManagementError("not ready"), "\x1b[1;31mPromotion FAILED\x1b[0m"),
             (2, RuntimeError("unexpected"), "\x1b[1;31mPromotion FAILED\x1b[0m"),
+            (3, prod_manage.deployment.ReleaseReconciliationStatusUnknown("DNS unavailable"),
+             "\x1b[1;33mPromotion STATUS UNKNOWN\x1b[0m"),
+            (2, prod_manage.deployment.ReleaseReconciliationFailed("service failed"),
+             "\x1b[1;31mPromotion FAILED\x1b[0m"),
             (130, KeyboardInterrupt(), "\x1b[1;31mPromotion INTERRUPTED\x1b[0m"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
@@ -252,6 +256,8 @@ class OperationLogTests(unittest.TestCase):
             ("qualification_status", True, 130, "Staging qualification INTERRUPTED"),
             ("candidate_status", False, 1, "Candidate qualification NOT PASSED"),
             ("reconcile", False, 2, "Production reconciliation FAILED"),
+            ("reconcile", False, 3, "Production reconciliation STATUS UNKNOWN"),
+            ("stage", True, 3, "Staging STATUS UNKNOWN"),
             ("prequalify", False, 0, "Local prequalification SUCCEEDED"),
         ):
             output = io.StringIO()
@@ -1181,6 +1187,31 @@ class StageOrderingTests(unittest.TestCase):
                 )
 
         warning.assert_called_once_with("Staging build 2026-08-22.1 FAILED")
+
+    def test_stage_unknown_status_does_not_guess_a_failed_phase_or_start_qualification(self) -> None:
+        identity = releases.ResolvedTag("2026-08-22.1", "b" * 40, "a" * 40)
+        unknown = prod_manage.deployment.ReleaseReconciliationStatusUnknown("DNS unavailable")
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "load_release_document", return_value=desired_document()),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(prod_manage, "next_release_name", return_value=identity.tag),
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(prod_manage.releases, "resolve_release_tag", return_value=identity),
+            mock.patch.object(prod_manage, "reconcile", side_effect=unknown),
+            mock.patch.object(prod_manage, "staging_failure_message") as failure_message,
+            mock.patch.object(prod_manage, "watch_qualification") as watcher,
+            mock.patch.object(prod_manage, "print_warning") as warning,
+            self.assertRaises(prod_manage.deployment.ReleaseReconciliationStatusUnknown) as raised,
+        ):
+            prod_manage.stage(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES, watch=True)
+        self.assertIs(raised.exception, unknown)
+        failure_message.assert_not_called()
+        warning.assert_not_called()
+        watcher.assert_not_called()
 
     def test_watch_starts_only_after_successful_staging_and_returns_its_result(self) -> None:
         identity = releases.ResolvedTag("2026-08-22.1", "b" * 40, "a" * 40)

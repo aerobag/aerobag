@@ -49,6 +49,7 @@ DEFAULT_WATCH_TIMEOUT_SECONDS = 3600
 SCHEDULED_REFRESH_WAIT_SECONDS = 20 * 60
 SCHEDULED_REFRESH_POLL_SECONDS = 10
 DEFAULT_SUNSET_DAYS = 4
+DEPLOYMENT_STATUS_UNKNOWN_EXIT_CODE = 3
 DEFAULT_GITHUB_TOKEN_HELPER = Path(
     "/root/aerobag-credentials/github-ci-reader/with-token"
 )
@@ -1036,7 +1037,7 @@ def prequalify() -> int:
 def staging_failure_message(config: dict[str, Any], tag: str) -> str:
     fallback = f"Staging deployment {tag} FAILED"
     try:
-        observed = load_remote_observed(config)
+        observed = load_remote_observed(config, timeout_seconds=30)
     except Exception:
         return fallback
     record = observed.releases.get(tag)
@@ -1123,6 +1124,10 @@ def stage(
         ) from error
     try:
         result = reconcile(config_path, releases_path)
+    except deployment.ReleaseReconciliationStatusUnknown:
+        # Do not query an unreachable host again and guess which phase failed.
+        # main preserves this distinct outcome through the final status line.
+        raise
     except Exception:
         print_warning(staging_failure_message(config, tag))
         raise
@@ -1317,6 +1322,8 @@ def print_operation_result(args: argparse.Namespace, result: int) -> None:
         status = "SUCCEEDED"
     elif result == 130:
         status = "INTERRUPTED"
+    elif result == DEPLOYMENT_STATUS_UNKNOWN_EXIT_CODE:
+        status = "STATUS UNKNOWN"
     elif result == 1:
         # A declined confirmation or an incomplete status read is not a failed build.
         status = "NOT PASSED" if operation.endswith("status") else "NOT COMPLETED"
@@ -1326,7 +1333,9 @@ def print_operation_result(args: argparse.Namespace, result: int) -> None:
     if result == 0 and operation == "stage" and not getattr(args, "watch", False):
         message += " (hosted qualification not checked)"
     if "NO_COLOR" not in os.environ:
-        color = "1;32" if result == 0 else "1;31"
+        color = "1;32" if result == 0 else (
+            "1;33" if result == DEPLOYMENT_STATUS_UNKNOWN_EXIT_CODE else "1;31"
+        )
         message = f"\x1b[{color}m{message}\x1b[0m"
     # Flush both streams before the final line, including redirected/buffered output.
     sys.stdout.flush()
@@ -1373,10 +1382,15 @@ def main() -> int:
                     watch=getattr(args, "watch", False),
                     watch_timeout_seconds=getattr(args, "watch_timeout", DEFAULT_WATCH_TIMEOUT_SECONDS),
                 )
+        except deployment.ReleaseReconciliationStatusUnknown as error:
+            deployment.append_command_log(f"prod_manage: {error}")
+            print(f"prod_manage: {error}", file=sys.stderr)
+            result = DEPLOYMENT_STATUS_UNKNOWN_EXIT_CODE
         except (
             ManagementError,
             release_ci.ReleaseCiError,
             releases.ReleaseConfigError,
+            deployment.ReleaseReconciliationFailed,
         ) as error:
             deployment.append_command_log(f"prod_manage: {error}")
             print(f"prod_manage: {error}", file=sys.stderr)

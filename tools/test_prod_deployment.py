@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import fcntl
 import io
 import json
@@ -24,6 +24,148 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import prod_deployment as deploy_prod  # noqa: E402
 import release_reconciler as releases  # noqa: E402
+
+
+class ReconciliationWatchTests(unittest.TestCase):
+    running = "activating\tsuccess\tPreparing cycle products\n"
+    succeeded = "inactive\tsuccess\tRelease reconciliation complete\n"
+
+    @staticmethod
+    def disconnected() -> subprocess.CalledProcessError:
+        return subprocess.CalledProcessError(
+            255, ["ssh"], output="ssh: Could not resolve hostname prod: Temporary failure in name resolution\n",
+        )
+
+    def watch(self, statuses, *, budget=12, start_error=None,
+              diagnostics_error=None, cleanup_error=None, force=None):
+        self.now = 0.0
+        self.calls = []
+        self.messages = []
+        self.stderr = io.StringIO()
+        statuses = iter(statuses)
+
+        def sleep(seconds):
+            self.now += seconds
+
+        def ssh(_config, command, **kwargs):
+            self.calls.append((command, kwargs))
+            if "start --no-block" in command:
+                if start_error:
+                    raise start_error
+            elif "systemctl show" in command:
+                value = next(statuses)
+                if isinstance(value, tuple):
+                    elapsed, value = value
+                    self.assertLessEqual(elapsed, kwargs["timeout_seconds"])
+                    self.now += elapsed
+                if isinstance(value, BaseException):
+                    raise value
+                return subprocess.CompletedProcess([], 0, value)
+            elif "journalctl" in command:
+                if diagnostics_error:
+                    raise diagnostics_error
+            elif command == "systemctl unset-environment AEROBAG_FORCE_PRODUCTION_TAG":
+                if cleanup_error:
+                    raise cleanup_error
+            else:
+                self.fail(f"unexpected command: {command}")
+            return subprocess.CompletedProcess([], 0, "")
+
+        with (
+            mock.patch.object(deploy_prod, "run_ssh", side_effect=ssh),
+            mock.patch.object(deploy_prod.time, "monotonic", side_effect=lambda: self.now),
+            mock.patch.object(deploy_prod.time, "sleep", side_effect=sleep),
+            mock.patch.object(deploy_prod, "RECONCILIATION_STATUS_RECOVERY_SECONDS", budget),
+            redirect_stderr(self.stderr),
+        ):
+            deploy_prod.run_release_reconciliation(
+                deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG),
+                progress=self.messages.append, dry_run=False, force_production_tag=force,
+            )
+
+    def assert_started_once(self):
+        self.assertEqual(sum("start --no-block" in command for command, _ in self.calls), 1)
+
+    def test_dns_and_timeout_recovery_retries_only_the_read(self):
+        self.watch([self.running, self.disconnected(), subprocess.TimeoutExpired("ssh", 7), self.succeeded])
+        self.assert_started_once()
+        polls = [kwargs for command, kwargs in self.calls if "systemctl show" in command]
+        self.assertEqual(len(polls), 4)
+        self.assertTrue(all(poll["capture"] for poll in polls))
+        self.assertEqual(sum("connection lost" in message for message in self.messages), 1)
+        self.assertEqual(sum("connection restored" in message for message in self.messages), 1)
+        self.assertEqual(self.messages[-1], "Release reconciliation complete")
+
+    def test_persistent_dns_failure_has_a_deadline_and_unknown_outcome(self):
+        with self.assertRaisesRegex(deploy_prod.ReleaseReconciliationStatusUnknown, "within 12s") as raised:
+            self.watch([self.disconnected()] * 3)
+        self.assert_started_once()
+        self.assertEqual(self.now, 12)
+        self.assertEqual([kw["timeout_seconds"] for cmd, kw in self.calls if "systemctl show" in cmd], [12, 7, 2])
+        self.assertIn("Temporary failure in name resolution", str(raised.exception))
+        self.assertIn("not canceled", str(raised.exception))
+        self.assertIn("--qualification-status --watch", str(raised.exception))
+        self.assertIn("--reconcile", str(raised.exception))
+
+    def test_hung_polls_are_bounded_by_both_request_and_recovery_budgets(self):
+        with self.assertRaises(deploy_prod.ReleaseReconciliationStatusUnknown):
+            self.watch([
+                (30, subprocess.TimeoutExpired("ssh", 30)),
+                (5, subprocess.TimeoutExpired("ssh", 5)),
+            ], budget=40)
+        self.assertEqual(self.now, 40)
+        self.assertEqual([kw["timeout_seconds"] for cmd, kw in self.calls if "systemctl show" in cmd], [30, 5])
+        self.assert_started_once()
+
+    def test_successful_read_resets_the_outage_budget(self):
+        self.watch([
+            self.disconnected(), self.disconnected(), self.running,
+            self.disconnected(), self.disconnected(), self.succeeded,
+        ])
+        self.assertGreater(self.now, 12)
+        self.assert_started_once()
+        self.assertEqual(sum("connection restored" in message for message in self.messages), 2)
+
+    def test_remote_probe_error_or_malformed_response_is_unknown_without_retry(self):
+        for response in [subprocess.CalledProcessError(1, ["ssh"], output="probe broken"), "bad status"]:
+            with self.subTest(response=response), self.assertRaises(deploy_prod.ReleaseReconciliationStatusUnknown):
+                self.watch([response])
+            self.assertEqual(len(self.calls), 2)
+            self.assertEqual(self.now, 0)
+
+    def test_unacknowledged_start_is_not_repeated_or_assumed_successful(self):
+        for error in [self.disconnected(), subprocess.TimeoutExpired("ssh", 30)]:
+            with self.subTest(error=error), self.assertRaisesRegex(
+                deploy_prod.ReleaseReconciliationStatusUnknown, "start command was not repeated",
+            ):
+                self.watch([], start_error=error)
+            self.assertEqual(len(self.calls), 1)
+
+    def test_remote_start_rejection_remains_a_failure(self):
+        error = subprocess.CalledProcessError(1, ["ssh"])
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.watch([], start_error=error)
+        self.assertIs(raised.exception, error)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_confirmed_service_failure_survives_lost_diagnostics(self):
+        for error in [None, self.disconnected(), subprocess.TimeoutExpired("ssh", 30)]:
+            with self.subTest(error=error), self.assertRaisesRegex(
+                deploy_prod.ReleaseReconciliationFailed, "service state: failed; result: exit-code",
+            ):
+                self.watch([self.disconnected(), "failed\texit-code\tBuild failed\n"], diagnostics_error=error)
+            self.assert_started_once()
+            self.assertEqual(sum("journalctl" in cmd for cmd, _ in self.calls), 1)
+
+    def test_failed_force_cleanup_preserves_unknown_or_interrupted_outcome(self):
+        for responses, expected in [
+            ([self.disconnected()] * 3, deploy_prod.ReleaseReconciliationStatusUnknown),
+            ([KeyboardInterrupt()], KeyboardInterrupt),
+        ]:
+            with self.subTest(expected=expected), self.assertRaises(expected):
+                self.watch(responses, cleanup_error=self.disconnected(), force="2026-10-11.5")
+            self.assertIn("controller cleanup could not complete", self.stderr.getvalue())
+            self.assertEqual(self.calls[-1][0], "systemctl unset-environment AEROBAG_FORCE_PRODUCTION_TAG")
 
 
 class ProductPublicationTests(unittest.TestCase):
@@ -471,6 +613,7 @@ class ProductPublicationTests(unittest.TestCase):
             config,
             "systemctl start aerobag-build-product.timer",
             dry_run=False,
+            timeout_seconds=deploy_prod.RECONCILIATION_SSH_TIMEOUT_SECONDS,
         )
         install_packages.assert_not_called()
         setup_android.assert_not_called()
@@ -519,7 +662,25 @@ class ProductPublicationTests(unittest.TestCase):
             config,
             "systemctl start aerobag-build-product.timer",
             dry_run=False,
+            timeout_seconds=deploy_prod.RECONCILIATION_SSH_TIMEOUT_SECONDS,
         )
+
+    def test_promotion_cleanup_cannot_mask_unknown_deployment_status(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        unknown = deploy_prod.ReleaseReconciliationStatusUnknown("connection lost")
+        with (
+            mock.patch.object(deploy_prod, "assert_local_refs_exist"),
+            mock.patch.object(deploy_prod, "assert_clean_checkout"),
+            mock.patch.object(deploy_prod, "quiesce_release_reconciliation"),
+            mock.patch.object(deploy_prod, "sync_source_checkout"),
+            mock.patch.object(deploy_prod, "run_release_reconciliation", side_effect=unknown),
+            mock.patch.object(deploy_prod, "run_ssh", side_effect=subprocess.CalledProcessError(255, ["ssh"])) as ssh,
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(deploy_prod.ReleaseReconciliationStatusUnknown) as raised,
+        ):
+            deploy_prod.activate_release_intent(config)
+        self.assertIs(raised.exception, unknown)
+        self.assertEqual(ssh.call_count, 1)
 
     def test_runtime_repair_does_not_start_product_build(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)

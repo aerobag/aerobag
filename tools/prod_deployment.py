@@ -126,6 +126,25 @@ COMMAND_LOG_ENV = "AEROBAG_COMMAND_LOG"
 ProgressReporter = Callable[[str], None]
 RECONCILIATION_BUSY_EXIT_CODE = 75
 RECONCILIATION_BUSY_MARKER = "aerobag-reconciliation-busy"
+RECONCILIATION_STATUS_RECOVERY_SECONDS = 5 * 60
+RECONCILIATION_STATUS_RETRY_SECONDS = 5
+RECONCILIATION_SSH_TIMEOUT_SECONDS = 30
+
+
+class ReleaseReconciliationStatusUnknown(RuntimeError):
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            f"Deployment status unknown: {detail}. "
+            "Server-side reconciliation may still be running; it was not canceled. "
+            "Do not create another release to retry. For staging, inspect "
+            "tools/prod_manage.py --qualification-status --watch; "
+            "once the controller is idle, use tools/prod_manage.py --reconcile "
+            "to finish any remaining deployment work."
+        )
+
+
+class ReleaseReconciliationFailed(RuntimeError):
+    pass
 
 
 class ReleaseReconciliationBusy(RuntimeError):
@@ -2388,6 +2407,87 @@ def start_support_runtime(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, command, dry_run=dry_run)
 
 
+def _ssh_connection_error(error: BaseException) -> bool:
+    return isinstance(error, subprocess.TimeoutExpired) or (
+        isinstance(error, subprocess.CalledProcessError) and error.returncode == 255
+    )
+
+
+def _status_error_detail(
+    error: subprocess.CalledProcessError | subprocess.TimeoutExpired,
+) -> str:
+    output = getattr(error, "stdout", None) or ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    append_command_log(output)
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"SSH status request timed out after {error.timeout:g}s"
+    return (
+        output.strip().splitlines()[-1] if output.strip()
+        else f"SSH status request failed with exit {error.returncode}"
+    )
+
+
+def _read_reconciliation_status(
+    config: dict[str, Any], command: str, progress: ProgressReporter | None,
+) -> subprocess.CompletedProcess[str]:
+    """Retry only this read, never the command that launches the controller."""
+    deadline = time.monotonic() + RECONCILIATION_STATUS_RECOVERY_SECONDS
+    disconnected = False
+    while True:
+        try:
+            status = run_ssh(
+                config, command, capture=True, dry_run=False,
+                timeout_seconds=min(
+                    RECONCILIATION_SSH_TIMEOUT_SECONDS, max(0.001, deadline - time.monotonic()),
+                ),
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            detail = _status_error_detail(error)
+            append_command_log(f"Deployment status read unavailable: {detail}")
+            if not _ssh_connection_error(error):
+                # A broken probe is not evidence that the deployment failed,
+                # and retrying a remote command error cannot repair the probe.
+                raise ReleaseReconciliationStatusUnknown(detail) from error
+            if not disconnected:
+                _report(
+                    progress, "Production connection lost; retrying read-only deployment status "
+                    f"for up to {RECONCILIATION_STATUS_RECOVERY_SECONDS}s (deployment not restarted)",
+                )
+                disconnected = True
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(RECONCILIATION_STATUS_RETRY_SECONDS, remaining))
+            if time.monotonic() >= deadline:
+                raise ReleaseReconciliationStatusUnknown(
+                    f"could not read controller status within "
+                    f"{RECONCILIATION_STATUS_RECOVERY_SECONDS}s; last error: {detail}"
+                ) from error
+        else:
+            if disconnected:
+                _report(progress, "Production connection restored; resuming deployment watch")
+            return status
+
+
+def _reconciliation_cleanup(
+    config: dict[str, Any], command: str, *, dry_run: bool,
+) -> None:
+    # A second connection failure during finally must not overwrite the original
+    # unknown/failed/interrupted outcome. Still attempt cleanup exactly once.
+    pending_error = sys.exc_info()[1]
+    try:
+        run_ssh(
+            config, command, dry_run=dry_run,
+            timeout_seconds=RECONCILIATION_SSH_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        if pending_error is None:
+            raise
+        message = f"WARNING: controller cleanup could not complete ({command}): {error}"
+        append_command_log(message)
+        print(message, file=sys.stderr, flush=True)
+
+
 def run_release_reconciliation(
     config: dict[str, Any],
     *,
@@ -2417,7 +2517,17 @@ def run_release_reconciliation(
         """
     ).strip()
     try:
-        run_ssh(config, start_command, dry_run=dry_run)
+        try:
+            run_ssh(
+                config, start_command, dry_run=dry_run,
+                timeout_seconds=RECONCILIATION_SSH_TIMEOUT_SECONDS,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            if not _ssh_connection_error(error):
+                raise
+            raise ReleaseReconciliationStatusUnknown(
+                "could not confirm the controller start; the start command was not repeated"
+            ) from error
         if dry_run:
             return
 
@@ -2435,13 +2545,13 @@ def run_release_reconciliation(
                 printf '%s\t%s\t%s\n' "$active_state" "$result" "$progress"
                 """
             ).strip()
-            status = run_ssh(config, status_command, capture=True, dry_run=False)
+            status = _read_reconciliation_status(config, status_command, progress)
             try:
                 active_state, result, current_progress = status.stdout.rstrip(
                     "\n"
                 ).split("\t", 2)
             except ValueError as error:
-                raise RuntimeError(
+                raise ReleaseReconciliationStatusUnknown(
                     f"invalid release reconciliation status: {status.stdout!r}"
                 ) from error
             if current_progress and current_progress != last_progress:
@@ -2462,14 +2572,21 @@ def run_release_reconciliation(
                 f"""
                 systemctl status {unit} --no-pager >&2 || true
                 journalctl -u {unit} -n 100 --no-pager >&2 || true
-                exit 1
                 """
             ).strip()
-            run_ssh(config, failure_command, dry_run=False)
-            raise AssertionError("failed service diagnostics unexpectedly returned")
+            try:
+                run_ssh(
+                    config, failure_command, dry_run=False,
+                    timeout_seconds=RECONCILIATION_SSH_TIMEOUT_SECONDS,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                append_command_log(f"Could not fetch controller failure diagnostics: {error}")
+            raise ReleaseReconciliationFailed(
+                f"release reconciliation failed (service state: {active_state}; result: {result})"
+            )
     finally:
         if force_production_tag is not None:
-            run_ssh(
+            _reconciliation_cleanup(
                 config,
                 "systemctl unset-environment AEROBAG_FORCE_PRODUCTION_TAG",
                 dry_run=dry_run,
@@ -2723,7 +2840,7 @@ def activate_release_intent(
             force_production_tag=force_production_tag,
         )
     finally:
-        run_ssh(
+        _reconciliation_cleanup(
             config,
             "systemctl start aerobag-build-product.timer",
             dry_run=dry_run,

@@ -91,6 +91,26 @@ before staging mutates intent.
 Direct desired-state edits followed by `--reconcile` remain the complete
 lower-level interface.
 
+Once deployment starts, the controller runs independently under systemd. Its
+local progress watcher retries read-only SSH status polls after connection
+failures (exit 255) or timeouts for up to five minutes per outage. Each request
+is bounded to 30 seconds (or the remaining recovery budget); retries are spaced
+five seconds apart. A successful read resets the outage budget. The watcher
+reports lost/restored connectivity and never repeats the controller-start
+command. A lost acknowledgement of that start is also an unknown outcome,
+not permission to start it again.
+
+If status remains unavailable, deployment exits 3 with an amber `STATUS UNKNOWN`
+final line and retains its log. The server may still be working; it is not
+canceled, and neither success nor build failure is inferred from missing status.
+A remote probe error or malformed status also reports unknown, without retrying
+the broken probe. A confirmed failed controller remains a failure even if its
+diagnostics cannot be fetched; cleanup errors cannot replace the primary outcome.
+Do not stage a replacement solely because monitoring disconnected. For staging,
+inspect `tools/prod_manage.py --qualification-status --watch`. Once the controller
+is idle, `tools/prod_manage.py --reconcile` completes any remaining deployment
+work (including post-controller setup interrupted by the lost connection).
+
 Use `tools/prod_manage.py --stage --watch` to stage and then watch qualification
 without manually polling. Hosted checks already start at the release push and
 overlap deployment; watching adds no qualification run or local prequalification.

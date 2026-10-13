@@ -2851,9 +2851,11 @@ def reconcile_host(
     # completed. Only the final service handoff needs these units stopped.
     stop_stale_units(config, dry_run=dry_run)
     reload_services(config, dry_run=dry_run)
+    # Hand the resident collector over to the installed telemetry contract before
+    # restarting monitoring and waiting for potentially lengthy product builds.
+    start_archive_services(config, dry_run=dry_run)
     _report(progress, "Reconciling release artifacts and channel assignments")
     start_reconciled_runtime(config, progress=progress, dry_run=dry_run)
-    start_archive_services(config, dry_run=dry_run)
     record_runtime_fingerprint(config, dry_run=dry_run)
 
 

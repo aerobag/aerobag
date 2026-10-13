@@ -586,6 +586,7 @@
         "touch_started",
         "touch_ended",
         "detail_opened",
+        "closed",
         "dismiss",
         "map_gesture"
       ],

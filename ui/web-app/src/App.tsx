@@ -166,7 +166,7 @@ import { resolveSituationOverlay } from "./domain/situationGeometry";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { MapSelectionRequests } from "./domain/mapSelectionRequests";
-import { MapInspectionBackdrop, MapInspectionPane } from "./MapInspectionPane";
+import { MapInspectionBackdrop, MapInspectionPane, useMapInspectionLifecycle } from "./MapInspectionPane";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { fetchTextResource } from "./domain/fetchTextResource";
@@ -4859,9 +4859,7 @@ function MapPage(props: {
       setMapSelection(null);
     }
   }, [mapInteraction.inspector_dismissal_revision]);
-  useEffect(() => {
-    inspectionCommand(!mapSelection ? "dismiss" : mapSelection.detailModal ? "detail_opened" : "open");
-  }, [!!mapSelection, !!mapSelection?.detailModal]);
+  useMapInspectionLifecycle(!!mapSelection, !!mapSelection?.detailModal, inspectionCommand);
   const mapSelectionDistanceTarget = mapSelection?.detailModal === null
     ? mapSelection.selectedItem?.distance_target ?? null
     : null;

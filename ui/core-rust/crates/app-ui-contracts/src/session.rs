@@ -1157,6 +1157,9 @@ pub enum MapInspectionCommand {
     TouchStarted,
     TouchEnded,
     DetailOpened,
+    // Platform reports an already hidden inspector; do not request another dismissal.
+    Closed,
+    // User requests dismissal; publish a dismissal revision to the platform.
     Dismiss,
     // Report only gestures starting on the map/backdrop, not inside the tray.
     MapGesture,

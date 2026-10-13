@@ -5,6 +5,17 @@
 import { useEffect, useRef, type PropsWithChildren } from "react";
 import type { MapInspectionCommand } from "./generated/sessionPageWire";
 
+export function useMapInspectionLifecycle(open: boolean, detailOpen: boolean,
+  onCommand: (command: MapInspectionCommand) => void) {
+  const command = useRef(onCommand);
+  command.current = onCommand;
+  useEffect(() => {
+    // A lifecycle report must not emit a dismissal that could land after the
+    // next scene opens. Explicit user dismissal is a separate command.
+    command.current(!open ? "closed" : detailOpen ? "detail_opened" : "open");
+  }, [open, detailOpen]);
+}
+
 /** A map hit target, not a second gesture implementation. Capture stays on the map. */
 export function MapInspectionBackdrop(props: { onDismiss: () => void }) {
   return <button type="button" className="trayScrim" aria-label="Close map selection"

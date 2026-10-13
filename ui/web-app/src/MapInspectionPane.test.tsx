@@ -6,7 +6,27 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import { MapInspectionBackdrop, MapInspectionPane } from "./MapInspectionPane";
+import { MapInspectionBackdrop, MapInspectionPane, useMapInspectionLifecycle } from "./MapInspectionPane";
+
+it("reports inspector replacement as lifecycle state, not a dismissal of the incoming scene", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  const command = vi.fn();
+  function Scene({open, detail}: {open: boolean; detail: boolean}) {
+    useMapInspectionLifecycle(open, detail, command);
+    return null;
+  }
+  try {
+    await act(async () => root.render(<Scene open detail />));
+    // Airport Info -> loading the next scene -> Chart Supplement inspector.
+    await act(async () => root.render(<Scene open={false} detail={false} />));
+    await act(async () => root.render(<Scene open detail={false} />));
+    expect(command.mock.calls).toEqual([["detail_opened"], ["closed"], ["open"]]);
+  } finally {
+    await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals();
+  }
+});
 
 it("routes backdrop drag/pinch pointers to the map but isolates tray pointers and wheel scrolling", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

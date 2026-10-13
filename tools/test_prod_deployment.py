@@ -693,6 +693,44 @@ class ProductPublicationTests(unittest.TestCase):
 
 
 class RuntimeUpdateTests(unittest.TestCase):
+    def test_reconcile_hands_off_archive_collector_before_release_build(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        calls = []
+        with ExitStack() as stack:
+            for name in [
+                "assert_local_refs_exist", "assert_clean_checkout", "install_bootstrap_packages",
+                "quiesce_release_reconciliation", "prepare_remote_paths", "ensure_legacy_channel_view",
+                "migrate_cloud_storage_layout", "sync_source_checkout", "install_external_package_sources",
+                "install_repo_packages", "install_android_signing_key", "install_nms_notams_credential",
+                "install_weather_camera_credential", "install_cloud_server_secret", "install_cloud_server_policy",
+                "write_remote_file", "write_remote_config", "run_initial_toolchain_build",
+                "install_archive_tools", "run_android_sdk_setup", "stop_stale_units", "reload_services",
+                "start_archive_services", "record_runtime_fingerprint",
+            ]:
+                stack.enter_context(mock.patch.object(
+                    deploy_prod, name, side_effect=lambda *args, _name=name, **kwargs: calls.append(_name),
+                ))
+            stack.enter_context(mock.patch.object(deploy_prod, "local_ref_sha", return_value="a" * 40))
+            def runtime_command(*args, **kwargs):
+                self.assertIn("start_archive_services", calls)
+
+            ssh = stack.enter_context(mock.patch.object(deploy_prod, "run_ssh", side_effect=runtime_command))
+
+            def reconcile(*args, **kwargs):
+                # This call can spend tens of minutes building products. A resident
+                # collector must already use the newly installed telemetry contract.
+                self.assertIn("start_archive_services", calls)
+                calls.append("run_release_reconciliation")
+
+            stack.enter_context(mock.patch.object(deploy_prod, "run_release_reconciliation", side_effect=reconcile))
+            deploy_prod.reconcile_host(config)
+
+        self.assertLess(calls.index("reload_services"), calls.index("start_archive_services"))
+        self.assertLess(calls.index("install_archive_tools"), calls.index("start_archive_services"))
+        self.assertEqual(calls.count("start_archive_services"), 1)
+        self.assertEqual(calls[-1], "record_runtime_fingerprint")
+        self.assertEqual(ssh.call_count, 2)
+
     def test_alarm_policy_and_engine_are_installed_and_runtime_fingerprinted(self) -> None:
         self.assertIn("deploy/alarm-dispositions.json", deploy_prod.RUNTIME_SOURCE_PATHS)
         self.assertIn("product/preprocessor/scripts/alarm_dispositions.py", deploy_prod.RUNTIME_SOURCE_PATHS)

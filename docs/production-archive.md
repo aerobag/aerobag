@@ -211,9 +211,11 @@ checks, so quiet product periods do not cause an alarm.
 This is deployment tooling and telemetry, not a client or NAVDB contract
 change. After integration, the operator's `tools/prod_manage.py --reconcile`
 installs it without staging a new app or rebuilding products. Collection
-restarts during reconciliation; the store adopts the new code on its next
-invocation, without forcibly interrupting an in-flight archive. Until both
-workers emit v2 status, the upgraded monitor may report a contract mismatch.
+restarts during the runtime handoff, before monitoring restarts and before any
+lengthy product builds. The store adopts the new code on its next invocation,
+without forcibly interrupting an in-flight archive. Until both workers emit v2
+status, the upgraded monitor may briefly report a contract mismatch; the
+collector's restart no longer waits for product reconciliation to finish.
 
 List and extract a retained day (replace `live-DAY-ID` with an actual name):
 

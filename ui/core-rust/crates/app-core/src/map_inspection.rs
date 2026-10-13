@@ -25,6 +25,7 @@ impl MapInspection {
                 self.touching = false;
                 self.deadline = Some(now.saturating_add(INSPECTOR_IDLE_MS));
             }
+            Closed => self.close(),
             Dismiss => self.dismiss(),
             MapGesture if !self.detail_open => self.dismiss(),
             DetailOpened => {
@@ -50,10 +51,16 @@ impl MapInspection {
 
     fn dismiss(&mut self) {
         if self.open {
-            self.open = false;
-            self.deadline = None;
+            self.close();
             self.dismissal_revision += 1;
         }
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.detail_open = false;
+        self.touching = false;
+        self.deadline = None;
     }
 
     pub fn refresh(&mut self, now: i64) {
@@ -133,5 +140,27 @@ mod tests {
         assert_eq!(state.dismissal_revision, 0);
         state.apply(MapInspectionCommand::Dismiss, 100_000);
         assert_eq!(state.dismissal_revision, 1);
+    }
+
+    #[test]
+    fn closing_a_rendered_scene_cancels_its_timer_without_dismissing_its_replacement() {
+        for opened in [Open, DetailOpened] {
+            let mut state = MapInspection::default();
+            state.apply(opened, 1_000);
+            state.apply(Closed, 2_000);
+            assert_eq!(state.next_refresh(), None);
+            assert_eq!(state.dismissal_revision, 0);
+            state.refresh(30_000);
+            assert_eq!(state.dismissal_revision, 0);
+
+            state.apply(Open, 31_000);
+            assert_eq!(state.dismissal_revision, 0);
+            assert_eq!(state.next_refresh(), Some(41_000));
+            state.apply(Dismiss, 32_000);
+            assert_eq!(state.dismissal_revision, 1);
+            // The platform acknowledging a core dismissal must not echo it back.
+            state.apply(Closed, 33_000);
+            assert_eq!(state.dismissal_revision, 1);
+        }
     }
 }

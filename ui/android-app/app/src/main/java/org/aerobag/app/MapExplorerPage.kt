@@ -2118,7 +2118,7 @@ internal fun MapExplorerPage(
     }
     LaunchedEffect(mapSelection != null, mapSelection?.detailModal != null) {
         inspectionCommand(when {
-            mapSelection == null -> MapInspectionCommand.Dismiss
+            mapSelection == null -> MapInspectionCommand.Closed
             mapSelection?.detailModal != null -> MapInspectionCommand.DetailOpened
             else -> MapInspectionCommand.Open
         })

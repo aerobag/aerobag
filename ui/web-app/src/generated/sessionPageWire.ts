@@ -403,7 +403,7 @@ export type UiMapInteraction = {
   mode: UiMapInteractionMode;
 };
 
-export type MapInspectionCommand = "open" | "activity" | "touch_started" | "touch_ended" | "detail_opened" | "dismiss" | "map_gesture";
+export type MapInspectionCommand = "open" | "activity" | "touch_started" | "touch_ended" | "detail_opened" | "closed" | "dismiss" | "map_gesture";
 
 export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "plate_flight_plan" | "bad_autopilot" | "internet_adsb" | "gps_capture" | "debug_log_to_developer_server";
 

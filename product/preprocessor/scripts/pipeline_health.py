@@ -71,6 +71,7 @@ PRODUCT_METRIC_REQUIREMENTS = {
 SERVICE_METRIC_REQUIREMENTS = {
     **{f"product_archive.{field}": ("product-archive", f"product_archive.{field}")
        for field in ("failure_count", "capture_gap_count", "buffer_bytes", "repository_bytes")},
+    "product_archive.progress_age_seconds": ("product-archive", "product_archive.progress_reference_unix_seconds"),
     "service_bulletins.publication_failure_count": ("service-bulletins", "service_bulletins.publication_failure_count"),
 }
 
@@ -637,6 +638,10 @@ def collect_archive_facts(root: Path) -> dict[str, Any]:
                 raise ValueError("archive status must be an object")
             if payload.get("schema_version") != descriptor["payload_schema_version"] or payload.get("telemetry_contract") != pin:
                 raise ValueError("archive telemetry identity mismatch")
+            if not isinstance(payload.get("state"), str) or payload["state"] not in descriptor["activity"]["state"]:
+                raise ValueError("archive omitted valid activity state")
+            if not isinstance(payload.get("phase"), str):
+                raise ValueError("archive omitted activity phase")
             for measurement in descriptor["measurements"].values():
                 number = payload.get(measurement["field"])
                 if type(number) is not int or number < 0:
@@ -658,6 +663,9 @@ def add_archive_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any], no
             if not isinstance(timestamp, str):
                 raise ValueError("archive timestamp must be a string")
             age = (now - datetime.fromisoformat(timestamp.replace("Z", "+00:00"))).total_seconds()
+            reference = payload["progress_reference_unix_seconds"]
+            if type(reference) is not int or reference < 0 or reference > now.timestamp():
+                raise ValueError("archive progress reference is invalid or in the future")
             if age > (120 if worker == "collect" else 4 * 3600):
                 error = f"archive {worker} has not reported for {age:.0f}s"
         except (KeyError, TypeError, ValueError):
@@ -668,6 +676,15 @@ def add_archive_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any], no
                    message=error or "Archive telemetry is current")
         if error:
             continue
+        activity = f"{payload['state']}: {payload['phase']}"
+        add_metric(metrics, metric_id=prefix + ".activity", label=f"Archive {worker} activity",
+                   value=None, severity="ok", message=activity)
+        progress_age = int(now.timestamp()) - payload["progress_reference_unix_seconds"]
+        overdue = progress_age > (120 if worker == "collect" else 4 * 3600)
+        add_metric(metrics, metric_id=prefix + ".progress_age_seconds", label=f"Archive {worker} completion age",
+                   value=progress_age, severity="critical" if overdue else "ok",
+                   message=f"No completed archive pass for {progress_age}s; {activity}" if overdue else
+                           f"Completion age {progress_age}s; {activity}")
         for field in ("failure_count", "capture_gap_count", "buffer_bytes", "repository_bytes"):
             value = payload[field]
             failed = field.endswith("count") and value > 0

@@ -138,8 +138,27 @@ the complete publication directories it names. It briefly takes the existing
 release-controller lock while making hardlinks into
 `artifacts/state/archive-cycle-pending` on the production data filesystem. This
 pins the immutable bytes against publication GC without holding the controller
-lock during Borg's read. Only one pending snapshot is retained; a failed Borg
-operation leaves it available for retry.
+lock during filesystem flushes or Borg's read. The ordering is:
+
+1. Hold the controller lock while selecting the generation, capturing metadata,
+   and hardlinking every publication file. GC cannot remove sources mid-pin.
+2. Release the controller lock. The hardlinks now own independent references to
+   immutable bytes, even if GC deletes the original publication names.
+3. Flush the pending snapshot, then atomically write its `ready.json` marker.
+   An interrupted flush never marks an incomplete snapshot ready.
+4. Archive and verify it with Borg before recording completion and removing it.
+
+The independent `store.lock` remains held throughout the pass, including health
+updates. Only one pending snapshot is retained; a failed Borg operation leaves
+it available for retry. A ready snapshot can be archived even while the
+controller lock is busy. Incomplete preparations are rebuilt on retry.
+
+If the controller lock is busy before a new pin, cycle capture is **deferred**
+until the next timer invocation. This is not an archive failure and does not
+advance the last-success timestamp. Live-feed archival and retention still run.
+An overlapping store invocation exits without overwriting the active worker's
+status. Other IO failures, including `EAGAIN` outside lock acquisition, remain
+real failures.
 
 Borg discovers content equality independently of cache identity. It preserves
 shared chunks when an older archive is removed. Unchanged current manifests are
@@ -163,7 +182,7 @@ archives.
 ## Health and recovery
 
 Pipeline health reads each worker's versioned status under
-`DATA_ROOT/health/archive/`. It checks the independently pinned `product-archive-v1`
+`DATA_ROOT/health/archive/`. It checks the independently pinned `product-archive-v2`
 telemetry contract. Missing, malformed, mismatched, or stale promised telemetry
 is a critical coverage alarm. Worker failures and capture gaps are critical;
 buffer and repository sizes are gauges. Gaps remain latched after recovery until
@@ -178,6 +197,23 @@ journalctl -u aerobag-archive-collect -u aerobag-archive-store
 
 Acknowledgement clears the active alarms, not historical gap records already
 written into batches. Do not treat it as repairing missing data.
+
+Status includes `running`, `deferred`, `succeeded`, or `failed`, plus the current
+phase. Running and deferred passes preserve any previous genuine failure until
+a complete successful pass supersedes it. The durable progress reference is the
+last successful pass, or the first tracked attempt if none has succeeded yet;
+deferrals and restarts cannot reset it. Pipeline health computes its age using
+the monitor's clock and raises a critical alarm after four hours without a
+completed store pass (two minutes for collection). Thus frequent deferral
+reports cannot hide starvation. Unchanged publications count as successful
+checks, so quiet product periods do not cause an alarm.
+
+This is deployment tooling and telemetry, not a client or NAVDB contract
+change. After integration, the operator's `tools/prod_manage.py --reconcile`
+installs it without staging a new app or rebuilding products. Collection
+restarts during reconciliation; the store adopts the new code on its next
+invocation, without forcibly interrupting an in-flight archive. Until both
+workers emit v2 status, the upgraded monitor may report a contract mismatch.
 
 List and extract a retained day (replace `live-DAY-ID` with an actual name):
 
@@ -229,6 +265,11 @@ Local root discovery runs it automatically when systemd and Borg are available.
 Rust helper tests prove NOTAM checkpoint/suffix replay, updates/removals, and
 rejection of missing or reordered deltas. Monitor tests cover missing promises,
 bad claims, stale workers, persistent gaps, and explicit disablement.
+Cycle-lock regressions exercise actual `flock` contention, source GC immediately
+after pinning but during flush, failed flush/retry, ready-snapshot reuse while
+the controller is busy, store-worker exclusion through Borg, and deferred
+retry without false success. Monitoring tests ensure running/deferred status
+cannot hide real failures or prolonged lack of completion.
 
 ```sh
 python3 -m unittest discover -s tools -p 'test_*archive*.py'

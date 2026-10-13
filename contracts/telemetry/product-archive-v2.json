@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "product-archive-v2",
+  "producer": "product-archive",
+  "payload_schema_version": 2,
+  "requires_claim": true,
+  "activity": {
+    "state": ["running", "deferred", "succeeded", "failed"],
+    "phase": "Required human-readable string describing the current operation or deferral. Running and deferred are incomplete passes, not successful attempts; they preserve the previous completed result."
+  },
+  "measurements": {
+    "product_archive.failure_count": {
+      "field": "failure_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "One when the latest collector or Borg worker attempt failed; zero following a successful attempt. Each worker emits its own status."
+    },
+    "product_archive.capture_gap_count": {
+      "field": "capture_gap_count",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "count",
+      "meaning": "Count of explicitly recorded unrecoverable or potentially incomplete capture intervals. Persists across restarts and archival; requires operator acknowledgement to clear."
+    },
+    "product_archive.buffer_bytes": {
+      "field": "buffer_bytes",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "bytes",
+      "meaning": "Allocated bytes of committed live-feed payload files plus their SQLite indexes in open and sealed buffers. Excludes temporary writes, small control files, and filesystem directory overhead."
+    },
+    "product_archive.repository_bytes": {
+      "field": "repository_bytes",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "bytes",
+      "meaning": "Allocated repository bytes; collector status reports live-feeds, store status reports cycles. Includes Borg metadata and uncompacted segments."
+    },
+    "product_archive.progress_reference_unix_seconds": {
+      "field": "progress_reference_unix_seconds",
+      "family": "*",
+      "type": "nonnegative-integer",
+      "unit": "unix-seconds",
+      "meaning": "Unix timestamp of the last fully successful worker pass, or the first tracked attempt if none has succeeded. Running, deferred, and failed passes do not advance it. A successful store pass includes both repositories and retention; an unchanged publication is a successful check."
+    }
+  }
+}

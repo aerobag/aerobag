@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -19,7 +20,7 @@ import time
 
 from live_feed_archive import LiveSource, member
 from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
-from product_archive import (BorgStore, DailyCapture, atomic_json, buffer_bytes, disk_bytes, durable_tree, locked,
+from product_archive import (BorgStore, DailyCapture, LockBusy, atomic_json, buffer_bytes, disk_bytes, durable_tree, locked,
                              now_utc, read_events, read_json, utc)
 
 GIB = 1024 ** 3
@@ -107,27 +108,27 @@ def capture_once(config, root):
         raise RuntimeError("; ".join(errors))
 
 
-def pin_cycle(config):
+def pin_cycle(config, *, progress=None):
     artifacts = Path(config["artifact_root"])
     pending = artifacts / "state/archive-cycle-pending"
+    # The caller owns store.lock. A ready snapshot is independent of publication
+    # GC, and interrupted preparation belongs only to this worker.
+    if (pending / "ready.json").exists():
+        return pending
+    if pending.exists():
+        shutil.rmtree(pending)
     # Reuse the controller lock only while obtaining a stable, hard-linked tree.
-    # Borg's potentially slow scan/copy runs after releasing it.
+    # Durability and Borg's potentially slow scan/copy run after releasing it.
     with locked(artifacts / "locks/release-reconciler.lock", blocking=False):
-        if (pending / "ready.json").exists():
-            return pending
         generation, _ = production_sources(artifacts)
         source = generation / "production/packages/current_artifacts.json"
         raw = source.read_bytes()
         identity = hashlib.sha256(raw).hexdigest()
         done = artifacts / "state/archive-cycle-last.json"
         if done.exists() and read_json(done)["identity"] == identity:
-            if pending.exists():
-                shutil.rmtree(pending)
             return None
         descriptor = read_json(generation / "generation.json")
         # At most one bounded pending cycle snapshot. Finish it before newer work.
-        if pending.exists():
-            shutil.rmtree(pending)
         pending.mkdir(parents=True)
         (pending / "current_artifacts.json").write_bytes(raw)
         publications = set()
@@ -148,57 +149,106 @@ def pin_cycle(config):
                 output.mkdir(parents=True, exist_ok=True)
                 for name in files:
                     os.link(Path(directory) / name, output / name)
-        durable_tree(pending)
-        atomic_json(pending / "ready.json", {
-            "identity": identity, "captured_at_utc": now_utc(), "generation": descriptor,
-        })
-        return pending
+        metadata = {"identity": identity, "captured_at_utc": now_utc(), "generation": descriptor}
+    if progress:
+        progress("Flushing pinned cycle snapshot")
+    durable_tree(pending)
+    atomic_json(pending / "ready.json", metadata)
+    return pending
 
 
-def store_once(config, root):
+def store_once(config, root, *, progress=None):
+    """Run under store.lock; return a deferral reason without claiming success."""
     reserve = config["archive_reserve_gib"] * GIB
-    with locked(root / "store.lock", blocking=False):
-        live = BorgStore(root / "live-feeds.borg",
-                         max_bytes=(config["archive_total_gib"] - config["archive_cycles_gib"]) * GIB,
-                         reserve_bytes=reserve)
-        capture = DailyCapture(root / "live-buffer", max_bytes=config["archive_buffer_gib"] * GIB)
-        errors = []
-        try:
-            live.commit_sealed(capture)
-        except Exception as error:
-            errors.append(f"live-feed archive: {error}")
-        cycles = BorgStore(root / "cycles.borg", max_bytes=config["archive_cycles_gib"] * GIB,
-                           reserve_bytes=reserve)
-        try:
-            pending = pin_cycle(config)
-            if pending:
-                metadata = read_json(pending / "ready.json")
-                name = "cycle-" + metadata["captured_at_utc"].replace(":", "") + "-" + metadata["identity"][:16]
-                cycles.commit(name, pending)
-                atomic_json(Path(config["artifact_root"]) / "state/archive-cycle-last.json", metadata)
-                shutil.rmtree(pending)
-        except Exception as error:
-            errors.append(f"cycle archive: {error}")
-        for store in (cycles, live):
-            if (store.repository / "config").exists():
-                store.prune()
-        if errors:
-            raise RuntimeError("; ".join(errors))
+    report = progress or (lambda phase: None)
+    live = BorgStore(root / "live-feeds.borg",
+                     max_bytes=(config["archive_total_gib"] - config["archive_cycles_gib"]) * GIB,
+                     reserve_bytes=reserve)
+    capture = DailyCapture(root / "live-buffer", max_bytes=config["archive_buffer_gib"] * GIB)
+    errors = []
+    deferred = None
+    report("Archiving sealed live-feed days")
+    try:
+        live.commit_sealed(capture)
+    except Exception as error:
+        errors.append(f"live-feed archive: {error}")
+    cycles = BorgStore(root / "cycles.borg", max_bytes=config["archive_cycles_gib"] * GIB,
+                       reserve_bytes=reserve)
+    report("Pinning cycle publication")
+    try:
+        pending = pin_cycle(config, progress=report)
+        if pending:
+            metadata = read_json(pending / "ready.json")
+            name = "cycle-" + metadata["captured_at_utc"].replace(":", "") + "-" + metadata["identity"][:16]
+            report("Archiving and verifying pinned cycle with Borg")
+            cycles.commit(name, pending)
+            atomic_json(Path(config["artifact_root"]) / "state/archive-cycle-last.json", metadata)
+            shutil.rmtree(pending)
+    except LockBusy as error:
+        deferred = f"Cycle capture deferred: {error}"
+    except Exception as error:
+        errors.append(f"cycle archive: {error}")
+    report("Applying archive retention")
+    for store in (cycles, live):
+        if (store.repository / "config").exists():
+            store.prune()
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return deferred
 
 
-def status(config, mode, error):
+def status(config, mode, error, *, state=None, phase=""):
     root = Path(config["archive_root"])
     path = Path(config["data_root"]) / "health/archive" / (mode + ".json")
     old = read_json(path) if path.exists() else {}
+    at = now_utc()
+    state = state or ("failed" if error else "succeeded")
+    completed = state in {"succeeded", "failed"}
+    success = at if state == "succeeded" else old.get("last_success_at_utc")
+    reference = (int(utc(success).timestamp()) if success else
+                 old.get("progress_reference_unix_seconds", int(utc(at).timestamp())))
     atomic_json(path, {
-        "schema_version": 1, "telemetry_contract": telemetry_pin(config),
-        "attempted_at_utc": now_utc(), "last_success_at_utc": old.get("last_success_at_utc") if error else now_utc(),
-        "failure_count": int(error is not None), "error": str(error) if error else None,
+        "schema_version": 2, "telemetry_contract": telemetry_pin(config),
+        "attempted_at_utc": at, "last_success_at_utc": success,
+        "state": state, "phase": phase, "progress_reference_unix_seconds": reference,
+        # Running/deferred passes have not superseded the last completed result.
+        "failure_count": int(error is not None) if completed else old.get("failure_count", 0),
+        "error": (str(error) if error else None) if completed else old.get("error"),
         "archive_root": str(root),
         "repository_bytes": disk_bytes(root / ("live-feeds.borg" if mode == "collect" else "cycles.borg")),
         "buffer_bytes": buffer_bytes(root / "live-buffer/batches"),
         "capture_gap_count": len(list((root / "live-buffer/gaps").glob("*.json"))),
     })
+
+
+def run_once(config, mode):
+    with ExitStack() as locks:
+        try:
+            root = require_mount(config, writing=mode == "collect")
+            if mode == "store":
+                try:
+                    locks.enter_context(locked(root / "store.lock", blocking=False))
+                except LockBusy as busy:
+                    # An existing worker owns both the buffer and its status.
+                    print(f"archive store deferred: {busy}", file=sys.stderr, flush=True)
+                    return 0
+            report = lambda phase: status(config, mode, None, state="running", phase=phase)
+            report("Starting archive pass")
+            if mode == "store":
+                deferred = store_once(config, root, progress=report)
+            else:
+                capture_once(config, root)
+                deferred = None
+        except Exception as error:
+            print(f"archive {mode}: {error}", file=sys.stderr, flush=True)
+            status(config, mode, error, phase="Archive pass failed")
+            return 1
+        if deferred:
+            print(f"archive {mode}: {deferred}", file=sys.stderr, flush=True)
+            status(config, mode, None, state="deferred", phase=deferred)
+        else:
+            status(config, mode, None, phase="Archive pass complete")
+        return 0
 
 
 def export_live(batch, product, at, output):
@@ -244,18 +294,9 @@ def main():
     if not args.mode:
         parser.error("--mode is required")
     while True:
-        error = None
-        try:
-            root = require_mount(config, writing=args.mode == "collect")
-            (capture_once if args.mode == "collect" else store_once)(config, root)
-        except Exception as caught:
-            error = caught
-            print(f"archive {args.mode}: {caught}", file=sys.stderr, flush=True)
-        status(config, args.mode, error)
+        result = run_once(config, args.mode)
         if args.once or args.mode == "store":
-            if error:
-                raise SystemExit(1)
-            return
+            raise SystemExit(result)
         time.sleep(15)
 
 

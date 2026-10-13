@@ -131,6 +131,16 @@ approval. Never invent an approver to make a check pass.
 
 ## Deployment
 
+The deployment-owned archive uses `product-archive-v2` (status envelope 2).
+It adds explicit running/deferred phases and a durable progress-reference
+timestamp. Existing failure, gap, and size measurements retain their meanings;
+running and deferred passes do not supersede a completed result. The monitor
+alarms on completion age independently of report freshness, so repeated lock
+contention cannot hide indefinite starvation. These sources and descriptors
+are runtime-fingerprinted and installed together by reconciliation; no client
+contract or product rebuild is required. See
+[archive health and recovery](../../docs/production-archive.md#health-and-recovery).
+
 After committing/pushing this runtime change, `tools/prod_manage.py --reconcile`
 can recognize the existing production and sunset contracts without rebuilding
 their products or staging an app release. The next normally built release will

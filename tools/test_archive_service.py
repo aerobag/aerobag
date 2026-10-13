@@ -10,7 +10,7 @@ from unittest import mock
 
 import archive_service
 import prod_deployment
-from product_archive import atomic_json, locked
+from product_archive import atomic_json, durable_tree, locked
 
 
 class ArchiveServiceTests(unittest.TestCase):
@@ -71,6 +71,131 @@ class ArchiveServiceTests(unittest.TestCase):
         archive_service.pin_cycle(self.config)
         self.assertFalse((pending / "unfinished").exists())
         self.assertTrue((pending / "ready.json").exists())
+
+    def test_cycle_gc_can_run_during_flush_but_not_before_files_are_pinned(self):
+        lock = self.artifacts / "locks/release-reconciler.lock"
+        link = archive_service.os.link
+
+        def pin(source, target):
+            with self.assertRaises(BlockingIOError):
+                with locked(lock, blocking=False):
+                    pass
+            return link(source, target)
+
+        def flush(pending):
+            self.assertFalse((pending / "ready.json").exists())
+            with locked(lock, blocking=False):
+                shutil.rmtree(self.publication)
+            self.assertEqual((pending / "published/cycle/123/unpacked/nav-db/page").read_bytes(),
+                             b"compressed cycle page")
+            durable_tree(pending)
+
+        with mock.patch.object(archive_service.os, "link", side_effect=pin), \
+                mock.patch.object(archive_service, "durable_tree", side_effect=flush):
+            pending = archive_service.pin_cycle(self.config)
+        self.assertTrue((pending / "ready.json").exists())
+
+    def test_flush_failure_cannot_publish_ready_and_retry_rebuilds(self):
+        pending = self.artifacts / "state/archive-cycle-pending"
+        with mock.patch.object(archive_service, "durable_tree", side_effect=OSError("flush failed")):
+            with self.assertRaisesRegex(OSError, "flush failed"):
+                archive_service.pin_cycle(self.config)
+        self.assertFalse((pending / "ready.json").exists())
+        with locked(self.artifacts / "locks/release-reconciler.lock", blocking=False):
+            pass
+        self.assertEqual(archive_service.pin_cycle(self.config), pending)
+        self.assertTrue((pending / "ready.json").exists())
+
+    def test_ready_cycle_does_not_need_controller_lock(self):
+        pending = archive_service.pin_cycle(self.config)
+        with locked(self.artifacts / "locks/release-reconciler.lock"):
+            self.assertEqual(archive_service.pin_cycle(self.config), pending)
+
+    def run_store(self):
+        with mock.patch.object(archive_service, "require_mount", return_value=self.archive):
+            return archive_service.run_once(self.config, "store")
+
+    def store_status(self):
+        return json.loads((self.root / "data/health/archive/store.json").read_text())
+
+    def test_busy_controller_returns_deferral_not_exception(self):
+        with locked(self.artifacts / "locks/release-reconciler.lock"), \
+                mock.patch.object(archive_service, "BorgStore"):
+            self.assertIn("release-reconciler.lock", archive_service.store_once(self.config, self.archive))
+
+    def test_busy_controller_defers_without_success_then_retry_archives(self):
+        archive_service.status(self.config, "store", None)
+        before = self.store_status()
+        with locked(self.artifacts / "locks/release-reconciler.lock"), \
+                mock.patch.object(archive_service, "BorgStore") as borg:
+            self.assertEqual(self.run_store(), 0)
+            borg.return_value.commit_sealed.assert_called_once()
+            borg.return_value.commit.assert_not_called()
+        deferred = self.store_status()
+        self.assertEqual(deferred["state"], "deferred")
+        self.assertEqual(deferred["failure_count"], 0)
+        self.assertIsNone(deferred["error"])
+        self.assertEqual(deferred["last_success_at_utc"], before["last_success_at_utc"])
+        self.assertEqual(deferred["progress_reference_unix_seconds"], before["progress_reference_unix_seconds"])
+        self.assertIn("release-reconciler.lock", deferred["phase"])
+        with mock.patch.object(archive_service, "BorgStore") as borg:
+            self.assertEqual(self.run_store(), 0)
+            borg.return_value.commit.assert_called_once()
+        self.assertEqual(self.store_status()["state"], "succeeded")
+        self.assertIsNotNone(self.store_status()["last_success_at_utc"])
+
+    def test_running_status_precedes_borg_and_keeps_exclusive_store_lock(self):
+        def commit(*args):
+            self.assertEqual(self.store_status()["state"], "running")
+            with self.assertRaises(BlockingIOError):
+                with locked(self.archive / "store.lock", blocking=False):
+                    pass
+            with locked(self.artifacts / "locks/release-reconciler.lock", blocking=False):
+                pass
+        with mock.patch.object(archive_service, "BorgStore") as borg:
+            borg.return_value.commit.side_effect = commit
+            self.assertEqual(self.run_store(), 0)
+
+    def test_second_store_worker_does_not_overwrite_running_worker_status(self):
+        archive_service.status(self.config, "store", None, state="running", phase="cycle Borg")
+        before = self.store_status()
+        with locked(self.archive / "store.lock"), mock.patch.object(archive_service, "BorgStore") as borg:
+            self.assertEqual(self.run_store(), 0)
+            borg.assert_not_called()
+        self.assertEqual(self.store_status(), before)
+
+    def test_real_failure_survives_deferred_attempt_until_success(self):
+        with mock.patch.object(archive_service, "BorgStore") as borg:
+            borg.return_value.commit_sealed.side_effect = OSError("disk failure")
+            with locked(self.artifacts / "locks/release-reconciler.lock"):
+                self.assertEqual(self.run_store(), 1)
+        failed = self.store_status()
+        self.assertEqual(failed["failure_count"], 1)
+        self.assertIn("disk failure", failed["error"])
+        with locked(self.artifacts / "locks/release-reconciler.lock"), \
+                mock.patch.object(archive_service, "BorgStore"):
+            self.assertEqual(self.run_store(), 0)
+        self.assertEqual(self.store_status()["failure_count"], 1)
+        self.assertEqual(self.store_status()["error"], failed["error"])
+        with mock.patch.object(archive_service, "BorgStore"):
+            self.assertEqual(self.run_store(), 0)
+        self.assertEqual(self.store_status()["failure_count"], 0)
+
+    def test_non_lock_eagain_is_a_real_failure(self):
+        with mock.patch.object(archive_service, "BorgStore"), \
+                mock.patch.object(archive_service, "durable_tree", side_effect=BlockingIOError(11, "IO failed")):
+            self.assertEqual(self.run_store(), 1)
+        self.assertEqual(self.store_status()["state"], "failed")
+        self.assertIn("IO failed", self.store_status()["error"])
+
+    def test_first_attempt_progress_reference_survives_repeated_deferrals(self):
+        with mock.patch.object(archive_service, "now_utc", return_value="2026-10-13T00:00:00Z"):
+            archive_service.status(self.config, "store", None, state="running")
+        first = self.store_status()
+        with mock.patch.object(archive_service, "now_utc", return_value="2026-10-13T05:00:00Z"):
+            archive_service.status(self.config, "store", None, state="deferred")
+        self.assertEqual(self.store_status()["progress_reference_unix_seconds"], first["progress_reference_unix_seconds"])
+        self.assertIsNone(self.store_status()["last_success_at_utc"])
 
     def test_missing_mount_and_overlapping_roots_are_rejected(self):
         with self.assertRaisesRegex(OSError, "not mounted"):

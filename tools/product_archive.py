@@ -55,11 +55,18 @@ def read_json(path):
     return json.loads(path.read_text())
 
 
+class LockBusy(BlockingIOError):
+    """Only lock acquisition contention, not an EAGAIN from protected IO."""
+
+
 @contextmanager
 def locked(path, *, blocking=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as error:
+            raise LockBusy(error.errno, "lock is busy", str(path)) from error
         yield
 
 

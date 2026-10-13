@@ -18,10 +18,12 @@ class ArchiveHealthTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.now = datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
         self.payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "telemetry_contract": telemetry_contracts.producer_pins(telemetry_contracts.default_catalog_root())["product-archive"],
             "attempted_at_utc": "2026-10-09T12:00:00Z", "failure_count": 0,
             "capture_gap_count": 0, "buffer_bytes": 1024, "repository_bytes": 2048,
+            "state": "succeeded", "phase": "complete",
+            "progress_reference_unix_seconds": int(self.now.timestamp()),
         }
 
     def metrics(self, payload):
@@ -39,7 +41,8 @@ class ArchiveHealthTests(unittest.TestCase):
         self.assertEqual(metrics["product_archive.collect.capture_gap_count"]["severity"], "critical")
 
     def test_missing_invalid_and_unclaimed_telemetry_are_coverage_errors(self):
-        for field in ("failure_count", "capture_gap_count", "telemetry_contract", "schema_version"):
+        for field in ("failure_count", "capture_gap_count", "telemetry_contract", "schema_version",
+                      "state", "phase", "progress_reference_unix_seconds"):
             with self.subTest(field=field):
                 payload = dict(self.payload)
                 del payload[field]
@@ -62,6 +65,42 @@ class ArchiveHealthTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 metrics = self.metrics(payload)
                 self.assertEqual(metrics["product_archive.collect.coverage"]["severity"], "critical")
+
+    def test_deferred_is_visible_without_failure_or_false_success(self):
+        metrics = self.metrics({**self.payload, "state": "deferred", "phase": "release-reconciler.lock busy"})
+        self.assertTrue(all(m["severity"] == "ok" for m in metrics.values()))
+        self.assertIn("deferred", metrics["product_archive.store.activity"]["message"])
+        self.assertIn("release-reconciler.lock", metrics["product_archive.store.activity"]["message"])
+
+    def test_fresh_reports_cannot_hide_four_hours_without_completion(self):
+        for state in ("deferred", "running", "failed"):
+            with self.subTest(state=state):
+                payload = {**self.payload, "state": state,
+                           "progress_reference_unix_seconds": int(self.now.timestamp()) - 4 * 3600 - 1}
+                metrics = self.metrics(payload)
+                self.assertEqual(metrics["product_archive.store.coverage"]["severity"], "ok")
+                self.assertEqual(metrics["product_archive.store.progress_age_seconds"]["severity"], "critical")
+
+    def test_progress_age_advances_while_worker_is_silent(self):
+        metrics = self.metrics({**self.payload, "state": "running", "attempted_at_utc": "2026-10-09T11:00:00Z",
+                                "progress_reference_unix_seconds": int(self.now.timestamp()) - 7200})
+        self.assertEqual(metrics["product_archive.store.progress_age_seconds"]["value"], 7200)
+
+    def test_real_failure_is_not_hidden_by_running_or_deferred_state(self):
+        for state in ("running", "deferred", "failed"):
+            metrics = self.metrics({**self.payload, "state": state, "failure_count": 1, "error": "disk full"})
+            failure = metrics["product_archive.store.failure_count"]
+            self.assertEqual(failure["severity"], "critical")
+            self.assertEqual(failure["message"], "disk full")
+
+    def test_old_contract_and_invalid_activity_are_not_accepted(self):
+        old_pin = {"id": "product-archive-v1", "sha256": "1955a0d664acd800a4ff312f0948d0d5fe20e88bb4b8376ffe4bbbd5c176c61a"}
+        for changes in ({"schema_version": 1, "telemetry_contract": old_pin},
+                        {"state": "made up"}, {"phase": []}, {"state": []},
+                        {"progress_reference_unix_seconds": int(self.now.timestamp()) + 3600}):
+            with self.subTest(changes=changes):
+                metrics = self.metrics({**self.payload, **changes})
+                self.assertEqual(metrics["product_archive.store.coverage"]["severity"], "critical")
 
 
 if __name__ == "__main__":

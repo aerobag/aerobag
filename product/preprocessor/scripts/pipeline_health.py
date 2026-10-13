@@ -922,6 +922,11 @@ def add_chart_quality_metrics(
                            message=f"{family}: no completed result yet; next check in progress")
                 continue
             report = previous
+            # The attempt remains pending, but the displayed result is complete
+            # and retains its own evidence and any exact operator disposition.
+            complete = True
+            cycle = report.get("cycle")
+            phase = chart_cycle_phase(facts, cycle, now)
         elif not error:
             add_metric(metrics, metric_id=f"{metric_prefix}.attempt", label=f"{label} chart check attempt",
                        value="completed", message=f"{family}: chart check completed",

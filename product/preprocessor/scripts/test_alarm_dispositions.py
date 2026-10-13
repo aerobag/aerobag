@@ -5,6 +5,7 @@
 import copy
 import json
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ import pipeline_health as health
 
 
 class AlarmDispositionTests(unittest.TestCase):
-    now = datetime(2026, 10, 12, 6, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 13, 14, tzinfo=timezone.utc)
 
     def report(self, publication=None, status="warning"):
         report = {
@@ -53,6 +54,37 @@ class AlarmDispositionTests(unittest.TestCase):
     def install_policy(self, facts, rules):
         facts["inputs"]["alarm_dispositions"] = {
             "payload": {"schema_version": 1, "dispositions": rules}, "error": None}
+
+    def captured_reports(self, cycle):
+        return json.loads((Path(__file__).parent / f"fixtures/chart_quality_legacy_{cycle}.json").read_text())
+
+    def deployed_policy(self):
+        return json.loads((Path(__file__).resolve().parents[3] / "deploy/alarm-dispositions.json").read_text())
+
+    def test_numeric_representation_does_not_change_fingerprint_or_raw_evidence(self):
+        metric = {"id": "example.content", "value": 1, "severity": "warning",
+                  "finding": {"producer": "example", "scores": [0, {"nested": [1, 2.5]}]}}
+        facts = self.facts([])
+        health.alarm_dispositions.apply([metric], facts)
+        self.install_policy(facts, [self.rule(metric)])
+        expected = metric["finding_match"]
+        for zero in (0.0, -0.0):
+            changed = copy.deepcopy(metric)
+            changed["value"] = 1.0
+            changed["finding"]["scores"] = [zero, {"nested": [1.0, 2.5]}]
+            raw = json.dumps(changed["finding"])
+            health.alarm_dispositions.apply([changed], facts)
+            self.assertEqual(changed["finding_match"], expected)
+            self.assertEqual(changed["actionable_severity"], "ok")
+            self.assertEqual(json.dumps(changed["finding"]), raw)
+
+    def test_numeric_normalization_does_not_merge_distinct_evidence(self):
+        canonical = health.alarm_dispositions.canonical_json
+        for left, right in [(False, 0), (True, 1), ("0", 0), (None, 0),
+                            (0, 1e-100), (1, 1.0000000000000002),
+                            (9007199254740992, 9007199254740993)]:
+            with self.subTest(left=left, right=right):
+                self.assertNotEqual(canonical({"score": left}), canonical({"score": right}))
 
     def test_invalid_finding_leaves_raw_evidence_but_not_downstream_alarm(self):
         facts = self.facts([self.report()])
@@ -176,34 +208,97 @@ class AlarmDispositionTests(unittest.TestCase):
         self.assertEqual(self.evaluate(facts)["top_line_status"], "critical")
 
     def test_checked_in_policy_is_narrow_and_documented(self):
-        root = Path(__file__).resolve().parents[3]
-        policy = json.loads((root / "deploy/alarm-dispositions.json").read_text())
+        policy = self.deployed_policy()
         health.alarm_dispositions.validate_policy(policy)
-        self.assertEqual(len(policy["dispositions"]), 2)
+        self.assertEqual({r["id"] for r in policy["dispositions"]}, {
+            "sec-2610-milwaukee-wrong-cycle-reference", "tac-2610-milwaukee-wrong-cycle-reference",
+            "sec-2611-milwaukee-before-approval", "tac-2611-milwaukee-before-approval"})
         self.assertEqual({r["match"]["metric_id"] for r in policy["dispositions"]},
                          {"chart_quality.SEC.unresolved", "chart_quality.TAC.unresolved"})
         self.assertTrue(all(r["kind"] == "invalid-finding" for r in policy["dispositions"]))
 
     def test_real_production_reports_match_policy_without_hiding_new_findings(self):
-        root = Path(__file__).resolve().parents[3]
-        captured = json.loads((Path(__file__).parent / "fixtures/chart_quality_legacy_2610.json").read_text())
-        policy = json.loads((root / "deploy/alarm-dispositions.json").read_text())
-        facts = self.facts([])
-        facts["inputs"]["chart_quality"] = [{"family": r["family"], "payload": r}
-                                             for r in captured["legacy"] + captured["corrected"]]
-        self.assertEqual(len(self.evaluate(facts)["alerts"]), 2)
-        facts["inputs"]["alarm_dispositions"] = {"payload": policy, "error": None}
-        result = self.evaluate(facts)
-        self.assertEqual(result["top_line_status"], "ok")
-        self.assertEqual(len(result["dispositioned_findings"]), 2)
-        for old, fixed in zip(captured["legacy"], captured["corrected"]):
-            self.assertEqual(old["source_id"], fixed["source_id"])
-            self.assertEqual(fixed["status"], "ok")
-        captured["legacy"][0]["regions"].append({"id": "new-finding", "status": "warning", "scores": {}})
-        captured["legacy"][0]["warning_count"] += 1
-        result = self.evaluate(facts)
-        self.assertEqual(len(result["alerts"]), 1)
-        self.assertEqual(result["alerts"][0]["metric_id"], "chart_quality.SEC.unresolved")
+        for cycle in ("2610", "2611"):
+            with self.subTest(cycle=cycle):
+                captured = self.captured_reports(cycle)
+                facts = self.facts([])
+                facts["inputs"]["chart_quality"] = [{"family": r["family"], "payload": r}
+                                                     for r in captured["legacy"] + captured["corrected"]]
+                self.assertEqual(len(self.evaluate(facts)["alerts"]), 2)
+                self.install_policy(facts, self.deployed_policy()["dispositions"])
+                result = self.evaluate(facts)
+                self.assertEqual(result["top_line_status"], "ok")
+                self.assertEqual(len(result["dispositioned_findings"]), 2)
+                for old, fixed in zip(captured["legacy"], captured["corrected"]):
+                    self.assertEqual((old["family"], old["cycle"], old["source_id"]),
+                                     (fixed["family"], fixed["cycle"], fixed["source_id"]))
+                    self.assertEqual(fixed["status"], "ok")
+                    self.assertIsInstance(old["regions"][0]["scores"]["control-2"]["control"], float,
+                                          "keep the original report's numeric representation")
+                captured["legacy"][0]["regions"].append({"id": "new-finding", "status": "warning", "scores": {}})
+                captured["legacy"][0]["warning_count"] += 1
+                result = self.evaluate(facts)
+                self.assertEqual(len(result["alerts"]), 1)
+                self.assertEqual(result["alerts"][0]["metric_id"], "chart_quality.SEC.unresolved")
+
+    def test_disposition_survives_in_progress_check_but_not_new_or_overdue_findings(self):
+        for cycle in ("2610", "2611"):
+            for report in self.captured_reports(cycle)["legacy"]:
+                with self.subTest(cycle=cycle, family=report["family"]), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    family = root / "state/chart-quality" / report["family"]
+                    completed = family / "reports" / report["report_id"] / "report.json"
+                    completed.parent.mkdir(parents=True)
+                    completed.write_text(json.dumps(report))
+                    current = family / "current.json"
+                    current.write_text(json.dumps(report))
+                    facts = self.facts([])
+                    # Derive this rule from the exact report to isolate retry handling
+                    # from the separately tested deployed policy and numeric matching.
+                    facts["inputs"]["chart_quality"] = health.collect_chart_quality(root)
+                    before = self.row(self.evaluate(facts))
+                    self.install_policy(facts, [self.rule(before)])
+                    pending = {**report, "status": "checking", "report_id": "b" * 32,
+                               "started_at": self.now.isoformat(), "cycle": "2612", "source_id": "new-source"}
+                    pending.pop("completed_at")
+                    current.write_text(json.dumps(pending))
+                    facts["inputs"]["chart_quality"] = health.collect_chart_quality(root)
+                    result = self.evaluate(facts)
+                    previous = self.row(result)
+                    self.assertEqual(result["alerts"], [])
+                    self.assertEqual(previous["finding_match"], before["finding_match"])
+                    self.assertEqual(previous["details"], before["details"])
+                    self.assertEqual(previous["severity"], "warning")
+                    self.assertEqual(previous["actionable_severity"], "ok")
+
+                    pending["started_at"] = "2026-10-12T00:00:00Z"
+                    current.write_text(json.dumps(pending))
+                    facts["inputs"]["chart_quality"] = health.collect_chart_quality(root)
+                    overdue = self.evaluate(facts)
+                    self.assertEqual([a["metric_id"] for a in overdue["alerts"]],
+                                     [f"chart_quality.{report['family']}.attempt"])
+                    self.assertEqual(self.row(overdue)["actionable_severity"], "ok")
+
+                    changed = copy.deepcopy(report)
+                    changed["regions"][0]["scores"]["control-1"]["control"] += .01
+                    current.write_text(json.dumps(changed))
+                    facts["inputs"]["chart_quality"] = health.collect_chart_quality(root)
+                    self.assertEqual([a["metric_id"] for a in self.evaluate(facts)["alerts"]],
+                                     [f"chart_quality.{report['family']}.unresolved"])
+
+    def test_in_progress_check_cannot_disposition_invalid_previous_evidence(self):
+        facts = self.facts([self.report()])
+        self.install_policy(facts, [self.rule(self.row(self.evaluate(facts)))])
+        pending = {**self.report(), "status": "checking", "started_at": self.now.isoformat()}
+        for update in ({"completed_at": None}, {"completed_at": "2027-01-01T00:00:00Z"},
+                       {"source_id": None}, {"warning_count": None}, {"status": "checking"}):
+            with self.subTest(update=update):
+                facts["inputs"]["chart_quality"] = [{"family": "SEC", "payload": pending,
+                                                     "last_completed": {**self.report(), **update}}]
+                result = self.evaluate(facts)
+                self.assertEqual(result["dispositioned_findings"], [])
+                row = next(m for m in result["metrics"] if m["id"] == "chart_quality.SEC.unresolved")
+                self.assertNotIn("finding_match", row)
 
     def test_engine_is_shared_but_metrics_without_semantic_evidence_cannot_be_muted(self):
         metric = {"id": "example.content", "value": 1, "severity": "warning",

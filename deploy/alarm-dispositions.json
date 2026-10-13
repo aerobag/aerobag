@@ -30,6 +30,36 @@
         "metric_id": "chart_quality.TAC.unresolved",
         "fingerprint": "79109241d83055920fa99675f6e5e22c51c0233d4c4a286e627b020a3a5b378e"
       }
+    },
+    {
+      "id": "sec-2611-milwaukee-before-approval",
+      "kind": "invalid-finding",
+      "reason": "The sunset producer republishes its cached cycle-2611 Milwaukee inset warning from before the human approval. The identical source is approved and passes the production check; no further chart review is required.",
+      "evidence": [
+        "Human review: a7d09db7ee3a01f9ac50714f28582d4eb2dd3c42 approves the cycle-2611 Milwaukee inset reference",
+        "Original SEC report d74db81cb6d142e8bf8817f11de514ed, completed 2026-10-10; region 4b703c9991430518ae55f954",
+        "Production 2026-10-13.1-36edfd8dea27, cycle 2611: report d98cd1018f2b46e9b09d3bb1d08e25a2, zero warnings on identical source_id",
+        "Captured evidence: product/preprocessor/scripts/fixtures/chart_quality_legacy_2611.json; see docs/pipeline-health-alarm-dispositions.md"
+      ],
+      "match": {
+        "metric_id": "chart_quality.SEC.unresolved",
+        "fingerprint": "757c6aacdb73bdcee0f33803b783d2da3e0d3f4f85900e2c3b3ad51eb73c9c1f"
+      }
+    },
+    {
+      "id": "tac-2611-milwaukee-before-approval",
+      "kind": "invalid-finding",
+      "reason": "The TAC check includes the Milwaukee inset from Chicago SEC. Its cached cycle-2611 warning predates the human approval. Production validates the identical sources with zero warnings; this does not identify a new chart change.",
+      "evidence": [
+        "Human review: a7d09db7ee3a01f9ac50714f28582d4eb2dd3c42 approves the cycle-2611 Milwaukee inset reference",
+        "Original TAC report 5c828598fd4d458787d3b73ad159bb69, completed 2026-10-10; region 4b703c9991430518ae55f954",
+        "Production 2026-10-13.1-36edfd8dea27, cycle 2611: report 3c41a14d2a05403e86850fc800e0d880, zero warnings on identical source_id",
+        "Captured evidence: product/preprocessor/scripts/fixtures/chart_quality_legacy_2611.json; see docs/pipeline-health-alarm-dispositions.md"
+      ],
+      "match": {
+        "metric_id": "chart_quality.TAC.unresolved",
+        "fingerprint": "c0f31118b7a991673228a0b9646fb4ef7498c4b24d4a0624da50ccf982c1809f"
+      }
     }
   ]
 }

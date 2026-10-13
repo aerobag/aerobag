@@ -80,7 +80,16 @@ counts, and the complete non-passing region records (including scores). Release
 tag and full producer commit are included when independently bound to a channel.
 Only attempt IDs, times, and passing regions are omitted. New inputs, additional
 regions, worsening evidence, and changed check semantics fail the match and alarm.
-A report still checking cannot lend its prior completed result to a disposition.
+Exact integer-valued floats are normalized for fingerprinting (`0.0`, `-0.0`, and
+`0` match); fractional scores are never rounded, booleans and strings remain
+distinct, and the raw report is unchanged. Non-finite evidence is ineligible.
+
+During a recheck, the displayed last-completed result retains its own evidence,
+cycle, and disposition. This does not disposition the pending attempt: its
+separate overdue/invalid-start alarm remains actionable, and the next completed
+result must independently match. Missing, malformed, or future-dated completed
+evidence cannot authorize a disposition. Schema-3 lookups remain scoped to the
+same publication and cycle; a legacy schema-2 result is explicitly unscoped.
 
 ## Display And History
 
@@ -111,11 +120,28 @@ The legacy reports lack release IDs, so only these exact evidence fingerprints
 are invalidated. No frozen telemetry registry is extended and no sunset producer
 or chart family is broadly exempted.
 
+### Cycle 2611 And Rebuild Replays
+
+On October 13, rebuilding sunset release `2026-09-18.2` replayed its cached
+October 10 SEC/TAC reports for cycle 2611. Both named the same Milwaukee inset,
+before its human approval in `a7d09db7ee3a01f9ac50714f28582d4eb2dd3c42`.
+Production `2026-10-13.1-36edfd8dea27` passes the identical sources. Two additional
+exact dispositions cover these pre-approval findings; they do not suppress new
+cycles, inputs, or changed findings. Captured original and corrected reports are
+in `product/preprocessor/scripts/fixtures/chart_quality_legacy_2611.json`.
+
+The incident also exposed two matching bugs: the original 2610 fixture capture
+had rewritten `0.0` scores to `0`, and pending attempts dropped the displayed
+completed result's fingerprint. Fixtures now preserve the original numeric
+types, fingerprints normalize equivalent numbers, and rechecks retain the
+completed evidence. Both fixture files omit passing regions only.
+
 ## Tests
 
 `test_alarm_dispositions.py` exercises the real evaluator: actionable status,
 raw history preservation, production versus staging, rollback/re-promotion,
 missing/malformed evidence, new/worsening findings, bad policy, and the captured
-production reports. Deployment tests verify installation and runtime fingerprints.
+production reports, including collector-to-evaluator recheck transitions and
+numeric serialization differences. Deployment tests verify installation and runtime fingerprints.
 `smoke_pipeline_health_dashboard.py` exercises collapsed groups, evidence links,
 neutral disposition labels, raw metrics, and ordinary alert navigation in Chrome.

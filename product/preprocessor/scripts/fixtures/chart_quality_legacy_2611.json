@@ -1,0 +1,224 @@
+{
+  "corrected": [
+    {
+      "completed_at": "2026-10-13T02:03:11.137625+00:00",
+      "critical_count": 0,
+      "cycle": "2611",
+      "family": "SEC",
+      "policy": {
+        "blur_radius": 1,
+        "boundary": {
+          "critical": 0.3,
+          "warning": 0.1
+        },
+        "context_fraction": 0.04,
+        "control": {
+          "critical": 0.15,
+          "warning": 0.04
+        },
+        "control_pixels": 128,
+        "interior": {
+          "critical": 0.18,
+          "warning": 0.04
+        },
+        "overview_pixels": 512,
+        "pixel_difference": 20
+      },
+      "publication": {
+        "excluded_metadata": [],
+        "has_map_sources": true,
+        "quarantined_sources": [],
+        "state": "ready"
+      },
+      "publication_id": "2026-10-13.1-36edfd8dea27",
+      "regions": [],
+      "report_id": "d98cd1018f2b46e9b09d3bb1d08e25a2",
+      "schema_version": 3,
+      "source_id": "e85f38be5d741991f643939c679026c99a96a3466a914d3d9770eb521f4eadfd",
+      "started_at": "2026-10-13T01:58:54.987218+00:00",
+      "status": "ok",
+      "unreviewed_count": 0,
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-10-13T02:15:30.358870+00:00",
+      "critical_count": 0,
+      "cycle": "2611",
+      "family": "TAC",
+      "policy": {
+        "blur_radius": 1,
+        "boundary": {
+          "critical": 0.3,
+          "warning": 0.1
+        },
+        "context_fraction": 0.04,
+        "control": {
+          "critical": 0.15,
+          "warning": 0.04
+        },
+        "control_pixels": 128,
+        "interior": {
+          "critical": 0.18,
+          "warning": 0.04
+        },
+        "overview_pixels": 512,
+        "pixel_difference": 20
+      },
+      "publication": {
+        "excluded_metadata": [],
+        "has_map_sources": true,
+        "quarantined_sources": [],
+        "state": "ready"
+      },
+      "publication_id": "2026-10-13.1-36edfd8dea27",
+      "regions": [],
+      "report_id": "3c41a14d2a05403e86850fc800e0d880",
+      "schema_version": 3,
+      "source_id": "85dd3612ad851b393de8ea31a626e2e09cbe15297932c2e62eca2b65137a1d41:e85f38be5d741991f643939c679026c99a96a3466a914d3d9770eb521f4eadfd",
+      "started_at": "2026-10-13T02:14:10.461799+00:00",
+      "status": "ok",
+      "unreviewed_count": 0,
+      "warning_count": 0
+    }
+  ],
+  "legacy": [
+    {
+      "completed_at": "2026-10-10T06:08:15.793584+00:00",
+      "critical_count": 0,
+      "cycle": "2611",
+      "family": "SEC",
+      "policy": {
+        "blur_radius": 1,
+        "boundary": {
+          "critical": 0.3,
+          "warning": 0.1
+        },
+        "context_fraction": 0.04,
+        "control": {
+          "critical": 0.15,
+          "warning": 0.04
+        },
+        "control_pixels": 128,
+        "interior": {
+          "critical": 0.18,
+          "warning": 0.04
+        },
+        "overview_pixels": 512,
+        "pixel_difference": 20
+      },
+      "publication": {
+        "excluded_metadata": [],
+        "has_map_sources": true,
+        "quarantined_sources": [],
+        "state": "ready"
+      },
+      "regions": [
+        {
+          "chart": "Chicago SEC",
+          "family": "SEC",
+          "id": "4b703c9991430518ae55f954",
+          "kind": "inset",
+          "message": "control-1 control: 7.8% changed",
+          "name": "Milwaukee",
+          "scores": {
+            "control-1": {
+              "control": 0.0782470703125
+            },
+            "control-2": {
+              "control": 0.0
+            },
+            "control-3": {
+              "control": 0.0
+            },
+            "control-4": {
+              "control": 0.0
+            },
+            "overview": {
+              "boundary": 0.0027243589743589742,
+              "interior": 0.029908590750186256
+            }
+          },
+          "source": "Chicago SEC.tif",
+          "status": "warning",
+          "unreviewed": false
+        }
+      ],
+      "report_id": "d74db81cb6d142e8bf8817f11de514ed",
+      "schema_version": 2,
+      "source_id": "e85f38be5d741991f643939c679026c99a96a3466a914d3d9770eb521f4eadfd",
+      "started_at": "2026-10-10T06:03:57.343955+00:00",
+      "status": "warning",
+      "unreviewed_count": 0,
+      "warning_count": 1
+    },
+    {
+      "completed_at": "2026-10-10T06:05:47.353537+00:00",
+      "critical_count": 0,
+      "cycle": "2611",
+      "family": "TAC",
+      "policy": {
+        "blur_radius": 1,
+        "boundary": {
+          "critical": 0.3,
+          "warning": 0.1
+        },
+        "context_fraction": 0.04,
+        "control": {
+          "critical": 0.15,
+          "warning": 0.04
+        },
+        "control_pixels": 128,
+        "interior": {
+          "critical": 0.18,
+          "warning": 0.04
+        },
+        "overview_pixels": 512,
+        "pixel_difference": 20
+      },
+      "publication": {
+        "excluded_metadata": [],
+        "has_map_sources": true,
+        "quarantined_sources": [],
+        "state": "ready"
+      },
+      "regions": [
+        {
+          "chart": "Chicago SEC",
+          "family": "SEC",
+          "id": "4b703c9991430518ae55f954",
+          "kind": "inset",
+          "message": "control-1 control: 7.8% changed",
+          "name": "Milwaukee",
+          "scores": {
+            "control-1": {
+              "control": 0.0782470703125
+            },
+            "control-2": {
+              "control": 0.0
+            },
+            "control-3": {
+              "control": 0.0
+            },
+            "control-4": {
+              "control": 0.0
+            },
+            "overview": {
+              "boundary": 0.0027243589743589742,
+              "interior": 0.029908590750186256
+            }
+          },
+          "source": "Chicago SEC.tif",
+          "status": "warning",
+          "unreviewed": false
+        }
+      ],
+      "report_id": "5c828598fd4d458787d3b73ad159bb69",
+      "schema_version": 2,
+      "source_id": "85dd3612ad851b393de8ea31a626e2e09cbe15297932c2e62eca2b65137a1d41:e85f38be5d741991f643939c679026c99a96a3466a914d3d9770eb521f4eadfd",
+      "started_at": "2026-10-10T06:03:57.314521+00:00",
+      "status": "warning",
+      "unreviewed_count": 0,
+      "warning_count": 1
+    }
+  ]
+}

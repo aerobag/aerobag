@@ -9,8 +9,20 @@ import json
 import re
 
 
+def normalize_numbers(value):
+    # JSON writers may emit the same score as 0 or 0.0. Normalize only exact
+    # integer-valued floats; never round scores or coerce booleans/strings.
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {key: normalize_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_numbers(item) for item in value]
+    return value
+
+
 def canonical_json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(normalize_numbers(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def validate_match(value):

@@ -2682,11 +2682,11 @@ internal fun AerobagApp(
                     onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
                     onOpenRecentChartOrPlate = { requestRuntimeReload(AppPage.Map) },
                     offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                    onOfflinePackageArtifactsChanged = { _, _ ->
+                    onOfflinePackageArtifactsChanged = { adoptionId, _, _ ->
                         retainedModel.page = AppPage.OfflinePackages
-                        retainedModel.resetRuntime()
-                        Log.i("AerobagRuntime", "reloading runtime after bootstrap package sync")
-                        retainedModel.awaitStartupPreparation(
+                        Log.i("AerobagRuntime", "adopting bootstrap package sync id=$adoptionId")
+                        retainedModel.adoptInstalledPackages(
+                            adoptionId,
                             context.applicationContext,
                             startupPerfTrace,
                         ).also { result ->
@@ -3977,7 +3977,7 @@ internal fun AerobagApp(
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
                             }
                         },
-                        onOfflinePackageArtifactsChanged = { libraryCacheJson, plannedGcFilenames ->
+                        onOfflinePackageArtifactsChanged = { _, libraryCacheJson, plannedGcFilenames ->
                             replaceInstalledPackageArtifacts(libraryCacheJson, plannedGcFilenames)
                         },
                     )
@@ -4003,7 +4003,7 @@ internal fun AerobagApp(
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
                             }
                         },
-                        onOfflinePackageArtifactsChanged = { libraryCacheJson, plannedGcFilenames ->
+                        onOfflinePackageArtifactsChanged = { _, libraryCacheJson, plannedGcFilenames ->
                             replaceInstalledPackageArtifacts(libraryCacheJson, plannedGcFilenames)
                         },
                     )

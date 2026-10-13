@@ -17,17 +17,24 @@ import org.aerobag.app.domain.LocalDocumentStore
 
 private const val CoreSettingsFileName = "core-settings-v1.json"
 
-internal class AndroidLocalDocumentStore(context: Context) : LocalDocumentStore {
+internal class AndroidLocalDocumentStore(
+    context: Context,
+    private val replaceFile: (File, File) -> Unit = { source, target ->
+        Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    },
+) : LocalDocumentStore, AutoCloseable {
     private val root = context.applicationContext.filesDir
+    private val diskLock = synchronized(rootLocks) { rootLocks.getOrPut(root.canonicalPath) { Any() } }
+    private var closed = false
     private fun document(key: String): AtomicFile {
         require(key.isNotEmpty() && key != "." && key != ".." && !key.contains('/') && !key.contains('\\'))
         return AtomicFile(File(root, key))
     }
 
-    @Synchronized
-    override fun readDocument(key: String): ByteArray? {
+    override fun readDocument(key: String): ByteArray? = synchronized(diskLock) {
+        check(!closed) { "Local document store is closed" }
         val file = document(key)
-        return try {
+        try {
             file.readFully()
         } catch (error: FileNotFoundException) {
             if (file.baseFile.exists() || File(root, "${key}.bak").exists() || !root.canRead()) throw error
@@ -35,8 +42,8 @@ internal class AndroidLocalDocumentStore(context: Context) : LocalDocumentStore 
         }
     }
 
-    @Synchronized
-    override fun writeDocument(key: String, bytes: ByteArray?) {
+    override fun writeDocument(key: String, bytes: ByteArray?): Unit = synchronized(diskLock) {
+        check(!closed) { "Local document store is closed" }
         val file = document(key)
         if (bytes == null) {
             file.delete()
@@ -56,7 +63,7 @@ internal class AndroidLocalDocumentStore(context: Context) : LocalDocumentStore 
             }
             // AtomicFile.finishWrite logs some rename failures instead of throwing.
             // The native host needs an actual completion/failure, not a log line.
-            Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            replaceFile(temporary, target)
             syncDirectory()
         } finally {
             temporary.delete()
@@ -67,9 +74,17 @@ internal class AndroidLocalDocumentStore(context: Context) : LocalDocumentStore 
         FileChannel.open(root.toPath(), StandardOpenOption.READ).use { it.force(true) }
     }
 
-    @Synchronized
-    fun clearSettings() {
+    fun clearSettings(): Unit = synchronized(diskLock) {
+        check(!closed) { "Local document store is closed" }
         document(CoreSettingsFileName).delete()
         document("tour-introduction-v1.json").delete()
+    }
+
+    override fun close() = synchronized(diskLock) { closed = true }
+
+    private companion object {
+        // JNI keeps store references while queued completions outlive a session.
+        // All readers/writers of a directory must serialize, not just one wrapper.
+        val rootLocks = mutableMapOf<String, Any>()
     }
 }

@@ -433,7 +433,7 @@ internal fun HomePage(
     onOfflinePackagePreferencesForCloud: suspend (String, Long) -> Unit = { _, _ -> },
     onOfflinePackagesClosed: (() -> Unit)? = null,
     onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
-    onOfflinePackageArtifactsChanged: suspend (String, Set<String>) -> Set<String> = { _, _ -> emptySet() },
+    onOfflinePackageArtifactsChanged: suspend (String, String, Set<String>) -> Set<String> = { _, _, _ -> emptySet() },
     onOfflinePackageArtifactsCommitted: () -> Unit = {},
     showPrimaryNavigation: Boolean = true,
 ) {
@@ -663,6 +663,7 @@ internal fun HomePage(
                 val libraryCacheJson = offlinePackagesControllerResult?.libraryCacheJson
                     ?: readOfflinePackagesLibraryCacheJson(prefs)
                 val retainedFilenames = onOfflinePackageArtifactsChanged(
+                    record.id,
                     libraryCacheJson,
                     record.command.plan.gc.toSet(),
                 )

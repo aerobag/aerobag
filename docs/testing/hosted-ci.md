@@ -53,7 +53,25 @@ runtime/driver with held save completions, stale receipts and failures. Core tes
 hold the actual backend callbacks; Compose tests cover pending/replacement/remount.
 These checks distinguish a synchronization mistake from real persistence loss.
 
-The next release exposed a restart caller that stopped Android itself before
+Release `2026-10-13.2` (run `38340733771`) exercised that guard: Android failed
+to rename `.core-settings-v1.json.pending` because the temporary file was gone.
+Logs showed two bootstrap package-adoption callbacks nine milliseconds apart,
+followed by concurrent native session initialization. Canceling the old startup
+coroutine did not interrupt its synchronous JNI work; each session had a store
+with its own lock but the same temporary filename. This was an application race,
+not a reason to weaken or retry the durability barrier.
+
+`RetainedRuntime` now serializes preparation and retirement off the UI thread,
+rejects obsolete publication, and coalesces adoption by durable download ID
+across effect cancellation/remount. Session retirement closes its document store
+before replacement; late JNI callbacks fail rather than overwrite new settings.
+Directory-wide storage locking covers rename and cleanup across store instances.
+Controlled JVM tests hold startup and filesystem replacement, exercise successive
+resets and shutdown, and reject retired writes. A Compose test unmounts/remounts
+the adoption caller while startup is held. Keep the existing strict clean-install
+and state-preserving restart journey as the end-to-end check.
+
+An earlier release exposed a restart caller that stopped Android itself before
 calling the guarded reload: cloud-client update simulation. Offline fixture
 edits now run inside the managed restart's `whileStopped` phase, after durable
 save acknowledgement and confirmed OS teardown, before replacement startup.

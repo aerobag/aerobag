@@ -31,11 +31,18 @@ class AndroidStartupPreparationBoundaryTest {
 
     @Test
     fun preparationIsIoOwnedAndResetInvalidatesPendingPublication() {
+        val ownerSource = sourceFile("src/main/java/org/aerobag/app/RetainedRuntime.kt").readText()
         assertTrue(retainedSource.contains("SupervisorJob() + Dispatchers.IO"))
-        assertTrue(retainedSource.contains("startupScope.async(start = CoroutineStart.LAZY)"))
-        assertTrue(retainedSource.contains("startupGeneration += 1"))
-        assertTrue(retainedSource.contains("preparation?.cancel()"))
-        assertTrue(retainedSource.contains("generation != startupGeneration"))
+        assertTrue(retainedSource.contains("RetainedRuntime<AerobagRetainedCoreSession>(startupScope) { it.close() }"))
+        assertTrue(retainedSource.contains("startup.resetFor(adoptionId)"))
+        assertTrue(retainedSource.contains("startup.close()"))
+        assertTrue(ownerSource.contains("scope.async(start = CoroutineStart.LAZY)"))
+        assertTrue(ownerSource.contains("generation += 1"))
+        assertTrue(ownerSource.contains("previous?.join()"))
+        assertTrue(ownerSource.contains("generation != startedGeneration"))
+        assertTrue(ownerSource.contains("loaded.getOrNull()?.let(dispose)"))
+        assertFalse(ownerSource.contains("preparation?.cancel()"))
+        assertTrue(retainedSource.contains("settingsStore.close()"))
     }
 
     @Test

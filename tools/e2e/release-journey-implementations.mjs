@@ -1783,34 +1783,37 @@ async function waitForOfflineSyncIdle(
   }, timeoutMs, 500);
 }
 
+export async function selectAndroidSettingsSliderStop(runtime, { rowId, from, to, index, description }) {
+  const prefix = `parity:settings-slider:${rowId}:`;
+  await revealRequiredElement(
+    runtime, `${prefix}${from}`, `${rowId} slider`,
+  );
+  return runtime.transition(description, {
+    ready: () => runtime.driver.readElement(`${prefix}${from}`),
+    act: (readyElement) => runtime.driver.setProgress(
+      `settings-slider:${rowId}:${from}`, index, readyElement,
+    ),
+    complete: () => runtime.driver.readProjection(prefix),
+    completionSatisfied: entries => entries.length === 1 && entries[0].id === `${prefix}${to}`,
+  });
+}
+
 async function androidPackageMaintenance(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
   await runtime.openPage("settings");
 
-  await revealRequiredElement(
-    runtime, "parity:settings-slider:display_dim_timeout:2m", "display dim slider",
-  );
-  const dimmed = await runtime.transition("change display dim timeout", {
-    ready: () => runtime.driver.readElement("parity:settings-slider:display_dim_timeout:2m"),
-    act: (readyElement) => runtime.driver.drag(
-      "settings-slider:display_dim_timeout:2m", { x: -1_000, y: 0 }, readyElement,
-    ),
-    complete: () => runtime.driver.readElement("parity:settings-slider:display_dim_timeout:10s"),
+  const dimmed = await selectAndroidSettingsSliderStop(runtime, {
+    rowId: "display_dim_timeout", from: "2m", to: "10s", index: 0,
+    description: "change display dim timeout",
   });
-  runtime.check("settings.display-dim-timeout", Boolean(dimmed), dimmed?.test_id);
+  runtime.check("settings.display-dim-timeout", Boolean(dimmed), dimmed[0]?.id);
 
-  await revealRequiredElement(
-    runtime, "parity:settings-slider:inactivity_sleep_timeout:1h", "inactivity sleep slider",
-  );
-  const sleeps = await runtime.transition("change inactivity sleep timeout", {
-    ready: () => runtime.driver.readElement("parity:settings-slider:inactivity_sleep_timeout:1h"),
-    act: (readyElement) => runtime.driver.drag(
-      "settings-slider:inactivity_sleep_timeout:1h", { x: -1_000, y: 0 }, readyElement,
-    ),
-    complete: () => runtime.driver.readElement("parity:settings-slider:inactivity_sleep_timeout:30m"),
+  const sleeps = await selectAndroidSettingsSliderStop(runtime, {
+    rowId: "inactivity_sleep_timeout", from: "1h", to: "30m", index: 0,
+    description: "change inactivity sleep timeout",
   });
-  runtime.check("settings.inactivity-sleep-timeout", Boolean(sleeps), sleeps?.test_id);
+  runtime.check("settings.inactivity-sleep-timeout", Boolean(sleeps), sleeps[0]?.id);
 
   await runtime.openPage("offline_packages");
   await waitForOfflineSyncIdle(runtime, "initial package plan ready");

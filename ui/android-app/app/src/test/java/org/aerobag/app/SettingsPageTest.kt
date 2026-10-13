@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
@@ -93,8 +94,8 @@ class SettingsPageTest {
             assertNotNull("Visible slider must be in the provider index", E2eProjectionRegistry.read(oldTag)?.bounds)
             assertNotNull("Help uses the same Settings index", E2eProjectionRegistry.read(helpTag)?.bounds)
         }
-        compose.onNodeWithTag(oldTag).assertIsDisplayed().performTouchInput { swipe(center, centerLeft) }
-        compose.onNodeWithTag(newTag).assertIsDisplayed()
+        compose.onNodeWithTag(oldTag, useUnmergedTree = true).assertIsDisplayed().performTouchInput { swipe(center, centerLeft) }
+        compose.onNodeWithTag(newTag, useUnmergedTree = true).assertIsDisplayed()
         compose.runOnIdle {
             assertEquals(listOf("opaque-dim" to "10s"), actions)
             if (BuildConfig.AEROBAG_E2E_ENABLED) {
@@ -107,6 +108,109 @@ class SettingsPageTest {
         compose.runOnIdle {
             assertNull(E2eProjectionRegistry.read(newTag))
             assertNull(E2eProjectionRegistry.read(helpTag))
+        }
+    }
+
+    @Test fun sparseSliderDragUsesEndpointWithCoreRefreshDuringGesture() = sparseSliderDrag(true)
+
+    // ADB's timed swipe may end without a MOVE at the endpoint. Compose uses
+    // the last MOVE, not the UP position; that gesture cannot select an exact stop.
+    @Test fun endpointOnlyOnUpDoesNotSubstituteForTheLastMove() = sparseSliderDrag(false)
+
+    private fun sparseSliderDrag(sendEndpointMove: Boolean) {
+        val row = mutableStateOf(UiSettingsPageRow(
+            id = "display_dim_timeout", title = "Display dims after...", helpText = "Dim the display",
+            kind = UiSettingsRowKind.Slider, valueId = "2m", actionId = "opaque-dim",
+            stops = listOf("10s", "30s", "1m", "2m", "5m", "never").map { UiSettingsSliderStop(it, it) },
+        ))
+        val actions = mutableListOf<Pair<String, String>>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme,
+                LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map)) {
+                Box(Modifier.size(400.dp, 740.dp)) {
+                    page(UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(
+                        UiSettingsPageBlock.Controls(listOf(row.value)))),
+                        settingsAction = { id, value -> actions.add(id to value); row.value = row.value.copy(valueId = value) })
+                }
+            }
+        }
+        val slider = compose.onNodeWithTag("parity:settings-slider:display_dim_timeout:2m", useUnmergedTree = true)
+        slider.performTouchInput {
+            down(Offset(width * 0.75f, height * 0.72f))
+            moveTo(Offset(width * 0.2f, height * 0.72f), 500)
+        }
+        compose.runOnIdle {
+            assertTrue("No command before finger-up", actions.isEmpty())
+            row.value = row.value.copy(title = "Refreshed display setting",
+                stops = row.value.stops.map { it.copy() })
+        }
+        compose.onNodeWithText("Refreshed display setting").assertIsDisplayed()
+        slider.performTouchInput {
+            val endpoint = Offset(0.5f, height * 0.72f)
+            if (sendEndpointMove) moveTo(endpoint, 150) else {
+                advanceEventTime(150)
+                updatePointerTo(0, endpoint)
+            }
+            up()
+        }
+        compose.runOnIdle { assertEquals(listOf("opaque-dim" to if (sendEndpointMove) "10s" else "30s"), actions) }
+    }
+
+    @Test fun publishedSliderRangeSelectsEveryStopByPhysicalTapAcrossRefreshAndRemount() {
+        val row = mutableStateOf(UiSettingsPageRow(
+            id = "display_dim_timeout", title = "Display dims after...", helpText = "Dim the display",
+            kind = UiSettingsRowKind.Slider, valueId = "2m", actionId = "opaque-dim",
+            stops = listOf("10s", "30s", "1m", "2m", "5m", "never").map { UiSettingsSliderStop(it, it) },
+        ))
+        val mounted = mutableStateOf(true)
+        val actions = mutableListOf<Pair<String, String>>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        lateinit var window: android.view.View
+        compose.setContent {
+            window = LocalView.current
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme,
+                LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map)) {
+                if (mounted.value) Box(Modifier.size(320.dp, 740.dp)) {
+                    page(UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(
+                        UiSettingsPageBlock.Controls(listOf(row.value)))),
+                        settingsAction = { id, value -> actions.add(id to value); row.value = row.value.copy(valueId = value) })
+                }
+            }
+        }
+        for (stops in listOf(listOf("10s", "30s", "1m", "2m", "5m", "never"), listOf("30m", "1h"))) {
+            compose.runOnIdle { row.value = row.value.copy(stops = stops.map { UiSettingsSliderStop(it, it) }, valueId = stops.last()) }
+            for ((index, stop) in stops.withIndex()) {
+                val tag = "parity:settings-slider:display_dim_timeout:${row.value.valueId}"
+                compose.runOnIdle {
+                    window.drawObservationFrame()
+                    val fields = E2eProjectionRegistry.read(tag)!!.state.split(':').chunked(2).associate { it[0] to it[1] }
+                    assertEquals("horizontal-progress", fields["kind"])
+                    assertEquals("0.0", fields["min"])
+                    assertEquals(stops.lastIndex.toFloat().toString(), fields["max"])
+                }
+                val slider = compose.onNodeWithTag(tag, useUnmergedTree = true)
+                slider.performTouchInput {
+                    down(Offset((width * index / stops.lastIndex.toFloat()).coerceIn(0.5f, width - 0.5f), height / 2f))
+                }
+                compose.runOnIdle { row.value = row.value.copy(title = "Updated label for $stop") }
+                slider.performTouchInput { up() }
+                compose.runOnIdle {
+                    assertEquals(stop, row.value.valueId)
+                    assertEquals("opaque-dim" to stop, actions.last())
+                    assertEquals(index + 1, actions.size)
+                    window.drawObservationFrame()
+                    assertNull(E2eProjectionRegistry.read(tag))
+                }
+            }
+            val tag = "parity:settings-slider:display_dim_timeout:${stops.last()}"
+            compose.runOnIdle { mounted.value = false }
+            compose.runOnIdle {
+                window.drawObservationFrame()
+                assertNull(E2eProjectionRegistry.read(tag))
+                actions.clear()
+                mounted.value = true
+            }
         }
     }
 

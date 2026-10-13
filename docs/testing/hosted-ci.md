@@ -281,6 +281,24 @@ modifier. `SettingsPageTest` physically drags the production slider and, with
 The cheap harness suite rejects bare Settings test tags so those readers cannot
 silently lose a newly added control.
 
+The October 13 scheduled run of `3db6e3f` failed package-maintenance after the
+same commit passed release qualification: its dim-timeout swipe landed on 30s,
+not 10s. The command took 155ms; the remaining time was spent waiting for the
+wrong postcondition. A controlled Compose reproduction shows the same result
+when the final MOVE stops short and only UP reaches the endpoint; an explicit
+endpoint MOVE succeeds across a core-state refresh. The hosted trace did not
+record MOVEs, so this reproduces a failure mechanism, not proof of that event
+sequence on the runner.
+
+Exact Settings choices now use the existing publisher-validated physical
+progress tap. The Material slider's track publishes its own bounds/range,
+excluding the thumb insets; the driver never sets app state directly. Component
+tests select every stop, including endpoints, across label refreshes and remount,
+and retain sparse-drag coverage. `settings-slider.test.mjs` runs the actual
+transition runner and rejects lost input, wrong stops, disappearance and rejected
+delivery without retries. Completion reads the entire row's rendered state so
+timeouts retain the wrong value, rather than a string of null observations.
+
 The same rule applies to fixed state projections: `readScalarProjection`
 always uses the publisher, including the first read and reads after disposal.
 Do not "seed" an accessibility path first. The September 15.3 release failed
@@ -824,9 +842,9 @@ rendered observations over an adb-forwarded localhost port. Do not replace
 rendered-node actions with direct app/core hooks. A visible, enabled control
 has its published identity and bounds revalidated before a physical gesture;
 the journey must still observe the specific semantic result. Text uses the
-test IME and verifies the rendered value. Sliders use their actual OS progress
-action. Accessibility trees remain available for failure diagnostics, not
-ordinary app readiness or absence checks.
+test IME and verifies the rendered value. Sliders publish their pointer range
+for a validated physical tap. Accessibility trees remain available for failure
+diagnostics, not ordinary app readiness or absence checks.
 
 ## Timing Rules
 

@@ -29,6 +29,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -656,6 +658,7 @@ private fun SettingsSyncIndicatorView(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun SettingsSliderRow(
     row: UiSettingsPageRow,
     onSettingsAction: (String, String) -> Unit,
@@ -692,14 +695,22 @@ private fun SettingsSliderRow(
                             onSettingsAction(row.actionId, nextStop.id)
                         }
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .e2eIndexedControl(
-                            semanticTag = "parity:settings-slider:${row.id}:${row.valueId}",
-                            enabled = true,
-                            text = row.title,
-                            state = row.valueId,
-                        ),
+                    modifier = Modifier.fillMaxWidth(),
+                    track = { sliderState ->
+                        // The track excludes the thumb's half-width at each end:
+                        // its bounds are the actual linear pointer-to-value range.
+                        SliderDefaults.Track(
+                            sliderState = sliderState,
+                            modifier = Modifier.e2eIndexedHorizontalProgress(
+                                semanticTag = "parity:settings-slider:${row.id}:${row.valueId}",
+                                enabled = maxIndex > 0,
+                                minimum = 0f,
+                                maximum = maxIndex.toFloat(),
+                                text = row.title,
+                                state = row.valueId,
+                            ),
+                        )
+                    },
                     valueRange = 0f..maxIndex.toFloat(),
                     steps = (row.stops.size - 2).coerceAtLeast(0),
                 )

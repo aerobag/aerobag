@@ -17,6 +17,7 @@ import {
   androidActionCandidates,
 } from "./semantic-journey-driver.mjs";
 import { createJourneyRuntime } from "./release-journey-runtime.mjs";
+import { selectAndroidSettingsSliderStop } from "./release-journey-implementations.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 import { performTransition, TransientObservationError } from "./transition-contract.mjs";
@@ -41,6 +42,7 @@ function device() {
     androidElementEnabled, androidTag, androidDataStatusRowsFromStateTag, rectOfBounds,
     androidActionCandidates,
     clickAndroidSemanticNode: () => assert.fail("unexpected physical input"),
+    setAndroidSemanticProgress: () => assert.fail("unexpected progress input"),
     chooseUnobscuredMapPoint, androidMapInspectionPoint,
     androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
     androidProjectionMayRequireVerticalScan,
@@ -88,7 +90,7 @@ function device() {
     source.indexOf("function activateAndroidSemanticTag("), source.indexOf("export function androidPageIdFromStartupStateTag("),
   ).trim()})`, context);
   const driver = new AndroidSemanticJourneyDriver("no-device", {});
-  for (const name of ["readAction", "performAction", "readScalarProjection", "readProjection", "scanProjection", "revealProjectionMatching", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot"]) {
+  for (const name of ["readAction", "performAction", "readScalarProjection", "readProjection", "scanProjection", "revealProjectionMatching", "readElement", "readPage", "readPageRoot", "revealElement", "findMapInspectionPoint", "readMapInteractionSnapshot", "setProgress"]) {
     driver[name] = runInNewContext(`({ ${AndroidSemanticJourneyDriver.prototype[name]} }).${name}`, context);
   }
   return {
@@ -96,8 +98,42 @@ function device() {
     respondWith(value) { responseOverride = value; },
     onTraversal(callback) { context.scrollUntilTag = callback; },
     onTap(callback) { context.clickAndroidSemanticNode = callback; },
+    onProgress(callback) { context.setAndroidSemanticProgress = callback; },
   };
 }
+
+test("Settings slider helper passes rendered identity and range input through the real Android driver", async t => {
+  const { driver, snapshots, onProgress } = device();
+  const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-settings-progress-"));
+  t.after(() => rmSync(artifactDir, { recursive: true, force: true }));
+  const oldTag = "parity:settings-slider:display_dim_timeout:2m";
+  const newTag = "parity:settings-slider:display_dim_timeout:10s";
+  const node = { "resource-id": oldTag, enabled: "true", visible: "true", "center-reachable": "true",
+    bounds: "[105,1627][974,1669]", "semantic-path": "projection-provider:process:149",
+    "state-description": "kind:horizontal-progress:min:0.0:max:5.0:enabled:true:state:2m:window-focus:true" };
+  snapshots.set(oldTag, node);
+  let inputs = 0;
+  driver.readSessionRevision = async () => 37;
+  driver.waitForObservation = async () => {};
+  onProgress((serial, tag, value, bounds, path) => {
+    inputs++;
+    assert.equal(serial, "no-device");
+    assert.equal(tag, oldTag);
+    assert.equal(value, 0);
+    assert.equal(bounds, node.bounds);
+    assert.equal(path, node["semantic-path"]);
+    snapshots.delete(oldTag);
+    snapshots.set(newTag, { ...node, "resource-id": newTag,
+      "state-description": node["state-description"].replace("state:2m", "state:10s") });
+  });
+  const runtime = createJourneyRuntime({ journey: { id: "test.settings-progress", assertions: [] },
+    platform: "android", driver, artifactDir });
+  const result = await selectAndroidSettingsSliderStop(runtime, {
+    rowId: "display_dim_timeout", from: "2m", to: "10s", index: 0, description: "select dim timeout",
+  });
+  assert.equal(inputs, 1);
+  assert.equal(result[0].id, newTag);
+});
 
 for (const outcome of ["ready", "unfocused", "disabled", "absent", "rejected", "lost"]) {
   test(`Android action near the readiness deadline: ${outcome}`, async t => {
@@ -449,8 +485,8 @@ test("all Settings controls register with the same index their driver reads", ()
   // physical SettingsPageTest also verifies slider geometry, input and disposal
   // with indexing enabled; this guard runs in the fixture-free harness suite.
   assert.doesNotMatch(page, /\.testTag\("parity:settings-/);
-  for (const kind of ["slider", "help"]) {
-    assert.match(page, new RegExp(`\\.e2eIndexedControl\\(\\s*semanticTag = "parity:settings-${kind}:`));
+  for (const [kind, modifier] of [["slider", "e2eIndexedHorizontalProgress"], ["help", "e2eIndexedControl"]]) {
+    assert.match(page, new RegExp(`\\.${modifier}\\(\\s*semanticTag = "parity:settings-${kind}:`));
   }
 });
 

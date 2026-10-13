@@ -207,9 +207,15 @@ internal fun Modifier.e2eIndexedHorizontalProgress(
     enabled: Boolean,
     minimum: Float,
     maximum: Float,
+    text: String? = null,
+    state: String? = null,
 ): Modifier = e2eIndexedElement(
     semanticTag,
-    "kind:horizontal-progress:min:$minimum:max:$maximum:enabled:$enabled",
+    buildString {
+        append("kind:horizontal-progress:min:$minimum:max:$maximum:enabled:$enabled")
+        text?.let { append(":text:").append(Uri.encode(it)) }
+        state?.let { append(":state:").append(Uri.encode(it)) }
+    },
 )
 
 /** Indexed editable state used by the release-journey IME boundary. */

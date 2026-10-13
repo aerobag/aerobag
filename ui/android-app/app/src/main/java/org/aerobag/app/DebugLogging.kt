@@ -18,7 +18,7 @@ internal inline fun perfLogInfo(tag: String, message: () -> String) {
 }
 
 internal inline fun diagnosticLogInfo(tag: String, message: () -> String) {
-    if (VerboseDiagnosticLogs) {
+    if (VerboseDiagnosticLogs || (BuildConfig.AEROBAG_E2E_ENABLED && tag == "AerobagNavigation")) {
         Log.i(tag, message())
     }
 }

@@ -201,6 +201,40 @@ class SettingsPageTest {
         compose.runOnIdle { assertEquals(listOf("flag" to "on"), actions) }
     }
 
+    @Test fun gridReplacementBetweenFingerDownAndUpCannotToggleAnotherSetting() {
+        fun item(id: String) = UiSettingsGridItem(
+            cell = FlightDataCell(id = id, label = id, value = null, action = null,
+                tone = FlightDataCellTone.Planned, estimateKind = FlightEstimateKind.Basic, attention = null),
+            enabled = true,
+        )
+        val row = mutableStateOf(UiSettingsPageRow(id = "flight_data_visibility", title = "Grid",
+            kind = UiSettingsRowKind.GridChoices, valueId = "", actionId = "visibility", stops = emptyList(),
+            items = listOf(item("altitude"), item("target"), item("agl"))))
+        val actions = mutableListOf<Pair<String, String>>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme,
+                LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map)) {
+                Box(Modifier.size(400.dp, 740.dp)) {
+                    page(UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(
+                        UiSettingsPageBlock.Controls(listOf(row.value)))),
+                        settingsAction = { id, value -> actions.add(id to value) })
+                }
+            }
+        }
+        val tag = "parity:settings-choice:flight_data_visibility:agl"
+        val choice = compose.onNodeWithTag(tag)
+        choice.performTouchInput { down(center) }
+        compose.runOnIdle { row.value = row.value.copy(items = listOf(item("barometer")) + row.value.items) }
+        // Release at the old screen location, now occupied by a different ID.
+        choice.performTouchInput { advanceEventTime(80); up() }
+        compose.runOnIdle { assertTrue("Must never retarget a held gesture: $actions",
+            actions.all { it.second == "agl" }) }
+        compose.runOnIdle { actions.clear() }
+        choice.performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("visibility" to "agl"), actions) }
+    }
+
     private fun mount(state: UiSettingsPageState, width: Int, aircraftAction: (String, String) -> Unit) {
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {

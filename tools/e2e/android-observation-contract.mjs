@@ -3,6 +3,10 @@
 
 // App observations have exactly one owner: the rendering publisher. Android
 // accessibility is reserved for external UI, input delivery, and diagnostics.
+// One completed rendered frame supplies the evidence. Re-reading it is not a
+// stronger readiness or completion guarantee; native and shared runners agree.
+export const ANDROID_TRANSITION_EVIDENCE = Object.freeze({ readinessSamples: 1, completionSamples: 1 });
+
 export function androidObservationBackend(tag) {
   if (tag === "" || tag.startsWith("parity:") || tag.startsWith("flight-data-cell:") ||
       tag.startsWith("org.aerobag.app:id/e2e_")) return "indexed";

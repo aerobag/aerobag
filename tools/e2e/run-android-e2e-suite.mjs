@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawnSync } from "node:child_process";
+import { ANDROID_TRANSITION_EVIDENCE } from "./android-observation-contract.mjs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -105,7 +106,7 @@ function nativeSemanticDriver(serial) {
 async function nativeTransition(result, description, contract) {
   const completed = await performTransition(description, {
     ...contract,
-    completionSamples: contract.completionSamples ?? 1,
+    completionSamples: contract.completionSamples ?? ANDROID_TRANSITION_EVIDENCE.completionSamples,
     onTiming(timing) {
       result.diagnostics.userTransitions ??= [];
       result.diagnostics.userTransitions.push(timing);

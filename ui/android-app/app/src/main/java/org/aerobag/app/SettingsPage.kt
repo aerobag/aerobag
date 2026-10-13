@@ -32,6 +32,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -527,19 +528,23 @@ private fun SettingsGridChoicesRow(
                         horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
                     ) {
                         items.forEach { item ->
-                            val semanticTag =
-                                "parity:settings-choice:${row.id}:${item.cell.id}"
-                            FlightDataSettingsCell(
-                                item = item,
-                                modifier = Modifier
-                                    .e2eIndexedControl(
-                                        semanticTag = semanticTag,
-                                        enabled = true,
-                                        selected = item.enabled,
-                                        text = item.cell.id,
-                                    ),
-                                onClick = { onSettingsAction(row.actionId, item.cell.id) },
-                            )
+                            // A replacement slot must cancel the old pointer owner,
+                            // never adopt its held gesture with a different action.
+                            key(row.id, item.cell.id) {
+                                val semanticTag =
+                                    "parity:settings-choice:${row.id}:${item.cell.id}"
+                                FlightDataSettingsCell(
+                                    item = item,
+                                    modifier = Modifier
+                                        .e2eIndexedControl(
+                                            semanticTag = semanticTag,
+                                            enabled = true,
+                                            selected = item.enabled,
+                                            text = item.cell.id,
+                                        ),
+                                    onClick = { onSettingsAction(row.actionId, item.cell.id) },
+                                )
+                            }
                         }
                     }
                 }

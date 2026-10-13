@@ -11,6 +11,14 @@ import org.junit.Test
 
 class HighRateSessionEffectsBoundaryTest {
     @Test
+    fun backgroundSourceCommandsUseTheWorkerDeliveryBoundary() {
+        val source = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+        val helper = balancedBlockAfterMarker(source, "suspend fun applyBackgroundSessionCommand(")
+        assertTrue(helper.contains("deliverBackgroundSessionCommand(operation,"))
+        assertFalse(helper.contains("operation()"))
+    }
+
+    @Test
     fun highRateCoreCommandsRunOffMainAndUseTypedSessionPublications() {
         val source = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val renderModelSource = sourceFile("src/main/java/org/aerobag/app/SessionRenderModel.kt").readText()

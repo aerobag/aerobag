@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { androidMapLayerName } from "./core-map-layer-ids.mjs";
-import { rejectObservationOverrides } from "./android-observation-contract.mjs";
+import { ANDROID_TRANSITION_EVIDENCE, rejectObservationOverrides } from "./android-observation-contract.mjs";
 
 import { readFileSync, writeFileSync } from "node:fs";
 import {
@@ -78,9 +78,8 @@ export function semanticActionReadinessSamples(_driver) {
 }
 
 export function semanticTransitionCompletionSamples(driver) {
-  // Android returns an exact typed postcondition. A second accessibility-tree
-  // traversal adds latency but does not add evidence that the action occurred.
-  return driver.platform === "android" ? 1 : E2E_TIMING.transitionCompletionSamples;
+  return driver.platform === "android"
+    ? ANDROID_TRANSITION_EVIDENCE.completionSamples : E2E_TIMING.transitionCompletionSamples;
 }
 
 export class SemanticJourneyDriver {

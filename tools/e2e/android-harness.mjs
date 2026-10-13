@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { journeyById } from "./release-journey-registry.mjs";
-import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
+import { ANDROID_TRANSITION_EVIDENCE, androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 import {
   E2E_TIMING, observeChangedValueUntilStable, observeUntil, performTransition,
   TransientObservationError,
@@ -1521,7 +1521,7 @@ export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = fal
   })).value;
   if (initial?.disclaimer_required !== "true") return false;
   await performTransition("accept mandatory disclaimer", {
-    readinessSamples: 1,
+    ...ANDROID_TRANSITION_EVIDENCE,
     ready: async () => {
       const readyState = queryAndroidStartupProjection(serial);
       if (readyState?.disclaimer_required !== "true") return null;
@@ -1546,7 +1546,7 @@ export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = fal
   }, {
     timeoutMs: E2E_TIMING.startupMs,
     intervalMs: E2E_TIMING.resourcePollIntervalMs,
-    consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
+    consecutiveSuccesses: ANDROID_TRANSITION_EVIDENCE.completionSamples,
   });
   if (!keepIntroduction) {
     // Observations use the same target-owned backend before and after disposal.
@@ -1556,17 +1556,19 @@ export async function acceptDisclaimerIfPresent(serial, { keepIntroduction = fal
     }))).value;
     if (panel) {
       await performTransition("close first-use tour", {
-        readinessSamples: 1,
+        ...ANDROID_TRANSITION_EVIDENCE,
         ready: () => node("parity:guided-tour-close"),
         act: button => activateAndroidNode(serial, button),
-        complete: () => !node("parity:guided-tour-panel") && node("parity:home-button:Chart"),
+        complete: () => ({ panel: node("parity:guided-tour-panel"), home: node("parity:home-button:Chart") }),
+        completionSatisfied: state => !state.panel && Boolean(state.home),
         responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
       });
       await performTransition("return to chart after introduction", {
-        readinessSamples: 1,
+        ...ANDROID_TRANSITION_EVIDENCE,
         ready: () => node("parity:home-button:Chart"),
         act: button => activateAndroidNode(serial, button),
-        complete: () => queryAndroidStartupState(serial)?.page === "Map",
+        complete: () => queryAndroidStartupState(serial),
+        completionSatisfied: state => state?.page === "Map",
         responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
       });
     }

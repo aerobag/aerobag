@@ -18342,7 +18342,24 @@ mod tests {
             row.kind,
             app_ui_contracts::session::UiSettingsRowKind::GridChoices
         );
-        assert_eq!(row.items.len(), 15);
+        assert_eq!(row.items.len(), 16);
+        // BARO defaults on even without a sensor; neither projection fabricates
+        // a reading. Its visibility is the user's preference, not availability.
+        let barometer = row
+            .items
+            .iter()
+            .find(|item| item.cell.id == "barometer")
+            .unwrap();
+        assert_eq!(barometer.cell.value, None);
+        let banner_barometer = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "barometer")
+            .unwrap();
+        assert_eq!(banner_barometer.value, None);
+        assert!(banner_barometer.action.is_none());
         assert!(row
             .items
             .iter()
@@ -19446,6 +19463,83 @@ mod tests {
     }
 
     #[test]
+    fn barometer_off_preference_survives_sensor_discovery_and_restart() {
+        let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+        let toggle = || UiSettingsAction {
+            action_id: "flight_data_visibility".into(),
+            value_id: "barometer".into(),
+        };
+        let assert_hidden = |snapshot: &UiSessionSnapshot| {
+            assert!(!snapshot
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .any(|cell| cell.id == "barometer"));
+            let choice = snapshot.settings_page_state.controls()[0]
+                .items
+                .iter()
+                .find(|item| item.cell.id == "barometer")
+                .unwrap();
+            assert!(!choice.enabled);
+        };
+        let now = 2_000_000_000_000;
+        assert_hidden(&perform_settings_action_in_session(init.handle, toggle(), now).unwrap());
+        for (offset, available) in [true, false, true].into_iter().enumerate() {
+            let time = now + offset as i64 * 1_000;
+            perform_flight_data_command_in_session(
+                init.handle,
+                crate::FlightDataCommand::Observe {
+                    available,
+                    pressure_hpa: available.then_some(1002.64),
+                    observed_epoch_ms: time,
+                    received_epoch_ms: time,
+                },
+            )
+            .unwrap();
+            assert_hidden(&get_session_snapshot(init.handle).unwrap());
+        }
+        destroy_session(init.handle);
+
+        let restarted = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        let restored = configure_platform_capabilities_in_session(
+            restarted.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .unwrap();
+        assert_hidden(&restored);
+        // Turning it back on without a sensor must immediately restore the slot.
+        let enabled =
+            perform_settings_action_in_session(restarted.handle, toggle(), now + 3_000).unwrap();
+        let cell = enabled
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "barometer")
+            .unwrap();
+        assert_eq!(cell.value, None);
+        assert!(cell.action.is_none());
+        assert!(
+            enabled.settings_page_state.controls()[0]
+                .items
+                .iter()
+                .find(|item| item.cell.id == "barometer")
+                .unwrap()
+                .enabled
+        );
+        destroy_session(restarted.handle);
+    }
+
+    #[test]
     fn flight_data_visibility_setting_filters_snapshot_and_persists() {
         let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init =
@@ -19456,7 +19550,7 @@ mod tests {
             Some(storage.clone()),
         )
         .expect("configure platform capabilities");
-        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 15);
+        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 16);
 
         let snapshot = perform_settings_action_in_session(
             init.handle,
@@ -27127,12 +27221,15 @@ mod tests {
         let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
         let now = 2_000_000_000_000;
         let before = get_session_snapshot(init.handle).unwrap();
-        assert!(!before
+        let before_barometer = before
             .app_ui_state
             .flight_data_banner
             .cells
             .iter()
-            .any(|cell| cell.id == "barometer"));
+            .find(|cell| cell.id == "barometer")
+            .unwrap();
+        assert_eq!(before_barometer.value, None);
+        assert!(before_barometer.action.is_none());
 
         let observation = |time| crate::FlightDataCommand::Observe {
             available: true,
@@ -27166,6 +27263,16 @@ mod tests {
         .unwrap();
         let snapshot = get_session_snapshot(init.handle).unwrap();
         let banner = &snapshot.app_ui_state.flight_data_banner;
+        let banner_ids = |snapshot: &UiSessionSnapshot| {
+            snapshot
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .map(|cell| cell.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(banner_ids(&snapshot), banner_ids(&before));
         let cell = banner
             .cells
             .iter()
@@ -27221,6 +27328,27 @@ mod tests {
             .flight_data_banner
             .editor
             .is_none());
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::Observe {
+                available: false,
+                pressure_hpa: None,
+                observed_epoch_ms: now + 7_000,
+                received_epoch_ms: now + 7_000,
+            },
+        )
+        .unwrap();
+        let unavailable = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(banner_ids(&unavailable), banner_ids(&before));
+        let cell = unavailable
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "barometer")
+            .unwrap();
+        assert_eq!(cell.value, None);
+        assert!(cell.action.is_none());
     }
 
     #[test]

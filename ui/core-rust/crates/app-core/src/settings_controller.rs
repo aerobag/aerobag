@@ -882,12 +882,11 @@ fn project_settings_page_state(
         indent_level: 0,
         value_id: String::new(),
         stops: Vec::new(),
-        items: flight_data_banner
-            .cells
-            .iter()
+        items: crate::flight_data::flight_data_settings_cells(flight_data_banner)
+            .into_iter()
             .map(|cell| UiSettingsGridItem {
-                cell: cell.clone(),
                 enabled: !preferences.disabled_flight_data_cell_ids.contains(&cell.id),
+                cell,
             })
             .collect(),
         action_id: FLIGHT_DATA_VISIBILITY_ACTION_ID.to_string(),
@@ -1416,6 +1415,76 @@ mod tests {
             gps_capture: false,
             debug_log_to_developer_server: false,
         }
+    }
+
+    #[test]
+    fn visibility_choices_keep_identity_and_order_when_sensor_cells_arrive_or_disappear() {
+        let mut controller = SettingsController::default();
+        let cold = banner();
+        let choices = |result: SettingsProjectionResult| {
+            result.projection.settings_page_state.controls()[0]
+                .items
+                .clone()
+        };
+        let before = choices(controller.test_project(true, false, None, &cold, &debug_state()));
+        let mut warm = cold.clone();
+        warm.cells.insert(
+            0,
+            crate::flight_data::cell("barometer", "BARO ft", Some("1000".into())),
+        );
+        warm.cells.insert(
+            2,
+            crate::flight_data::cell(
+                crate::altitude_target::TARGET_CELL_ID,
+                "TGT BARO",
+                Some("2500".into()),
+            ),
+        );
+        let after = choices(controller.test_project(true, false, None, &warm, &debug_state()));
+        let ids = |items: &[UiSettingsGridItem]| {
+            items
+                .iter()
+                .map(|item| item.cell.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&before), ids(&after));
+        assert_eq!(
+            after
+                .iter()
+                .find(|item| item.cell.id == "barometer")
+                .unwrap()
+                .cell
+                .value
+                .as_deref(),
+            Some("1000")
+        );
+        controller
+            .perform_action(
+                &UiSettingsAction {
+                    action_id: FLIGHT_DATA_VISIBILITY_ACTION_ID.into(),
+                    value_id: "barometer".into(),
+                },
+                true,
+                false,
+            )
+            .unwrap();
+        let absent_again =
+            choices(controller.test_project(true, false, None, &cold, &debug_state()));
+        assert_eq!(ids(&before), ids(&absent_again));
+        let barometer = absent_again
+            .iter()
+            .find(|item| item.cell.id == "barometer")
+            .unwrap();
+        assert!(!barometer.enabled);
+        assert_eq!(barometer.cell.value, None);
+        // An explicit off preference excludes BARO even when readings exist.
+        assert!(!controller
+            .test_project(true, false, None, &warm, &debug_state())
+            .projection
+            .flight_data_banner
+            .cells
+            .iter()
+            .any(|cell| cell.id == "barometer"));
     }
 
     #[test]

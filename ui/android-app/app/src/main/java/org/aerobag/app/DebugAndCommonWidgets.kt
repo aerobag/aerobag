@@ -136,6 +136,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.text
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
@@ -421,7 +423,9 @@ internal fun FittedSingleLineText(
 ) {
     val textMeasurer = rememberTextMeasurer()
     BoxWithConstraints(
-        modifier = modifier,
+        // Outline layers are paint, not independent accessibility labels.
+        // Exposing all copies makes Compose traverse/sort them on every update.
+        modifier = modifier.clearAndSetSemantics { this.text = AnnotatedString(text) },
         contentAlignment = when (textAlign) {
             TextAlign.Start -> Alignment.CenterStart
             TextAlign.End -> Alignment.CenterEnd
@@ -582,7 +586,7 @@ internal fun OutlinedButtonLabel(
         )
         return
     }
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    Box(modifier = modifier.clearAndSetSemantics { this.text = AnnotatedString(text) }, contentAlignment = Alignment.Center) {
         offsets.forEach { offset ->
             Text(
                 text = text,

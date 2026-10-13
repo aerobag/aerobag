@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
+import { ANDROID_TRANSITION_EVIDENCE, androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 import { acceptDisclaimer, readGuidedTourPanel, readStartupState } from "./first-use-startup.mjs";
 import { AndroidSemanticJourneyDriver, androidElementSemanticTag } from "./semantic-journey-driver.mjs";
 import { acceptDisclaimerIfPresent, androidIndexedControlIsActionReady, queryAndroidExactProjection } from "./android-harness.mjs";
@@ -212,34 +212,60 @@ for (const transient of [true, false]) {
   });
 }
 
-test("native bootstrap observes a physically closed tour without any accessibility-tree request", async () => {
+for (const scenario of ["prompt", "near-deadline", "lost-close", "missing-home"]) {
+test(`native bootstrap: ${scenario} completion uses rendered evidence without duplicate actions`, async () => {
   let disclaimer = true;
   let tour = true;
   let page = "Map";
   const taps = [];
   const state = () => ({ disclaimer_required: String(disclaimer), tour_pending: "false", page });
   const context = indexedDeviceContext(tag => {
-    const present = tag !== "parity:guided-tour-panel" || tour;
+    const present = tag === "parity:guided-tour-panel" ? tour
+      : tag === "parity:home-button:Chart" ? page === "Home" && scenario !== "missing-home" : true;
     return { status: 0, stdout: JSON.stringify(present ? [{
       "resource-id": tag, visible: "true", enabled: "true", bounds: "[10,20][30,40]",
       "center-reachable": "true", "semantic-path": "projection-provider:12",
     }] : []) };
   });
   Object.assign(context, {
-    E2E_TIMING, observeUntil, performTransition,
+    E2E_TIMING, ANDROID_TRANSITION_EVIDENCE, observeUntil,
+    performTransition(description, contract) {
+      assert.equal(contract.completionSamples, 1, `${description}: one rendered completion is sufficient`);
+      let clock = 0;
+      let completionReads = 0;
+      return performTransition(description, {
+        ...contract,
+        scheduler: { now: () => clock, setTimeout, clearTimeout },
+        waitForObservation: async () => { clock += 50; },
+        complete: async () => {
+          if (scenario === "near-deadline" && description === "close first-use tour" && !tour) {
+            clock += completionReads++ === 0 ? 5_900 : 200;
+          }
+          return contract.complete();
+        },
+      });
+    },
     queryAndroidStartupProjection: state, queryAndroidStartupState: state,
     androidIndexedControlIsActionReady,
     activateAndroidNode(_serial, node) {
       const tag = node["resource-id"];
       taps.push(tag);
       if (tag === "parity:disclaimer-accept-button") disclaimer = false;
-      else if (tag === "parity:guided-tour-close") { tour = false; page = "Home"; }
+      else if (tag === "parity:guided-tour-close") {
+        if (scenario !== "lost-close") { tour = false; page = "Home"; }
+      }
       else if (tag === "parity:home-button:Chart") page = "Map";
       else assert.fail(`unexpected tap ${tag}`);
     },
   });
   const accept = runInNewContext(`(${acceptDisclaimerIfPresent})`, context);
+  if (scenario === "lost-close" || scenario === "missing-home") {
+    await assert.rejects(accept("test-device"), /close first-use tour completed timed out/);
+    assert.deepEqual(taps, ["parity:disclaimer-accept-button", "parity:guided-tour-close"]);
+    return;
+  }
   assert.equal(await accept("test-device"), true);
   assert.deepEqual(taps, ["parity:disclaimer-accept-button", "parity:guided-tour-close", "parity:home-button:Chart"]);
   assert.equal(page, "Map");
 });
+}

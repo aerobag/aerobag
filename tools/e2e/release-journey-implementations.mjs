@@ -1948,13 +1948,12 @@ async function statusAndSettings(runtime) {
     await runtime.action("change flight data visibility", actionId, {
       complete: async () => {
         const choices = await runtime.driver.readProjection("settings-choice-flight_data_visibility");
-        const changed = choices.find((choice) =>
-          projectionId(choice) === projectionId(firstFlightDataChoice)
-          && (choice.checked !== firstFlightDataChoice.checked
-            || choice.selected !== firstFlightDataChoice.selected
-            || choice.pressed !== firstFlightDataChoice.pressed));
-        return changed ?? null;
+        return choices.find(choice => projectionId(choice) === projectionId(firstFlightDataChoice)) ?? null;
       },
+      completionSatisfied: choice => Boolean(choice) && (
+        choice.checked !== firstFlightDataChoice.checked
+        || choice.selected !== firstFlightDataChoice.selected
+        || choice.pressed !== firstFlightDataChoice.pressed),
     });
   }
 

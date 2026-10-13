@@ -242,10 +242,8 @@ impl FlightDataComputer {
             cells: FLIGHT_DATA_BANNER_CELLS
                 .iter()
                 .filter(|definition| {
-                    (definition.field != FlightDataBannerField::Barometer
-                        || input.barometer.is_some())
-                        && (definition.field != FlightDataBannerField::AltitudeTarget
-                            || input.altitude_target.is_some())
+                    definition.field != FlightDataBannerField::AltitudeTarget
+                        || input.altitude_target.is_some()
                 })
                 .map(|definition| {
                     if definition.field == FlightDataBannerField::AltitudeTarget {
@@ -325,11 +323,15 @@ impl FlightDataComputer {
                                 message: message.clone(),
                                 highlighted: true,
                             });
-                        cell.action = Some(flight_data_cell_action(
-                            crate::barometer::BAROMETER_CELL_ID,
-                            "Set barometric altimeter",
-                            None,
-                        ));
+                        // Availability controls the reading/editor, not visibility.
+                        // Only the user's preference removes the BARO slot.
+                        cell.action = input.barometer.as_ref().map(|_| {
+                            flight_data_cell_action(
+                                crate::barometer::BAROMETER_CELL_ID,
+                                "Set barometric altimeter",
+                                None,
+                            )
+                        });
                     }
                     cell
                 })
@@ -610,6 +612,22 @@ pub fn is_flight_data_banner_cell_id(id: &str) -> bool {
     FLIGHT_DATA_BANNER_CELLS
         .iter()
         .any(|definition| definition.id == id)
+}
+
+/// Preferences describe the stable catalog, not just currently reporting sensors.
+/// Preserve live values/labels when available without inserting or removing slots.
+pub(crate) fn flight_data_settings_cells(banner: &FlightDataBannerModel) -> Vec<FlightDataCell> {
+    FLIGHT_DATA_BANNER_CELLS
+        .iter()
+        .map(|definition| {
+            banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == definition.id)
+                .cloned()
+                .unwrap_or_else(|| cell(definition.id, definition.label, None))
+        })
+        .collect()
 }
 
 pub fn cell(id: &str, label: &str, value: Option<String>) -> FlightDataCell {
@@ -1074,13 +1092,44 @@ mod tests {
     }
 
     #[test]
-    fn banner_uses_one_ordered_definition_set_for_all_fourteen_cells() {
+    fn barometer_availability_changes_value_and_action_not_banner_slots() {
+        let computer = FlightDataComputer::default();
+        let before = computer.banner(FlightDataBannerInput::default());
+        let ids = |banner: &FlightDataBannerModel| {
+            banner
+                .cells
+                .iter()
+                .map(|cell| cell.id.clone())
+                .collect::<Vec<_>>()
+        };
+        for reading in [None, Some(Some(1234.0)), Some(None), None] {
+            let banner = computer.banner(FlightDataBannerInput {
+                barometer: reading.map(|altitude_ft| crate::BarometerReading {
+                    altitude_ft,
+                    editor: None,
+                    warning: None,
+                }),
+                ..Default::default()
+            });
+            assert_eq!(ids(&banner), ids(&before));
+            let barometer = banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == "barometer")
+                .expect("BARO is present even without a pressure source");
+            assert_eq!(barometer.value, reading.flatten().map(format_feet));
+            assert_eq!(barometer.action.is_some(), reading.is_some());
+        }
+    }
+
+    #[test]
+    fn banner_uses_one_ordered_definition_set_without_optional_target_input() {
         let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
             nexrad_age: Some("4m".to_string()),
             ..FlightDataBannerInput::default()
         });
 
-        assert_eq!(banner.cells.len(), 14);
+        assert_eq!(banner.cells.len(), 15);
         assert_eq!(
             banner
                 .cells
@@ -1088,6 +1137,7 @@ mod tests {
                 .map(|cell| cell.id.as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "barometer",
                 "altitude",
                 "agl",
                 "vertical_speed",

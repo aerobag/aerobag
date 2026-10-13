@@ -904,6 +904,35 @@ by CI test jobs.
 
 ## Release qualification and stability testing
 
+### Dynamic controls and Android startup pressure
+
+The October 12 release journeys exposed a real Settings mis-tap: the barometer
+became available between pointer down and up, a positional grid slot changed
+from AGL to target altitude, and Compose invoked the replacement callback.
+Settings now projects the stable core-owned catalog (with unavailable values
+blank), independently of which cells can currently appear in the live banner.
+Android also keys each grid control by its row and cell identity so a replaced
+control cannot inherit a held gesture. `SettingsPageTest` inserts a cell during
+physical input; the core test exercises arrival, disappearance and saved
+visibility preferences. Do not fix similar races with a wait for an arbitrary
+number of unchanged grid samples.
+
+The Home navigation failure eventually reached Home, after its six-second
+deadline. Logs showed source-status commands blocking the UI thread behind
+session/feed work; the failure stack also showed Compose processing the
+accessibility tree. Background command delivery now runs native operations on
+IO and publishes on the caller's dispatcher, with held-operation, failure and
+cancellation tests. Outlined labels expose one accessible text value instead
+of all seventeen paint copies. Navigation request/commit logs are enabled in
+E2E builds to distinguish lost input from delayed rendering in future failures.
+
+Native startup and shared Android transitions use the same single completed
+render-frame evidence. The old native helper required a second successful
+sample even when the first arrived within the functional deadline. Its
+controlled near-deadline regression runs the real transition runner. Deadlines
+and single-action delivery are unchanged; tour closure still requires both
+panel absence and the Home destination, and mismatched state is retained.
+
 The implementation/audit checklist and retained findings live in the
 [CI hardening plan](ci-hardening-plan.md).
 

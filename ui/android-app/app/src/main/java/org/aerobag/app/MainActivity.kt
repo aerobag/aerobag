@@ -2846,16 +2846,12 @@ internal fun AerobagApp(
             null
         }
     }
-    fun applyBackgroundSessionCommand(
+    suspend fun applyBackgroundSessionCommand(
         commandName: String,
         logTag: String,
         operation: () -> UiSessionSnapshot,
     ): Boolean {
-        return try {
-            val snapshot = operation()
-            applySessionSnapshot(snapshot)
-            true
-        } catch (error: Throwable) {
+        return deliverBackgroundSessionCommand(operation, { applySessionSnapshot(it) }) { error ->
             if (error is NativeSessionCommandRejectedException) {
                 recoverSessionCommandFailure(error, notifyUser = false)
             } else if (error is CancellationException) {
@@ -2863,7 +2859,6 @@ internal fun AerobagApp(
             } else {
                 Log.w(logTag, "background session command failed command=$commandName", error)
             }
-            false
         }
     }
     suspend fun runHighRateSessionCommand(
@@ -3280,7 +3275,7 @@ internal fun AerobagApp(
             uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
         }
         launch {
-            fun applyPendingGpsControl() {
+            suspend fun applyPendingGpsControl() {
                 val input = AndroidGpsPower.pendingControl(appContext) ?: return
                 val applied = applyBackgroundSessionCommand("applySituationControlInput", "AerobagOwnship") {
                     uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())

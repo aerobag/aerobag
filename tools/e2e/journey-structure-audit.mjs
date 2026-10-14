@@ -18,6 +18,7 @@ export { webWorkspaceDirectory };
 export const AUDITED_JOURNEY_FILES = Object.freeze([
   "tools/e2e/release-journey-implementations.mjs",
   "tools/e2e/plate-gestures.mjs",
+  "tools/e2e/scroll-search.mjs",
   "tools/e2e/cloud-journey-peer.mjs",
   "tools/e2e/cloud-client-update.mjs",
   "tools/e2e/run-android-e2e-suite.mjs",

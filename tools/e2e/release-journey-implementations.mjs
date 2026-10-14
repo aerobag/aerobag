@@ -809,11 +809,15 @@ function procedureRowUid(entry) {
   return id.slice(offset + marker.length);
 }
 
-async function openProcedureRow(runtime, procedureId) {
+export async function openProcedureRow(runtime, procedureId) {
   const row = await findProcedureRow(runtime, procedureId);
+  const uid = procedureRowUid(row);
+  await revealRequiredElement(runtime,
+    runtime.platform === "web" ? `plan-row-${uid}` : `plan-row:${uid}`,
+    `flight-plan procedure ${procedureId}`);
   await runtime.action(
     `open flight-plan procedure ${procedureId}`,
-    `plan-row:${procedureRowUid(row)}`,
+    `plan-row:${uid}`,
     {
       complete: () => runtime.driver.readElement("plan-row-tray-scrim"),
     },

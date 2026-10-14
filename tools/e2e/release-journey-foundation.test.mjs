@@ -5717,13 +5717,18 @@ test("Android reveal requires reachability and traverses only known scroll colle
 test("Android vertical reveals settle semantic scrolling before exposing a target", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const method = harness.slice(
-    harness.indexOf("async function scrollUntilTagInDirection"),
-    harness.indexOf("export function pressKey"),
+    harness.indexOf("export async function scrollUntilTag("),
+    harness.indexOf("export async function scrollUntilTagPrefix("),
   );
   assert.match(method, /queryAndroidExactProjection/);
   assert.match(method, /verifyReachable: requireReachable/);
   assert.match(method, /avoidNavigation/);
-  assert.match(method, /await scrollAndroidSemanticSurfaceAndAwait/);
+  assert.match(method, /findScrollTarget/);
+  assert.match(method, /scroll: direction => scrollAndroidSemanticSurfaceAndAwait/);
+  const search = readFileSync(new URL("./scroll-search.mjs", import.meta.url), "utf8");
+  assert.match(search, /await read\(\)/);
+  assert.match(search, /await scroll\(direction\)/);
+  assert.match(search, /throw new Error\(`scroll search exhausted/);
   assert.doesNotMatch(method, /scrollAndroidSemanticSurface\(serial, "vertical", direction\)/);
   const settleHelper = harness.slice(
     harness.indexOf("async function scrollAndroidSemanticSurfaceAndAwait"),

@@ -35,6 +35,24 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+Release `2026-10-14.1` (run `38613227107`) failed on two incomplete scroll
+traversals, not an application timeout. On web, the STAR journey revealed KPAE
+to inspect its invariant, then tried to click the CHINS5 header above the viewport.
+The header's metadata existed, but its button was not reachable. Procedure-row
+opening now explicitly reveals the identified button before taking fresh action
+readiness. A controlled test runs the real transition runner with an offscreen
+row and rejects lost clicks or unsuccessful reveals without replaying input.
+
+On Android, the airway journey found MEDEA partway down V4's long exit list, then
+searched downward to the end. Its separate twenty-swipe upward allowance was
+spent mostly retracing the same rows, stopping before YKM and falsely reporting
+absence. Exact-tag, prefix and predicate searches now share a beginning-first
+sweep with the same total gesture budget. Only both real boundaries establish
+absence; exhausting the traversal budget is a distinct diagnostic failure.
+Controlled tests cover targets on either side of the starting offset, missing
+targets, and budget exhaustion. Physical scroll completion still requires the
+publisher's settled movement/boundary evidence; action deadlines are unchanged.
+
 Android state-preserving reset/reload waits for local-document durability, not
 just disappearance of the disclaimer. The October 11 main E2E run accepted the
 disclaimer, stopped the process, then found the disclaimer back on restart.

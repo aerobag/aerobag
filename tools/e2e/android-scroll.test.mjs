@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { scrollAndroidAndAwait, readAndroidScrollSurface, findNodeByScrolling } from "./android-harness.mjs";
+import {
+  scrollAndroidAndAwait, readAndroidScrollSurface, findNodeByScrolling,
+  scrollUntilTag, scrollUntilTagPrefix,
+} from "./android-harness.mjs";
+import { findScrollTarget } from "./scroll-search.mjs";
 import { observeUntil, TransientObservationError } from "./transition-contract.mjs";
 
 const surface = { "resource-id": "parity:scroll:1", "semantic-path": "projection-provider:process:1",
@@ -100,12 +104,86 @@ test("traversal rechecks the target after a shrinking list reaches its boundary"
   const h = harness([boundary]);
   const target = { "resource-id": "parity:notification-action" };
   const find = runInNewContext(`(${findNodeByScrolling})`, {
+    findScrollTarget,
     queryAndroidSemanticNodes: () => h.counts().reads > 0 ? [target] : [],
     scrollAndroidSemanticSurfaceAndAwait: (serial, _orientation, direction) =>
       h.scroll(serial, h.counts().reads > 0 ? boundary : surface, direction),
   });
   assert.equal(await find("test", node => node["resource-id"] === target["resource-id"]), target);
   assert.deepEqual(h.counts(), { reads: 1, gestures: 1 });
+});
+
+function listSearch({ start = 7, target = 4, last = 27, maxSwipes = 20 } = {}) {
+  let position = start;
+  const gestures = [], boundaries = new Set();
+  const node = { "resource-id": "parity:plan-airway-exit:YKM", visible: "true", "center-reachable": "true" };
+  const read = () => position === target ? [node] : [];
+  const context = {
+    findScrollTarget,
+    queryAndroidExactProjection: read,
+    queryAndroidSemanticNodes: read,
+    scrollAndroidSemanticSurfaceAndAwait: async (_serial, _orientation, direction) => {
+      if (direction === "up" && position === 0 || direction === "down" && position === last) {
+        boundaries.add(direction);
+        return false;
+      }
+      gestures.push(direction);
+      position += direction === "up" ? -1 : 1;
+      return true;
+    },
+  };
+  return {
+    gestures, boundaries, node,
+    async search(kind) {
+      if (kind === "predicate") {
+        return runInNewContext(`(${findNodeByScrolling})`, context)("device", entry => entry === node, maxSwipes);
+      }
+      const fn = kind === "exact" ? scrollUntilTag : scrollUntilTagPrefix;
+      return runInNewContext(`(${fn})`, context)("device", node["resource-id"], maxSwipes, true);
+    },
+  };
+}
+
+for (const kind of ["exact", "prefix", "predicate"]) {
+  test(`${kind} traversal leaves an already visible target in place`, async () => {
+    const h = listSearch({ target: 7 });
+    assert.ok(await h.search(kind));
+    assert.equal(h.gestures.length, 0);
+  });
+  test(`${kind} traversal finds a target above the initial offset of a long list`, async () => {
+    // CI found MEDEA ~7 screens down, then scanned 20 screens to the bottom.
+    // Twenty return swipes merely retraced that territory; YKM was still above.
+    const h = listSearch();
+    assert.ok(await h.search(kind));
+    assert.ok(h.gestures.length <= 40, "retain the original overall gesture budget");
+  });
+  test(`${kind} traversal searches the full other side, not a per-direction slice`, async () => {
+    const h = listSearch({ target: 26 });
+    assert.ok(await h.search(kind));
+    assert.ok(h.gestures.length <= 40);
+  });
+  test(`${kind} absence requires both real list boundaries`, async () => {
+    const h = listSearch({ target: -1 });
+    assert.ok(!await h.search(kind));
+    assert.deepEqual([...h.boundaries].sort(), ["down", "up"]);
+  });
+  test(`${kind} traversal exhaustion is a diagnostic failure, not an absent control`, async () => {
+    const h = listSearch({ target: -1, last: 100 });
+    await assert.rejects(h.search(kind), /scroll search exhausted.*40 gestures/);
+    assert.equal(h.gestures.length, 40);
+  });
+}
+
+test("scroll search propagates observation and gesture failures without changing direction", async () => {
+  for (const source of ["read", "scroll"]) {
+    const failure = new Error(`${source} unavailable`);
+    const directions = [];
+    await assert.rejects(findScrollTarget({
+      read: async () => { if (source === "read") throw failure; return null; },
+      scroll: async direction => { directions.push(direction); throw failure; },
+    }), error => error === failure);
+    assert.deepEqual(directions, source === "scroll" ? ["up"] : []);
+  }
 });
 
 test("scroll discovery cannot select a clipped surface", async () => {

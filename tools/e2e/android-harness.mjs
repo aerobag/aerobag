@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { journeyById } from "./release-journey-registry.mjs";
+import { findScrollTarget } from "./scroll-search.mjs";
 import { ANDROID_TRANSITION_EVIDENCE, androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 import {
   E2E_TIMING, observeChangedValueUntilStable, observeUntil, performTransition,
@@ -1202,21 +1203,23 @@ export async function scrollUntilTag(
   requireReachable = false,
   avoidNavigation = false,
 ) {
-  if (await scrollUntilTagInDirection(
-    serial, tag, "down", maxSwipes, requireReachable, avoidNavigation,
-  )) {
-    return true;
-  }
-  return scrollUntilTagInDirection(
-    serial, tag, "up", maxSwipes, requireReachable, avoidNavigation,
-  );
+  return Boolean(await findScrollTarget({
+    maxSteps: maxSwipes * 2,
+    read: () => queryAndroidExactProjection(serial, tag, {
+      includeDescendantText: false, verifyReachable: requireReachable, avoidNavigation,
+    }).find(target => !requireReachable || target["center-reachable"] === "true"),
+    scroll: direction => scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction),
+  }));
 }
 
 export async function scrollUntilTagPrefix(serial, tagPrefix, maxSwipes = 8, requireReachable = false) {
-  if (await scrollUntilTagPrefixInDirection(
-    serial, tagPrefix, "down", maxSwipes, requireReachable,
-  )) return true;
-  return scrollUntilTagPrefixInDirection(serial, tagPrefix, "up", maxSwipes, requireReachable);
+  return Boolean(await findScrollTarget({
+    maxSteps: maxSwipes * 2,
+    read: () => queryAndroidSemanticNodes(serial, tagPrefix, { prefix: true })
+      .find(node => node.visible === "true" &&
+        (!requireReachable || node["center-reachable"] === "true")),
+    scroll: direction => scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction),
+  }));
 }
 
 export function findVerticalScrollSurface(xml) {
@@ -1303,30 +1306,11 @@ async function scrollAndroidSemanticSurfaceAndAwait(serial, orientation, directi
 }
 
 export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
-  const read = () => queryAndroidSemanticNodes(serial, "", { prefix: true }).find(predicate) ?? null;
-  let found = read();
-  if (found) return found;
-  for (const direction of ["down", "up"]) {
-    for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-      if (!await scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction)) break;
-      found = read();
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-async function scrollUntilTagPrefixInDirection(
-  serial, tagPrefix, direction, maxSwipes, requireReachable,
-) {
-  const found = () => queryAndroidSemanticNodes(serial, tagPrefix, { prefix: true })
-    .some(node => node.visible === "true" &&
-      (!requireReachable || node["center-reachable"] === "true"));
-  for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-    if (found()) return true;
-    if (!await scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction)) break;
-  }
-  return found();
+  return findScrollTarget({
+    maxSteps: maxSwipes * 2,
+    read: () => queryAndroidSemanticNodes(serial, "", { prefix: true }).find(predicate) ?? null,
+    scroll: direction => scrollAndroidSemanticSurfaceAndAwait(serial, "vertical", direction),
+  });
 }
 
 export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
@@ -1339,43 +1323,6 @@ export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
     }
   }
   return found();
-}
-
-async function scrollUntilTagInDirection(
-  serial,
-  tag,
-  direction,
-  maxSwipes,
-  requireReachable,
-  avoidNavigation,
-) {
-  for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-    const target = queryAndroidExactProjection(
-      serial,
-      tag,
-      {
-        includeDescendantText: false,
-        verifyReachable: requireReachable,
-        avoidNavigation,
-      },
-    )[0];
-    if (target && (!requireReachable || target["center-reachable"] === "true")) {
-      return true;
-    }
-    if (!await scrollAndroidSemanticSurfaceAndAwait(
-      serial, "vertical", direction,
-    )) break;
-  }
-  const target = queryAndroidExactProjection(
-    serial,
-    tag,
-    {
-      includeDescendantText: false,
-      verifyReachable: requireReachable,
-      avoidNavigation,
-    },
-  )[0];
-  return Boolean(target && (!requireReachable || target["center-reachable"] === "true"));
 }
 
 export function pressKey(serial, keyCode) {

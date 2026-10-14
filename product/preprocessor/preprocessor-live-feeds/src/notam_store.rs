@@ -97,9 +97,27 @@ impl NotamStateReader {
         Self { root: root.into() }
     }
 
-    pub fn current_records(&self) -> anyhow::Result<Vec<StructuredNotamRecord>> {
+    pub fn current_records_from_environment(
+        &self,
+        expected_environment: &str,
+    ) -> anyhow::Result<Vec<StructuredNotamRecord>> {
         let connection = self.open_connection()?;
-        let mut statement = connection
+        // Keep provenance and records in the same SQLite read snapshot.
+        let transaction = connection.unchecked_transaction()?;
+        let environment: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'source_environment'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to read NMS NOTAM source environment")?;
+        if environment.as_deref() != Some(expected_environment) {
+            bail!(
+                "NOTAM source environment {environment:?} cannot enrich {expected_environment} data"
+            );
+        }
+        let mut statement = transaction
             .prepare("SELECT record_json FROM current_notams ORDER BY id")
             .context("failed to prepare current NOTAM query")?;
         let rows = statement

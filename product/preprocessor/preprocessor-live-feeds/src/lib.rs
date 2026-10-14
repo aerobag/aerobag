@@ -456,9 +456,11 @@ struct CapturedNotamMessage {
     body_utf8: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TfrListEntry {
     notam_id: String,
+    #[serde(flatten)]
+    attributes: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1817,6 +1819,38 @@ pub fn load_tfr_notam_ids(input_dir: &Path) -> anyhow::Result<Vec<String>> {
         .into_iter()
         .map(|entry| entry.notam_id)
         .collect())
+}
+
+pub fn load_tfr_source_revisions(input_dir: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut modifications: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let graphics = input_dir.join("graphics.geojson");
+    if graphics.is_file() {
+        let value: Value = serde_json::from_slice(&fs::read(&graphics)?)?;
+        for feature in value["features"]
+            .as_array()
+            .context("TFR graphics missing features")?
+        {
+            let properties = &feature["properties"];
+            if let (Some(id), Some(modified)) = (
+                geojson_notam_id(feature, properties),
+                geojson_property_string(properties, &["LAST_MODIFICATION_DATETIME"]),
+            ) {
+                modifications.entry(id).or_default().insert(modified);
+            }
+        }
+    }
+    load_tfr_list_entries(input_dir)?
+        .into_iter()
+        .map(|entry| {
+            // FDC numbers and detail URLs are reused. Bind the cached document to
+            // the current listing and FAA modification time, not to that short ID.
+            let revision = engine::canonical_json_sha256(&serde_json::json!({
+                "listing": entry,
+                "modified": modifications.get(&entry.notam_id),
+            }))?;
+            Ok((entry.notam_id, revision))
+        })
+        .collect()
 }
 
 fn load_tfr_list_entries(input_dir: &Path) -> anyhow::Result<Vec<TfrListEntry>> {
@@ -4803,6 +4837,41 @@ mod tests {
             .as_str()
             .expect("notam text")
             .contains("TEMPORARY FLIGHT RESTRICTIONS"));
+        Ok(())
+    }
+
+    #[test]
+    fn tfr_source_revision_tracks_notice_identity_and_modification_not_feature_order(
+    ) -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let listing = temp.path().join("list.json");
+        let graphics = temp.path().join("graphics.geojson");
+        fs::write(
+            &listing,
+            r#"[{"notam_id":"6/8923","facility":"ZNY","creation_date":"07/27/2026"}]"#,
+        )?;
+        let old = load_tfr_source_revisions(temp.path())?;
+        fs::write(
+            &listing,
+            r#"[{"notam_id":"6/8923","facility":"ZLC","creation_date":"10/12/2026"}]"#,
+        )?;
+        let new = load_tfr_source_revisions(temp.path())?;
+        assert_ne!(old, new);
+        let feature = serde_json::json!({"properties": {
+            "NOTAM_KEY": "6/8923-1-FDC-F", "LAST_MODIFICATION_DATETIME": "202610121031"
+        }});
+        fs::write(
+            &graphics,
+            serde_json::to_vec(&serde_json::json!({"features":[feature]}))?,
+        )?;
+        let modified = load_tfr_source_revisions(temp.path())?;
+        assert_ne!(new, modified);
+        // Several geometry areas repeat the same notice-level revision.
+        fs::write(
+            &graphics,
+            serde_json::to_vec(&serde_json::json!({"features":[feature,feature]}))?,
+        )?;
+        assert_eq!(modified, load_tfr_source_revisions(temp.path())?);
         Ok(())
     }
 

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Write},
     os::fd::AsRawFd,
@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::StructuredTfrNotamMetadata;
 
-const TFR_DETAIL_BACKFILL_SCHEMA_VERSION: u32 = 1;
+const TFR_DETAIL_BACKFILL_SCHEMA_VERSION: u32 = 2;
 const TFR_DETAIL_FETCH_RETRY_BASE_SECONDS: i64 = 5 * 60;
 const TFR_DETAIL_FETCH_RETRY_MAX_SECONDS: i64 = 60 * 60;
 
@@ -37,6 +37,16 @@ pub struct TfrDetailBackfillLock {
 pub struct TfrDetailFetchTarget {
     pub tfr_id: String,
     pub source_url: String,
+    pub source_revision: String,
+}
+
+impl TfrDetailFetchTarget {
+    pub fn cache_key(&self) -> String {
+        format!(
+            "tfr-detail-backfill:{}:{}",
+            self.tfr_id, self.source_revision
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +125,7 @@ impl TfrDetailBackfillStore {
 
     pub fn reconcile_desired_tfrs(
         &self,
-        tfr_ids: &BTreeSet<String>,
+        tfr_ids: &BTreeMap<String, String>,
         current_tfrs: usize,
     ) -> anyhow::Result<()> {
         if tfr_ids.len() > current_tfrs {
@@ -131,15 +141,16 @@ impl TfrDetailBackfillStore {
         let observed_at_utc = Utc::now().to_rfc3339();
         tx.execute("DELETE FROM desired_tfrs", [])
             .context("failed to clear prior TFR detail desired set")?;
-        for tfr_id in tfr_ids {
+        for (tfr_id, revision) in tfr_ids {
             let source_url = detail_url_for_tfr_id(tfr_id)?;
             tx.execute(
-                "INSERT INTO desired_tfrs (tfr_id, source_url, last_seen_at_utc)
-                 VALUES (?1, ?2, ?3)
+                "INSERT INTO desired_tfrs (tfr_id, source_url, last_seen_at_utc, source_revision)
+                 VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(tfr_id) DO UPDATE SET
                     source_url = excluded.source_url,
-                    last_seen_at_utc = excluded.last_seen_at_utc",
-                params![tfr_id, source_url, observed_at_utc],
+                    last_seen_at_utc = excluded.last_seen_at_utc,
+                    source_revision = excluded.source_revision",
+                params![tfr_id, source_url, observed_at_utc, revision],
             )
             .with_context(|| format!("failed to record desired TFR detail {tfr_id}"))?;
         }
@@ -161,10 +172,12 @@ impl TfrDetailBackfillStore {
         let now = Utc::now().to_rfc3339();
         let mut statement = connection
             .prepare(
-                "SELECT desired_tfrs.tfr_id, desired_tfrs.source_url
+                "SELECT desired_tfrs.tfr_id, desired_tfrs.source_url, desired_tfrs.source_revision
                  FROM desired_tfrs
                  LEFT JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id
+                   AND detail_records.source_revision = desired_tfrs.source_revision
                  LEFT JOIN fetch_failures ON fetch_failures.tfr_id = desired_tfrs.tfr_id
+                   AND fetch_failures.source_revision = desired_tfrs.source_revision
                  WHERE detail_records.tfr_id IS NULL
                    AND (
                      fetch_failures.next_retry_after_utc IS NULL
@@ -179,6 +192,7 @@ impl TfrDetailBackfillStore {
                 Ok(TfrDetailFetchTarget {
                     tfr_id: row.get(0)?,
                     source_url: row.get(1)?,
+                    source_revision: row.get(2)?,
                 })
             })
             .context("failed to query due TFR details")?;
@@ -200,7 +214,8 @@ impl TfrDetailBackfillStore {
             &connection,
             "SELECT COUNT(*)
              FROM desired_tfrs
-             JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id",
+             JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id
+               AND detail_records.source_revision = desired_tfrs.source_revision",
             [],
         )?;
         let historical_cached =
@@ -209,7 +224,8 @@ impl TfrDetailBackfillStore {
             &connection,
             "SELECT COUNT(*)
              FROM desired_tfrs
-             JOIN fetch_failures ON fetch_failures.tfr_id = desired_tfrs.tfr_id",
+             JOIN fetch_failures ON fetch_failures.tfr_id = desired_tfrs.tfr_id
+               AND fetch_failures.source_revision = desired_tfrs.source_revision",
             [],
         )?;
         let remaining_unfetched = scalar_count(
@@ -217,6 +233,7 @@ impl TfrDetailBackfillStore {
             "SELECT COUNT(*)
              FROM desired_tfrs
              LEFT JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id
+               AND detail_records.source_revision = desired_tfrs.source_revision
              WHERE detail_records.tfr_id IS NULL",
             [],
         )?;
@@ -225,7 +242,9 @@ impl TfrDetailBackfillStore {
             "SELECT COUNT(*)
              FROM desired_tfrs
              LEFT JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id
+               AND detail_records.source_revision = desired_tfrs.source_revision
              LEFT JOIN fetch_failures ON fetch_failures.tfr_id = desired_tfrs.tfr_id
+               AND fetch_failures.source_revision = desired_tfrs.source_revision
              WHERE detail_records.tfr_id IS NULL
                AND (
                  fetch_failures.next_retry_after_utc IS NULL
@@ -248,19 +267,19 @@ impl TfrDetailBackfillStore {
 
     pub fn current_metadata_by_fdc_id(
         &self,
-        tfr_ids: &BTreeSet<String>,
+        tfr_ids: &BTreeMap<String, String>,
     ) -> anyhow::Result<Vec<(String, StructuredTfrNotamMetadata)>> {
         if tfr_ids.is_empty() {
             return Ok(Vec::new());
         }
         let connection = self.open_connection()?;
         let mut statement = connection
-            .prepare("SELECT source_url, raw_xml FROM detail_records WHERE tfr_id = ?1")
+            .prepare("SELECT source_url, raw_xml FROM detail_records WHERE tfr_id = ?1 AND source_revision = ?2")
             .context("failed to prepare TFR detail metadata query")?;
         let mut metadata = Vec::new();
-        for tfr_id in tfr_ids {
+        for (tfr_id, revision) in tfr_ids {
             let rows = statement
-                .query_map([tfr_id], |row| {
+                .query_map([tfr_id, revision], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .with_context(|| format!("failed to query TFR detail metadata {tfr_id}"))?;
@@ -290,16 +309,20 @@ impl TfrDetailBackfillStore {
         let tx = connection
             .transaction()
             .context("failed to start TFR detail success transaction")?;
+        if !target_is_current(&tx, target)? {
+            return Ok(parsed);
+        }
         tx.execute(
             "INSERT INTO detail_records (
-                tfr_id, source_url, fetched_at_utc, sha256, raw_xml, metadata_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                tfr_id, source_url, fetched_at_utc, sha256, raw_xml, metadata_json, source_revision
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(tfr_id) DO UPDATE SET
                 source_url = excluded.source_url,
                 fetched_at_utc = excluded.fetched_at_utc,
                 sha256 = excluded.sha256,
                 raw_xml = excluded.raw_xml,
-                metadata_json = excluded.metadata_json",
+                metadata_json = excluded.metadata_json,
+                source_revision = excluded.source_revision",
             params![
                 target.tfr_id,
                 target.source_url,
@@ -307,6 +330,7 @@ impl TfrDetailBackfillStore {
                 sha256,
                 xml,
                 metadata_json,
+                target.source_revision,
             ],
         )
         .with_context(|| format!("failed to upsert TFR detail {}", target.tfr_id))?;
@@ -330,10 +354,13 @@ impl TfrDetailBackfillStore {
         let tx = connection
             .transaction()
             .context("failed to start TFR detail failure transaction")?;
+        if !target_is_current(&tx, target)? {
+            return Ok(());
+        }
         let consecutive_failures: i64 = tx
             .query_row(
-                "SELECT consecutive_failures FROM fetch_failures WHERE tfr_id = ?1",
-                [&target.tfr_id],
+                "SELECT consecutive_failures FROM fetch_failures WHERE tfr_id = ?1 AND source_revision = ?2",
+                [&target.tfr_id, &target.source_revision],
                 |row| row.get(0),
             )
             .unwrap_or(0_i64)
@@ -346,14 +373,15 @@ impl TfrDetailBackfillStore {
         tx.execute(
             "INSERT INTO fetch_failures (
                 tfr_id, source_url, last_failure_at_utc, next_retry_after_utc,
-                consecutive_failures, last_error
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                consecutive_failures, last_error, source_revision
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(tfr_id) DO UPDATE SET
                 source_url = excluded.source_url,
                 last_failure_at_utc = excluded.last_failure_at_utc,
                 next_retry_after_utc = excluded.next_retry_after_utc,
                 consecutive_failures = excluded.consecutive_failures,
-                last_error = excluded.last_error",
+                last_error = excluded.last_error,
+                source_revision = excluded.source_revision",
             params![
                 target.tfr_id,
                 target.source_url,
@@ -361,6 +389,7 @@ impl TfrDetailBackfillStore {
                 next_retry_after_utc,
                 consecutive_failures,
                 error,
+                target.source_revision,
             ],
         )
         .with_context(|| format!("failed to record TFR detail failure {}", target.tfr_id))?;
@@ -376,12 +405,13 @@ impl TfrDetailBackfillStore {
     fn open_connection(&self) -> anyhow::Result<Connection> {
         fs::create_dir_all(self.state_root())
             .with_context(|| format!("failed to create {}", self.state_root().display()))?;
-        let connection = Connection::open(self.sqlite_path())
+        let mut connection = Connection::open(self.sqlite_path())
             .with_context(|| format!("failed to open {}", self.sqlite_path().display()))?;
-        connection
-            .execute_batch(
-                "
-                PRAGMA journal_mode = WAL;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.execute_batch("PRAGMA journal_mode = WAL;")?;
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(
+            "
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -410,21 +440,45 @@ impl TfrDetailBackfillStore {
                 CREATE INDEX IF NOT EXISTS tfr_detail_failures_retry_idx
                     ON fetch_failures(next_retry_after_utc);
                 ",
-            )
-            .context("failed to initialize TFR detail backfill sqlite schema")?;
-        connection
-            .execute(
-                "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
+        )
+        .context("failed to initialize TFR detail backfill sqlite schema")?;
+        match metadata(&tx, "schema_version")?.as_deref() {
+            None | Some("1") => {
+                // Old cached bodies have no proof of which notice revision they
+                // describe. Preserve them, but never serve them for a new revision.
+                tx.execute_batch(
+                    "ALTER TABLE desired_tfrs ADD COLUMN source_revision TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE detail_records ADD COLUMN source_revision TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE fetch_failures ADD COLUMN source_revision TEXT NOT NULL DEFAULT '';"
+                )?;
+            }
+            Some("2") => {}
+            Some(version) => bail!("unsupported TFR detail cache schema {version}"),
+        }
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [TFR_DETAIL_BACKFILL_SCHEMA_VERSION.to_string()],
-            )
-            .context("failed to record TFR detail backfill sqlite schema version")?;
+            [TFR_DETAIL_BACKFILL_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to record TFR detail backfill sqlite schema version")?;
+        tx.commit()?;
         Ok(connection)
     }
 
     fn state_root(&self) -> PathBuf {
         self.root.join("state")
     }
+}
+
+fn target_is_current(
+    connection: &Connection,
+    target: &TfrDetailFetchTarget,
+) -> anyhow::Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM desired_tfrs WHERE tfr_id = ?1 AND source_revision = ?2)",
+        [&target.tfr_id, &target.source_revision],
+        |row| row.get(0),
+    )?)
 }
 
 fn scalar_count<P>(connection: &Connection, sql: &str, params: P) -> anyhow::Result<usize>
@@ -698,12 +752,88 @@ mod tests {
     }
 
     #[test]
+    fn unversioned_cache_is_migrated_but_never_served_as_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TfrDetailBackfillStore::new(temp.path());
+        let connection = store.open_connection().unwrap();
+        // Recreate the deployed v1 cache shape, including an unversioned body.
+        connection.execute_batch(
+            "ALTER TABLE desired_tfrs DROP COLUMN source_revision;
+             ALTER TABLE detail_records DROP COLUMN source_revision;
+             ALTER TABLE fetch_failures DROP COLUMN source_revision;
+             UPDATE metadata SET value='1' WHERE key='schema_version';
+             INSERT INTO detail_records VALUES ('6/8923', 'old-url', '2026-07-27', 'old-hash', '<old/>', '{}');"
+        ).unwrap();
+        drop(connection);
+        let current = BTreeMap::from([("6/8923".into(), "october-kalispell".into())]);
+        store.reconcile_desired_tfrs(&current, 1).unwrap();
+        assert!(store
+            .current_metadata_by_fdc_id(&current)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.due_fetch_targets(10).unwrap().len(), 1);
+        let summary = store.summary().unwrap();
+        assert_eq!(summary.historical_cached, 1);
+        assert_eq!(summary.current_cached, 0);
+        assert_eq!(summary.remaining_unfetched, 1);
+    }
+
+    #[test]
+    fn reused_tfr_number_does_not_reuse_old_text_or_inflight_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TfrDetailBackfillStore::new(temp.path());
+        let old = BTreeMap::from([("6/8923".into(), "july-bethlehem".into())]);
+        let new = BTreeMap::from([("6/8923".into(), "october-kalispell".into())]);
+        let xml = |city| {
+            format!(
+                r#"<XNOTAM-Update><Not>
+            <NotUid><dateIndexYear>2026</dateIndexYear><noSeqNo>8923</noSeqNo></NotUid>
+            <txtDescrTraditional>{city}</txtDescrTraditional>
+            </Not></XNOTAM-Update>"#
+            )
+        };
+        store.reconcile_desired_tfrs(&old, 1).unwrap();
+        let old_target = store.due_fetch_targets(10).unwrap().remove(0);
+        store
+            .record_success(&old_target, &xml("Bethlehem"))
+            .unwrap();
+        assert_eq!(store.current_metadata_by_fdc_id(&old).unwrap().len(), 1);
+        store.reconcile_desired_tfrs(&new, 1).unwrap();
+        assert!(
+            store.current_metadata_by_fdc_id(&new).unwrap().is_empty(),
+            "July text must not accompany October geometry"
+        );
+        assert_eq!(store.summary().unwrap().current_cached, 0);
+        let target = store.due_fetch_targets(10).unwrap().remove(0);
+        assert_ne!(target, old_target, "network-cache identity must change too");
+        assert_ne!(target.cache_key(), old_target.cache_key());
+        store
+            .record_failure(&old_target, "late July failure")
+            .unwrap();
+        assert_eq!(store.due_fetch_targets(10).unwrap().len(), 1);
+        store.record_success(&target, &xml("Kalispell")).unwrap();
+        store
+            .record_success(&old_target, &xml("Bethlehem"))
+            .unwrap();
+        let reopened = TfrDetailBackfillStore::new(temp.path());
+        assert_eq!(
+            reopened.current_metadata_by_fdc_id(&new).unwrap()[0]
+                .1
+                .text
+                .as_deref(),
+            Some("Kalispell")
+        );
+        assert_eq!(reopened.summary().unwrap().current_cached, 1);
+        assert!(reopened.due_fetch_targets(10).unwrap().is_empty());
+    }
+
+    #[test]
     fn store_records_desired_tfrs_and_successful_details() {
         let temp = tempfile::tempdir().expect("tempdir");
         let store = TfrDetailBackfillStore::new(temp.path());
         store.initialize().expect("initialize");
         store
-            .reconcile_desired_tfrs(&BTreeSet::from(["6/8212".to_string()]), 4)
+            .reconcile_desired_tfrs(&BTreeMap::from([("6/8212".to_string(), "v1".into())]), 4)
             .expect("desired");
         let targets = store.due_fetch_targets(10).expect("targets");
         assert_eq!(targets.len(), 1);
@@ -732,7 +862,7 @@ mod tests {
             .expect("success");
         assert!(store.due_fetch_targets(10).expect("targets").is_empty());
         let records = store
-            .current_metadata_by_fdc_id(&BTreeSet::from(["6/8212".to_string()]))
+            .current_metadata_by_fdc_id(&BTreeMap::from([("6/8212".to_string(), "v1".into())]))
             .expect("metadata");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].0, "6/8212");
@@ -753,7 +883,7 @@ mod tests {
 
         let last_needed_at_utc = active.last_needed_at_utc;
         store
-            .reconcile_desired_tfrs(&BTreeSet::new(), 5)
+            .reconcile_desired_tfrs(&BTreeMap::new(), 5)
             .expect("clear desired set");
         let idle = store.summary().expect("idle summary");
         assert_eq!(idle.current_tfrs, 5);
@@ -773,8 +903,8 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO detail_records (
-                    tfr_id, source_url, fetched_at_utc, sha256, raw_xml, metadata_json
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    tfr_id, source_url, fetched_at_utc, sha256, raw_xml, metadata_json, source_revision
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'v1')",
                 params![
                     "6/8212",
                     "https://example.test/detail.xml",
@@ -794,7 +924,7 @@ mod tests {
             )
             .expect("insert");
         let records = store
-            .current_metadata_by_fdc_id(&BTreeSet::from(["6/8212".to_string()]))
+            .current_metadata_by_fdc_id(&BTreeMap::from([("6/8212".to_string(), "v1".into())]))
             .expect("metadata");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].1.record_id, "F:ZTL:2026:N:8212");

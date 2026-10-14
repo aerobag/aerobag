@@ -24531,6 +24531,7 @@ mod tests {
             "notam_count": 1,
             "area_group_count": 1,
             "areas": [{
+                "area_id": "6/0001:test",
                 "notam_id": "6/0001",
                 "area_index": 0,
                 "schedule_fragments": [],
@@ -31939,6 +31940,144 @@ mod tests {
         assert!(action.enabled);
         assert_eq!(action.session_action.as_deref(), Some("direct-to-action"));
         assert!(action.flight_plan_row_action.is_none());
+    }
+
+    #[test]
+    fn overlapping_tfr_areas_keep_airport_inspection_and_overlay_identity() {
+        // The FAA emits separate features with the same NOTAM and area_index=0.
+        // These two bounds/identities are from the 2026-10-14 Kalispell feed.
+        let areas = [
+            (
+                "6/8923:54a3bdf779d9aa5d",
+                47.76506247,
+                48.83099901,
+                -115.09179224,
+                -113.49431888,
+            ),
+            (
+                "6/8923:7f55fc66c119d942",
+                48.09818898,
+                48.49791516,
+                -114.59259111,
+                -113.99352001,
+            ),
+        ]
+        .map(|(id, south, north, west, east)| {
+            serde_json::json!({
+                "area_id": id, "notam_id": "6/8923", "area_index": 0,
+                "schedule_fragments": [],
+                "upper_limit": {"value_text": "180", "unit": "FL"},
+                "lower_limit": {"value_text": "0", "unit": "FT"},
+                "polygon": [
+                    {"lat": south, "lon": west}, {"lat": south, "lon": east},
+                    {"lat": north, "lon": east}, {"lat": north, "lon": west}
+                ],
+                "summary_text": "Kalispell regression bounds",
+                "notam": {"record_id": "test", "text": "Kalispell TFR"}
+            })
+        });
+        let payload = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "version_label": "kalispell", "notam_count": 1,
+            "area_group_count": areas.len(), "areas": areas
+        }))
+        .unwrap();
+        let position = LatLon {
+            lat: 48.31,
+            lon: -114.26,
+        };
+        let position_json = serde_json::to_vec(&position).unwrap();
+        let symbol_json = br#"{"kind":"airport","label":"KGPI","symbol_kind":"airport","style_class":"airport","towered":true,"fuel_available":true,"runway_length_ratio":1.0}"#;
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
+                ("navref/position/airport/KGPI", &position_json),
+                ("navref/symbol/airport/KGPI", symbol_json),
+                (
+                    "weather/station-catalog",
+                    br#"{"schema_version":1,"stations":{}}"#,
+                ),
+            ],
+            1024,
+        );
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+        ingest_tfrs_in_session(init.handle, &payload).unwrap();
+        let viewport = MapViewport {
+            center: position,
+            zoom: 8.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let outcome =
+            get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms(
+                init.handle,
+                viewport.clone(),
+                1200.0,
+                900.0,
+                NavRef::Airport("KGPI".into()),
+                1.0,
+                0,
+            )
+            .expect("overlapping TFRs must not prevent airport inspection");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("unexpected page fault: {outcome:?}");
+        };
+        let selected: MapSelectionForNavRefResult = serde_json::from_value(result).unwrap();
+        let items: Vec<_> = selected
+            .selection
+            .categories
+            .iter()
+            .flat_map(|c| &c.items)
+            .collect();
+        assert!(items
+            .iter()
+            .any(|i| i.nav_ref == Some(NavRef::Airport("KGPI".into()))));
+        let expected: HashSet<_> = areas
+            .iter()
+            .map(|a| format!("tfr:{}", a["area_id"].as_str().unwrap()))
+            .collect();
+        let tfrs: Vec<_> = items.iter().filter(|i| i.id.starts_with("tfr:")).collect();
+        assert_eq!(tfrs.len(), 2);
+        assert_eq!(
+            tfrs.iter().map(|i| i.id.clone()).collect::<HashSet<_>>(),
+            expected
+        );
+        for item in tfrs {
+            assert_eq!(
+                item.highlight,
+                MapSelectionHighlight::FeatureRef {
+                    id: item.id.clone()
+                }
+            );
+            assert_eq!(item.airspace_icon.as_ref().unwrap().id, item.id);
+            let action = item.actions.iter().find(|a| a.id == "tfr_text").unwrap();
+            map_selection_action_decision_in_session(
+                init.handle,
+                action.action_uid.clone().unwrap(),
+            )
+            .unwrap();
+        }
+        let outcome = get_map_overlay_in_session(init.handle, viewport, 1200.0, 900.0).unwrap();
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("unexpected page fault: {outcome:?}");
+        };
+        let overlay: crate::map_overlay::MapOverlayQueryResult =
+            serde_json::from_value(result).unwrap();
+        assert_eq!(overlay.tfr_paths.len(), 2);
+        assert_eq!(
+            overlay
+                .tfr_paths
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<HashSet<_>>(),
+            expected
+        );
+        assert!(overlay
+            .airspace_labels
+            .iter()
+            .filter(|l| l.feature_id.starts_with("tfr:"))
+            .all(|l| expected.contains(&l.feature_id)));
+        destroy_session(init.handle);
     }
 
     #[test]

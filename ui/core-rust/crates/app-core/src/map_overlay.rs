@@ -1186,8 +1186,8 @@ pub struct TfrProductPayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TfrAreaPayload {
+    pub area_id: String,
     pub notam_id: String,
-    pub area_index: u32,
     pub schedule_fragments: Vec<TfrScheduleFragment>,
     pub upper_limit: TfrAltitudeLimit,
     pub lower_limit: TfrAltitudeLimit,
@@ -1195,6 +1195,12 @@ pub struct TfrAreaPayload {
     pub summary_text: String,
     #[serde(default)]
     pub notam: Option<TfrNotamMetadata>,
+}
+
+impl TfrAreaPayload {
+    fn feature_id(&self) -> String {
+        format!("tfr:{}", self.area_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5139,7 +5145,7 @@ fn tfr_selection_icon(
                 .map(|point| [point.lon, point.lat])
                 .collect(),
         }),
-        &format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+        &area.feature_id(),
         area.notam_id.trim(),
         style_key,
         Some(tfr_display_style(style_key)),
@@ -5270,7 +5276,7 @@ fn selection_item_for_tfr(
     actions.push(text_action);
     MapSelectionItem {
         notam_badge: None,
-        id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+        id: area.feature_id(),
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
         description: Some(tfr_timing_description(timing)),
@@ -5280,7 +5286,7 @@ fn selection_item_for_tfr(
         elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
-            id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+            id: area.feature_id(),
         },
         nav_ref: None,
         symbol_feature: None,
@@ -6416,7 +6422,7 @@ fn query_tfr_overlay(
             tfr_label_screen_point(area, &projected_points, projection, &point_obstacle_rects)
         {
             labels.push(AirspaceDisplayLabel {
-                feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+                feature_id: area.feature_id(),
                 glyph: airspace_limit_glyph(
                     tfr_limit_label(&area.upper_limit),
                     tfr_limit_label(&area.lower_limit),
@@ -6427,7 +6433,7 @@ fn query_tfr_overlay(
             });
         }
         paths.push(AirspaceDisplayPath {
-            id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
+            id: area.feature_id(),
             name: area.notam_id.trim().to_string(),
             style_key: style_key.to_string(),
             style: tfr_display_style(style_key),
@@ -10013,7 +10019,7 @@ mod tests {
                     area_group_count: 1,
                     areas: vec![TfrAreaPayload {
                         notam_id: "1/2345".to_string(),
-                        area_index: 0,
+                        area_id: "1/2345:0".to_string(),
                         schedule_fragments: Vec::new(),
                         upper_limit: TfrAltitudeLimit {
                             value_text: "180".to_string(),
@@ -11911,7 +11917,7 @@ mod tests {
             area_group_count: 1,
             areas: vec![TfrAreaPayload {
                 notam_id: "1/2345".to_string(),
-                area_index: 0,
+                area_id: "1/2345:0".to_string(),
                 schedule_fragments: Vec::new(),
                 upper_limit: TfrAltitudeLimit {
                     value_text: "180".to_string(),
@@ -11986,7 +11992,7 @@ mod tests {
             area_group_count: 1,
             areas: vec![TfrAreaPayload {
                 notam_id: "1/2345".to_string(),
-                area_index: 0,
+                area_id: "1/2345:0".to_string(),
                 schedule_fragments: Vec::new(),
                 upper_limit: TfrAltitudeLimit {
                     value_text: "180".to_string(),
@@ -12105,7 +12111,7 @@ mod tests {
             area_group_count: 1,
             areas: vec![TfrAreaPayload {
                 notam_id: "1/2345".to_string(),
-                area_index: 0,
+                area_id: "1/2345:0".to_string(),
                 schedule_fragments: Vec::new(),
                 upper_limit: TfrAltitudeLimit {
                     value_text: "18000".to_string(),
@@ -12173,7 +12179,7 @@ mod tests {
     fn tfr_selection_exposes_text_as_modal_action_not_inline_detail() {
         let area = TfrAreaPayload {
             notam_id: "1/2345".to_string(),
-            area_index: 0,
+            area_id: "1/2345:0".to_string(),
             schedule_fragments: Vec::new(),
             upper_limit: TfrAltitudeLimit {
                 value_text: "12000".to_string(),
@@ -12248,7 +12254,7 @@ mod tests {
     fn tfr_modal_timing_uses_same_one_hour_color_threshold_as_map_rendering() {
         let area = TfrAreaPayload {
             notam_id: "1/2345".to_string(),
-            area_index: 0,
+            area_id: "1/2345:0".to_string(),
             schedule_fragments: Vec::new(),
             upper_limit: TfrAltitudeLimit {
                 value_text: "12000".to_string(),
@@ -12328,7 +12334,7 @@ mod tests {
             area_group_count: 1,
             areas: vec![TfrAreaPayload {
                 notam_id: "1/2345".to_string(),
-                area_index: 0,
+                area_id: "1/2345:0".to_string(),
                 schedule_fragments: Vec::new(),
                 upper_limit: TfrAltitudeLimit {
                     value_text: "18000".to_string(),

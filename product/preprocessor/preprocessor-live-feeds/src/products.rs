@@ -28,7 +28,7 @@ use crate::{
         BuiltLiveFeedState, DeltaPolicy, LiveFeedStatePayload, LiveFeedStatusTimestamps,
         LiveFeedTemporalCoverage, ProductBuilder, UpstreamEvent,
     },
-    load_tfr_notam_ids, metar_content_fingerprint,
+    load_tfr_source_revisions, metar_content_fingerprint,
     notam_store::{NotamPersistentStore, NotamStateReader},
     pirep_content_fingerprint, sanitize_notam_id, taf_content_fingerprint,
     tfr_detail_backfill::{TfrDetailBackfillStore, TfrDetailFetchTarget},
@@ -708,15 +708,14 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             &provenance_dir,
             "tfrs",
         )?;
-        let tfr_notam_ids = load_tfr_notam_ids(&input_dir)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
+        let revisions = load_tfr_source_revisions(&input_dir)?;
+        let tfr_notam_ids = revisions.keys().cloned().collect::<BTreeSet<_>>();
         let mut notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
-        let missing_from_notam_state = tfr_notam_ids
+        let missing_from_notam_state = revisions
             .iter()
-            .filter(|tfr_id| !notams_by_fdc_id.contains_key(*tfr_id))
-            .cloned()
-            .collect::<BTreeSet<_>>();
+            .filter(|(tfr_id, _)| !notams_by_fdc_id.contains_key(*tfr_id))
+            .map(|(id, revision)| (id.clone(), revision.clone()))
+            .collect::<BTreeMap<_, _>>();
         if let Some(backfill_metadata) = self
             .current_tfr_detail_backfill_metadata(&missing_from_notam_state, tfr_notam_ids.len())
         {
@@ -776,7 +775,9 @@ impl TfrLiveFeedBuilder {
         let Some(state_root) = &self.notam_state_root else {
             return BTreeMap::new();
         };
-        match NotamStateReader::new(state_root).current_records() {
+        // tfr.faa.gov is production. Staging NMS reuses FDC numbers for unrelated
+        // notices; leave those missing so FAA detail backfill supplies the text.
+        match NotamStateReader::new(state_root).current_records_from_environment("production") {
             Ok(records) => {
                 let mut metadata = tfr_notam_metadata_by_fdc_id(&records);
                 metadata.retain(|fdc_id, _| tfr_notam_ids.contains(fdc_id));
@@ -794,7 +795,7 @@ impl TfrLiveFeedBuilder {
 
     fn current_tfr_detail_backfill_metadata(
         &self,
-        missing_tfr_ids: &BTreeSet<String>,
+        missing_tfr_ids: &BTreeMap<String, String>,
         current_tfr_count: usize,
     ) -> Option<Vec<(String, StructuredTfrNotamMetadata)>> {
         let Some(state_root) = &self.tfr_detail_backfill_state_root else {
@@ -889,7 +890,7 @@ fn fetch_one_tfr_detail_backfill(
     let provenance_dir = input_dir.join("provenance");
     let request = live_feed_request(&target.source_url)
         .with_logical_file_name(&file_name)
-        .with_cache_key(format!("tfr-detail-backfill:{}", target.tfr_id));
+        .with_cache_key(target.cache_key());
     prefetch_requests_with_provenance(
         &[request],
         &input_dir,
@@ -1866,6 +1867,65 @@ mod tests {
     }
 
     #[test]
+    fn tfr_enrichment_does_not_join_staging_or_unidentified_notam_numbers() -> anyhow::Result<()> {
+        let record = crate::nms_initial_load::parse_nms_api_update(
+            r#"<root><NOTAM>
+                <location>ZNY</location><number>8923</number><year>2026</year><type>N</type>
+                <text>!FDC 6/8923 ZNY PA..AIRSPACE BETHLEHEM, PA..TEMPORARY FLIGHT RESTRICTIONS.</text>
+            </NOTAM></root>"#,
+            crate::nms_initial_load::NmsNotamClassification::Fdc,
+        )?.record;
+        let wanted = BTreeSet::from(["6/8923".to_string()]);
+        for environment in [Some("production"), Some("staging"), None] {
+            let temp = tempdir()?;
+            let state_root = temp.path().join("nms");
+            NotamStateReader::replace_records_for_test(&state_root, std::slice::from_ref(&record))?;
+            let connection = rusqlite::Connection::open(state_root.join("state.sqlite"))?;
+            connection.execute_batch(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            )?;
+            if let Some(environment) = environment {
+                connection.execute(
+                    "INSERT INTO metadata VALUES ('source_environment', ?1)",
+                    [environment],
+                )?;
+            }
+            let builder = TfrLiveFeedBuilder::new(LiveFeedFetchConfig::cache_first(
+                1,
+                temp.path().join("cache"),
+            ))
+            .with_notam_state_root(&state_root)
+            .with_tfr_detail_backfill_state_root(temp.path().join("backfill"));
+            let metadata = builder.current_tfr_notam_metadata_by_fdc_id(&wanted);
+            assert_eq!(
+                metadata.contains_key("6/8923"),
+                environment == Some("production"),
+                "{environment:?}"
+            );
+            let missing = wanted
+                .difference(&metadata.keys().cloned().collect())
+                .map(|id| (id.clone(), "v1".to_string()))
+                .collect();
+            builder
+                .current_tfr_detail_backfill_metadata(&missing, wanted.len())
+                .unwrap();
+            let targets =
+                TfrDetailBackfillStore::new(temp.path().join("backfill")).due_fetch_targets(10)?;
+            assert_eq!(
+                targets.len(),
+                usize::from(environment != Some("production"))
+            );
+            if let Some(target) = targets.first() {
+                assert_eq!(
+                    target.source_url,
+                    "https://tfr.faa.gov/download/detail_6_8923.xml"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn tfr_builder_queues_and_consumes_detail_backfill_metadata() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let state_root = temp.path().join("tfr-detail-backfill");
@@ -1874,7 +1934,7 @@ mod tests {
             temp.path().join("cache"),
         ))
         .with_tfr_detail_backfill_state_root(&state_root);
-        let missing = BTreeSet::from(["6/8212".to_string()]);
+        let missing = BTreeMap::from([("6/8212".to_string(), "v1".to_string())]);
 
         let first = builder
             .current_tfr_detail_backfill_metadata(&missing, 3)

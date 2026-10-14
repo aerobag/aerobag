@@ -799,6 +799,7 @@ internal fun ChartsPage(
                 ) {
                     drawPlateFlightPlanOverlay(
                         segments = plateFlightPlanOverlay,
+                        standby = plateFlightPlanRoute.standbyPreview,
                         densityScale = density.density,
                         uiTheme = uiTheme,
                     )
@@ -1143,6 +1144,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateOwnshipOve
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateFlightPlanOverlay(
     segments: List<PlateFlightPlanScreenSegment>,
+    standby: Boolean,
     densityScale: Float,
     uiTheme: UiTheme,
 ) {
@@ -1150,7 +1152,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateFlightPlan
         drawFlightPlanRoutePath(
             screenPath = projected.path,
             style = projected.segment.style,
-            color = routeSegmentColor(uiTheme, projected.segment.status),
+            color = routeSegmentColor(uiTheme, projected.segment.status, standby),
             contrastColor = uiTheme.flightPlanRoute.contrast,
             densityScale = densityScale,
         )

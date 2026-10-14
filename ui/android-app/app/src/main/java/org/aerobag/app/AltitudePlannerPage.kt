@@ -71,6 +71,7 @@ import org.aerobag.app.domain.UiSessionSnapshot
 
 @Composable
 internal fun AltitudePlannerPage(
+    workspace: org.aerobag.app.domain.FlightPlanWorkspaceUi? = null,
     page: AppPage,
     planner: AltitudePlannerUiView,
     planVersion: Long,
@@ -230,6 +231,12 @@ internal fun AltitudePlannerPage(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                workspace?.let {
+                    FlightPlanSlotLabel(it, it.openSlot, Modifier.e2eIndexedLabel(
+                        "parity:altitude-plan-heading",
+                        if (it.openSlot == org.aerobag.app.generated.FlightPlanSlot.Active) it.activeLabel else it.standbyLabel,
+                    ))
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

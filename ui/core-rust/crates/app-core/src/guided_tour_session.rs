@@ -65,7 +65,7 @@ pub(super) fn persist_introduction(s: &UiSession) -> AppResult<()> {
 /// clocks and platform capabilities continue to advance normally during a tour.
 #[derive(Clone)]
 pub(super) struct TourSavedState {
-    flight_plan: FlightPlanModelCheckpoint,
+    flight_plan: FlightPlanWorkspaceCheckpoint,
     settings: SettingsModelCheckpoint,
     situation: SituationModelCheckpoint,
     map: MapModelCheckpoint,
@@ -191,6 +191,7 @@ pub fn perform_guided_tour_action_in_session(
                         s.coordinator.tour_introduction_offered = Some(true);
                     }
                     s.coordinator.tour_saved = Some(Arc::new(TourSavedState::capture(s)));
+                    s.flight_plan.select(FlightPlanSlot::Active);
                     // A separate anonymous model prevents demo edits from reaching a
                     // real sync account, even if a command records a local mutation.
                     s.cloud = CloudController::default();
@@ -293,7 +294,7 @@ fn prepare_step(s: &mut UiSession, step: &Step) -> Result<(), SessionModelTransa
         None
     };
     let row_uid = if step.surface == app_ui_contracts::tour::UiTourSurface::FlightPlanRow {
-        let projected = crate::project_ui_state(&session_plan(s)?);
+        let projected = crate::project_ui_state(&open_session_plan(s)?);
         Some(
             projected
                 .display_rows
@@ -310,6 +311,7 @@ fn prepare_step(s: &mut UiSession, step: &Step) -> Result<(), SessionModelTransa
         )
     } else {
         s.flight_plan
+            .active
             .airway_picker()
             .view(s.nav_data.epoch())
             .map(|picker| picker.row_uid.clone())
@@ -341,6 +343,7 @@ fn prepare_step(s: &mut UiSession, step: &Step) -> Result<(), SessionModelTransa
         if matches!(step.demo, Demo::RouteDraft | Demo::RouteVia) {
             if let Some(route) = s
                 .flight_plan
+                .active
                 .routing_editor()
                 .view(s.nav_data.epoch())
                 .and_then(|v| v.route)
@@ -402,8 +405,8 @@ fn prepare_plan(s: &mut UiSession, demo: Demo) -> Result<(), SessionModelTransac
             input,
         )?
     };
-    s.flight_plan.set_airway_picker(Default::default());
-    s.flight_plan.set_routing_editor(Default::default());
+    s.flight_plan.active.set_airway_picker(Default::default());
+    s.flight_plan.active.set_routing_editor(Default::default());
     if matches!(demo, AirwayEntry | AirwayExit | AirwayAdded) {
         plan = prepare_airway(s, plan, demo)?;
     }
@@ -430,11 +433,11 @@ fn prepare_plan(s: &mut UiSession, demo: Demo) -> Result<(), SessionModelTransac
     if demo == Spot {
         plan = crate::insert_waypoint(&plan, 0, false, NavRef::Spot(guided_tour::TOUR_SPOT))?;
     }
-    let picker = s.flight_plan.airway_picker().clone();
-    let router = s.flight_plan.routing_editor().clone();
+    let picker = s.flight_plan.active.airway_picker().clone();
+    let router = s.flight_plan.active.routing_editor().clone();
     replace_session_flight_plan(s, plan)?;
-    s.flight_plan.set_airway_picker(picker);
-    s.flight_plan.set_routing_editor(router);
+    s.flight_plan.active.set_airway_picker(picker);
+    s.flight_plan.active.set_routing_editor(router);
     sync_guidance_geometry_for_session(s, &crate::CoreDebugTimer::start())?;
     if !matches!(demo, Empty) {
         sync_plan_preview_to_active_leg(s)?;
@@ -494,7 +497,7 @@ fn prepare_route(
         }
     }
     if matches!(demo, Demo::RouteDraft | Demo::RouteVia) {
-        s.flight_plan.set_routing_editor(editor);
+        s.flight_plan.active.set_routing_editor(editor);
         return Ok(plan);
     }
     let view = editor.view(epoch).unwrap();
@@ -531,7 +534,7 @@ fn prepare_airway(
         if (demo == Demo::AirwayEntry && label == "SEA")
             || (demo == Demo::AirwayExit && label == "BRUKK")
         {
-            s.flight_plan.set_airway_picker(picker);
+            s.flight_plan.active.set_airway_picker(picker);
             return Ok(plan);
         }
         let choice = view
@@ -563,7 +566,7 @@ fn prepare_airway(
 
 fn prepare_plate(s: &mut UiSession, subject: &str) -> Result<String, SessionModelTransactionError> {
     let (airport, desired) = subject.split_once(':').unwrap_or((subject, ""));
-    let plan = session_plan(s)?;
+    let plan = open_session_plan(s)?;
     let derived = crate::had_ops::chart_page_state(
         session_nav_kv_store(s)?,
         crate::had_ops::ChartPageQuery {

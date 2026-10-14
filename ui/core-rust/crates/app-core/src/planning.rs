@@ -2144,6 +2144,12 @@ fn flight_plan_control(
 
 pub(crate) fn flight_plan_control_symbol_id(id: FlightPlanControlId) -> &'static str {
     match id {
+        FlightPlanControlId::OpenActivePlan
+        | FlightPlanControlId::OpenStandbyPlan
+        | FlightPlanControlId::ToggleOpenPlan => "open_plan",
+        FlightPlanControlId::SwapPlans => "swap_plans",
+        FlightPlanControlId::CopyActiveToStandby => "copy_plan",
+        FlightPlanControlId::ClearStandby => "remove",
         FlightPlanControlId::ActivateNextLeg => "activate_next_leg",
         FlightPlanControlId::Redo => "redo",
         FlightPlanControlId::RestoreDirectTo => "restore_direct_to",
@@ -5612,7 +5618,7 @@ fn component_view_kind(component: &RouteComponent) -> RouteComponentViewKind {
     }
 }
 
-fn component_summary(component: &RouteComponent) -> String {
+pub(crate) fn component_summary(component: &RouteComponent) -> String {
     match component {
         RouteComponent::Waypoint { waypoint } => nav_ref_label(waypoint),
         RouteComponent::Airway { airway } => airway.name.clone(),

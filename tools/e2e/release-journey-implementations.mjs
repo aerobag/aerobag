@@ -895,6 +895,61 @@ async function planControl(runtime, controlId) {
   );
 }
 
+async function flightPlanWorkspace(runtime) {
+  await runtime.reset();
+  await acceptDisclaimer(runtime);
+  await runtime.openPage("flight_plan");
+  await appendRoute(runtime, "KSEA KPAE");
+  const heading = async (label) => {
+    const value = await runtime.driver.readElement("plan-slot-heading");
+    const settled = await runtime.driver.readElement("plan-workspace-transition:idle");
+    return value?.text === `${label} PLAN` && settled ? value : null;
+  };
+  const controlId = id => runtime.platform === "web" ? `plan-control-${id}` : `plan-control:${id}`;
+  const hasRoute = async (expected) => {
+    const rows = await planRows(runtime);
+    const airports = rows.map(row => row.text).filter(text => /^K[A-Z]{3}$/.test(text));
+    return JSON.stringify(airports) === JSON.stringify(expected) ? rows : null;
+  };
+  const copy = await runtime.action("copy Active to Standby", controlId("copy_active_to_standby"), {
+    complete: () => heading("STANDBY"),
+  });
+  const copied = await runtime.eventually("copied route", () => hasRoute(["KSEA", "KPAE"]));
+  runtime.check("plan.workspace.copy", Boolean(copy && copied));
+  const cleared = await runtime.action("clear Standby", controlId("clear_standby"), {
+    complete: async () => {
+      const route = await hasRoute([]);
+      const input = await runtime.driver.readElement("plan-append-route-input");
+      return route && input?.focused ? input : null;
+    },
+  });
+  runtime.check("plan.workspace.clear", Boolean(cleared));
+  await appendRoute(runtime, "KRNT KPLU");
+  const openedActive = await runtime.action("toggle to Active", controlId("toggle_open_plan"), {
+    complete: () => heading("ACTIVE"),
+  });
+  const untouched = await runtime.eventually("Active route remains unchanged", () => hasRoute(["KSEA", "KPAE"]));
+  runtime.check("plan.workspace.toggle", Boolean(openedActive && untouched));
+  const openedStandby = await runtime.action("open collapsed Standby", "plan-collapsed-open", {
+    complete: () => heading("STANDBY"),
+  });
+  await runtime.eventually("Standby retains its edits", () => hasRoute(["KRNT", "KPLU"]));
+  runtime.check("plan.workspace.open-standby", Boolean(openedStandby));
+  const swapped = await runtime.action("swap plans", controlId("swap_plans"), {
+    complete: () => heading("ACTIVE"),
+  });
+  await runtime.eventually("new Active route", () => hasRoute(["KRNT", "KPLU"]));
+  runtime.check("plan.workspace.swap", Boolean(swapped));
+  await runtime.action("open former Active", "plan-collapsed-open", {
+    complete: () => heading("STANDBY"),
+  });
+  await runtime.eventually("former Active retained", () => hasRoute(["KSEA", "KPAE"]));
+  const reopenedActive = await runtime.action("open collapsed Active", "plan-collapsed-open", {
+    complete: () => heading("ACTIVE"),
+  });
+  runtime.check("plan.workspace.open-active", Boolean(reopenedActive));
+}
+
 async function flightPlanEditAndNavigate(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
@@ -3755,6 +3810,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.startup-navigation": startupNavigation,
   "shared.chart-basic-use": chartBasicUse,
   "shared.flight-plan-edit-and-navigate": flightPlanEditAndNavigate,
+  "shared.flight-plan-workspace": flightPlanWorkspace,
   "shared.procedure-departure": procedureDeparture,
   "shared.procedure-arrival": procedureArrival,
   "shared.procedure-approach": procedureApproach,

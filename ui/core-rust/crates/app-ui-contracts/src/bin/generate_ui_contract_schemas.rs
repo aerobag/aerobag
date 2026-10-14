@@ -53,6 +53,7 @@ fn session_schema() -> Value {
     .insert("x-export-values".to_string(), Value::Bool(true));
     add_definition::<session::FlightEstimateKind>(&mut root, "FlightEstimateKind");
     add_definition::<session::FlightPlanControlId>(&mut root, "FlightPlanControlId");
+    add_definition::<session::FlightPlanSlot>(&mut root, "FlightPlanSlot");
     add_definition::<session::FlightPlanControlUiView>(&mut root, "FlightPlanControlUiView");
     add_definition::<session::FlightDataColumn>(&mut root, "FlightDataColumn");
     add_definition::<session::FlightDataBannerModel>(&mut root, "FlightDataBannerModel");
@@ -185,6 +186,7 @@ fn main() {
                 "UiNavigationPageOption",
                 "UiNavigationPageState",
                 "FlightPlanControlId",
+                "FlightPlanSlot",
                 "FlightPlanControlUiView",
                 "UiAirwayPickerButton",
                 "UiAirwayPickerSection",

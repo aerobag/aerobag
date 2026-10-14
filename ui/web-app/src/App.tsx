@@ -10,6 +10,7 @@ import type { UiTourAction } from "./generated/sessionPageWire";
 import { useMapGeometryBinding } from "./MapGeometryLayer";
 import { GeographicLineOverlay } from "./GeographicLineOverlay";
 import { AirwayRoutingOverlay } from "./AirwayRoutingOverlay";
+import { FlightPlanWorkspaceLayout } from "./FlightPlanWorkspaceLayout";
 import { GlideRingOverlay } from "./GlideRingOverlay";
 import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
@@ -18,6 +19,8 @@ import type {
   ChartPageData,
   ChartFamilyId,
   FlightPlanControlId,
+  FlightPlanControlUiView,
+  FlightPlanWorkspaceUi,
   FlightPlanEntryPreview,
   FlightPlanRouteProjection,
   FlightPlanRouteSegment,
@@ -1022,6 +1025,7 @@ type UiThemeJson = {
     guidance_arrow: string;
     remaining: string;
     distance_pill_bg: string;
+    standby: string;
     distance_pill_fg: string;
   };
   plate_folder: {
@@ -2304,6 +2308,8 @@ const appThemeVars = {
   "--theme-text-input-bg": controlTheme.text_input_bg,
   "--theme-button-icon-secondary": controlTheme.button_icon_secondary,
   "--theme-flight-plan-active": loadedUiTheme.flight_plan_route.active,
+  "--theme-flight-plan-standby": loadedUiTheme.flight_plan_route.standby,
+  "--theme-flight-plan-remaining": loadedUiTheme.flight_plan_route.remaining,
   "--theme-flight-plan-guidance-arrow": loadedUiTheme.flight_plan_route.guidance_arrow,
   "--theme-panel-bg": controlTheme.panel_bg,
   "--theme-panel-border": controlTheme.panel_border,
@@ -3387,9 +3393,11 @@ function OperationalApp() {
     };
   }, [uiSession, sessionRenderStore, applySessionSnapshot]);
   const planUiState = sessionSnapshot.app_ui_state.active_plan;
+  const planWorkspace = sessionSnapshot.app_ui_state.flight_plan_workspace ?? null;
+  const openPlanUiState = planWorkspace?.standby_plan ?? planUiState;
   const chartPageStateRequestKey = JSON.stringify([
-    planUiState?.plan_id ?? null,
-    planUiState?.plan_version ?? null,
+    openPlanUiState?.plan_id ?? null,
+    openPlanUiState?.plan_version ?? null,
     sessionSnapshot.chart_page_state,
     sessionSnapshot.notam_display_state_id ?? null,
   ]);
@@ -4112,6 +4120,7 @@ function OperationalApp() {
           onStatusAction={performStatusAction}
           planUiState={planUiState}
           playbackSourcePath={playbackSourcePath}
+          editingPlanUiState={openPlanUiState}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={applySessionSnapshotDispatch}
           onSituationControlInput={applySituationControlInput}
@@ -4129,7 +4138,9 @@ function OperationalApp() {
           uiSession={uiSession}
           page={page}
           pageHistory={pageHistory}
-          planUiState={planUiState}
+          planUiState={openPlanUiState}
+          workspace={planWorkspace}
+          activeNavElement={planUiState.guidance?.nav_element}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
@@ -4252,7 +4263,9 @@ function OperationalApp() {
       <PageLayer active={page === "altitude"}>
         <AltitudePlannerPage
           page={page}
-          planUiState={planUiState}
+          workspace={planWorkspace}
+          planUiState={openPlanUiState!}
+          activeNavElement={planUiState.guidance?.nav_element}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
@@ -4277,7 +4290,7 @@ function OperationalApp() {
           onToggleDepartureTimeBasis={async () => {
             if (!uiSession) return;
             applySessionSnapshot(
-              await uiSession.performTimeDisplayAction(planUiState.altitude_planner.departure.time_display_action_id),
+              await uiSession.performTimeDisplayAction(openPlanUiState!.altitude_planner.departure.time_display_action_id),
               "time_display_mode",
             );
           }}
@@ -4602,6 +4615,7 @@ function MapPage(props: {
   statusControls: UiSurfaceStatusState;
   onStatusAction: (actionId: string) => void | Promise<void>;
   planUiState: FlightPlanUiState | null;
+  editingPlanUiState: FlightPlanUiState | null;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
@@ -7604,9 +7618,9 @@ function MapPage(props: {
           onDoubleClick={handleDoubleClick}
         >
         {mapIsVisible && mapLayerState.glide_ring.visible && uiSession ? <GlideRingOverlay session={uiSession} geometry={mapGeometry} /> : null}
-        {mapInteraction.edit_route && props.planUiState?.airway_routing?.map_open && uiSession ? (
+        {mapInteraction.edit_route && props.editingPlanUiState?.airway_routing?.map_open && uiSession ? (
           <AirwayRoutingOverlay
-            view={props.planUiState.airway_routing} session={uiSession}
+            view={props.editingPlanUiState.airway_routing} session={uiSession}
             geometry={mapGeometry}
             renderSymbol={(feature) => <VectorPointSymbol feature={feature} showLabel={false} />}
             renderActionIcon={(symbolId) => { const layers = actionSymbol(symbolId); return layers ? <ActionIcon layers={layers} /> : null; }}
@@ -8012,6 +8026,7 @@ function MapPage(props: {
                         key={`route:${flightPlanRouteSegmentRenderKey(segment, segmentIndex)}`}
                         segment={segment}
                         layer="color"
+                        standby={flightPlanRouteProjection.standby_preview}
                       />
                     ))}
                     {routeScreenSegments.flatMap((segment, segmentIndex) =>
@@ -8056,7 +8071,7 @@ function MapPage(props: {
                           height={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX}
                           rx={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
                           fill="none"
-                          stroke={routeSegmentColor(layout.annotation.status)}
+                          stroke={routeSegmentColor(layout.annotation.status, flightPlanRouteProjection.standby_preview)}
                           strokeWidth="2"
                         />
                         <text
@@ -9311,6 +9326,8 @@ function PlaybackWidget(props: {
 }
 
 export function AltitudePlannerPage(props: {
+  workspace?: FlightPlanWorkspaceUi | null;
+  activeNavElement?: NavElementUiView | null;
   page: AppPage;
   planUiState: FlightPlanUiState;
   mostRecentChartOrPlatePage: AppPage;
@@ -9376,6 +9393,7 @@ export function AltitudePlannerPage(props: {
     }
   }, [
     props.page,
+    props.planUiState.plan_id,
     props.planUiState.plan_version,
     planner.estimate_summary.label,
     planner.departure.time_value,
@@ -9472,6 +9490,7 @@ export function AltitudePlannerPage(props: {
       ) : null}
       <header className="altitudePlannerPageHeader">
         <h1>{planner.title}</h1>
+        {props.workspace ? <FlightPlanSlotLabel workspace={props.workspace} slot={props.workspace.open_slot} testId="altitude-plan-heading" /> : null}
         <div className="altitudePlannerControls" data-testid="altitude-planner-control-tray">
           {planner.controls.map((control) => {
             const disabledReason = disabledReasonText(control.disabled_reason);
@@ -9725,7 +9744,7 @@ export function AltitudePlannerPage(props: {
 
       <PrimaryNavigationDock
         page={props.page}
-        navElement={props.planUiState.guidance?.nav_element}
+        navElement={props.activeNavElement}
         chartPlateTargetPage={props.mostRecentChartOrPlatePage}
         onSelectPage={props.onSelectPage}
         onOpenPlan={() => props.onSelectPage("plan")}
@@ -9740,7 +9759,56 @@ export function AltitudePlannerPage(props: {
   );
 }
 
+export function FlightPlanSlotLabel(props: {
+  workspace: FlightPlanWorkspaceUi;
+  slot: FlightPlanWorkspaceUi["open_slot"];
+  testId?: string;
+}) {
+  return <span className={`planSlotLabel is${props.slot}`} data-testid={props.testId}>
+    {props.slot === "active" ? props.workspace.active_label : props.workspace.standby_label}
+  </span>;
+}
+
+export function FlightPlanWorkspaceButton(props: {
+  control: FlightPlanControlUiView;
+  onControl: (id: FlightPlanControlId) => void;
+  onDisabled: (message: string) => void;
+}) {
+  const { control } = props;
+  const layers = actionSymbol(control.symbol_id);
+  return <button type="button" className="trayButton trayButtonSquare planControlButton planWorkspaceButton"
+    data-testid={`plan-control-${control.id}`} title={control.disabled_reason ?? control.label}
+    aria-label={control.label} aria-disabled={!control.enabled}
+    onClick={() => control.enabled ? props.onControl(control.id) : props.onDisabled(control.disabled_reason ?? control.label)}>
+    {layers ? <ActionIcon layers={layers} /> : null}
+  </button>;
+}
+
+export function FlightPlanWorkspaceBand(props: {
+  workspace: FlightPlanWorkspaceUi;
+  onControl: (id: FlightPlanControlId) => void;
+  onDisabled: (message: string) => void;
+}) {
+  const w = props.workspace;
+  const standby = w.open_slot === "active";
+  return <div className="planWorkspaceBand">
+    <div className="planCollapsedSummary">
+      <button type="button" className="planCollapsedOpen" data-testid="plan-collapsed-open"
+        onClick={() => props.onControl(standby ? "open_standby_plan" : "open_active_plan")}>
+        <FlightPlanSlotLabel workspace={w} slot={standby ? "standby" : "active"} />
+      </button>
+      <input readOnly data-testid="plan-collapsed-summary"
+        aria-label={standby ? w.standby_label : w.active_label}
+        value={standby ? w.standby_summary : w.active_summary}
+        onFocus={event => event.currentTarget.select()} />
+    </div>
+    {w.controls.map(control => <FlightPlanWorkspaceButton key={control.id} control={control} onControl={props.onControl} onDisabled={props.onDisabled} />)}
+  </div>;
+}
+
 function FlightPlanPage(props: {
+  workspace: FlightPlanWorkspaceUi | null;
+  activeNavElement?: NavElementUiView | null;
   appCoreAdapter: AppCoreAdapter | null;
   uiSession: UiSession | null;
   page: AppPage;
@@ -9824,7 +9892,25 @@ function FlightPlanPage(props: {
     loading: boolean;
     suggestions: WaypointIdentifierSuggestion[];
   } | null>(null);
-  const [routeEntryText, setRouteEntryText] = useState("");
+  const [routeEntryDrafts, setRouteEntryDrafts] = useState<Record<string, string>>({});
+  const draftId = props.planUiState?.plan_id ?? "";
+  const routeEntryText = routeEntryDrafts[draftId] ?? "";
+  const setRouteEntryText = (text: string) => setRouteEntryDrafts((drafts) => ({ ...drafts, [draftId]: text }));
+  const entryRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastFocusRevision = useRef(props.workspace?.entry_focus_revision ?? 0);
+  useEffect(() => {
+    setSelectedWaypointUid(null);
+    setProcedurePicker(null);
+    setAirportInsert(null);
+  }, [props.workspace?.open_slot, draftId]);
+  useEffect(() => {
+    const revision = props.workspace?.entry_focus_revision ?? 0;
+    if (revision === lastFocusRevision.current) return;
+    lastFocusRevision.current = revision;
+    setRouteEntryText("");
+    entryRef.current?.scrollIntoView({ block: "nearest" });
+    entryRef.current?.focus();
+  }, [props.workspace?.entry_focus_revision]);
   const [routeEntryPreview, setRouteEntryPreview] = useState<FlightPlanEntryPreview>({
     can_commit: false,
     tokens: [],
@@ -10382,6 +10468,12 @@ function FlightPlanPage(props: {
 
   return (
     <section className="appPage planPage" ref={pageRef} data-testid="parity:page:flight_plan">
+      <FlightPlanWorkspaceLayout slot={props.workspace?.open_slot ?? "active"}
+        band={props.workspace ? <FlightPlanWorkspaceBand workspace={props.workspace} onControl={performFlightPlanControl} onDisabled={showDisabledAction} /> : null}>
+      {props.workspace ? <div className="planSlotHeading">
+        <FlightPlanSlotLabel workspace={props.workspace} slot={props.workspace.open_slot} testId="plan-slot-heading" />
+      </div> : null}
+      {props.workspace?.notice ? <div className="planWorkspaceNotice" role="status">{props.workspace.notice}</div> : null}
       <span
         data-testid={`parity:plan-state:rows:${planUiState.display_rows.length}:active:${planUiState.display_rows.filter((row) => row.active).map((row) => row.uid).join(",") || "none"}:from:${guidance?.active_from_row_uid ?? "none"}:to:${guidance?.active_to_row_uid ?? "none"}`}
         aria-hidden="true"
@@ -10597,6 +10689,7 @@ function FlightPlanPage(props: {
                   )}
                   <textarea
                     className="planEntryInput"
+                    ref={entryRef}
                     data-testid="plan-append-route-input"
                     value={routeEntryText}
                     spellCheck={false}
@@ -10615,6 +10708,7 @@ function FlightPlanPage(props: {
                     }}
                   />
                 </div>
+                {props.workspace?.open_slot === "standby" ? <FlightPlanWorkspaceButton control={props.workspace.clear_standby} onControl={performFlightPlanControl} onDisabled={showDisabledAction} /> : null}
               </form>
               {routeEntryError ? (
                 <div className="planEntryFeedback" data-testid="plan-append-route-feedback">{routeEntryError}</div>
@@ -10628,6 +10722,7 @@ function FlightPlanPage(props: {
         </div>
       </div>
 
+      </FlightPlanWorkspaceLayout>
       <div className="planControls" ref={planControlsRef}>
         {planControls.map((control) => {
           const disabledReason = disabledReasonText(control.disabled_reason);
@@ -10671,7 +10766,7 @@ function FlightPlanPage(props: {
 
       <PrimaryNavigationDock
         page={props.page}
-        navElement={planUiState.guidance?.nav_element}
+        navElement={props.activeNavElement}
         chartPlateTargetPage={props.mostRecentChartOrPlatePage}
         onSelectPage={props.onSelectPage}
         onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
@@ -12871,7 +12966,7 @@ export function ChartsPage(props: {
               >
                 {plateFlightPlanScreenSegments.map((segment, segmentIndex) => (
                   <Fragment key={`${segment.id}:${segmentIndex}`}>
-                    <FlightPlanRoutePath segment={segment} />
+                    <FlightPlanRoutePath segment={segment} standby={plateFlightPlanRouteProjection.standby_preview} />
                   </Fragment>
                 ))}
               </svg>
@@ -14455,7 +14550,8 @@ function flightPlanEntryPreviewSegments(
   return segments;
 }
 
-function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
+function routeSegmentColor(status: FlightPlanRouteSegment["status"], standby = false) {
+  if (standby && status !== "active") return loadedUiTheme.flight_plan_route.standby;
   if (status === "completed") {
     return loadedUiTheme.flight_plan_route.completed;
   }
@@ -14471,6 +14567,7 @@ function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
 function FlightPlanRoutePath(props: {
   segment: Pick<FlightPlanRouteSegment, "status" | "style"> & { path: readonly ScreenPoint[] };
   layer?: "contrast" | "color" | "both";
+  standby?: boolean;
 }) {
   const { segment, layer = "both" } = props;
   const strokeForLayer = (renderLayer: "contrast" | "color") =>
@@ -14480,7 +14577,7 @@ function FlightPlanRoutePath(props: {
           width: 7,
         }
       : {
-          color: routeSegmentColor(segment.status),
+          color: routeSegmentColor(segment.status, props.standby),
           width: 3.5,
         };
   const renderLayers: Array<"contrast" | "color"> =

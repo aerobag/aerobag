@@ -43,6 +43,12 @@
       "offline_regions": "layer.offline-regions"
     },
     "flight_plan_controls": {
+      "open_active_plan": "plan.workspace.open-active",
+      "open_standby_plan": "plan.workspace.open-standby",
+      "toggle_open_plan": "plan.workspace.toggle",
+      "swap_plans": "plan.workspace.swap",
+      "copy_active_to_standby": "plan.workspace.copy",
+      "clear_standby": "plan.workspace.clear",
       "activate_next_leg": "plan.activate-next-leg",
       "redo": "plan.redo",
       "restore_direct_to": "plan.restore-direct-to",

@@ -28,8 +28,64 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type ActionSymbolId = "vor" | "gnss" | "apply_route" | "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "start_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "find_route" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
+export type ActionSymbolId = "open_plan" | "swap_plans" | "copy_plan" | "vor" | "gnss" | "apply_route" | "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "start_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "find_route" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
 export const actionSymbols = {
+  "open_plan": [
+    {
+      "path": "M -19 -15 H 19 V -7 H -19 Z",
+      "paint": "action_row",
+      "fill": "button_icon_secondary",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 0 -8 V 6",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -7 6 L 0 18 L 7 6 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "swap_plans": [
+    {
+      "path": "M -9 15 V -15 L -17 -7 M -9 -15 L -1 -7 M 9 -15 V 15 L 1 7 M 9 15 L 17 7",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "copy_plan": [
+    {
+      "path": "M -4 -7 H 15 V 16 H -4 Z M -10 9 H -16 V -16 H 6 V -12",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
   "vor": [
     {
       "path": "M -16 0 L -8 -14 L 8 -14 L 16 0 L 8 14 L -8 14 Z",

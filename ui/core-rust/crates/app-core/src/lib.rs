@@ -28,6 +28,7 @@ pub mod errors;
 pub mod flight_data;
 mod flight_plan_controller;
 mod flight_plan_materialization;
+mod flight_plan_workspace;
 mod forecast_atmosphere;
 pub mod freshness;
 pub mod geodesy;
@@ -500,6 +501,8 @@ pub struct FlightPlanRouteDistanceAnnotation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanRouteProjection {
     pub flight_plan_route_revision: u64,
+    #[serde(default)]
+    pub standby_preview: bool,
     pub segments: Vec<FlightPlanRouteSegment>,
     #[serde(default)]
     pub distance_annotations: Vec<FlightPlanRouteDistanceAnnotation>,

@@ -28,11 +28,26 @@ import kotlinx.serialization.json.jsonPrimitive
 data class WireAppUiState(
     val map_interaction: org.aerobag.app.generated.UiMapInteraction? = null,
     val active_plan: WireFlightPlanUiState? = null,
+    val flight_plan_workspace: WireFlightPlanWorkspaceUi? = null,
     val aircraft_plan_view_path: String = "",
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
     val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(cells = emptyList()),
     val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
     val last_content_report: WireContentReport? = null,
+)
+
+@Serializable
+data class WireFlightPlanWorkspaceUi(
+    val open_slot: org.aerobag.app.generated.FlightPlanSlot,
+    val active_label: String,
+    val standby_label: String,
+    val active_summary: String,
+    val standby_summary: String,
+    val standby_plan: WireFlightPlanUiState? = null,
+    val controls: List<org.aerobag.app.generated.FlightPlanControlUiView>,
+    val clear_standby: org.aerobag.app.generated.FlightPlanControlUiView,
+    val entry_focus_revision: Long,
+    val notice: String? = null,
 )
 
 @Serializable
@@ -1152,6 +1167,7 @@ data class WireFlightPlanRouteDistanceAnnotation(
 
 @Serializable
 data class WireFlightPlanRouteProjection(
+    val standby_preview: Boolean = false,
     val flight_plan_route_revision: Long,
     val segments: List<WireFlightPlanRouteSegment>,
     val distance_annotations: List<WireFlightPlanRouteDistanceAnnotation> = emptyList(),

@@ -373,6 +373,7 @@ internal fun FlightPlanPage(
     uptimeLabel: String,
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
+    workspace: org.aerobag.app.domain.FlightPlanWorkspaceUi? = null,
     planListState: LazyListState,
     uiTheme: UiTheme,
     overlayState: FlightPlanOverlayState,
@@ -425,7 +426,13 @@ internal fun FlightPlanPage(
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
     val airportInfoScope = rememberCoroutineScope()
-    var routeEntryText by remember { mutableStateOf("") }
+    var routeEntryDrafts by remember { mutableStateOf(mapOf<String, String>()) }
+    val draftId = planUiState?.planId.orEmpty()
+    var routeEntryText by remember(draftId) { mutableStateOf(routeEntryDrafts[draftId].orEmpty()) }
+    androidx.compose.runtime.SideEffect {
+        if (routeEntryDrafts[draftId] != routeEntryText) routeEntryDrafts = routeEntryDrafts + (draftId to routeEntryText)
+    }
+    val routeEntryFocusRequester = remember { FocusRequester() }
     var routeEntryPreview by remember { mutableStateOf(emptyFlightPlanEntryPreview()) }
     var routeEntryLoading by remember { mutableStateOf(false) }
     var routeEntryError by remember { mutableStateOf<String?>(null) }
@@ -472,6 +479,22 @@ internal fun FlightPlanPage(
     }
     val blocks = remember(rows) {
         buildFlightPlanDisplayBlocks(rows)
+    }
+    var lastEntryFocusRevision by remember { mutableStateOf(workspace?.entryFocusRevision ?: 0L) }
+    LaunchedEffect(workspace?.entryFocusRevision) {
+        val revision = workspace?.entryFocusRevision ?: 0L
+        if (revision != lastEntryFocusRevision) {
+            lastEntryFocusRevision = revision
+            routeEntryText = ""
+            planListState.scrollToItem(blocks.size)
+            androidx.compose.runtime.withFrameNanos { }
+            routeEntryFocusRequester.requestFocus()
+        }
+    }
+    LaunchedEffect(workspace?.openSlot, draftId) {
+        onOverlayAction(FlightPlanOverlayAction.Dismiss)
+        procedurePicker = null
+        airportInsert = null
     }
     val configuration = LocalConfiguration.current
     val planControlItemSize = ThumbSize + 8.dp
@@ -820,7 +843,8 @@ internal fun FlightPlanPage(
             .e2ePageRoot("parity:page:flight_plan")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        Column(
+        FlightPlanWorkspaceLayout(
+            slot = workspace?.openSlot ?: org.aerobag.app.generated.FlightPlanSlot.Active,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(
@@ -829,8 +853,17 @@ internal fun FlightPlanPage(
                     end = ThumbGap,
                     bottom = planFooterHeight,
                 ),
-            verticalArrangement = Arrangement.spacedBy(PlanGridGap),
+            band = { workspace?.let { FlightPlanWorkspaceBand(it, ::performFlightPlanControl) } },
         ) {
+            workspace?.let {
+                val slotLabel = if (it.openSlot == org.aerobag.app.generated.FlightPlanSlot.Active) it.activeLabel else it.standbyLabel
+                FlightPlanSlotLabel(
+                    workspace = it,
+                    slot = it.openSlot,
+                    modifier = Modifier.e2eIndexedLabel("parity:plan-slot-heading", slotLabel),
+                )
+                it.notice?.let { notice -> Text(notice, style = MaterialTheme.typography.titleMedium) }
+            }
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -933,7 +966,10 @@ internal fun FlightPlanPage(
                             }
                         }
                         item {
+                            Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                            Box(Modifier.weight(1f)) {
                             FlightPlanRouteEntryRow(
+                                focusRequester = routeEntryFocusRequester,
                                 text = routeEntryText,
                                 preview = routeEntryPreview,
                                 loading = routeEntryLoading,
@@ -949,6 +985,11 @@ internal fun FlightPlanPage(
                                 },
                                 onSubmit = { submitRouteEntry() },
                             )
+                            }
+                            if (workspace?.openSlot == org.aerobag.app.generated.FlightPlanSlot.Standby) {
+                                FlightPlanWorkspaceButton(workspace.clearStandby, ::performFlightPlanControl)
+                            }
+                            }
                         }
                     }
                 }
@@ -1524,6 +1565,7 @@ internal fun FlightPlanRouteEntryRow(
     onTextChange: (String) -> Unit,
     onFocusChange: (Boolean) -> Unit,
     onSubmit: () -> Unit,
+    focusRequester: FocusRequester? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val submitAction = rememberCurrentAction(onSubmit)
@@ -1581,6 +1623,7 @@ internal fun FlightPlanRouteEntryRow(
             ),
             modifier =
                 Modifier
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .e2eIndexedTextControl(
                         semanticTag = "parity:plan-append-route-input",
                         text = text,

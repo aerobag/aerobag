@@ -1575,16 +1575,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       snapshot = await runSessionMutation(operation, undefined, operationLabel);
       return snapshot;
     };
-    const performFlightPlanCommand = (command: Record<string, unknown>) =>
-      runFlightPlanMutation(
+    const performFlightPlanCommand = (command: Record<string, unknown>) => {
+      const plan = snapshot.app_ui_state.flight_plan_workspace?.standby_plan ?? snapshot.app_ui_state.active_plan;
+      const boundCommand = { kind: "for_open_plan", plan_id: plan?.plan_id ?? "", command };
+      return runFlightPlanMutation(
         () =>
           this.module.perform_flight_plan_command_in_session(
             handle,
-            JSON.stringify(command),
+            JSON.stringify(boundCommand),
             BigInt(this.clockEpochMs()),
           ),
         `flight_plan.${command.kind}`,
       );
+    };
     const queryFlightPlan = <T,>(query: Record<string, unknown>) =>
       runSessionResult<T>(
         () => this.module.query_flight_plan_in_session(handle, JSON.stringify(query)),

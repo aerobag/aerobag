@@ -166,6 +166,7 @@ data class FlightPlanRouteDistanceAnnotation(
 )
 
 data class FlightPlanRouteProjection(
+    val standbyPreview: Boolean = false,
     val flightPlanRouteRevision: Long,
     val segments: List<FlightPlanRouteSegment>,
     val distanceAnnotations: List<FlightPlanRouteDistanceAnnotation> = emptyList(),
@@ -618,9 +619,23 @@ data class ChartPageFixture(
 data class AppUiState(
     val mapInteraction: org.aerobag.app.generated.UiMapInteraction? = null,
     val activePlan: FlightPlanUiState? = null,
+    val flightPlanWorkspace: FlightPlanWorkspaceUi? = null,
     val aircraftPlanViewPath: String = "",
     val ownship: OwnshipUiState = OwnshipUiState(),
     val flightDataBanner: FlightDataBannerModel = FlightDataBannerModel(),
+)
+
+data class FlightPlanWorkspaceUi(
+    val openSlot: org.aerobag.app.generated.FlightPlanSlot,
+    val activeLabel: String,
+    val standbyLabel: String,
+    val activeSummary: String,
+    val standbySummary: String,
+    val standbyPlan: FlightPlanUiState?,
+    val controls: List<FlightPlanControlUiView>,
+    val clearStandby: FlightPlanControlUiView,
+    val entryFocusRevision: Long,
+    val notice: String?,
 )
 
 sealed interface OwnshipSelection {

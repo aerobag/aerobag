@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
   "paths": {
+    "action_swap_plans": "M -9 15 V -15 L -17 -7 M -9 -15 L -1 -7 M 9 -15 V 15 L 1 7 M 9 15 L 17 7",
+    "action_copy_plan": "M -4 -7 H 15 V 16 H -4 Z M -10 9 H -16 V -16 H 6 V -12",
     "action_apply_plus": "M -14 0 H 14 M 0 -14 V 14",
     "action_vor_hex": "M -16 0 L -8 -14 L 8 -14 L 16 0 L 8 14 L -8 14 Z",
     "action_satellite_body": "M -5 -6 H 5 V 6 H -5 Z",
@@ -109,6 +111,12 @@
       { "path": "action_direct_to_d", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round", "line_join": "round" },
       { "path": "action_direct_to_shaft", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round" },
       { "path": "action_direct_to_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_swap_plans": [
+      { "path": "action_swap_plans", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" }
+    ],
+    "action_copy_plan": [
+      { "path": "action_copy_plan", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" }
     ],
     "action_undo": [
       { "path": "action_undo_arc", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
@@ -344,6 +352,9 @@
     ]
   },
   "action_symbols": {
+    "open_plan": "action_move_down",
+    "swap_plans": "action_swap_plans",
+    "copy_plan": "action_copy_plan",
     "vor": "action_vor",
     "gnss": "action_gnss",
     "apply_route": "action_apply_route",

@@ -26,6 +26,7 @@ pub struct AppState {
 pub struct AppUiState {
     pub map_interaction: app_ui_contracts::session::UiMapInteraction,
     pub active_plan: Option<FlightPlanUiState>,
+    pub flight_plan_workspace: Option<crate::flight_plan_workspace::FlightPlanWorkspaceUi>,
     pub aircraft_plan_view_path: String,
     pub ownship: OwnshipUiState,
     pub flight_data_banner: FlightDataBannerModel,
@@ -149,6 +150,7 @@ pub(crate) fn project_app_ui_state_from_ui_parts(
         map_interaction: crate::map_controller::interaction_policy(false),
         active_plan,
         aircraft_plan_view_path: String::new(),
+        flight_plan_workspace: None,
         ownship,
         flight_data_banner: FlightDataBannerModel::default(),
         content_policy,

@@ -89,7 +89,11 @@ pub fn query_glide_ring_in_session(handle: u32, epoch_ms: i64) -> AppResult<HadO
     let track = kinematics.track_deg_true;
     let aircraft = match crate::had_ops::planner_aircraft(
         session_nav_kv_store(session)?,
-        session_plan(session)?.aircraft.as_ref(),
+        session
+            .flight_plan
+            .active
+            .active_plan()
+            .and_then(|plan| plan.aircraft.as_ref()),
         &session_aircraft_definitions(session)?,
     ) {
         Ok(aircraft) => aircraft,

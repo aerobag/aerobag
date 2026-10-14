@@ -47,11 +47,15 @@ class AndroidStartupPreparationBoundaryTest {
 
     @Test
     fun expensiveChartProjectionIsDeferredAndNeverRunsOnTheUiThread() {
+        assertTrue(activitySource.contains(
+            "val openPlanUiState = appUiState.flightPlanWorkspace?.standbyPlan ?: sessionPlanUiState",
+        ))
         val projection = sourceBetween(
             activitySource,
-            "LaunchedEffect(\n        uiSession,\n        page,\n        sessionPlanUiState.planId,",
-            "    LaunchedEffect(uiSession) {",
+            "LaunchedEffect(\n        uiSession,\n        page,\n        openPlanUiState.planId,",
+            "    val barometerLifecycle =",
         )
+        assertTrue(projection.contains("openPlanUiState.planVersion,"))
         assertTrue(projection.contains("if (page != AppPage.Charts) return@LaunchedEffect"))
         assertTrue(
             projection.contains(

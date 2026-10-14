@@ -83,7 +83,7 @@ use crate::{
     },
     flight_plan_controller::{
         guidance_leg_geometry_from_route, self_contained_guidance_leg_geometry_for_plan,
-        FlightPlanController, FlightPlanModelCheckpoint, FlightPlanProjectionInputs,
+        FlightPlanController, FlightPlanProjectionInputs,
     },
     freshness::{
         cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant,
@@ -161,7 +161,10 @@ mod guided_tour_session;
 pub use guided_tour_session::perform_guided_tour_action_in_session;
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
-const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
+use crate::flight_plan_workspace::{
+    FlightPlanSlot, FlightPlanWorkspace, FlightPlanWorkspaceCheckpoint,
+};
+const SETTINGS_PERSISTENCE_VERSION: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SettingsPersistenceDocument {
     version: u32,
@@ -170,6 +173,10 @@ struct SettingsPersistenceDocument {
     cloud: CloudPersistentState,
     #[serde(default)]
     service_notifications: crate::service_notifications::ServicePersistentState,
+    #[serde(default)]
+    standby_plan: Option<FlightPlan>,
+    #[serde(default)]
+    open_plan_slot: FlightPlanSlot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,7 +235,7 @@ struct UiSession {
     coordinator: SessionCoordinatorModel,
     projection_versions: SessionProjectionVersionState,
     settings: SettingsController,
-    flight_plan: FlightPlanController,
+    flight_plan: FlightPlanWorkspace,
     nav_data: NavDataController,
     packages: PackageController,
     cloud: CloudController,
@@ -367,7 +374,7 @@ impl SessionDiagnosticsCounters {
             weather_revision: session.weather.revision(),
             map_revision: session.map.revision(),
             situation_revision: session.situation.revision(),
-            flight_plan_revision: session.flight_plan.revision(),
+            flight_plan_revision: session.flight_plan.active.revision(),
             nav_data_revision: session.nav_data.revision(),
             package_revision: session.packages.revision(),
             package_projection_count: self.package_projection_count.load(Ordering::Relaxed),
@@ -503,6 +510,12 @@ enum RegisteredMapSelectionAction {
         action_uid: String,
     },
     PerformSession(MapSelectionSessionAction),
+}
+
+#[derive(Serialize, Deserialize)]
+struct MapSelectionActionToken {
+    edit_plan_id: Option<String>,
+    action: RegisteredMapSelectionAction,
 }
 
 #[derive(Clone)]
@@ -2246,7 +2259,10 @@ fn create_ui_session_inner(
     let situation = SituationController::new(app_state.ownship.clone());
     let guidance_leg_geometry =
         self_contained_guidance_leg_geometry_for_plan(&active_plan)?.unwrap_or_default();
-    let flight_plan = FlightPlanController::new(active_plan.clone(), guidance_leg_geometry)?;
+    let flight_plan = FlightPlanWorkspace::new(FlightPlanController::new(
+        active_plan.clone(),
+        guidance_leg_geometry,
+    )?)?;
     let cloud = CloudController::default();
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_derive_chart_page_state");
@@ -2617,6 +2633,7 @@ pub fn perform_cloud_ui_action_in_session(
         advance_session_wall_clock(session, now_epoch_ms);
         let plan = session
             .flight_plan
+            .active
             .active_plan()
             .cloned()
             .ok_or_else(|| missing_active_plan_error("cloud action"))?;
@@ -2752,6 +2769,7 @@ pub fn complete_cloud_provider_request_in_session(
         if let Some(remote_plan) = updates.remote_flight_plan {
             let navigation_active = session
                 .flight_plan
+                .active
                 .active_plan()
                 .as_ref()
                 .is_some_and(|plan| plan.guidance.is_some());
@@ -2777,7 +2795,7 @@ struct SessionModelTransactionCheckpoint {
     coordinator: SessionCoordinatorModel,
     projection_versions: SessionProjectionVersionState,
     settings: SettingsModelCheckpoint,
-    flight_plan: FlightPlanModelCheckpoint,
+    flight_plan: FlightPlanWorkspaceCheckpoint,
     nav_data: NavDataModelCheckpoint,
     packages: PackageModelCheckpoint,
     cloud: CloudModelCheckpoint,
@@ -3517,6 +3535,7 @@ fn install_guidance_leg_geometry(
 ) -> AppResult<()> {
     session
         .flight_plan
+        .active
         .install_guidance_leg_geometry(geometries);
     if selected_ownship_source_kind(session.situation.ownship())
         == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
@@ -3557,8 +3576,8 @@ fn sync_guidance_geometry_for_session(
     session: &mut UiSession,
     started: &crate::CoreDebugTimer,
 ) -> Result<(), HadReadError> {
-    let Some(plan) = session.flight_plan.active_plan().cloned() else {
-        session.flight_plan.clear_guidance_leg_geometry();
+    let Some(plan) = session.flight_plan.active.active_plan().cloned() else {
+        session.flight_plan.active.clear_guidance_leg_geometry();
         crate::core_debug_log(
             "plan.guidance.sync.core_phase",
             &serde_json::json!({
@@ -3589,7 +3608,7 @@ fn sync_guidance_geometry_for_session(
             install_guidance_leg_geometry(session, geometries)
                 .map_err(|err| HadReadError::Fatal(err.message))?;
         } else {
-            session.flight_plan.clear_guidance_leg_geometry();
+            session.flight_plan.active.clear_guidance_leg_geometry();
         }
         crate::core_debug_log(
             "plan.guidance.sync.core_phase",
@@ -3638,16 +3657,44 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let store = session_nav_kv_store(session)?.clone();
-    match session
+    let projection = session
         .flight_plan
+        .open_mut()
         .project_route(&store, session.nav_data.generation())
-    {
-        Ok((projection, _rebuilt)) => Ok(HadOperationOutcome::complete(
-            serde_json::to_value(projection).map_err(|err| AppError {
-                kind: AppErrorKind::Internal,
-                message: err.to_string(),
-            })?,
-        )),
+        .and_then(|(mut projection, rebuilt)| {
+            if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+                let (active, _) = session
+                    .flight_plan
+                    .active
+                    .project_route(&store, session.nav_data.generation())?;
+                // Keep the CDI's leg visible, not the rest of the Active plan.
+                // Prefix its render IDs because the Standby plan may be a copy.
+                projection.segments.extend(
+                    active
+                        .segments
+                        .into_iter()
+                        .filter(|segment| {
+                            segment.status == crate::FlightPlanRouteSegmentStatus::Active
+                        })
+                        .map(|mut segment| {
+                            segment.id = format!("active-guidance:{}", segment.id);
+                            segment
+                        }),
+                );
+            }
+            Ok((projection, rebuilt))
+        });
+    match projection {
+        Ok((mut projection, _rebuilt)) => {
+            projection.flight_plan_route_revision = session.flight_plan.route_revision();
+            projection.standby_preview = session.flight_plan.open_slot == FlightPlanSlot::Standby;
+            Ok(HadOperationOutcome::complete(
+                serde_json::to_value(projection).map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+            ))
+        }
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
         }),
@@ -3662,7 +3709,7 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<Had
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let (airport_id, recent_airport_ids) = chart_airport_selection(session, airport_id)?;
     session.coordinator.chart_page_state = derive_compact_chart_page_state(
         &plan,
@@ -3686,7 +3733,7 @@ pub fn open_chart_airport_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let (airport_id, recent_airport_ids) = chart_airport_selection(session, airport_id)?;
     session.coordinator.chart_page_state =
         derive_compact_chart_page_state_with_reference(CompactChartPageInput {
@@ -3734,7 +3781,7 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOper
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     session.coordinator.chart_page_state =
         derive_compact_chart_page_state_with_reference(CompactChartPageInput {
             plan: &plan,
@@ -3764,7 +3811,7 @@ pub fn select_chart_reference_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     session.coordinator.chart_page_state =
         derive_compact_chart_page_state_with_reference(CompactChartPageInput {
             plan: &plan,
@@ -4169,6 +4216,10 @@ pub fn tick_bad_autopilot_in_session(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlightPlanSessionCommand {
+    ForOpenPlan {
+        plan_id: String,
+        command: Box<FlightPlanSessionCommand>,
+    },
     PerformAirwayRoutingAction {
         action_id: String,
     },
@@ -4257,12 +4308,25 @@ pub fn perform_flight_plan_command_in_session(
         advance_session_wall_clock(&mut session, now_epoch_ms);
     }
     match command {
+        FlightPlanSessionCommand::ForOpenPlan { plan_id, command } => {
+            // Resource retries must retain their original edit target. Navigation
+            // and workspace controls have explicit targets independent of the open plan.
+            let edits_open_plan = !matches!(&*command,
+                FlightPlanSessionCommand::PerformControl { control_id }
+                    if !matches!(control_id, crate::FlightPlanControlId::Undo | crate::FlightPlanControlId::Redo));
+            if edits_open_plan {
+                let slot = session_slot(handle)?;
+                let session = slot.lock_running()?;
+                session.flight_plan.require_open_plan_id(&plan_id)?;
+            }
+            perform_flight_plan_command_in_session(handle, *command, now_epoch_ms)
+        }
         FlightPlanSessionCommand::PerformAirwayRoutingAction { action_id } => {
             let slot = session_slot(handle)?;
             let mut session = slot.lock_running()?;
-            let transition = session.flight_plan.routing_editor().advance(
+            let transition = session.flight_plan.open().routing_editor().advance(
                 session_nav_kv_store(&session)?,
-                &session_plan(&session)?,
+                &open_session_plan(&session)?,
                 &action_id,
                 session.nav_data.epoch(),
             );
@@ -4280,6 +4344,7 @@ pub fn perform_flight_plan_command_in_session(
             let mut session = slot.lock_running()?;
             let transition = session
                 .flight_plan
+                .open()
                 .routing_editor()
                 .drag(
                     session.nav_data.epoch(),
@@ -4344,6 +4409,14 @@ fn perform_flight_plan_control_in_session(
     control_id: crate::FlightPlanControlId,
 ) -> AppResult<HadOperationOutcome> {
     match control_id {
+        crate::FlightPlanControlId::OpenActivePlan
+        | crate::FlightPlanControlId::OpenStandbyPlan
+        | crate::FlightPlanControlId::ToggleOpenPlan
+        | crate::FlightPlanControlId::SwapPlans
+        | crate::FlightPlanControlId::CopyActiveToStandby
+        | crate::FlightPlanControlId::ClearStandby => {
+            perform_plan_workspace_control(handle, control_id)
+        }
         crate::FlightPlanControlId::ActivateNextLeg => activate_next_leg_in_session(handle),
         crate::FlightPlanControlId::Redo => redo_flight_plan_edit_in_session(handle),
         crate::FlightPlanControlId::RestoreDirectTo => restore_direct_to_in_session(handle),
@@ -4354,6 +4427,81 @@ fn perform_flight_plan_control_in_session(
         }
         crate::FlightPlanControlId::Undo => undo_flight_plan_edit_in_session(handle),
     }
+}
+
+fn perform_plan_workspace_control(
+    handle: u32,
+    control: crate::FlightPlanControlId,
+) -> AppResult<HadOperationOutcome> {
+    use crate::FlightPlanControlId::*;
+    let slot = session_slot(handle)?;
+    let mut guard = slot.lock_running()?;
+    let session = &mut *guard;
+    run_session_model_transaction(session, |session| {
+        let prior = session.flight_plan.active.active_plan().cloned();
+        match control {
+            OpenActivePlan => session.flight_plan.select(FlightPlanSlot::Active),
+            OpenStandbyPlan => session.flight_plan.select(FlightPlanSlot::Standby),
+            ToggleOpenPlan => session
+                .flight_plan
+                .select(match session.flight_plan.open_slot {
+                    FlightPlanSlot::Active => FlightPlanSlot::Standby,
+                    FlightPlanSlot::Standby => FlightPlanSlot::Active,
+                }),
+            CopyActiveToStandby => session.flight_plan.copy_active()?,
+            ClearStandby => session.flight_plan.clear_standby()?,
+            SwapPlans => {
+                sync_standby_geometry(session)?;
+                let input = crate::navigation_start::NavigationStartInput::from(
+                    &session.situation.ownship().render,
+                );
+                session.flight_plan.swap(input)?;
+                if let (Some(prior), Some(plan)) = (prior, session.flight_plan.active.active_plan())
+                {
+                    session.cloud.record_local_flight_plan_mutation(
+                        &prior,
+                        plan,
+                        session.coordinator.wall_clock_epoch_ms,
+                    )?;
+                }
+                sync_guidance_geometry_for_session(session, &crate::CoreDebugTimer::start())?;
+            }
+            _ => {
+                return Err(AppError {
+                    kind: AppErrorKind::UnsupportedOperation,
+                    message: "This action is not a flight-plan workspace control.".into(),
+                }
+                .into());
+            }
+        }
+        let open_plan = open_session_plan(session)?;
+        refresh_session_flight_plan_derivatives(session, &open_plan);
+        session.runtime.flight_plan_row_actions.clear();
+        session.projection_versions.force_flight_plan_update();
+        Ok(vec![
+            UiInvalidation::SessionSnapshot,
+            UiInvalidation::FlightPlanRoute,
+            UiInvalidation::MapOverlay,
+        ])
+    })
+}
+
+fn sync_standby_geometry(session: &mut UiSession) -> Result<(), HadReadError> {
+    let Some(plan) = session.flight_plan.standby.active_plan() else {
+        return Ok(());
+    };
+    let geometry = if let Some(store) = session.nav_data.store() {
+        guidance_leg_geometry_from_route(crate::had_ops::project_flight_plan_route(store, plan)?)
+    } else {
+        self_contained_guidance_leg_geometry_for_plan(plan)
+            .map_err(|e| HadReadError::Fatal(e.message))?
+            .unwrap_or_default()
+    };
+    session
+        .flight_plan
+        .standby
+        .install_guidance_leg_geometry(geometry);
+    Ok(())
 }
 
 pub fn query_flight_plan_in_session(
@@ -4368,7 +4516,7 @@ pub fn query_flight_plan_in_session(
         } => {
             let slot = session_slot(handle)?;
             let session = slot.lock_running()?;
-            let viewport = session.flight_plan.routing_editor().viewport(
+            let viewport = session.flight_plan.open().routing_editor().viewport(
                 session.nav_data.epoch(),
                 width,
                 height,
@@ -4437,7 +4585,7 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let compact = &session.coordinator.chart_page_state;
     let mut derived = match chart_page_state(
         session_nav_kv_store(session)?,
@@ -4584,7 +4732,7 @@ fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome
     let panel = match crate::had_ops::altitude_comparison_panel(
         session_nav_kv_store(session)?,
         &private_aircraft_definitions,
-        session_plan(session)?,
+        open_session_plan(session)?,
         flight_plan_live_data_for_session(session),
         planner_atmosphere_for_session(session),
     ) {
@@ -4656,7 +4804,7 @@ fn perform_altitude_planner_action_in_session(
             session_nav_kv_store(session)?,
             &private_aircraft_definitions,
             &selection,
-            session_plan(session)?.cruise_altitude_ft,
+            open_session_plan(session)?.cruise_altitude_ft,
         ) {
             Ok(cruise_altitude_ft) => cruise_altitude_ft,
             Err(HadReadError::NeedPages(pages)) => {
@@ -4776,7 +4924,7 @@ fn set_altitude_planner_departure_input_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     if plan.guidance.is_some() {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
@@ -5057,7 +5205,7 @@ fn mutate_session_navigation_controller(
     let session = &mut *session_guard;
     let input =
         crate::navigation_start::NavigationStartInput::from(&session.situation.ownship().render);
-    let next_plan = mutation(&session.flight_plan, input)?;
+    let next_plan = mutation(&session.flight_plan.active, input)?;
     commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
 }
 
@@ -5068,7 +5216,7 @@ fn mutate_session_flight_plan_definition_controller(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let next_plan = mutation(&session.flight_plan)?;
+    let next_plan = mutation(session.flight_plan.open())?;
     commit_session_flight_plan_edit_with_invalidations_outcome(session, next_plan)
 }
 
@@ -5203,7 +5351,7 @@ fn insert_waypoint_best_position_for_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let store = session_nav_kv_store(session)?;
     let mutation = match insert_waypoint_best_position(store, &plan, waypoint) {
         Ok(mutation) => mutation,
@@ -5231,7 +5379,7 @@ pub(crate) fn insert_waypoint_at_flight_plan_row_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
         .display_rows
@@ -5267,7 +5415,7 @@ pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
         .display_rows
@@ -5325,12 +5473,12 @@ fn apply_routing_editor_transition(
             {
                 return run_session_model_transaction(session, |session| {
                     session.settings.set_airway_navigation_mode(mode);
-                    session.flight_plan.set_routing_editor(editor);
+                    session.flight_plan.open_mut().set_routing_editor(editor);
                     session.projection_versions.force_flight_plan_update();
                     Ok(Vec::new())
                 });
             }
-            session.flight_plan.set_routing_editor(editor);
+            session.flight_plan.open_mut().set_routing_editor(editor);
             changed_session_update_outcome_for_flight_plan(session)
         }
         Ok(crate::routing_editor::Transition::Apply(plan)) => {
@@ -5350,7 +5498,7 @@ fn open_airway_picker_in_session(
     session: &mut UiSession,
     row_uid: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
         .display_rows
@@ -5366,6 +5514,7 @@ fn open_airway_picker_in_session(
     })?;
     let transition = session
         .flight_plan
+        .open()
         .airway_picker()
         .open(
             session_nav_kv_store(session)?,
@@ -5384,7 +5533,7 @@ fn perform_airway_picker_action_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session = slot.lock_running()?;
-    let transition = session.flight_plan.airway_picker().advance(
+    let transition = session.flight_plan.open().airway_picker().advance(
         session_nav_kv_store(&session)?,
         action_id,
         session.nav_data.epoch(),
@@ -5398,7 +5547,7 @@ fn apply_airway_picker_transition(
 ) -> AppResult<HadOperationOutcome> {
     match transition {
         Ok(crate::airway_picker::Transition::Picker(picker)) => {
-            session.flight_plan.set_airway_picker(picker);
+            session.flight_plan.open_mut().set_airway_picker(picker);
             changed_session_update_outcome_for_flight_plan(session)
         }
         Ok(crate::airway_picker::Transition::Insert { row_uid, selection }) => {
@@ -5421,8 +5570,8 @@ fn describe_plate_procedure_loads_in_session(
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
-    let plan = session_plan(session)?;
-    let loads = match describe_plate_loads(session_nav_kv_store(session)?, &plan, &plate_id) {
+    let plan = open_session_plan(session)?;
+    let mut loads = match describe_plate_loads(session_nav_kv_store(session)?, &plan, &plate_id) {
         Ok(loads) => loads,
         Err(HadReadError::NeedPages(pages)) => {
             return Ok(HadOperationOutcome::NeedResources {
@@ -5436,6 +5585,10 @@ fn describe_plate_procedure_loads_in_session(
             })
         }
     };
+    loads.header.push_str(match session.flight_plan.open_slot {
+        FlightPlanSlot::Active => " (Active)",
+        FlightPlanSlot::Standby => " (Standby)",
+    });
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(loads).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
@@ -5451,7 +5604,7 @@ pub(crate) fn preview_flight_plan_entry_in_session(
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let store = session_nav_kv_store(session)?;
     match crate::had_ops::preview_flight_plan_entry(store, &plan, &input) {
         Ok(preview) => Ok(HadOperationOutcome::complete(
@@ -5477,7 +5630,7 @@ pub(crate) fn append_flight_plan_entry_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let mutation = {
         let store = session_nav_kv_store(session)?;
         match crate::had_ops::append_flight_plan_entry(store, &plan, &input) {
@@ -5503,7 +5656,7 @@ fn insert_airway_at_flight_plan_row_in_session(
     row_uid: String,
     selection: AirwayPresentationSelection,
 ) -> AppResult<HadOperationOutcome> {
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
         .display_rows
@@ -5590,7 +5743,7 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
@@ -5735,7 +5888,7 @@ pub(crate) fn load_plate_procedure_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let mut plan = session_plan(session)?;
+    let mut plan = open_session_plan(session)?;
     let is_departure = command.kind == ProcedureKind::Sid;
     let airport_component_index = match &command.target {
         ProcedureLoadPlanTarget::ExistingOrigin { row_uid } => {
@@ -5906,6 +6059,7 @@ fn activate_direct_to_nav_ref_in_session_outcome(
         })?;
     let next_plan = session
         .flight_plan
+        .active
         .plan_after_direct_to(from_position, target)?;
     commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
 }
@@ -5993,10 +6147,11 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
         };
         let transition = session
             .flight_plan
+            .open()
             .routing_editor()
             .open(
                 session_nav_kv_store(session)?,
-                &session_plan(session)?,
+                &open_session_plan(session)?,
                 &row_uid,
                 session.nav_data.epoch(),
                 session.settings.airway_navigation_mode(),
@@ -6019,7 +6174,7 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
     {
         return open_airway_picker_in_session(session, &row_uid);
     }
-    let (next_plan, domain) = session.flight_plan.plan_after_row_action(
+    let (next_plan, domain) = session.flight_plan.open().plan_after_row_action(
         &row_uid,
         &action_uid,
         session.situation.ownship().render.position,
@@ -6029,6 +6184,9 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
             commit_session_flight_plan_edit_with_invalidations_outcome(session, next_plan)
         }
         crate::flight_plan_controller::FlightPlanMutationDomain::Navigation => {
+            if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+                return Err(AppError { kind: AppErrorKind::UnsupportedOperation, message: "Navigation actions are available on Active only. Swap plans to navigate Standby.".into() });
+            }
             commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
         }
     }
@@ -6068,7 +6226,7 @@ pub(crate) fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperatio
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let next_plan = session.flight_plan.plan_after_restore_direct_to()?;
+    let next_plan = session.flight_plan.active.plan_after_restore_direct_to()?;
     commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
 }
 
@@ -6090,7 +6248,8 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     session.nav_data.attach(store_id, store, open_result);
-    session.flight_plan.invalidate_nav_data();
+    session.flight_plan.active.invalidate_nav_data();
+    session.flight_plan.standby.invalidate_nav_data();
     session.weather.invalidate_nav_data();
     rebuild_pirep_tile_cache(session);
     sync_cycle_product_freshness_status_records(session);
@@ -6176,10 +6335,19 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     mark_cycle_product_freshness_dirty(&mut candidate);
 
     let rebuild = (|| -> Result<UiSessionUpdate, SessionSnapshotProjectionError> {
-        if let Some(plan) = candidate.flight_plan.active_plan() {
+        if let Some(plan) = candidate.flight_plan.active.active_plan() {
             let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
             replace_session_flight_plan(&mut candidate, rebuilt_plan)
                 .map_err(HadReadError::from)?;
+        }
+        if let Some(plan) = candidate.flight_plan.standby.active_plan() {
+            let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
+            candidate
+                .flight_plan
+                .standby
+                .replace_plan(rebuilt_plan)
+                .map_err(HadReadError::from)?;
+            sync_standby_geometry(&mut candidate)?;
         }
         candidate
             .map
@@ -6552,7 +6720,7 @@ pub fn restore_chart_page_state_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let plan = session_plan(session)?;
+    let plan = open_session_plan(session)?;
     session.coordinator.chart_page_state =
         derive_compact_chart_page_state_with_reference(CompactChartPageInput {
             plan: &plan,
@@ -9983,6 +10151,7 @@ fn forecast_atmosphere_snapshot_resources(session: &mut UiSession) -> Vec<CoreRe
 
     let paths = session
         .flight_plan
+        .active
         .guidance_leg_geometry()
         .values()
         .map(crate::flight_plan_materialization::geometry_points)
@@ -10267,7 +10436,7 @@ fn flight_plan_overlay_features(
     width_px: f64,
     height_px: f64,
 ) -> Result<Vec<crate::VisibleMapFeature>, HadReadError> {
-    let Some(plan) = session.flight_plan.active_plan() else {
+    let Some(plan) = session.flight_plan.open().active_plan() else {
         return Ok(Vec::new());
     };
     let points = flight_plan_selection_points(session, plan)?;
@@ -10619,7 +10788,7 @@ fn materialize_map_selection_in_session(
     } else {
         Some(Vec::new())
     };
-    let plan = session.flight_plan.active_plan();
+    let plan = session.flight_plan.open().active_plan();
     let supplemental_nav_ref_points = match plan {
         Some(plan) => collect_map_selection_prerequisite(
             flight_plan_selection_points(session, plan),
@@ -10784,6 +10953,20 @@ fn finalize_map_selection_actions(
             item.actions.truncate(action_slot_count);
             item.automatic_action_uid = None;
             for action in &mut item.actions {
+                if action.id == "insert" {
+                    action.label = match session.flight_plan.open_slot {
+                        FlightPlanSlot::Active => "Insert into Active",
+                        FlightPlanSlot::Standby => "Insert into Standby",
+                    }
+                    .into();
+                }
+                if action.id == "remove_from_flight_plan" {
+                    action.label = match session.flight_plan.open_slot {
+                        FlightPlanSlot::Active => "Remove from Active",
+                        FlightPlanSlot::Standby => "Remove from Standby",
+                    }
+                    .into();
+                }
                 action.action_uid = None;
                 action.placeholder = false;
                 let Some(command) = registered_map_selection_action(action)? else {
@@ -10820,7 +11003,26 @@ fn encode_map_selection_action_token(
     session: &mut UiSession,
     action: &RegisteredMapSelectionAction,
 ) -> AppResult<String> {
-    let plaintext = serde_json::to_vec(action).map_err(|err| AppError {
+    let edits_plan = matches!(
+        action,
+        RegisteredMapSelectionAction::PerformFlightPlanRow { .. }
+            | RegisteredMapSelectionAction::PerformSession(
+                MapSelectionSessionAction::InsertWaypointBestPosition { .. }
+            )
+    );
+    let token = MapSelectionActionToken {
+        edit_plan_id: if edits_plan {
+            session
+                .flight_plan
+                .open()
+                .active_plan()
+                .map(|p| p.id.clone())
+        } else {
+            None
+        },
+        action: action.clone(),
+    };
+    let plaintext = serde_json::to_vec(&token).map_err(|err| AppError {
         kind: AppErrorKind::Internal,
         message: format!("failed to encode map-selection action token: {err}"),
     })?;
@@ -10879,7 +11081,12 @@ fn decode_map_selection_action_token(
     let plaintext = ChaCha20Poly1305::new(Key::from_slice(&key))
         .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
         .map_err(|_| invalid_map_selection_action_token())?;
-    serde_json::from_slice(&plaintext).map_err(|_| invalid_map_selection_action_token())
+    let token: MapSelectionActionToken =
+        serde_json::from_slice(&plaintext).map_err(|_| invalid_map_selection_action_token())?;
+    if let Some(plan_id) = token.edit_plan_id {
+        session.flight_plan.require_open_plan_id(&plan_id)?;
+    }
+    Ok(token.action)
 }
 
 fn invalid_map_selection_action_token() -> AppError {
@@ -12488,14 +12695,15 @@ fn ownship_overlay_context(session: &UiSession) -> Option<crate::ObstacleOverlay
     })
 }
 
-fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
+fn open_session_plan(session: &UiSession) -> AppResult<FlightPlan> {
     session
         .flight_plan
+        .open()
         .active_plan()
         .cloned()
         .ok_or_else(|| AppError {
             kind: AppErrorKind::Internal,
-            message: "session missing active plan".to_string(),
+            message: "session missing open plan".to_string(),
         })
 }
 
@@ -12553,7 +12761,7 @@ fn airport_plate_availability(
 }
 
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
-    let normalized_plan = session.flight_plan.replace_plan(plan)?.clone();
+    let normalized_plan = session.flight_plan.active.replace_plan(plan)?.clone();
     refresh_session_flight_plan_derivatives(session, &normalized_plan);
     Ok(())
 }
@@ -12578,7 +12786,9 @@ fn refresh_session_flight_plan_derivatives(session: &mut UiSession, normalized_p
             candidate_chart_id: Some(&session.coordinator.chart_page_state.selected_chart_id),
             suggested_chart_ids: &session.coordinator.chart_page_state.suggested_chart_ids,
         });
-    sync_procedure_geometry_status_records(session, normalized_plan);
+    if let Some(active) = session.flight_plan.active.active_plan().cloned() {
+        sync_procedure_geometry_status_records(session, &active);
+    }
 }
 
 fn commit_session_flight_plan_edit_with_invalidations_outcome(
@@ -12588,12 +12798,25 @@ fn commit_session_flight_plan_edit_with_invalidations_outcome(
     let started = crate::CoreDebugTimer::start();
     let prior_plan = session
         .flight_plan
+        .open()
         .active_plan()
         .cloned()
         .ok_or_else(|| missing_active_plan_error("flight-plan mutation"))?;
     run_session_model_transaction(session, |session| {
-        let accepted_plan = session.flight_plan.apply_definition_edit(plan)?.clone();
+        let accepted_plan = session
+            .flight_plan
+            .open_mut()
+            .apply_definition_edit(plan)?
+            .clone();
         refresh_session_flight_plan_derivatives(session, &accepted_plan);
+        if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+            sync_standby_geometry(session)?;
+            return Ok(vec![
+                UiInvalidation::SessionSnapshot,
+                UiInvalidation::FlightPlanRoute,
+                UiInvalidation::MapOverlay,
+            ]);
+        }
         let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         let definition_changed = session.cloud.record_local_flight_plan_mutation(
             &prior_plan,
@@ -12620,9 +12843,10 @@ fn commit_session_navigation_update_with_invalidations_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let started = crate::CoreDebugTimer::start();
     run_session_model_transaction(session, |session| {
-        session.flight_plan.apply_navigation_update(plan)?;
+        session.flight_plan.active.apply_navigation_update(plan)?;
         if session
             .flight_plan
+            .active
             .active_plan()
             .is_some_and(|plan| plan.guidance.is_none())
         {
@@ -12655,15 +12879,32 @@ fn move_flight_plan_history_in_session(
     let started = crate::CoreDebugTimer::start();
     let prior_plan = session
         .flight_plan
+        .open()
         .active_plan()
         .cloned()
         .ok_or_else(|| missing_active_plan_error("flight-plan history mutation"))?;
     run_session_model_transaction(session, |session| {
         let accepted_plan = match direction {
-            FlightPlanHistoryDirection::Undo => session.flight_plan.undo_definition_edit()?.clone(),
-            FlightPlanHistoryDirection::Redo => session.flight_plan.redo_definition_edit()?.clone(),
+            FlightPlanHistoryDirection::Undo => session
+                .flight_plan
+                .open_mut()
+                .undo_definition_edit()?
+                .clone(),
+            FlightPlanHistoryDirection::Redo => session
+                .flight_plan
+                .open_mut()
+                .redo_definition_edit()?
+                .clone(),
         };
         refresh_session_flight_plan_derivatives(session, &accepted_plan);
+        if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+            sync_standby_geometry(session)?;
+            return Ok(vec![
+                UiInvalidation::SessionSnapshot,
+                UiInvalidation::FlightPlanRoute,
+                UiInvalidation::MapOverlay,
+            ]);
+        }
         session.cloud.record_local_flight_plan_mutation(
             &prior_plan,
             &accepted_plan,
@@ -12892,6 +13133,7 @@ fn session_projection_dependencies(
             map_interaction: snapshot.app_ui_state.map_interaction,
             route_revision: session.flight_plan.route_revision(),
             active_plan: snapshot.app_ui_state.active_plan.clone(),
+            workspace: snapshot.app_ui_state.flight_plan_workspace.clone(),
             aircraft_plan_view_path: snapshot.app_ui_state.aircraft_plan_view_path.clone(),
         },
         ownship: snapshot.app_ui_state.ownship.clone(),
@@ -13024,6 +13266,7 @@ fn assemble_session_update(
                 ["flight_plan_route_revision"] => snapshot.flight_plan_route_revision,
                 ["app_ui_state", "map_interaction"] => snapshot.app_ui_state.map_interaction,
                 ["app_ui_state", "active_plan"] => snapshot.app_ui_state.active_plan,
+                ["app_ui_state", "flight_plan_workspace"] => snapshot.app_ui_state.flight_plan_workspace,
                 ["app_ui_state", "aircraft_plan_view_path"] => snapshot.app_ui_state.aircraft_plan_view_path,
             }
         }),
@@ -13406,7 +13649,7 @@ fn try_snapshot_for_session(
 
 fn app_state_for_session(session: &UiSession) -> AppState {
     AppState {
-        active_plan: session.flight_plan.active_plan().cloned(),
+        active_plan: session.flight_plan.active.active_plan().cloned(),
         ownship: session.situation.ownship().clone(),
         content_policy: session.coordinator.content_policy,
         last_content_report: session.coordinator.last_content_report.clone(),
@@ -13677,6 +13920,11 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
     }
+    if let Some(mut plan) = document.standby_plan {
+        plan.guidance = None;
+        session.flight_plan.standby.replace_plan(plan)?;
+    }
+    session.flight_plan.select(document.open_plan_slot);
     Ok(())
 }
 
@@ -13720,8 +13968,13 @@ fn decode_session_persistence(bytes: &[u8]) -> Result<SettingsPersistenceDocumen
     if bytes.is_empty() {
         return Err("stored settings are empty or truncated".to_string());
     }
-    let document = serde_json::from_slice::<SettingsPersistenceDocument>(bytes)
+    let mut document = serde_json::from_slice::<SettingsPersistenceDocument>(bytes)
         .map_err(|error| format!("stored settings are malformed: {error}"))?;
+    if document.version == 1 {
+        document.version = SETTINGS_PERSISTENCE_VERSION;
+        document.standby_plan = None;
+        document.open_plan_slot = FlightPlanSlot::Active;
+    }
     if document.version != SETTINGS_PERSISTENCE_VERSION {
         return Err(format!(
             "stored settings version {} is unsupported by version {}",
@@ -13736,6 +13989,8 @@ fn encode_session_persistence(session: &UiSession) -> AppResult<Vec<u8>> {
         version: SETTINGS_PERSISTENCE_VERSION,
         preferences: session.settings.persistent_preferences(),
         cloud: session.cloud.persistent().clone(),
+        standby_plan: session.flight_plan.standby.active_plan().cloned(),
+        open_plan_slot: session.flight_plan.open_slot,
         service_notifications: session
             .coordinator
             .service_notifications
@@ -13847,31 +14102,51 @@ fn project_session_app_ui_state(
         .cloud
         .aircraft_library_digest()
         .map_err(|error| HadReadError::Fatal(error.message))?;
-    let flight_plan_projection = session.flight_plan.project(
+    let inputs = FlightPlanProjectionInputs {
+        ownship_position: situation_projection.ownship.render.position,
+        ownship_speed_kt: situation_projection.ownship.render.speed_kt,
+        ownship_track_deg_true: situation_projection.ownship.render.track_deg_true,
+        ownship_altitude_ft: situation_projection
+            .ownship
+            .render
+            .pressure_altitude_ft
+            .or(situation_projection.ownship.render.altitude_msl_ft),
+        now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+        nav_data_generation: session.nav_data.generation(),
+        weather_revision,
+        wind_forecast_selected: matches!(
+            session.coordinator.altitude_planner_wind_selection,
+            AltitudePlannerWindSelection::Gfs
+        ),
+        aircraft_library_digest,
+        local_time_zone,
+        time_display_mode: session.coordinator.time_display_mode,
+        ete_scope: session.settings.flight_plan_ete_scope(),
+    };
+    let mut standby_ui = if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+        session
+            .flight_plan
+            .standby
+            .project(
+                nav_kv_store.as_deref(),
+                &private_aircraft_definitions,
+                &aircraft_library_memberships,
+                inputs,
+                planner_atmosphere_for_selection(
+                    session.coordinator.altitude_planner_wind_selection,
+                    &session.weather,
+                ),
+            )?
+            .projection
+            .ui_state
+    } else {
+        None
+    };
+    let flight_plan_projection = session.flight_plan.active.project(
         nav_kv_store.as_deref(),
         &private_aircraft_definitions,
         &aircraft_library_memberships,
-        FlightPlanProjectionInputs {
-            ownship_position: situation_projection.ownship.render.position,
-            ownship_speed_kt: situation_projection.ownship.render.speed_kt,
-            ownship_track_deg_true: situation_projection.ownship.render.track_deg_true,
-            ownship_altitude_ft: situation_projection
-                .ownship
-                .render
-                .pressure_altitude_ft
-                .or(situation_projection.ownship.render.altitude_msl_ft),
-            now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
-            nav_data_generation: session.nav_data.generation(),
-            weather_revision,
-            wind_forecast_selected: matches!(
-                session.coordinator.altitude_planner_wind_selection,
-                AltitudePlannerWindSelection::Gfs
-            ),
-            aircraft_library_digest,
-            local_time_zone,
-            time_display_mode: session.coordinator.time_display_mode,
-            ete_scope: session.settings.flight_plan_ete_scope(),
-        },
+        inputs,
         atmosphere,
     )?;
     if flight_plan_projection.rebuilt {
@@ -13926,29 +14201,38 @@ fn project_session_app_ui_state(
             )?;
         }
     }
-    if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
+    let open_ui = if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+        standby_ui.as_mut()
+    } else {
+        app_ui_state.active_plan.as_mut()
+    };
+    if let Some(active_plan) = open_ui {
         active_plan.airway_routing = session
             .flight_plan
+            .open()
             .routing_editor()
             .view_with_symbols(session.nav_data.epoch(), session.nav_data.store())?;
         active_plan.airway_picker = session
             .flight_plan
+            .open()
             .airway_picker()
             .view(session.nav_data.epoch());
         enrich_flight_plan_live_feeds(session, active_plan);
         enrich_altitude_planner_winds_acquisition(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
+        if session.flight_plan.open_slot == FlightPlanSlot::Standby {
+            crate::flight_plan_workspace::remove_navigation_actions(active_plan);
+        }
     }
+    let open_ui = standby_ui.as_ref().or(app_ui_state.active_plan.as_ref());
     app_ui_state.map_interaction = crate::map_controller::interaction_policy(
-        app_ui_state
-            .active_plan
-            .as_ref()
+        open_ui
             .and_then(|plan| plan.airway_routing.as_ref())
             .is_some_and(|editor| editor.map_open),
     );
     app_ui_state.map_interaction.inspector_dismissal_revision =
         session.map.inspection().dismissal_revision;
-    refresh_registered_flight_plan_row_actions(session, app_ui_state.active_plan.as_ref())
+    refresh_registered_flight_plan_row_actions(session, open_ui)
         .map_err(|error| HadReadError::Fatal(error.message))?;
     app_ui_state.flight_data_banner = project_flight_data_banner(
         session,
@@ -13957,6 +14241,7 @@ fn project_session_app_ui_state(
         destination_estimate,
         weather_projection,
     )?;
+    app_ui_state.flight_plan_workspace = Some(session.flight_plan.project(standby_ui));
     Ok(app_ui_state)
 }
 
@@ -14118,9 +14403,15 @@ fn enrich_flight_plan_live_feeds(session: &UiSession, active_plan: &mut FlightPl
         let notam_index = session.weather.runtime().notam_display_index.as_ref();
         row.notam_badge = crate::map_overlay::navaid_notam_badge(row.nav_ref.as_ref(), notam_index);
         if row.row_kind == crate::planning::FlightPlanDisplayRowKind::Group {
-            if let Some(crate::RouteComponent::Airway { airway }) = row
-                .component_index
-                .and_then(|i| session.flight_plan.active_plan()?.route_components.get(i))
+            if let Some(crate::RouteComponent::Airway { airway }) =
+                row.component_index.and_then(|i| {
+                    session
+                        .flight_plan
+                        .open()
+                        .active_plan()?
+                        .route_components
+                        .get(i)
+                })
             {
                 row.notam_badge = crate::map_overlay::subject_notam_badge(
                     &product_contracts::NotamSubjectKey::Airway(airway.name.clone()),
@@ -14656,8 +14947,9 @@ impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
     ) -> Option<String> {
         let records = session
             .flight_plan
+            .active
             .active_plan()
-            .map(|plan| plan_preview_legs(plan, session.flight_plan.guidance_leg_geometry()))
+            .map(|plan| plan_preview_legs(plan, session.flight_plan.active.guidance_leg_geometry()))
             .unwrap_or_default();
         if records.is_empty() {
             return Some("No plan preview route is available.".to_string());
@@ -14706,12 +14998,12 @@ fn project_active_leg_nav_element(
     session: &UiSession,
     store: Option<&NavKvStore>,
 ) -> Result<NavElementUiView, HadReadError> {
-    let Some(plan) = session.flight_plan.active_plan() else {
+    let Some(plan) = session.flight_plan.active.active_plan() else {
         return Ok(NavElementUiView::default());
     };
     let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
         plan,
-        session.flight_plan.guidance_leg_geometry(),
+        session.flight_plan.active.guidance_leg_geometry(),
         session.situation.ownship().render.position,
     )
     .map_err(|err| HadReadError::Fatal(err.message))?;
@@ -14778,7 +15070,7 @@ struct PlanPreviewLeg {
 }
 
 fn sync_plan_preview_to_active_leg(session: &mut UiSession) -> AppResult<()> {
-    let Some(plan) = session.flight_plan.active_plan() else {
+    let Some(plan) = session.flight_plan.active.active_plan() else {
         return Ok(());
     };
     let leg_index = plan
@@ -14786,7 +15078,7 @@ fn sync_plan_preview_to_active_leg(session: &mut UiSession) -> AppResult<()> {
         .as_ref()
         .map(|guidance| guidance.active_leg_index)
         .unwrap_or(0);
-    let Some(record) = plan_preview_legs(plan, session.flight_plan.guidance_leg_geometry())
+    let Some(record) = plan_preview_legs(plan, session.flight_plan.active.guidance_leg_geometry())
         .into_iter()
         .find(|record| record.resolved_leg_index == leg_index)
     else {
@@ -14805,8 +15097,9 @@ fn apply_plan_preview_input(
 ) -> AppResult<()> {
     let records = session
         .flight_plan
+        .active
         .active_plan()
-        .map(|plan| plan_preview_legs(plan, session.flight_plan.guidance_leg_geometry()))
+        .map(|plan| plan_preview_legs(plan, session.flight_plan.active.guidance_leg_geometry()))
         .unwrap_or_default();
     if records.is_empty() {
         return Ok(());
@@ -14886,8 +15179,9 @@ const PLAN_PREVIEW_FAST_STEP_NM: f64 = 20.0;
 fn plan_preview_control_bounds(session: &UiSession) -> (bool, bool) {
     let records = session
         .flight_plan
+        .active
         .active_plan()
-        .map(|plan| plan_preview_legs(plan, session.flight_plan.guidance_leg_geometry()))
+        .map(|plan| plan_preview_legs(plan, session.flight_plan.active.guidance_leg_geometry()))
         .unwrap_or_default();
     if records.is_empty() {
         return (false, false);
@@ -15044,7 +15338,7 @@ fn tick_bad_autopilot(
 }
 
 fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, GuidanceLegGeometry)> {
-    session.flight_plan.active_guidance_detail_geometry()
+    session.flight_plan.active.active_guidance_detail_geometry()
 }
 
 fn plan_preview_legs(
@@ -15471,6 +15765,7 @@ fn sequence_guidance_by_ownship_motion(
 ) -> AppResult<bool> {
     session
         .flight_plan
+        .active
         .sequence_by_ownship_motion(previous_position, current_position)
 }
 
@@ -16132,7 +16427,7 @@ mod tests {
             },
             projection_versions: SessionProjectionVersionState::default(),
             settings: SettingsController::default(),
-            flight_plan,
+            flight_plan: FlightPlanWorkspace::new(flight_plan).unwrap(),
             nav_data,
             packages: PackageController::default(),
             cloud: CloudController::default(),
@@ -16361,6 +16656,7 @@ mod tests {
                 "flight_plan",
                 BTreeSet::from([
                     "app_ui_state/active_plan",
+                    "app_ui_state/flight_plan_workspace",
                     "app_ui_state/map_interaction",
                     "app_ui_state/aircraft_plan_view_path",
                     "flight_plan_route_revision",
@@ -17249,6 +17545,7 @@ mod tests {
             };
             session
                 .flight_plan
+                .active
                 .replace_plan(plan)
                 .expect("install plan");
             Err(HadReadError::NeedPages(vec![42]).into())
@@ -17267,8 +17564,8 @@ mod tests {
         assert_eq!(session.weather.revision(), 0);
         assert_eq!(session.situation.revision(), 0);
         assert!(session.situation.plan_preview().pointer.is_none());
-        assert_eq!(session.flight_plan.revision(), 0);
-        assert!(session.flight_plan.active_plan().is_none());
+        assert_eq!(session.flight_plan.active.revision(), 0);
+        assert!(session.flight_plan.active.active_plan().is_none());
         assert_eq!(
             session.map.runtime().terrain_source_tile_cache["seed"].as_ptr(),
             terrain_bytes_address
@@ -18502,7 +18799,7 @@ mod tests {
             .expect("persisted bytes");
         let persisted_json: serde_json::Value =
             serde_json::from_slice(&persisted).expect("persisted json");
-        assert_eq!(persisted_json["version"], 1);
+        assert_eq!(persisted_json["version"], SETTINGS_PERSISTENCE_VERSION);
         assert_eq!(persisted_json["preferences"]["display_dim_timeout"], "30s");
 
         let next =
@@ -20026,6 +20323,7 @@ mod tests {
                 session_ref(&sessions, init.handle)
                     .expect("session")
                     .flight_plan
+                    .active
                     .active_plan()
                     .and_then(|plan| plan.cruise_altitude_ft),
                 Some(16_000)
@@ -20046,6 +20344,7 @@ mod tests {
             session_ref(&sessions, init.handle)
                 .expect("session")
                 .flight_plan
+                .active
                 .active_plan()
                 .and_then(|plan| plan.cruise_altitude_ft),
             Some(16_000)
@@ -20087,6 +20386,7 @@ mod tests {
             session_ref(&sessions, init.handle)
                 .expect("session")
                 .flight_plan
+                .active
                 .active_plan()
                 .and_then(|plan| plan.aircraft.as_ref()),
             Some(&selection)
@@ -20140,7 +20440,11 @@ mod tests {
 
         let sessions = lock_sessions();
         let session = session_ref(&sessions, init.handle).expect("session");
-        let plan = session.flight_plan.active_plan().expect("active plan");
+        let plan = session
+            .flight_plan
+            .active
+            .active_plan()
+            .expect("active plan");
         assert_eq!(plan.aircraft.as_ref(), Some(&selection));
         assert_eq!(plan.cruise_altitude_ft, Some(12_000));
     }
@@ -20165,6 +20469,7 @@ mod tests {
             assert_eq!(
                 session
                     .flight_plan
+                    .active
                     .active_plan()
                     .and_then(|plan| plan.planned_departure_time_epoch_ms),
                 Some(departure),
@@ -20190,6 +20495,7 @@ mod tests {
             assert_eq!(
                 session
                     .flight_plan
+                    .active
                     .active_plan()
                     .and_then(|plan| plan.planned_departure_time_epoch_ms),
                 Some(departure),
@@ -20211,6 +20517,7 @@ mod tests {
                 session_ref(&sessions, init.handle)
                     .expect("session")
                     .flight_plan
+                    .active
                     .active_plan()
                     .and_then(|plan| plan.planned_departure_time_epoch_ms),
                 Some(utc("2026-05-21T09:01:00Z").timestamp_millis()),
@@ -20231,6 +20538,7 @@ mod tests {
             session_ref(&sessions, init.handle)
                 .expect("session")
                 .flight_plan
+                .active
                 .active_plan()
                 .and_then(|plan| plan.planned_departure_time_epoch_ms),
             None
@@ -21085,7 +21393,7 @@ mod tests {
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("retained session");
         assert_eq!(session.nav_data.store_id(), Some(31));
-        assert_eq!(session.flight_plan.active_plan(), Some(&plan));
+        assert_eq!(session.flight_plan.active.active_plan(), Some(&plan));
     }
 
     fn generated_rollover_store(generation: nav_db_fixture::Generation) -> NavKvStore {
@@ -21228,16 +21536,27 @@ mod tests {
         );
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("committed candidate session");
-        assert_eq!(session.flight_plan.active_plan(), Some(&expected_plan));
+        assert_eq!(
+            session.flight_plan.active.active_plan(),
+            Some(&expected_plan)
+        );
         assert_eq!(session.nav_data.store_id(), Some(2609));
         assert_eq!(
             airport_name(session.nav_data.store().expect("adopted store")),
             CANDIDATE_AIRPORT_NAME
         );
-        assert!(!session.flight_plan.guidance_leg_geometry().is_empty());
+        assert!(!session
+            .flight_plan
+            .active
+            .guidance_leg_geometry()
+            .is_empty());
         let route = crate::had_ops::project_flight_plan_route(
             session.nav_data.store().expect("committed NAVDB"),
-            session.flight_plan.active_plan().expect("active plan"),
+            session
+                .flight_plan
+                .active
+                .active_plan()
+                .expect("active plan"),
         )
         .expect("project committed candidate route");
         assert!(route
@@ -24594,6 +24913,7 @@ mod tests {
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session
                 .flight_plan
+                .active
                 .install_guidance_leg_geometry(vec![GuidanceLegGeometry {
                     leg_id: "test-leg".to_string(),
                     from: LatLon {
@@ -24985,6 +25305,7 @@ mod tests {
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session
                 .flight_plan
+                .active
                 .install_guidance_leg_geometry(vec![GuidanceLegGeometry {
                     leg_id: "test-leg".to_string(),
                     from: LatLon {
@@ -29293,6 +29614,22 @@ mod tests {
         {
             let slot = session_slot(init.handle).unwrap();
             let mut session = slot.lock_running().unwrap();
+            session.flight_plan.copy_active().unwrap();
+            let mut standby = session.flight_plan.standby.active_plan().unwrap().clone();
+            standby.aircraft = Some(product_contracts::AircraftSelection {
+                definition_hash: "f".repeat(64),
+                profile_id: "unavailable-standby-model".into(),
+            });
+            session.flight_plan.standby.replace_plan(standby).unwrap();
+        }
+        assert_eq!(
+            query(epoch + 1_000),
+            ring,
+            "Standby's aircraft must not change live glide reach"
+        );
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
             session.coordinator.altitude_planner_wind_selection = AltitudePlannerWindSelection::Gfs;
         }
         assert!(
@@ -30055,6 +30392,54 @@ mod tests {
         serde_json::from_value::<crate::FlightPlanRouteProjection>(result)
             .expect("route projection")
             .segments
+    }
+
+    #[test]
+    fn standby_preview_keeps_only_the_current_active_navigation_leg() {
+        use crate::FlightPlanRouteSegmentStatus::*;
+        let init = create_synced_twf_v4_ykm_chins_kpae_session(NavRef::Navaid("PDT".into()));
+        let active = session_route_segments(init.handle);
+        let active_leg: Vec<_> = active.iter().filter(|s| s.status == Active).collect();
+        assert!(!active_leg.is_empty());
+        assert!(active.iter().any(|s| s.status == Remaining));
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.flight_plan.copy_active().unwrap();
+        }
+        let preview = session_route_segments(init.handle);
+        let retained: Vec<_> = preview.iter().filter(|s| s.status == Active).collect();
+        assert_eq!(
+            retained.len(),
+            active_leg.len(),
+            "Standby must retain the CDI's active leg"
+        );
+        for (retained, original) in retained.iter().zip(&active_leg) {
+            assert_eq!(retained.path, original.path);
+            assert_eq!(retained.leg_id, original.leg_id);
+        }
+        assert_eq!(
+            preview.len(),
+            active.len() + active_leg.len(),
+            "Do not append the rest of Active"
+        );
+        assert_eq!(
+            preview
+                .iter()
+                .map(|s| &s.id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            preview.len()
+        );
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.flight_plan.active.park_navigation().unwrap();
+        }
+        assert!(session_route_segments(init.handle)
+            .iter()
+            .all(|s| s.status != Active));
+        destroy_session(init.handle);
     }
 
     fn session_route_statuses(handle: u32) -> Vec<crate::FlightPlanRouteSegmentStatus> {
@@ -32725,6 +33110,7 @@ mod tests {
         let session = session_ref(&sessions, init.handle).expect("session");
         let core_guidance = session
             .flight_plan
+            .active
             .active_plan()
             .and_then(|plan| plan.guidance.as_ref())
             .expect("core guidance");
@@ -34010,7 +34396,7 @@ mod tests {
         let plan = {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).unwrap();
-            session.flight_plan.active_plan().unwrap().clone()
+            session.flight_plan.active.active_plan().unwrap().clone()
         };
 
         for (zone, label, value) in [
@@ -34033,7 +34419,7 @@ mod tests {
             assert_eq!(clock.value.as_deref(), Some(value));
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("same session");
-            assert_eq!(session.flight_plan.active_plan(), Some(&plan));
+            assert_eq!(session.flight_plan.active.active_plan(), Some(&plan));
             assert_eq!(
                 session.coordinator.time_display_mode,
                 crate::TimeDisplayMode::Local
@@ -36177,7 +36563,7 @@ mod tests {
         })
         .unwrap();
         let mut session = isolated_test_session(Some(store.clone()));
-        session.flight_plan = FlightPlanController::new(plan.clone(), Vec::new()).unwrap();
+        session.flight_plan.active = FlightPlanController::new(plan.clone(), Vec::new()).unwrap();
         let epoch = session.nav_data.epoch();
         let row = crate::project_ui_state(&plan).display_rows[0].uid.clone();
         let draft = RoutingEditor::default()
@@ -36194,7 +36580,10 @@ mod tests {
             .button
             .action_id
             .clone();
-        session.flight_plan.set_routing_editor(draft.clone());
+        session
+            .flight_plan
+            .open_mut()
+            .set_routing_editor(draft.clone());
         let storage = Arc::new(MemoryLocalDocumentBackend::default());
         session.coordinator.persistence_storage =
             Some(crate::local_documents::LocalDocuments::new(storage.clone()));
@@ -36227,7 +36616,7 @@ mod tests {
             AirwayNavigationMode::Vor
         );
 
-        let before = session.flight_plan.routing_editor().clone();
+        let before = session.flight_plan.open().routing_editor().clone();
         let undo = before
             .view(epoch)
             .unwrap()
@@ -36269,7 +36658,12 @@ mod tests {
             AirwayNavigationMode::Gnss
         );
         assert_eq!(
-            session.flight_plan.active_plan().unwrap().route_components,
+            session
+                .flight_plan
+                .active
+                .active_plan()
+                .unwrap()
+                .route_components,
             plan.route_components
         );
         let legacy: SettingsPreferences = serde_json::from_value(serde_json::json!({})).unwrap();
@@ -36586,6 +36980,211 @@ mod tests {
             original.route_components
         );
         destroy_session(init.handle);
+    }
+
+    #[test]
+    fn workspace_inspector_edit_tokens_keep_their_target_but_direct_to_stays_active() {
+        let mut session = isolated_test_session(None);
+        replace_session_flight_plan(&mut session, sample_guided_plan()).unwrap();
+        let target = NavRef::Airport("KSEA".into());
+        let edit = encode_map_selection_action_token(
+            &mut session,
+            &RegisteredMapSelectionAction::PerformSession(
+                MapSelectionSessionAction::InsertWaypointBestPosition {
+                    nav_ref: target.clone(),
+                },
+            ),
+        )
+        .unwrap();
+        let direct = encode_map_selection_action_token(
+            &mut session,
+            &RegisteredMapSelectionAction::PerformSession(
+                MapSelectionSessionAction::ActivateDirectToNavRef { nav_ref: target },
+            ),
+        )
+        .unwrap();
+        assert!(decode_map_selection_action_token(&session, &edit).is_ok());
+        session.flight_plan.copy_active().unwrap();
+        assert!(decode_map_selection_action_token(&session, &edit)
+            .err()
+            .expect("the edit token must remain bound to the previous plan")
+            .message
+            .contains("open flight plan changed"));
+        assert!(decode_map_selection_action_token(&session, &direct).is_ok());
+    }
+
+    #[test]
+    fn workspace_delayed_edit_cannot_follow_a_changed_open_plan() {
+        use crate::FlightPlanControlId::*;
+        let init = create_ui_session(sample_guided_plan(), &[], None, None).unwrap();
+        let original = init
+            .snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .unwrap()
+            .plan_id
+            .clone();
+        let delayed = FlightPlanSessionCommand::ForOpenPlan {
+            plan_id: original,
+            command: Box::new(FlightPlanSessionCommand::AppendEntry {
+                input: "KSEA".into(),
+            }),
+        };
+        perform_flight_plan_control_in_session(init.handle, CopyActiveToStandby).unwrap();
+        let error = perform_flight_plan_command_in_session(init.handle, delayed, 0).unwrap_err();
+        assert!(error.message.contains("open flight plan changed"));
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(
+            snapshot.app_state.active_plan,
+            init.snapshot.app_state.active_plan
+        );
+        assert_eq!(
+            snapshot
+                .app_ui_state
+                .flight_plan_workspace
+                .unwrap()
+                .open_slot,
+            FlightPlanSlot::Standby
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn workspace_session_edits_and_history_target_open_plan_but_guidance_stays_active() {
+        use crate::FlightPlanControlId::*;
+        let init = create_ui_session(sample_guided_plan(), &[], None, None).unwrap();
+        let active = init.snapshot.app_state.active_plan.unwrap();
+        let control = |id| perform_flight_plan_control_in_session(init.handle, id).unwrap();
+        let copied = session_update_from_outcome(control(CopyActiveToStandby));
+        assert!(copied
+            .flight_plan
+            .unwrap()
+            .assignments
+            .iter()
+            .any(|a| a.path == ["app_ui_state", "flight_plan_workspace"]));
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        let w = snapshot.app_ui_state.flight_plan_workspace.unwrap();
+        assert_eq!(w.open_slot, FlightPlanSlot::Standby);
+        let ui = w.standby_plan.unwrap();
+        assert!(ui.guidance.is_none());
+        assert!(ui.controls.iter().all(|c| matches!(c.id, Undo | Redo)));
+        assert!(ui
+            .display_rows
+            .iter()
+            .flat_map(crate::planning::flight_plan_row_actions)
+            .all(|a| !matches!(
+                a.id,
+                FlightPlanRowActionId::ActivateLeg | FlightPlanRowActionId::DirectTo
+            )));
+        assert_eq!(snapshot.app_state.active_plan.as_ref(), Some(&active));
+        let mut draft = {
+            let slot = session_slot(init.handle).unwrap();
+            let session = slot.lock_running().unwrap();
+            open_session_plan(&session).unwrap()
+        };
+        draft.cruise_altitude_ft = Some(12500);
+        draft.name = "Plan B".into();
+        replace_flight_plan_in_session(init.handle, draft).unwrap();
+        control(ClearStandby);
+        control(Undo);
+        let slot = session_slot(init.handle).unwrap();
+        {
+            let session = slot.lock_running().unwrap();
+            assert_eq!(
+                session.flight_plan.open().active_plan().unwrap().name,
+                "Plan B"
+            );
+            assert_eq!(session.flight_plan.active.active_plan(), Some(&active));
+            assert!(!session.flight_plan.active.can_undo());
+            assert_ne!(
+                session
+                    .flight_plan
+                    .standby
+                    .active_plan()
+                    .unwrap()
+                    .cruise_altitude_ft,
+                active.cruise_altitude_ft
+            );
+        }
+        control(OpenActivePlan);
+        assert!(get_session_snapshot(init.handle)
+            .unwrap()
+            .app_ui_state
+            .flight_plan_workspace
+            .unwrap()
+            .standby_plan
+            .is_none());
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn workspace_persistence_restores_standby_and_migrates_v1_without_changing_cloud_format() {
+        let mut session = isolated_test_session(None);
+        replace_session_flight_plan(&mut session, sample_guided_plan()).unwrap();
+        session.flight_plan.copy_active().unwrap();
+        let standby = session.flight_plan.standby.active_plan().unwrap().clone();
+        let bytes = encode_session_persistence(&session).unwrap();
+        let document = decode_session_persistence(&bytes).unwrap();
+        assert_eq!(document.standby_plan.as_ref(), Some(&standby));
+        assert_eq!(document.open_plan_slot, FlightPlanSlot::Standby);
+        let backend = Arc::new(MemoryLocalDocumentBackend::default());
+        let store = crate::local_documents::LocalDocuments::new(backend);
+        store
+            .replace(crate::local_documents::SESSION_DOCUMENT, &bytes)
+            .unwrap();
+        let mut restored = isolated_test_session(None);
+        restored.coordinator.persistence_storage = Some(store);
+        load_session_persistence_from_storage(&mut restored).unwrap();
+        assert_eq!(restored.flight_plan.open_slot, FlightPlanSlot::Standby);
+        assert_eq!(restored.flight_plan.standby.active_plan(), Some(&standby));
+        let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        old["version"] = 1.into();
+        old.as_object_mut().unwrap().remove("standby_plan");
+        old.as_object_mut().unwrap().remove("open_plan_slot");
+        let migrated = decode_session_persistence(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(migrated.standby_plan.is_none());
+        assert_eq!(migrated.open_plan_slot, FlightPlanSlot::Active);
+        assert_eq!(migrated.cloud, document.cloud);
+    }
+
+    #[test]
+    fn workspace_open_standby_does_not_capture_off_plan_direct_to_or_cloud_updates() {
+        let mut session = isolated_test_session(None);
+        replace_session_flight_plan(&mut session, sample_guided_plan()).unwrap();
+        session.flight_plan.copy_active().unwrap();
+        let standby = session.flight_plan.standby.active_plan().unwrap().clone();
+        let direct = crate::activate_direct_to(
+            session.flight_plan.active.active_plan().unwrap(),
+            LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            NavRef::LatLon(LatLon {
+                lat: 47.1,
+                lon: -122.1,
+            }),
+        )
+        .unwrap();
+        commit_session_navigation_update_with_invalidations_outcome(&mut session, direct).unwrap();
+        assert_eq!(
+            session
+                .flight_plan
+                .active
+                .active_plan()
+                .unwrap()
+                .guidance
+                .as_ref()
+                .unwrap()
+                .sequencing_mode,
+            SequencingMode::DirectTo
+        );
+        assert_eq!(session.flight_plan.standby.active_plan(), Some(&standby));
+        let mut remote = sample_guided_plan();
+        remote.name = "Crossfilled Active".into();
+        replace_session_flight_plan(&mut session, remote).unwrap();
+        assert_eq!(session.flight_plan.standby.active_plan(), Some(&standby));
+        assert_eq!(session.flight_plan.open_slot, FlightPlanSlot::Standby);
     }
 
     #[test]

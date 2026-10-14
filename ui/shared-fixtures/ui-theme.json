@@ -67,6 +67,7 @@
     "airport_runway_pattern": "#111111"
   },
   "flight_plan_route": {
+    "standby": "#007e8c",
     "contrast": "#0000008c",
     "completed": "#8c9dad",
     "active": "#ff4fcf",

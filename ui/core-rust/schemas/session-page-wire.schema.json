@@ -462,6 +462,12 @@
     },
     "FlightPlanControlId": {
       "enum": [
+        "open_active_plan",
+        "open_standby_plan",
+        "toggle_open_plan",
+        "swap_plans",
+        "copy_active_to_standby",
+        "clear_standby",
         "activate_next_leg",
         "redo",
         "restore_direct_to",
@@ -507,6 +513,14 @@
       ],
       "title": "FlightPlanControlUiView",
       "type": "object"
+    },
+    "FlightPlanSlot": {
+      "enum": [
+        "active",
+        "standby"
+      ],
+      "title": "FlightPlanSlot",
+      "type": "string"
     },
     "FlightPlanWeatherBadgeUiView": {
       "additionalProperties": false,
@@ -3468,6 +3482,7 @@
     "UiNavigationPageOption",
     "UiNavigationPageState",
     "FlightPlanControlId",
+    "FlightPlanSlot",
     "FlightPlanControlUiView",
     "UiAirwayPickerButton",
     "UiAirwayPickerSection",

@@ -911,12 +911,15 @@ fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
     let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/flight_plan_controller.rs");
+    let workspace = read_repo_file("ui/core-rust/crates/app-core/src/flight_plan_workspace.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
     let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
 
     assert!(
-        ui_session.contains("flight_plan: FlightPlanController"),
-        "UiSession must compose flight-plan behavior through one controller"
+        ui_session.contains("flight_plan: FlightPlanWorkspace")
+            && workspace.contains("pub active: FlightPlanController")
+            && workspace.contains("pub standby: FlightPlanController"),
+        "UiSession must compose its workspace from two flight-plan controllers"
     );
     for field in [
         "active_plan",
@@ -943,18 +946,26 @@ fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
     let checkpoint =
         balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
     assert!(
-        checkpoint.contains("flight_plan: FlightPlanModelCheckpoint"),
-        "session transactions must checkpoint the flight-plan model"
+        checkpoint.contains("flight_plan: FlightPlanWorkspaceCheckpoint")
+            && workspace.contains("active: FlightPlanModelCheckpoint")
+            && workspace.contains("standby: FlightPlanModelCheckpoint"),
+        "session transactions must checkpoint both flight-plan models"
     );
     assert!(
-        function_body(session, "rollback").contains("session.flight_plan.rollback_model"),
-        "session transaction rollback must restore the flight-plan model"
+        function_body(session, "rollback").contains("session.flight_plan.rollback_model")
+            && function_body(&workspace, "rollback_model").contains("self.active.rollback_model")
+            && function_body(&workspace, "rollback_model").contains("self.standby.rollback_model"),
+        "session transaction rollback must restore both flight-plan models"
     );
     let aggregate_projection = function_body(&session_text, "project_session_app_ui_state");
     assert!(
-        aggregate_projection.contains("session.flight_plan.project")
+        aggregate_projection.contains("session.flight_plan.active.project")
+            && aggregate_projection
+                .split_whitespace()
+                .collect::<String>()
+                .contains(".standby.project(")
             && aggregate_projection.contains("flight_plan_projection.projection.ui_state"),
-        "aggregate UI projection must consume FlightPlanController's cached projection"
+        "aggregate UI projection must consume each FlightPlanController's cached projection"
     );
     assert!(
         function_body(session, "project_flight_plan_route_in_session").contains(".flight_plan")
@@ -964,8 +975,8 @@ fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
     );
     assert!(
         function_body(session, "perform_flight_plan_row_action_in_session")
-            .contains("flight_plan.plan_after_row_action"),
-        "core-owned row actions must be interpreted by FlightPlanController"
+            .contains("flight_plan.open().plan_after_row_action"),
+        "core-owned edit actions must be interpreted by the open FlightPlanController"
     );
 }
 

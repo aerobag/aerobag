@@ -27,6 +27,10 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "plan.stop-navigation", "plan.start-navigation", "plan.suspend-sequencing",
     "plan.unsuspend-sequencing", "plan.restore-direct-to", "plan.route-paint",
   ]),
+  journey("shared.flight-plan-workspace", "p0", shared, [
+    "plan.workspace.open-active", "plan.workspace.open-standby", "plan.workspace.toggle",
+    "plan.workspace.swap", "plan.workspace.copy", "plan.workspace.clear",
+  ]),
   journey("shared.procedure-departure", "p0", shared, [
     "procedure.sid.select", "procedure.sid.render", "procedure.sid.show-plate",
     "procedure.sid.invariant", "procedure.sid.remove",

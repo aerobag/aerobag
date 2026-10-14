@@ -3068,9 +3068,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.doesNotMatch(charts, /\.testTag\(\s*"parity:plate-viewport:/);
   assert.match(mainActivity, /R\.id\.e2e_startup_state_projection/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_rows_projection/);
-  assert.match(mainActivity, /sessionPlanUiState\.displayRows\.joinToString/);
+  assert.match(mainActivity, /val openPlanUiState = appUiState\.flightPlanWorkspace\?\.standbyPlan \?: sessionPlanUiState/);
+  assert.match(mainActivity, /openPlanUiState\.displayRows\.joinToString/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_state_projection/);
-  assert.match(mainActivity, /flightPlanStateProjection\(sessionPlanUiState\)/);
+  assert.match(mainActivity, /flightPlanStateProjection\(openPlanUiState\)/);
   assert.match(mapExplorer, /R\.id\.e2e_flight_plan_route_overlay_projection/);
   assert.match(mapExplorer, /flightPlanRouteOverlayProjectionState\(/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_overlay_projection/);

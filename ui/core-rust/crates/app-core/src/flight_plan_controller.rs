@@ -382,6 +382,17 @@ impl FlightPlanController {
         self.model.definition.can_undo()
     }
 
+    /// Parking a plan preserves edit history, but never stale leg-selection state.
+    pub(crate) fn park_navigation(&mut self) -> AppResult<()> {
+        if let Some(plan) = self.active_plan().filter(|p| p.guidance.is_some()).cloned() {
+            self.apply_navigation_update(crate::stop_navigation(&plan)?)?;
+        }
+        self.model.navigation.stopped_guidance = None;
+        self.model.airway_picker = Default::default();
+        self.model.routing_editor = Default::default();
+        Ok(())
+    }
+
     pub fn can_redo(&self) -> bool {
         self.model.definition.can_redo()
     }
@@ -881,6 +892,7 @@ impl FlightPlanController {
             None => (Vec::new(), Vec::new()),
         };
         let projection = FlightPlanRouteProjection {
+            standby_preview: false,
             flight_plan_route_revision: self.model.route_revision,
             segments,
             distance_annotations,

@@ -170,6 +170,7 @@ export type FlightPlanRouteDistanceAnnotation = {
 };
 
 export type FlightPlanRouteProjection = {
+  standby_preview?: boolean;
   flight_plan_route_revision: number;
   segments: FlightPlanRouteSegment[];
   distance_annotations: FlightPlanRouteDistanceAnnotation[];
@@ -556,11 +557,25 @@ export type Situation = {
 export type AppUiState = {
   map_interaction: import("../generated/sessionPageWire").UiMapInteraction | null;
   active_plan: FlightPlanUiState | null;
+  flight_plan_workspace?: FlightPlanWorkspaceUi | null;
   aircraft_plan_view_path: string;
   ownship: OwnshipUiState;
   flight_data_banner: FlightDataBannerModel;
   content_policy: ContentPolicy;
   last_content_report: ContentReport | null;
+};
+
+export type FlightPlanWorkspaceUi = {
+  open_slot: import("../generated/sessionPageWire").FlightPlanSlot;
+  active_label: string;
+  standby_label: string;
+  active_summary: string;
+  standby_summary: string;
+  standby_plan: FlightPlanUiState | null;
+  controls: FlightPlanControlUiView[];
+  clear_standby: FlightPlanControlUiView;
+  entry_focus_revision: number;
+  notice: string | null;
 };
 
 export type {

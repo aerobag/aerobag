@@ -40,6 +40,7 @@ pub(crate) struct FlightPlanProjectionDependencies {
     pub map_interaction: app_ui_contracts::session::UiMapInteraction,
     pub route_revision: u64,
     pub active_plan: Option<FlightPlanUiState>,
+    pub workspace: Option<crate::flight_plan_workspace::FlightPlanWorkspaceUi>,
     pub aircraft_plan_view_path: String,
 }
 
@@ -258,6 +259,7 @@ mod tests {
                 map_interaction: crate::map_controller::interaction_policy(false),
                 route_revision: 0,
                 active_plan: None,
+                workspace: None,
                 aircraft_plan_view_path: String::new(),
             },
             ownship: {

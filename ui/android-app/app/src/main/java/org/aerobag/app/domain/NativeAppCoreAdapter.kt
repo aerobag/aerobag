@@ -802,6 +802,9 @@ private fun landAppUiState(
     listOf("app_ui_state", "active_plan") -> previous.copy(
         activePlan = json.decodeFromJsonElement<WireFlightPlanUiState?>(value)?.toUi(),
     )
+    listOf("app_ui_state", "flight_plan_workspace") -> previous.copy(
+        flightPlanWorkspace = json.decodeFromJsonElement<WireFlightPlanWorkspaceUi?>(value)?.toUi(),
+    )
     listOf("app_ui_state", "aircraft_plan_view_path") -> previous.copy(
         aircraftPlanViewPath = value.jsonPrimitive.content,
     )
@@ -1032,14 +1035,21 @@ class NativeUiSession internal constructor(
     private fun performFlightPlanCommand(
         commandName: String,
         command: JsonObject,
-    ): UiSessionSnapshot =
-        runPagedSnapshot(commandName) {
+    ): UiSessionSnapshot {
+        val plan = snapshot.appUiState.flightPlanWorkspace?.standbyPlan ?: snapshot.appUiState.activePlan
+        val boundCommand = buildJsonObject {
+            put("kind", "for_open_plan")
+            put("plan_id", plan?.planId.orEmpty())
+            put("command", command)
+        }
+        return runPagedSnapshot(commandName) {
             bridge.performFlightPlanCommandInSessionJson(
                 handle,
-                command.toString(),
+                boundCommand.toString(),
                 System.currentTimeMillis(),
             )
         }
+    }
 
     private fun queryFlightPlan(query: JsonObject): JsonElement {
         val result = executePagedOperation {
@@ -2382,9 +2392,23 @@ private fun OwnshipSourcePowerState.toWire(): WireOwnshipSourcePowerState = when
 private fun WireAppUiState.toUi() = AppUiState(
     mapInteraction = map_interaction,
     activePlan = active_plan?.toUi(),
+    flightPlanWorkspace = flight_plan_workspace?.toUi(),
     aircraftPlanViewPath = aircraft_plan_view_path,
     ownship = ownship.toUi(),
     flightDataBanner = flight_data_banner.toUi(),
+)
+
+private fun WireFlightPlanWorkspaceUi.toUi() = FlightPlanWorkspaceUi(
+    openSlot = open_slot,
+    activeLabel = active_label,
+    standbyLabel = standby_label,
+    activeSummary = active_summary,
+    standbySummary = standby_summary,
+    standbyPlan = standby_plan?.toUi(),
+    controls = controls,
+    clearStandby = clear_standby,
+    entryFocusRevision = entry_focus_revision,
+    notice = notice,
 )
 
 private fun WireOwnshipSelection.toUi(): OwnshipSelection = when (this) {
@@ -4034,6 +4058,7 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
 )
 
 private fun WireFlightPlanRouteProjection.toUi() = FlightPlanRouteProjection(
+    standbyPreview = standby_preview,
     flightPlanRouteRevision = flight_plan_route_revision,
     segments = segments.map { it.toUi() },
     distanceAnnotations = distance_annotations.map { annotation ->

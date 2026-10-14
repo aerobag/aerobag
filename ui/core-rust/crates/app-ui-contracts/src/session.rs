@@ -56,6 +56,12 @@ pub struct UiNavigationPageState {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FlightPlanControlId {
+    OpenActivePlan,
+    OpenStandbyPlan,
+    ToggleOpenPlan,
+    SwapPlans,
+    CopyActiveToStandby,
+    ClearStandby,
     ActivateNextLeg,
     Redo,
     RestoreDirectTo,
@@ -63,6 +69,15 @@ pub enum FlightPlanControlId {
     StopNavigation,
     ToggleSequencingSuspension,
     Undo,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanSlot {
+    #[default]
+    Active,
+    Standby,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

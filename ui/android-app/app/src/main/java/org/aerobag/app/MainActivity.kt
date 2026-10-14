@@ -1284,8 +1284,8 @@ internal fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
     MapLayerId.OfflineRegions -> R.drawable.layer_offline_regions_icon
 }
 
-internal fun routeSegmentColor(uiTheme: UiTheme, status: RouteSegmentStatus): Color =
-    when (status) {
+internal fun routeSegmentColor(uiTheme: UiTheme, status: RouteSegmentStatus, standby: Boolean = false): Color =
+    if (standby && status != RouteSegmentStatus.Active) uiTheme.flightPlanRoute.standby else when (status) {
         RouteSegmentStatus.Completed -> uiTheme.flightPlanRoute.completed
         RouteSegmentStatus.Active -> uiTheme.flightPlanRoute.active
         RouteSegmentStatus.ActiveLegRemaining -> uiTheme.flightPlanRoute.activeLegRemaining
@@ -3058,6 +3058,7 @@ internal fun AerobagApp(
     val sessionPlanUiState = requireNotNull(appUiState.activePlan) {
         "UiSessionSnapshot must provide active flight-plan UI state"
     }
+    val openPlanUiState = appUiState.flightPlanWorkspace?.standbyPlan ?: sessionPlanUiState
     var derivedChartPageState by remember(uiSession) {
         mutableStateOf(
             DerivedChartPageState(
@@ -3221,8 +3222,8 @@ internal fun AerobagApp(
     LaunchedEffect(
         uiSession,
         page,
-        sessionPlanUiState.planId,
-        sessionPlanUiState.planVersion,
+        openPlanUiState.planId,
+        openPlanUiState.planVersion,
         sessionSnapshot.notamDisplayStateId,
         sessionSnapshot.chartPageState.recentAirportIds,
         sessionSnapshot.chartPageState.plateTargetAirportId,
@@ -3673,7 +3674,7 @@ internal fun AerobagApp(
             )
             E2eProjectionView(
                 viewId = R.id.e2e_flight_plan_rows_projection,
-                state = sessionPlanUiState.displayRows.joinToString("\u001f") { it.label },
+                state = openPlanUiState.displayRows.joinToString("\u001f") { it.label },
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offset(x = 1.dp)
@@ -3686,7 +3687,7 @@ internal fun AerobagApp(
             }
             E2eProjectionView(
                 viewId = R.id.e2e_flight_plan_state_projection,
-                state = flightPlanStateProjection(sessionPlanUiState),
+                state = flightPlanStateProjection(openPlanUiState),
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offset(x = 2.dp)
@@ -3803,7 +3804,7 @@ internal fun AerobagApp(
                             onOpenPlan = { navigateToPage(AppPage.Plan) },
                         ),
                         navElement = navElement,
-                        planUiState = sessionPlanUiState,
+                        planUiState = openPlanUiState,
                         )
                     }
                 }
@@ -3817,7 +3818,8 @@ internal fun AerobagApp(
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,
                         navElement = navElement,
-                        planUiState = sessionPlanUiState,
+                        planUiState = openPlanUiState,
+                        workspace = appUiState.flightPlanWorkspace,
                         planListState = planListState,
                         uiTheme = uiTheme,
                         overlayState = flightPlanOverlayController.state,
@@ -3834,8 +3836,9 @@ internal fun AerobagApp(
                 AppPage.AltitudePlanner -> {
                     AltitudePlannerPage(
                         page = page,
-                        planner = sessionPlanUiState.altitudePlanner,
-                        planVersion = sessionPlanUiState.planVersion,
+                        workspace = appUiState.flightPlanWorkspace,
+                        planner = openPlanUiState.altitudePlanner,
+                        planVersion = openPlanUiState.planVersion,
                         uiSession = uiSession,
                         navElement = navElement,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),

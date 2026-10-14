@@ -3537,6 +3537,7 @@ internal fun MapExplorerPage(
                 )
             }
             RouteOverlayLayer(
+                standbyPreview = flightPlanRouteProjection.standbyPreview,
                 flightPlanRoute = flightPlanRoute,
                 distanceAnnotations = flightPlanRouteDistanceAnnotations,
                 visibleFeatureIds = displayedMapOverlay.flightPlanFeatures.mapTo(mutableSetOf()) { it.id },
@@ -4698,6 +4699,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineRegion(
 
 @Composable
 private fun RouteOverlayLayer(
+    standbyPreview: Boolean,
     flightPlanRoute: List<FlightPlanRouteSegment>,
     distanceAnnotations: List<FlightPlanRouteDistanceAnnotation>,
     visibleFeatureIds: Set<String>,
@@ -4761,7 +4763,7 @@ private fun RouteOverlayLayer(
             drawFlightPlanRoutePath(
                 screenPath = screenPaths[index],
                 style = segment.style,
-                color = routeSegmentColor(uiTheme, segment.status),
+                color = routeSegmentColor(uiTheme, segment.status, standbyPreview),
                 contrastColor = uiTheme.flightPlanRoute.contrast,
                 densityScale = densityScale,
                 layer = RouteRenderLayer.Contrast,
@@ -4796,7 +4798,7 @@ private fun RouteOverlayLayer(
             drawFlightPlanRoutePath(
                 screenPath = screenPaths[index],
                 style = segment.style,
-                color = routeSegmentColor(uiTheme, segment.status),
+                color = routeSegmentColor(uiTheme, segment.status, standbyPreview),
                 contrastColor = uiTheme.flightPlanRoute.contrast,
                 densityScale = densityScale,
                 layer = RouteRenderLayer.Color,
@@ -4811,7 +4813,7 @@ private fun RouteOverlayLayer(
             }
         }
         pillRects.forEach { (layout, rect) ->
-            distanceBorderPaint.color = routeSegmentColor(uiTheme, layout.annotation.status).toArgb()
+            distanceBorderPaint.color = routeSegmentColor(uiTheme, layout.annotation.status, standbyPreview).toArgb()
             val baseline = layout.center.y -
                 (distanceTextPaint.fontMetrics.ascent + distanceTextPaint.fontMetrics.descent) / 2f
             drawContext.canvas.nativeCanvas.apply {

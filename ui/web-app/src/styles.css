@@ -4533,9 +4533,14 @@ button {
 
 .planEntryForm {
   margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--thumb-gap);
 }
 
 .planEntryInputShell {
+  flex: 1;
+  min-width: 0;
   position: relative;
   min-height: var(--thumb);
   border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 76%, black);
@@ -4625,6 +4630,130 @@ button {
   justify-content: center;
   gap: var(--thumb-gap);
 }
+
+.planSlotHeading {
+  flex: none;
+  padding: 4px var(--thumb-gap);
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--theme-panel-fg);
+}
+
+.planSlotLabel {
+  font-size: 18px;
+  font-weight: 800;
+  -webkit-text-stroke: 3px var(--theme-map-line-contrast);
+  paint-order: stroke fill;
+}
+
+.planSlotLabel.isactive {
+  color: var(--theme-flight-plan-remaining);
+}
+
+.planSlotLabel.isstandby {
+  color: var(--theme-flight-plan-standby);
+}
+
+.planWorkspaceLayout {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  --plan-band-height: calc(var(--thumb) + var(--thumb-gap) * 2);
+  --plan-editor-height: calc(100% - var(--plan-band-height) - 8px);
+}
+.planWorkspaceEditorClip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: var(--plan-editor-height);
+  overflow: hidden;
+}
+.planWorkspaceEditor {
+  display: flex;
+  flex-direction: column;
+  height: var(--plan-editor-height);
+}
+.planWorkspaceBandPosition {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--plan-editor-height) + 8px);
+}
+.planWorkspaceLayout.isstandby > .planWorkspaceEditorClip { top: calc(var(--plan-band-height) + 8px); }
+.planWorkspaceLayout.isstandby > .planWorkspaceBandPosition { top: 0; }
+.planWorkspaceClosingEditor { pointer-events: none; }
+.planWorkspaceReadiness { position: absolute; inset: 0; pointer-events: none; }
+
+.planWorkspaceBand {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--thumb-gap);
+  padding: var(--thumb-gap) 0;
+}
+
+.planWorkspaceDivider {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--plan-editor-height);
+  height: 8px;
+  border: 2px solid var(--theme-map-line-contrast);
+  background: var(--theme-flight-plan-standby);
+  pointer-events: none;
+  z-index: 1;
+}
+.planWorkspaceLayout.isstandby > .planWorkspaceDivider { top: var(--plan-band-height); }
+
+.planCollapsedSummary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  flex: 1;
+  min-width: 0;
+  height: var(--thumb);
+  border: 0;
+  background: transparent;
+  color: var(--theme-panel-fg);
+  padding: 0 var(--thumb-gap);
+  font-size: 18px;
+  text-align: left;
+}
+
+.planCollapsedOpen, .planCollapsedSummary input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.planCollapsedSummary input {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.planWorkspaceButton {
+  flex: 0 0 var(--thumb);
+  width: var(--thumb);
+  height: var(--thumb);
+}
+
+.planWorkspaceButton > .actionIcon {
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.planWorkspaceButton[aria-disabled="true"] { opacity: 0.45; }
+.planWorkspaceNotice { padding: var(--thumb-gap); color: var(--theme-panel-fg); }
 
 .planEstimateMode {
   display: grid;

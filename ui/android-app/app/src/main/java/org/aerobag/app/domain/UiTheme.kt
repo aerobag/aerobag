@@ -95,6 +95,7 @@ data class AviationTheme(
 )
 
 data class FlightPlanRouteTheme(
+    val standby: Color,
     val contrast: Color,
     val completed: Color,
     val active: Color,
@@ -196,6 +197,7 @@ private data class WireAviationTheme(
 
 @Serializable
 private data class WireFlightPlanRouteTheme(
+    val standby: String,
     val contrast: String,
     val completed: String,
     val active: String,
@@ -285,6 +287,7 @@ object UiThemeLoader {
                 airportRunwayPattern = wire.aviation.airport_runway_pattern.toColor(),
             ),
             flightPlanRoute = FlightPlanRouteTheme(
+                standby = wire.flight_plan_route.standby.toColor(),
                 contrast = wire.flight_plan_route.contrast.toColor(),
                 completed = wire.flight_plan_route.completed.toColor(),
                 active = wire.flight_plan_route.active.toColor(),

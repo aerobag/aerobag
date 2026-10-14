@@ -5122,6 +5122,7 @@ fn airspace_selection_icon(feature: &AirspaceFeaturePayload) -> Option<AirspaceD
 enum TfrTimingKind {
     Active,
     Upcoming { starts_in_ms: i64 },
+    Ended,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5306,7 +5307,14 @@ fn tfr_timing_state(area: &TfrAreaPayload, reference_utc: Option<DateTime<Utc>>)
             kind: TfrTimingKind::Active,
         };
     };
-    let starts_in_ms = tfr_effective_start_utc(area).map(|start| {
+    let (start, end) = tfr_effective_window(area, Some(reference_utc));
+    if end.is_some_and(|end| end <= reference_utc) {
+        return TfrTimingState {
+            style_key: TFR_UPCOMING_STYLE_KEY,
+            kind: TfrTimingKind::Ended,
+        };
+    }
+    let starts_in_ms = start.map(|start| {
         start
             .signed_duration_since(reference_utc)
             .num_milliseconds()
@@ -5327,6 +5335,7 @@ fn tfr_timing_state(area: &TfrAreaPayload, reference_utc: Option<DateTime<Utc>>)
 fn tfr_timing_description(state: TfrTimingState) -> String {
     match state.kind {
         TfrTimingKind::Active => "Active".to_string(),
+        TfrTimingKind::Ended => "Published interval ended".to_string(),
         TfrTimingKind::Upcoming { starts_in_ms } => {
             format!("Starts in {}", format_weather_age(starts_in_ms))
         }
@@ -5340,8 +5349,7 @@ fn tfr_timing_detail_status(
     time_display_mode: crate::TimeDisplayMode,
 ) -> Option<MapSelectionDetailStatus> {
     let reference_utc = reference_utc.filter(|value| *value > DateTime::<Utc>::UNIX_EPOCH)?;
-    let start_utc = tfr_effective_start_utc(area);
-    let end_utc = tfr_effective_end_utc(area);
+    let (start_utc, end_utc) = tfr_effective_window(area, Some(reference_utc));
     let timing = tfr_timing_state(area, Some(reference_utc));
     let (text, action_id) =
         if let Some(start_utc) = start_utc.filter(|start| *start > reference_utc) {
@@ -5416,30 +5424,62 @@ fn format_tfr_time(
     )
 }
 
-fn tfr_effective_start_utc(area: &TfrAreaPayload) -> Option<DateTime<Utc>> {
-    area.notam
+fn tfr_effective_window(
+    area: &TfrAreaPayload,
+    reference: Option<DateTime<Utc>>,
+) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+    let fallback_start = area
+        .notam
         .as_ref()
-        .and_then(|notam| notam.effective_start_utc.as_deref())
-        .or_else(|| {
-            area.schedule_fragments
-                .iter()
-                .find(|fragment| fragment.kind.eq_ignore_ascii_case("effective"))
-                .map(|fragment| fragment.value_utc.as_str())
-        })
-        .and_then(crate::freshness::parse_utc_instant)
-}
-
-fn tfr_effective_end_utc(area: &TfrAreaPayload) -> Option<DateTime<Utc>> {
-    area.notam
+        .and_then(|n| n.effective_start_utc.as_deref())
+        .and_then(crate::freshness::parse_utc_instant);
+    let fallback_end = area
+        .notam
         .as_ref()
-        .and_then(|notam| notam.effective_end_utc.as_deref())
-        .or_else(|| {
-            area.schedule_fragments
-                .iter()
-                .find(|fragment| fragment.kind.eq_ignore_ascii_case("expires"))
-                .map(|fragment| fragment.value_utc.as_str())
-        })
-        .and_then(crate::freshness::parse_utc_instant)
+        .and_then(|n| n.effective_end_utc.as_deref())
+        .and_then(crate::freshness::parse_utc_instant);
+    let mut windows = Vec::new();
+    let mut start = None;
+    for fragment in &area.schedule_fragments {
+        let Some(instant) = crate::freshness::parse_utc_instant(&fragment.value_utc) else {
+            continue;
+        };
+        if fragment.kind.eq_ignore_ascii_case("effective") {
+            if let Some(previous) = start.replace(instant) {
+                windows.push((Some(previous), fallback_end));
+            }
+        } else if fragment.kind.eq_ignore_ascii_case("expires") {
+            windows.push((start.take().or(fallback_start), Some(instant)));
+        }
+    }
+    if start.is_some() {
+        windows.push((start, fallback_end));
+    }
+    if windows.is_empty() {
+        return (fallback_start, fallback_end);
+    }
+    windows.sort_unstable();
+    // Overlapping windows are one continuous restriction, not an early end.
+    let mut merged: Vec<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = Vec::new();
+    for window in windows {
+        if let Some(last) = merged.last_mut() {
+            if last.1.is_none() || window.0.is_none() || window.0 <= last.1 {
+                last.1 = match (last.1, window.1) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    _ => None,
+                };
+                continue;
+            }
+        }
+        merged.push(window);
+    }
+    // Select the active window, otherwise the next one, otherwise the last
+    // ended window. A gap must not be filled by the notice-wide envelope.
+    merged
+        .iter()
+        .copied()
+        .find(|(_, end)| reference.is_none_or(|now| end.is_none_or(|end| end > now)))
+        .unwrap_or_else(|| *merged.last().expect("nonempty schedule"))
 }
 
 fn tfr_notam_detail_text(notam: &TfrNotamMetadata) -> Option<String> {
@@ -6788,11 +6828,18 @@ fn tfr_fraction_label_width_px(area: &TfrAreaPayload) -> f64 {
 
 fn tfr_limit_label(limit: &TfrAltitudeLimit) -> String {
     let value = limit.value_text.trim();
-    if value == "0" {
+    let unit = limit.unit.trim();
+    if value == "SFC" || (value == "0" && unit == "FT AGL") {
         return "SFC".to_string();
     }
-    if limit.unit.trim() == "FL" {
+    if value.is_empty() {
+        return "--".to_string();
+    }
+    if unit == "FL" {
         return format!("FL{value}");
+    }
+    if let Some(datum) = unit.strip_prefix("FT ") {
+        return format!("{value} {datum}");
     }
     value.to_string()
 }
@@ -11925,7 +11972,7 @@ mod tests {
                 },
                 lower_limit: TfrAltitudeLimit {
                     value_text: "0".to_string(),
-                    unit: "FT".to_string(),
+                    unit: "FT AGL".to_string(),
                 },
                 polygon: vec![
                     TfrLatLonPoint {
@@ -12173,6 +12220,99 @@ mod tests {
         assert_eq!(result.paths[0].style.fill_color_key, "tfr_upcoming");
         assert_eq!(result.labels[0].glyph.style_key, TFR_UPCOMING_STYLE_KEY);
         assert_eq!(result.labels[0].glyph.color_key, "tfr_upcoming");
+    }
+
+    #[test]
+    fn tfr_scoped_schedule_selects_current_or_next_window_and_preserves_datum() {
+        let area: TfrAreaPayload = serde_json::from_value(serde_json::json!({
+            "area_id":"6/8923:scoped", "notam_id":"6/8923",
+            "schedule_fragments":[
+                {"kind":"effective","value_utc":"2026-10-14T20:00:00Z"},
+                {"kind":"expires","value_utc":"2026-10-14T21:00:00Z"},
+                {"kind":"effective","value_utc":"2026-10-16T20:00:00Z"},
+                {"kind":"expires","value_utc":"2026-10-16T21:00:00Z"}
+            ],
+            "upper_limit":{"value_text":"2400","unit":"FT AGL"},
+            "lower_limit":{"value_text":"0","unit":"FT MSL"},
+            "polygon":[], "summary_text":"",
+            "notam":{"record_id":"NMS:test","effective_start_utc":"2026-10-14T00:00:00Z","effective_end_utc":"2026-10-18T00:00:00Z"}
+        })).unwrap();
+        for (now, expected, color) in [
+            (
+                "2026-10-15T20:00:00Z",
+                "Starts in 1d",
+                TFR_UPCOMING_STYLE_KEY,
+            ),
+            (
+                "2026-10-16T20:30:00Z",
+                "Active now; ends in 30m",
+                TFR_ACTIVE_STYLE_KEY,
+            ),
+            (
+                "2026-10-16T22:00:00Z",
+                "The published effective interval has ended",
+                TFR_UPCOMING_STYLE_KEY,
+            ),
+        ] {
+            let status = tfr_timing_detail_status(
+                &area,
+                crate::freshness::parse_utc_instant(now),
+                chrono_tz::UTC,
+                crate::TimeDisplayMode::Utc,
+            )
+            .unwrap();
+            assert!(status.text.starts_with(expected), "{now}: {}", status.text);
+            assert_eq!(status.color_key, color);
+        }
+        assert_eq!(tfr_limit_label(&area.lower_limit), "0 MSL");
+        assert_eq!(tfr_limit_label(&area.upper_limit), "2400 AGL");
+        let mut overlapping = area.clone();
+        overlapping.schedule_fragments[2].value_utc = "2026-10-14T20:30:00Z".into();
+        overlapping.schedule_fragments[3].value_utc = "2026-10-14T22:00:00Z".into();
+        assert_eq!(
+            tfr_effective_window(
+                &overlapping,
+                crate::freshness::parse_utc_instant("2026-10-14T20:45:00Z")
+            )
+            .1,
+            crate::freshness::parse_utc_instant("2026-10-14T22:00:00Z"),
+            "overlapping windows are continuous through the later end"
+        );
+    }
+
+    #[test]
+    fn tfr_area_schedule_takes_precedence_over_notice_envelope() {
+        let mut area: TfrAreaPayload = serde_json::from_value(serde_json::json!({
+            "area_id": "6/8923:missoula", "notam_id": "6/8923",
+            "schedule_fragments": [
+                {"kind":"effective", "value_utc":"2026-10-15T01:00:00Z"},
+                {"kind":"expires", "value_utc":"2026-10-15T02:00:00Z"}
+            ],
+            "upper_limit":{"value_text":"17999","unit":"FT"},
+            "lower_limit":{"value_text":"SFC","unit":""},
+            "polygon":[], "summary_text":"",
+            "notam": {"record_id":"NMS:test",
+                "effective_start_utc":"2026-10-14T22:30:00Z",
+                "effective_end_utc":"2026-10-15T04:00:00Z"}
+        }))
+        .unwrap();
+        assert_eq!(
+            tfr_effective_window(&area, None).0,
+            crate::freshness::parse_utc_instant("2026-10-15T01:00:00Z")
+        );
+        assert_eq!(
+            tfr_effective_window(&area, None).1,
+            crate::freshness::parse_utc_instant("2026-10-15T02:00:00Z")
+        );
+        area.schedule_fragments.clear();
+        assert_eq!(
+            tfr_effective_window(&area, None).0,
+            crate::freshness::parse_utc_instant("2026-10-14T22:30:00Z")
+        );
+        assert_eq!(
+            tfr_effective_window(&area, None).1,
+            crate::freshness::parse_utc_instant("2026-10-15T04:00:00Z")
+        );
     }
 
     #[test]

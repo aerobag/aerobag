@@ -710,19 +710,10 @@ impl ProductBuilder for TfrLiveFeedBuilder {
         )?;
         let revisions = load_tfr_source_revisions(&input_dir)?;
         let tfr_notam_ids = revisions.keys().cloned().collect::<BTreeSet<_>>();
-        let mut notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
-        let missing_from_notam_state = revisions
-            .iter()
-            .filter(|(tfr_id, _)| !notams_by_fdc_id.contains_key(*tfr_id))
-            .map(|(id, revision)| (id.clone(), revision.clone()))
-            .collect::<BTreeMap<_, _>>();
-        if let Some(backfill_metadata) = self
-            .current_tfr_detail_backfill_metadata(&missing_from_notam_state, tfr_notam_ids.len())
-        {
-            for (fdc_id, metadata) in backfill_metadata {
-                notams_by_fdc_id.entry(fdc_id).or_insert(metadata);
-            }
-        }
+        let notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
+        // NMS notice text does not describe the individual WFS polygons. Even
+        // with NMS available, fetch the XML's coupled geometry and area facts.
+        self.install_current_tfr_details(&revisions, &input_dir.join("details"));
         write_json_pretty_file(
             &input_dir.join("notam-enrichment-by-fdc-id.json"),
             &notams_by_fdc_id,
@@ -793,30 +784,22 @@ impl TfrLiveFeedBuilder {
         }
     }
 
-    fn current_tfr_detail_backfill_metadata(
-        &self,
-        missing_tfr_ids: &BTreeMap<String, String>,
-        current_tfr_count: usize,
-    ) -> Option<Vec<(String, StructuredTfrNotamMetadata)>> {
+    fn install_current_tfr_details(&self, revisions: &BTreeMap<String, String>, directory: &Path) {
         let Some(state_root) = &self.tfr_detail_backfill_state_root else {
-            return None;
+            return;
         };
         let store = TfrDetailBackfillStore::new(state_root);
-        if let Err(error) = store.reconcile_desired_tfrs(missing_tfr_ids, current_tfr_count) {
+        if let Err(error) = store.reconcile_desired_tfrs(revisions, revisions.len()) {
             eprintln!(
                 "TFR detail backfill queue unavailable from {}: {error:#}",
                 state_root.display()
             );
         }
-        match store.current_metadata_by_fdc_id(missing_tfr_ids) {
-            Ok(metadata) => Some(metadata),
-            Err(error) => {
-                eprintln!(
-                    "TFR detail backfill metadata unavailable from {}: {error:#}",
-                    state_root.display()
-                );
-                None
-            }
+        if let Err(error) = store.copy_current_details_to(revisions, directory) {
+            eprintln!(
+                "TFR detail backfill unavailable from {}: {error:#}",
+                state_root.display()
+            );
         }
     }
 }
@@ -1902,18 +1885,17 @@ mod tests {
                 environment == Some("production"),
                 "{environment:?}"
             );
-            let missing = wanted
-                .difference(&metadata.keys().cloned().collect())
+            let revisions = wanted
+                .iter()
                 .map(|id| (id.clone(), "v1".to_string()))
                 .collect();
-            builder
-                .current_tfr_detail_backfill_metadata(&missing, wanted.len())
-                .unwrap();
+            builder.install_current_tfr_details(&revisions, &temp.path().join("details"));
             let targets =
                 TfrDetailBackfillStore::new(temp.path().join("backfill")).due_fetch_targets(10)?;
             assert_eq!(
                 targets.len(),
-                usize::from(environment != Some("production"))
+                1,
+                "even production NMS text cannot supply per-area geometry/facts"
             );
             if let Some(target) = targets.first() {
                 assert_eq!(
@@ -1936,10 +1918,9 @@ mod tests {
         .with_tfr_detail_backfill_state_root(&state_root);
         let missing = BTreeMap::from([("6/8212".to_string(), "v1".to_string())]);
 
-        let first = builder
-            .current_tfr_detail_backfill_metadata(&missing, 3)
-            .expect("metadata query");
-        assert!(first.is_empty());
+        let directory = temp.path().join("details");
+        builder.install_current_tfr_details(&missing, &directory);
+        assert!(!directory.join("6_8212.xml").exists());
         let store = TfrDetailBackfillStore::new(&state_root);
         let targets = store.due_fetch_targets(10)?;
         assert_eq!(targets.len(), 1);
@@ -1968,18 +1949,10 @@ mod tests {
             "#,
         )?;
 
-        let second = builder
-            .current_tfr_detail_backfill_metadata(&missing, 3)
-            .expect("metadata query");
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].0, "6/8212");
-        assert_eq!(second[0].1.record_id, "F:ZTL:2026:N:8212");
-        assert!(second[0]
-            .1
-            .text
-            .as_deref()
-            .expect("text")
-            .contains("SFC-400FT"));
+        builder.install_current_tfr_details(&missing, &directory);
+        let xml = fs::read_to_string(directory.join("6_8212.xml"))?;
+        let parsed = crate::tfr_detail_backfill::parse_tfr_detail_xml("6/8212", "", &xml)?;
+        assert_eq!(parsed.metadata.record_id, "F:ZTL:2026:N:8212");
         Ok(())
     }
 

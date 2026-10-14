@@ -13,7 +13,6 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::{Duration, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::StructuredTfrNotamMetadata;
@@ -62,11 +61,12 @@ pub struct TfrDetailBackfillStoreSummary {
     pub last_needed_at_utc: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParsedTfrDetailBackfill {
     pub tfr_id: String,
     pub source_url: String,
     pub metadata: StructuredTfrNotamMetadata,
+    pub(crate) areas: Vec<crate::ParsedTfrArea>,
 }
 
 impl TfrDetailBackfillStore {
@@ -265,7 +265,8 @@ impl TfrDetailBackfillStore {
         })
     }
 
-    pub fn current_metadata_by_fdc_id(
+    #[cfg(test)]
+    fn current_metadata_by_fdc_id(
         &self,
         tfr_ids: &BTreeMap<String, String>,
     ) -> anyhow::Result<Vec<(String, StructuredTfrNotamMetadata)>> {
@@ -292,6 +293,28 @@ impl TfrDetailBackfillStore {
             }
         }
         Ok(metadata)
+    }
+
+    pub fn copy_current_details_to(
+        &self,
+        revisions: &BTreeMap<String, String>,
+        directory: &Path,
+    ) -> anyhow::Result<()> {
+        fs::create_dir_all(directory)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT raw_xml FROM detail_records WHERE tfr_id = ?1 AND source_revision = ?2",
+        )?;
+        for (id, revision) in revisions {
+            validate_tfr_id(id)?;
+            let xml: Option<String> = statement
+                .query_row([id, revision], |row| row.get(0))
+                .optional()?;
+            if let Some(xml) = xml {
+                fs::write(directory.join(format!("{}.xml", id.replace('/', "_"))), xml)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn record_success(
@@ -540,45 +563,52 @@ pub fn parse_tfr_detail_xml(
     let xml = xml.trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(xml)
         .with_context(|| format!("failed to parse TFR detail XML for {tfr_id}"))?;
-    let number = child_text(&document, "noSeqNo").unwrap_or_else(|| {
-        tfr_id
-            .split_once('/')
-            .map(|(_, number)| number.to_string())
-            .unwrap()
-    });
-    let year = child_text(&document, "dateIndexYear").unwrap_or_else(|| "20??".to_string());
-    let facility = child_text(&document, "codeFacility");
-    let city = child_text(&document, "txtNameCity");
-    let state = child_text(&document, "txtNameUSState");
-    let issued_utc = child_text(&document, "dateIssued").map(normalize_detail_timestamp);
-    let effective_start_utc =
-        child_text(&document, "dateEffective").map(normalize_detail_timestamp);
-    let effective_end_utc = child_text(&document, "dateExpire").map(normalize_detail_timestamp);
-    let lower = detail_limit_text(
-        child_text(&document, "valDistVerLower"),
-        child_text(&document, "uomDistVerLower"),
-        true,
+    let mut notices = document
+        .descendants()
+        .filter(|node| node.has_tag_name("Not"));
+    let notice = notices
+        .next()
+        .context("TFR detail response has no notice")?;
+    anyhow::ensure!(
+        notices.next().is_none(),
+        "TFR detail response has multiple notices"
     );
-    let upper = detail_limit_text(
-        child_text(&document, "valDistVerUpper"),
-        child_text(&document, "uomDistVerUpper"),
-        false,
+    let identity = notice
+        .children()
+        .find(|node| node.has_tag_name("NotUid"))
+        .context("TFR detail response has no notice identity")?;
+    let field = |name| {
+        identity
+            .children()
+            .find(|node| node.has_tag_name(name))
+            .and_then(|node| node.text())
+            .map(str::trim)
+    };
+    let number = field("noSeqNo").context("TFR detail response has no notice number")?;
+    let year = field("dateIndexYear").context("TFR detail response has no notice year")?;
+    anyhow::ensure!(
+        super::fdc_id_from_year_and_number(year, number).as_deref() == Some(tfr_id),
+        "TFR detail identity {year}/{number} does not match requested {tfr_id}"
     );
+    let facility = crate::tfr_areas::text(notice, "codeFacility").map(str::to_owned);
+    let city = child_text(notice, "txtNameCity");
+    let state = child_text(notice, "txtNameUSState");
+    let issued_utc = crate::tfr_areas::text(identity, "dateIssued")
+        .map(|value| normalize_detail_timestamp(value.into()));
+    let effective_start_utc = crate::tfr_areas::text(notice, "dateEffective")
+        .map(|v| normalize_detail_timestamp(v.into()));
+    let effective_end_utc =
+        crate::tfr_areas::text(notice, "dateExpire").map(|v| normalize_detail_timestamp(v.into()));
     let location = match (city.as_deref(), state.as_deref()) {
         (Some(city), Some(state)) => format!("{city}, {state}"),
         (Some(city), None) => city.to_string(),
         (None, Some(state)) => state.to_string(),
         (None, None) => tfr_id.to_string(),
     };
-    let altitude_pair = match (&lower, &upper) {
-        (Some(lower), Some(upper)) => format!("{lower}-{upper}"),
-        _ => "altitudes unavailable".to_string(),
-    };
     let summary_text = format!(
-        "{}..AIRSPACE {}..TEMPORARY FLIGHT RESTRICTIONS. {}.{}{}",
+        "{}..AIRSPACE {}..TEMPORARY FLIGHT RESTRICTIONS. See area-specific altitude limits.{}{}",
         state.as_deref().unwrap_or("US"),
         location,
-        altitude_pair,
         effective_start_utc
             .as_deref()
             .map(|value| format!(" Effective {value}."))
@@ -588,13 +618,14 @@ pub fn parse_tfr_detail_xml(
             .map(|value| format!(" Expires {value}."))
             .unwrap_or_default()
     );
-    let text = child_text(&document, "txtDescrTraditional")
-        .or_else(|| child_text(&document, "txtDescrUSNS"))
-        .unwrap_or_else(|| match child_text(&document, "txtDescrPurpose") {
+    let text = crate::tfr_areas::text(notice, "txtDescrTraditional")
+        .map(str::to_owned)
+        .or_else(|| crate::tfr_areas::text(notice, "txtDescrUSNS").map(str::to_owned))
+        .unwrap_or_else(|| match child_text(notice, "txtDescrPurpose") {
             Some(purpose) => format!("{summary_text} {purpose}"),
             None => summary_text.clone(),
         });
-    let record_id = match (&facility, year.as_str()) {
+    let record_id = match (&facility, year) {
         (Some(facility), year) if year.chars().all(|ch| ch.is_ascii_digit()) => {
             format!("F:{facility}:{year}:N:{number}")
         }
@@ -603,6 +634,7 @@ pub fn parse_tfr_detail_xml(
     Ok(ParsedTfrDetailBackfill {
         tfr_id: tfr_id.to_string(),
         source_url: source_url.to_string(),
+        areas: crate::tfr_areas::parse(notice, tfr_id)?,
         metadata: StructuredTfrNotamMetadata {
             record_id,
             source_type: Some("FAA_TFR_DETAIL".to_string()),
@@ -633,30 +665,13 @@ fn validate_tfr_id(tfr_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn child_text(document: &roxmltree::Document<'_>, local_name: &str) -> Option<String> {
-    document
-        .descendants()
+fn child_text(node: roxmltree::Node<'_, '_>, local_name: &str) -> Option<String> {
+    node.descendants()
         .find(|node| node.is_element() && node.tag_name().name() == local_name)
         .and_then(|node| node.text())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-}
-
-fn detail_limit_text(value: Option<String>, unit: Option<String>, lower: bool) -> Option<String> {
-    let value = value?.trim().to_ascii_uppercase();
-    let unit = unit.unwrap_or_default().trim().to_ascii_uppercase();
-    if lower && (value == "0" || value == "SFC") {
-        return Some("SFC".to_string());
-    }
-    if value.is_empty() {
-        return None;
-    }
-    if unit.is_empty() {
-        Some(value)
-    } else {
-        Some(format!("{value}{unit}"))
-    }
 }
 
 fn normalize_detail_timestamp(value: String) -> String {
@@ -747,8 +762,24 @@ mod tests {
             .expect("parsed detail");
         let text = parsed.metadata.text.as_deref().expect("text");
         assert!(text.contains("TEMPORARY FLIGHT RESTRICTIONS"));
-        assert!(text.contains("SFC-400FT"));
+        assert!(text.contains("area-specific altitude limits"));
         assert!(text.contains("Expires 2026-07-17T03:59:00+00:00"));
+    }
+
+    #[test]
+    fn detail_response_must_identify_the_requested_notice() {
+        for identity in [
+            "<dateIndexYear>2026</dateIndexYear><noSeqNo>8927</noSeqNo>",
+            "<dateIndexYear>2025</dateIndexYear><noSeqNo>8923</noSeqNo>",
+            "<dateIndexYear>2026</dateIndexYear>",
+            "<noSeqNo>8923</noSeqNo>",
+        ] {
+            let xml = format!("<XNOTAM-Update><Not><NotUid>{identity}</NotUid><txtDescrTraditional>Wrong response</txtDescrTraditional></Not></XNOTAM-Update>");
+            assert!(
+                parse_tfr_detail_xml("6/8923", "unused", &xml).is_err(),
+                "accepted unrelated or unidentified response: {identity}"
+            );
+        }
     }
 
     #[test]
@@ -825,6 +856,17 @@ mod tests {
         );
         assert_eq!(reopened.summary().unwrap().current_cached, 1);
         assert!(reopened.due_fetch_targets(10).unwrap().is_empty());
+        let cold_root = tempfile::tempdir().unwrap();
+        let cold = TfrDetailBackfillStore::new(cold_root.path());
+        cold.reconcile_desired_tfrs(&new, 1).unwrap();
+        let cold_target = cold.due_fetch_targets(1).unwrap().remove(0);
+        cold.record_success(&cold_target, &xml("Kalispell"))
+            .unwrap();
+        assert_eq!(
+            reopened.current_metadata_by_fdc_id(&new).unwrap(),
+            cold.current_metadata_by_fdc_id(&new).unwrap(),
+            "warm/reopened and cold caches must agree for identical current inputs"
+        );
     }
 
     #[test]

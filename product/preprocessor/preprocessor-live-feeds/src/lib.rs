@@ -463,17 +463,10 @@ struct TfrListEntry {
     attributes: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextMode {
-    DateEffective,
-    DateExpire,
-    Upper,
-    Lower,
-    UpperUnit,
-    LowerUnit,
-    GeoLat,
-    GeoLon,
-}
+mod tfr_areas;
+
+#[cfg(test)]
+mod tfr_area_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MetarTextMode {
@@ -621,7 +614,7 @@ pub struct StructuredTfrDataset {
     areas: Vec<StructuredTfrArea>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StructuredTfrArea {
     area_id: String,
     notam_id: String,
@@ -662,27 +655,28 @@ pub struct StructuredTfrNotamMetadata {
     icao_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StructuredTfrScheduleFragment {
     kind: String,
     value_utc: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StructuredTfrLimit {
     value_text: String,
     unit: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StructuredTfrPoint {
     lat: f64,
     lon: f64,
 }
 
-#[derive(Debug, Clone)]
-struct ParsedTfrArea {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ParsedTfrArea {
     notam_id: String,
+    source_area_id: Option<String>,
     area_index: usize,
     schedule_fragments: Vec<StructuredTfrScheduleFragment>,
     upper_value_text: String,
@@ -789,20 +783,39 @@ pub fn sanitize_notam_id(notam_id: &str) -> String {
 pub fn tfr_notam_metadata_by_fdc_id(
     records: &[StructuredNotamRecord],
 ) -> BTreeMap<String, StructuredTfrNotamMetadata> {
-    let mut by_fdc_id = BTreeMap::new();
+    let mut by_fdc_id = BTreeMap::<String, Option<StructuredTfrNotamMetadata>>::new();
     for record in records {
-        let metadata = structured_tfr_notam_metadata(record);
-        for fdc_id in fdc_ids_for_notam(record) {
-            match by_fdc_id.get(&fdc_id) {
-                Some(existing)
-                    if tfr_notam_metadata_rank(existing) >= tfr_notam_metadata_rank(&metadata) => {}
-                _ => {
-                    by_fdc_id.insert(fdc_id, metadata.clone());
-                }
-            }
+        if !record
+            .source_type
+            .as_deref()
+            .is_some_and(|source| source.eq_ignore_ascii_case("F"))
+        {
+            continue;
         }
+        let Some(fdc_id) = record
+            .notam_year
+            .as_deref()
+            .zip(record.notam_number.as_deref())
+            .and_then(|(year, number)| fdc_id_from_year_and_number(year, number))
+        else {
+            continue;
+        };
+        let metadata = structured_tfr_notam_metadata(record);
+        // References in prose are not aliases. Conflicting owners must stay
+        // unresolved regardless of source order; the caller can fetch FAA detail.
+        by_fdc_id
+            .entry(fdc_id)
+            .and_modify(|existing| {
+                if existing.as_ref().is_some_and(|value| value != &metadata) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(metadata));
     }
     by_fdc_id
+        .into_iter()
+        .filter_map(|(id, value)| value.map(|value| (id, value)))
+        .collect()
 }
 
 fn structured_tfr_notam_metadata(record: &StructuredNotamRecord) -> StructuredTfrNotamMetadata {
@@ -826,207 +839,24 @@ fn structured_tfr_notam_metadata(record: &StructuredNotamRecord) -> StructuredTf
     }
 }
 
-fn tfr_notam_metadata_rank(metadata: &StructuredTfrNotamMetadata) -> u8 {
-    let source_rank = metadata
-        .source_type
-        .as_deref()
-        .is_some_and(|source| source.eq_ignore_ascii_case("F")) as u8;
-    let keyword_rank = metadata
-        .keyword
-        .as_deref()
-        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("AIRSPACE"))
-        as u8;
-    let text_rank = metadata.text.as_deref().is_some_and(text_contains_tfr) as u8;
-    source_rank + keyword_rank + text_rank
-}
-
-fn fdc_ids_for_notam(record: &StructuredNotamRecord) -> BTreeSet<String> {
-    let mut ids = BTreeSet::new();
-    if record
-        .source_type
-        .as_deref()
-        .is_some_and(|source| source.eq_ignore_ascii_case("F"))
-    {
-        if let (Some(year), Some(number)) = (&record.notam_year, &record.notam_number) {
-            if let Some(id) = fdc_id_from_year_and_number(year, number) {
-                ids.insert(id);
-            }
-        }
-    }
-    for text in [&record.text, &record.local_text, &record.icao_text]
-        .into_iter()
-        .flatten()
-    {
-        ids.extend(fdc_ids_in_text(text));
-    }
-    ids
-}
-
 fn fdc_id_from_year_and_number(year: &str, number: &str) -> Option<String> {
-    let year_digit = year.trim().chars().rev().find(|ch| ch.is_ascii_digit())?;
-    let number = number.trim();
-    if number.is_empty() || !number.chars().all(|ch| ch.is_ascii_digit()) {
+    let year = year.trim();
+    if year.len() != 4 || !year.bytes().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let year_digit = &year[3..];
+    let mut number = number.trim();
+    if let Some((prefix, suffix)) = number.split_once('/') {
+        if prefix != year_digit {
+            return None;
+        }
+        number = suffix;
+    }
+    if number.is_empty() || number.len() > 4 || !number.bytes().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
     let number = number.parse::<u32>().ok()?;
     Some(format!("{year_digit}/{number:04}"))
-}
-
-fn fdc_ids_in_text(text: &str) -> BTreeSet<String> {
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut ids = BTreeSet::new();
-    for index in 0..chars.len().saturating_sub(5) {
-        if !chars[index].is_ascii_digit() || chars.get(index + 1) != Some(&'/') {
-            continue;
-        }
-        let Some(number) = chars.get(index + 2..index + 6) else {
-            continue;
-        };
-        if !number.iter().all(|ch| ch.is_ascii_digit()) {
-            continue;
-        }
-        let before_ok = index == 0 || !chars[index - 1].is_ascii_alphanumeric();
-        let after_ok = chars
-            .get(index + 6)
-            .map(|ch| !ch.is_ascii_alphanumeric())
-            .unwrap_or(true);
-        if before_ok && after_ok {
-            ids.insert(chars[index..index + 6].iter().collect::<String>());
-        }
-    }
-    ids
-}
-
-fn text_contains_tfr(text: &str) -> bool {
-    let text = text.to_ascii_uppercase();
-    text.contains("TEMPORARY FLIGHT RESTRICTIONS")
-        || text.contains(" TFR")
-        || text.contains("91.137")
-        || text.contains("91.138")
-        || text.contains("91.139")
-        || text.contains("91.141")
-        || text.contains("91.143")
-        || text.contains("91.145")
-}
-
-fn enriched_tfr_limits(
-    area: &ParsedTfrArea,
-    notam_text: Option<&str>,
-) -> (StructuredTfrLimit, StructuredTfrLimit) {
-    let mut lower_limit = StructuredTfrLimit {
-        value_text: area.lower_value_text.clone(),
-        unit: area.lower_unit.clone(),
-    };
-    let mut upper_limit = StructuredTfrLimit {
-        value_text: area.upper_value_text.clone(),
-        unit: area.upper_unit.clone(),
-    };
-    if lower_limit.value_text.trim().is_empty() || upper_limit.value_text.trim().is_empty() {
-        if let Some((notam_lower, notam_upper)) = notam_text.and_then(tfr_altitude_limits_from_text)
-        {
-            if lower_limit.value_text.trim().is_empty() {
-                lower_limit = notam_lower;
-            }
-            if upper_limit.value_text.trim().is_empty() {
-                upper_limit = notam_upper;
-            }
-        }
-    }
-    (lower_limit, upper_limit)
-}
-
-fn tfr_notam_altitude_text(metadata: &StructuredTfrNotamMetadata) -> Option<&str> {
-    metadata
-        .local_text
-        .as_deref()
-        .or(metadata.text.as_deref())
-        .or(metadata.icao_text.as_deref())
-}
-
-fn tfr_altitude_limits_from_text(text: &str) -> Option<(StructuredTfrLimit, StructuredTfrLimit)> {
-    let tokens = text.split_whitespace().collect::<Vec<_>>();
-    for (index, token) in tokens.iter().enumerate() {
-        if let Some(limits) = parse_tfr_altitude_pair_token(token) {
-            return Some(limits);
-        }
-        let Some(next) = tokens.get(index + 1) else {
-            continue;
-        };
-        let next = next
-            .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
-            .to_ascii_uppercase();
-        let Some(upper) = next
-            .strip_prefix("MSL-")
-            .or_else(|| next.strip_prefix("AGL-"))
-        else {
-            continue;
-        };
-        if let Some(limits) = parse_tfr_altitude_pair_token(&format!("{token}-{upper}")) {
-            return Some(limits);
-        }
-    }
-    None
-}
-
-fn parse_tfr_altitude_pair_token(token: &str) -> Option<(StructuredTfrLimit, StructuredTfrLimit)> {
-    let token = token
-        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
-        .to_ascii_uppercase();
-    let (lower, upper) = token.split_once('-')?;
-    if lower.is_empty() || upper.is_empty() {
-        return None;
-    }
-    // Bare numeric ranges also describe compact NOTAM effective dates. At
-    // least one side must carry syntax that identifies this as an altitude.
-    if !tfr_altitude_limit_has_marker(lower) && !tfr_altitude_limit_has_marker(upper) {
-        return None;
-    }
-    Some((
-        parse_tfr_altitude_limit(lower)?,
-        parse_tfr_altitude_limit(upper)?,
-    ))
-}
-
-fn tfr_altitude_limit_has_marker(value: &str) -> bool {
-    let value = value
-        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
-        .to_ascii_uppercase();
-    value == "SFC" || value.starts_with("FL") || value.ends_with("FT")
-}
-
-fn parse_tfr_altitude_limit(value: &str) -> Option<StructuredTfrLimit> {
-    let value = value
-        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
-        .to_ascii_uppercase();
-    if value == "SFC" {
-        return Some(StructuredTfrLimit {
-            value_text: "SFC".to_string(),
-            unit: String::new(),
-        });
-    }
-    if let Some(number) = value.strip_prefix("FL") {
-        if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
-            return Some(StructuredTfrLimit {
-                value_text: number.to_string(),
-                unit: "FL".to_string(),
-            });
-        }
-    }
-    if let Some(number) = value.strip_suffix("FT") {
-        if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
-            return Some(StructuredTfrLimit {
-                value_text: number.to_string(),
-                unit: "FT".to_string(),
-            });
-        }
-    }
-    if !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()) {
-        return Some(StructuredTfrLimit {
-            value_text: value,
-            unit: String::new(),
-        });
-    }
-    None
 }
 
 pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrResult> {
@@ -1037,13 +867,22 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let (entries, parsed_areas) = load_parsed_tfr_areas(&request.input_dir)?;
+    let (entries, parsed_areas, details) = load_parsed_tfr_areas(&request.input_dir)?;
     let mut structured_areas_by_id = BTreeMap::new();
     for area in parsed_areas.iter().cloned() {
         let area_id = structured_tfr_area_id(&area)?;
-        let notam = request.notams_by_fdc_id.get(&area.notam_id).cloned();
-        let (lower_limit, upper_limit) =
-            enriched_tfr_limits(&area, notam.as_ref().and_then(tfr_notam_altitude_text));
+        let notam = details
+            .get(&area.notam_id)
+            .or_else(|| request.notams_by_fdc_id.get(&area.notam_id))
+            .cloned();
+        let lower_limit = StructuredTfrLimit {
+            value_text: area.lower_value_text,
+            unit: area.lower_unit,
+        };
+        let upper_limit = StructuredTfrLimit {
+            value_text: area.upper_value_text,
+            unit: area.upper_unit,
+        };
         let structured_area = StructuredTfrArea {
             area_id: area_id.clone(),
             notam_id: area.notam_id,
@@ -1055,14 +894,23 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
             summary_text: area.summary_text,
             notam,
         };
-        if structured_areas_by_id
-            .insert(area_id.clone(), structured_area)
-            .is_some()
+        if let Some(previous) =
+            structured_areas_by_id.insert(area_id.clone(), structured_area.clone())
         {
-            bail!("duplicate stable TFR area identity {area_id}");
+            anyhow::ensure!(
+                previous == structured_area,
+                "conflicting stable TFR area identity {area_id}"
+            );
         }
     }
-    let structured_areas = structured_areas_by_id.into_values().collect::<Vec<_>>();
+    let mut structured_areas = structured_areas_by_id.into_values().collect::<Vec<_>>();
+    let mut next_index = BTreeMap::<String, usize>::new();
+    for area in &mut structured_areas {
+        let index = next_index.entry(area.notam_id.clone()).or_default();
+        area.area_index = *index;
+        *index += 1;
+    }
+    let area_group_count = structured_areas.len();
     let structured_json_path = request.output_dir.join("tfrs.json");
     let manifest_path = request
         .output_dir
@@ -1097,7 +945,7 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
             },
             counts: TfrManifestCounts {
                 notams: entries.len(),
-                area_groups: parsed_areas.len(),
+                area_groups: area_group_count,
             },
         },
     )?;
@@ -1108,7 +956,7 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
         structured_json_path,
         zip_path,
         notam_count: entries.len(),
-        area_group_count: parsed_areas.len(),
+        area_group_count,
     })
 }
 
@@ -1118,6 +966,10 @@ fn structured_tfr_area_id(area: &ParsedTfrArea) -> anyhow::Result<String> {
     hasher.update(area.notam_id.as_bytes());
     hasher.update([0]);
     hasher.update(&polygon_identity);
+    if let Some(source_area_id) = &area.source_area_id {
+        hasher.update([0]);
+        hasher.update(source_area_id.as_bytes());
+    }
     let digest = format!("{:x}", hasher.finalize());
     Ok(format!("{}:{}", area.notam_id, &digest[..16]))
 }
@@ -3289,20 +3141,41 @@ fn parse_optional_f64(value: &str) -> anyhow::Result<Option<f64>> {
 
 fn load_parsed_tfr_areas(
     input_dir: &Path,
-) -> anyhow::Result<(Vec<TfrListEntry>, Vec<ParsedTfrArea>)> {
+) -> anyhow::Result<(
+    Vec<TfrListEntry>,
+    Vec<ParsedTfrArea>,
+    BTreeMap<String, StructuredTfrNotamMetadata>,
+)> {
     let entries = load_tfr_list_entries(input_dir)?;
     let graphics_path = input_dir.join("graphics.geojson");
-    if graphics_path.is_file() {
-        return Ok((entries, parse_wfs_geojson_areas(&graphics_path)?));
-    }
-    let mut parsed_areas = Vec::new();
+    let mut parsed_areas = if graphics_path.is_file() {
+        parse_wfs_geojson_areas(&graphics_path)?
+    } else {
+        Vec::new()
+    };
+    let mut details = BTreeMap::new();
     for entry in &entries {
         let detail_path = input_dir
             .join("details")
             .join(format!("{}.xml", sanitize_notam_id(&entry.notam_id)));
-        parsed_areas.extend(parse_detail_xml_groups(&detail_path, &entry.notam_id)?);
+        if !detail_path.is_file() {
+            continue;
+        }
+        let xml = fs::read_to_string(&detail_path)?;
+        match tfr_detail_backfill::parse_tfr_detail_xml(&entry.notam_id, "", &xml) {
+            Ok(detail) => {
+                // Geometry and restrictions are one authoritative unit. Never
+                // join XML area facts to WFS polygons by proximity or ordinal.
+                if !detail.areas.is_empty() {
+                    parsed_areas.retain(|area| area.notam_id != entry.notam_id);
+                    parsed_areas.extend(detail.areas);
+                }
+                details.insert(entry.notam_id.clone(), detail.metadata);
+            }
+            Err(error) => eprintln!("TFR {} detail rejected; keeping WFS geometry without guessed area facts: {error:#}", entry.notam_id),
+        }
     }
-    Ok((entries, parsed_areas))
+    Ok((entries, parsed_areas, details))
 }
 
 fn parse_wfs_geojson_areas(path: &Path) -> anyhow::Result<Vec<ParsedTfrArea>> {
@@ -3379,6 +3252,7 @@ fn parse_wfs_geojson_areas(path: &Path) -> anyhow::Result<Vec<ParsedTfrArea>> {
             .unwrap_or_default();
             areas.push(ParsedTfrArea {
                 notam_id: notam_id.clone(),
+                source_area_id: None,
                 area_index: feature_area_index,
                 summary_text: build_tfr_summary_text(
                     &schedule_fragments,
@@ -3575,201 +3449,6 @@ fn build_tfr_summary_text(
         text.push_str(&normalize_geo_number_string(&point.lon.to_string())?);
     }
     Ok(text)
-}
-
-fn parse_detail_xml_groups(path: &Path, notam_id: &str) -> anyhow::Result<Vec<ParsedTfrArea>> {
-    let xml =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut reader = Reader::from_str(&xml);
-    let mut buffer = Vec::new();
-    let mut groups = Vec::new();
-    let mut current_group = ParsedTfrArea {
-        notam_id: notam_id.to_string(),
-        area_index: 0,
-        schedule_fragments: Vec::new(),
-        upper_value_text: String::new(),
-        upper_unit: String::new(),
-        lower_value_text: String::new(),
-        lower_unit: String::new(),
-        polygon: Vec::new(),
-        summary_text: String::new(),
-    };
-    let mut in_area_group = false;
-    let mut in_area = false;
-    let mut mode = None;
-    let mut pending_lat = None;
-
-    loop {
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"TFRAreaGroup" => {
-                    in_area_group = true;
-                    current_group = ParsedTfrArea {
-                        notam_id: notam_id.to_string(),
-                        area_index: groups.len(),
-                        schedule_fragments: Vec::new(),
-                        upper_value_text: String::new(),
-                        upper_unit: String::new(),
-                        lower_value_text: String::new(),
-                        lower_unit: String::new(),
-                        polygon: Vec::new(),
-                        summary_text: "TFR:: ".to_string(),
-                    };
-                }
-                b"dateEffective" if in_area_group => mode = Some(TextMode::DateEffective),
-                b"dateExpire" if in_area_group => mode = Some(TextMode::DateExpire),
-                b"valDistVerUpper" if in_area_group => mode = Some(TextMode::Upper),
-                b"valDistVerLower" if in_area_group => mode = Some(TextMode::Lower),
-                b"uomDistVerUpper" if in_area_group => mode = Some(TextMode::UpperUnit),
-                b"uomDistVerLower" if in_area_group => mode = Some(TextMode::LowerUnit),
-                b"abdMergedArea" if in_area_group => {
-                    in_area = true;
-                    pending_lat = None;
-                }
-                b"geoLat" if in_area_group => mode = Some(TextMode::GeoLat),
-                b"geoLong" if in_area_group => mode = Some(TextMode::GeoLon),
-                _ => {}
-            },
-            Ok(Event::End(event)) => match event.name().as_ref() {
-                b"TFRAreaGroup" => {
-                    groups.push(current_group.clone());
-                    in_area_group = false;
-                    in_area = false;
-                    mode = None;
-                    pending_lat = None;
-                }
-                b"abdMergedArea" if in_area_group => {
-                    in_area = false;
-                    pending_lat = None;
-                }
-                b"dateEffective" | b"dateExpire" | b"valDistVerUpper" | b"valDistVerLower"
-                | b"uomDistVerUpper" | b"uomDistVerLower" | b"geoLat" | b"geoLong" => mode = None,
-                _ => {}
-            },
-            Ok(Event::Text(event)) if in_area_group => {
-                let text = event
-                    .xml_content()
-                    .context("failed to decode TFR XML text")?
-                    .trim()
-                    .to_string();
-                if text.is_empty() {
-                    buffer.clear();
-                    continue;
-                }
-                match mode {
-                    Some(TextMode::DateEffective) => {
-                        current_group.summary_text.push_str("Eff ");
-                        current_group.summary_text.push_str(&text);
-                        current_group.summary_text.push(' ');
-                        current_group
-                            .schedule_fragments
-                            .push(StructuredTfrScheduleFragment {
-                                kind: "effective".to_string(),
-                                value_utc: text,
-                            });
-                    }
-                    Some(TextMode::DateExpire) => {
-                        current_group.summary_text.push_str("Exp ");
-                        current_group.summary_text.push_str(&text);
-                        current_group.summary_text.push(' ');
-                        current_group
-                            .schedule_fragments
-                            .push(StructuredTfrScheduleFragment {
-                                kind: "expires".to_string(),
-                                value_utc: text,
-                            });
-                    }
-                    Some(TextMode::Upper) => {
-                        current_group.summary_text.push_str("Top ");
-                        current_group.summary_text.push_str(&text);
-                        current_group.summary_text.push(' ');
-                        current_group.upper_value_text = text;
-                    }
-                    Some(TextMode::Lower) => {
-                        current_group.summary_text.push_str("Low ");
-                        current_group.summary_text.push_str(&text);
-                        current_group.summary_text.push(' ');
-                        current_group.lower_value_text = text;
-                    }
-                    Some(TextMode::UpperUnit) => {
-                        current_group.summary_text.push_str(&text);
-                        current_group.summary_text.push(' ');
-                        current_group.upper_unit = text;
-                    }
-                    Some(TextMode::LowerUnit) => {
-                        current_group.summary_text.push_str(&text);
-                        current_group.summary_text.push(' ');
-                        current_group.lower_unit = text;
-                    }
-                    Some(TextMode::GeoLat) if in_area => {
-                        current_group.summary_text.push(',');
-                        current_group
-                            .summary_text
-                            .push_str(&normalize_geo_number_string(&text)?);
-                        pending_lat = Some(parse_geo_value(&text)?);
-                    }
-                    Some(TextMode::GeoLon) if in_area => {
-                        let lon = parse_geo_value(&text)?;
-                        current_group.summary_text.push(',');
-                        current_group
-                            .summary_text
-                            .push_str(&normalize_geo_number_string(&text)?);
-                        let lat = pending_lat.take().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "encountered geoLong before geoLat in {}",
-                                path.display()
-                            )
-                        })?;
-                        current_group.polygon.push(StructuredTfrPoint { lat, lon });
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::CData(event)) if in_area_group => {
-                let text = event
-                    .xml_content()
-                    .context("failed to decode TFR XML cdata")?
-                    .trim()
-                    .to_string();
-                if text.is_empty() {
-                    buffer.clear();
-                    continue;
-                }
-                match mode {
-                    Some(TextMode::GeoLat) if in_area => {
-                        current_group.summary_text.push(',');
-                        current_group
-                            .summary_text
-                            .push_str(&normalize_geo_number_string(&text)?);
-                        pending_lat = Some(parse_geo_value(&text)?);
-                    }
-                    Some(TextMode::GeoLon) if in_area => {
-                        let lon = parse_geo_value(&text)?;
-                        current_group.summary_text.push(',');
-                        current_group
-                            .summary_text
-                            .push_str(&normalize_geo_number_string(&text)?);
-                        let lat = pending_lat.take().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "encountered geoLong before geoLat in {}",
-                                path.display()
-                            )
-                        })?;
-                        current_group.polygon.push(StructuredTfrPoint { lat, lon });
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to parse {}", path.display()));
-            }
-        }
-        buffer.clear();
-    }
-
-    Ok(groups)
 }
 
 fn parse_geo_value(raw: &str) -> anyhow::Result<f64> {
@@ -4763,21 +4442,73 @@ mod tests {
     }
 
     #[test]
-    fn tfr_altitude_parser_ignores_effective_dates_before_msl_to_flight_level_limits() {
-        let text = "2603080900-2611010959 END PART 1 OF 2 \
-                    390803N1212615W 4100FT MSL-FL180 \
-                    EFFECTIVE 2603080900 UTC UNTIL 2611010959 UTC";
+    fn tfr_enrichment_uses_own_structured_identity_not_text_references() {
+        for number in ["0543", "6/0543"] {
+            let record = tfr_notam_record(
+                "NMS:own",
+                "ZFW",
+                number,
+                "!FDC 6/0543 ZFW AIRSPACE. THIS NOTAM REPLACES NOTAM 5/3680. SEE ALSO 6/1234.",
+            );
+            let indexed = tfr_notam_metadata_by_fdc_id(&[record]);
+            assert_eq!(
+                indexed.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["6/0543"]
+            );
+        }
+        let mut record =
+            tfr_notam_record("NMS:domestic", "ADS", "05/025", "SEE FDC 9/2934 VIP TFR");
+        record.source_type = Some("D".into());
+        assert!(tfr_notam_metadata_by_fdc_id(&[record]).is_empty());
+    }
 
-        let (lower, upper) = tfr_altitude_limits_from_text(text).expect("TFR altitude limits");
-
-        assert_eq!(lower.value_text, "4100");
-        assert_eq!(lower.unit, "FT");
-        assert_eq!(upper.value_text, "180");
-        assert_eq!(upper.unit, "FL");
-        assert!(
-            tfr_altitude_limits_from_text("EFFECTIVE 2603080900 UTC UNTIL 2611010959 UTC")
-                .is_none()
+    #[test]
+    fn tfr_enrichment_rejects_conflicting_owners_independently_of_order() {
+        let a = tfr_notam_record(
+            "NMS:a",
+            "ZLC",
+            "8923",
+            "KALISPELL TEMPORARY FLIGHT RESTRICTIONS",
         );
+        let b = tfr_notam_record(
+            "NMS:b",
+            "ZNY",
+            "8923",
+            "BETHLEHEM TEMPORARY FLIGHT RESTRICTIONS",
+        );
+        for records in [
+            vec![a.clone(), b.clone()],
+            vec![b.clone(), a.clone()],
+            vec![a.clone(), b, a.clone()],
+        ] {
+            assert!(
+                tfr_notam_metadata_by_fdc_id(&records).is_empty(),
+                "ambiguous identity must not select an arbitrary owner"
+            );
+        }
+        assert_eq!(tfr_notam_metadata_by_fdc_id(&[a.clone(), a]).len(), 1);
+    }
+
+    #[test]
+    fn tfr_enrichment_rejects_inconsistent_or_missing_structured_identity() {
+        for (year, number) in [
+            ("2025", "6/0543"),
+            ("", "6/0543"),
+            ("2026", ""),
+            ("2026", "12345"),
+        ] {
+            let mut record = tfr_notam_record(
+                "NMS:a",
+                "ZFW",
+                number,
+                "!FDC 6/0543 ZFW TEMPORARY FLIGHT RESTRICTIONS",
+            );
+            record.notam_year = Some(year.into());
+            assert!(
+                tfr_notam_metadata_by_fdc_id(&[record]).is_empty(),
+                "{year:?} {number:?}"
+            );
+        }
     }
 
     #[test]
@@ -4827,9 +4558,10 @@ mod tests {
         assert!(area["area_id"]
             .as_str()
             .is_some_and(|value| !value.is_empty()));
-        assert_eq!("SFC", area["lower_limit"]["value_text"]);
-        assert_eq!("8500", area["upper_limit"]["value_text"]);
-        assert_eq!("FT", area["upper_limit"]["unit"]);
+        // Notice text is readable, but does not authorize assigning its first
+        // altitude pair to a particular WFS polygon.
+        assert_eq!("", area["lower_limit"]["value_text"]);
+        assert_eq!("", area["upper_limit"]["value_text"]);
         assert_eq!("F:ZSE:2026:N:7042", area["notam"]["record_id"]);
         assert_eq!("ZSE", area["notam"]["facility"]);
         assert_eq!("PUBLISHED", area["notam"]["status"]);

@@ -286,3 +286,152 @@ only the raw replay's derived expectation and adjacent audit notes change. It
 sets 1,443 mutations, 1,209 removals, and the reviewed `cebde572...cc6d` final hash.
 All capture bytes, capture schema, compact fixtures, and replay assertions remain
 unchanged. The application fixture lock now pins this revision.
+
+## TFR attribution audit, October 14, 2026
+
+The July-detail/October-geometry cache failure prompted an ownership and scope
+audit. Production was inspected read-only, not deployed or restarted.
+
+The current production daemon's NMS SQLite snapshot contained 28,294 records
+(production environment, poll cursor 2026-10-14T17:06:59Z). Use the state root
+from the running daemon's arguments: the older top-level `state/nms-notams`
+directory is a retired August store, not the current production input.
+
+The original enrichment helper produced 32 index entries owned by a different
+notice and 21 associations that changed when input order was reversed. It
+scanned all prose for number-shaped strings, including replacements and cross
+references, then ranked conflicting owners. The captured published TFR state
+`5ca2f863f8194ff8` actually attached domestic airport references to 15 of its 65
+TFR notices (31 of 92 polygons). For example, `9/2934` displayed Addison's
+`05/025`, which merely says to see FDC `9/2934`.
+
+The corrected join accepts only the record's own structured FDC year/number,
+including NMS's `6/0543` spelling, and never treats prose references as aliases.
+Conflicting owners remain unresolved for FAA detail backfill, not arbitrary
+first/last-wins selection. The same capture now yields 4,840 entries, zero
+wrong owners, zero order-dependent results, and zero missing unambiguous owners.
+
+The FAA detail parser also now verifies the response's own XML year/number
+against the requested identity. Core now prefers area-specific effective dates
+over the enclosing notice's dates. Both had failing regressions before fixes.
+
+### Repeatable checks
+
+The production join audit reads canonical source JSON objects, one per line;
+capture them with a read-only `SELECT record_json FROM current_notams ORDER BY id`
+against the running daemon's store. No credentials or source captures are checked
+into the repository.
+
+```sh
+cargo run --manifest-path product/preprocessor/Cargo.toml \
+  -p preprocessor-live-feeds --example audit_tfr_joins < records.jsonl
+
+python3 tools/audit_tfr_attribution.py \
+  --state published-tfrs.json.xz --details detail-records.json
+```
+
+The second command takes a JSON array of `{tfr_id, raw_xml}` records, exported
+read-only from a current FAA detail cache. Identity contradictions fail the
+command. Area-scope and coarse geographic inconsistencies are review candidates,
+not inferred polygon joins or automatic reasons to discard valid restrictions.
+
+Fixture-free tests now exercise own identity versus references, inconsistent
+year/number pairs, conflicting-owner permutations (including duplicates),
+foreign detail responses, area-date precedence, and warm/reopened versus cold
+cache equivalence. The audit checks positive coverage too: dropping everything
+cannot pass. The live sweeps are explicit tools, not scheduled CI or new
+pipeline-health metrics. Wire-format/delta round trips remain separate tests;
+they cannot establish that a well-formed record belongs to the displayed entity.
+
+### Area-scope defects and resolution
+
+Comparing the published state with 77 freshly fetched FAA XML details found no
+disjoint notice-level geographic bounds among the 65 comparable notices. That
+coarse check does not establish exact polygon equality or validate attached text.
+
+- Four notices have distinct FAA area altitude bands collapsed to one published
+  band: `6/3002`, `6/4143`, `6/4348`, `6/8902`. For example, `6/4348` has SFC-2400
+  and 2400-FL180 areas, but both published polygons say SFC-2400. The current
+  text enrichment takes the first range in the entire notice.
+- Six notices have different area schedules but no published area schedule
+  fragments: `6/3002`, `6/8923`, `6/8927`, `6/8928`, `6/8992`, `6/9367`. Kalispell
+  and Missoula do not start simultaneously, despite sharing one notice.
+- Altitude reference (AGL versus MSL) is present in XML `codeDistVer*`, but the
+  text-derived FT unit does not preserve it. Per-area attribution must preserve
+  this distinction as well as value and unit.
+
+These producer defects are now fixed in the working tree:
+
+- Request revision-matched FAA XML for every current TFR, even when production
+  NMS already supplies its text. Cached current details require no network fetch.
+- Publish each XML `TFRAreaGroup` as one coupled geometry/altitude/schedule unit.
+  Validate its boundary's area identity. Do not spatially match it to WFS.
+- Preserve AGL/MSL and flight levels; zero MSL is not surface. Remove the
+  notice-wide text altitude parser, including synthesized first-area altitudes.
+- Compile daily, overnight, and weekday schedules into ordered UTC interval
+  pairs. Area dates override notice defaults; missing dates use those defaults.
+  Core selects the current or next interval, merges overlaps, and does not
+  report an ended first interval when another window remains.
+- While details are pending or rejected, retain WFS geometry and readable NMS
+  notice text where available, but show unknown area altitudes. One invalid
+  detail must not remove other restrictions or abort the entire publication.
+- Area IDs incorporate the XML area identity as well as canonical geometry,
+  allowing identical footprints with different altitude bands. Exact duplicate
+  groups coalesce; conflicting definitions are rejected at notice scope.
+
+There is no new required wire field or encoding: `area_id` remains opaque,
+limits retain their value/unit strings, and `schedule_fragments` retains its
+effective/expires UTC values. No nav-db rebuild is needed. Both the live-feed
+daemon and app-core need these changes to publish and display the corrected
+facts. Production has not been deployed or restarted for this audit.
+
+Replaying all 77 captured details through the production parser/publisher yields
+65 drawable notices and 97 areas (the other 12 notices have no merged boundary).
+An independent exact-geometry-and-altitude audit agrees on all 97 areas, with
+zero missing drawable notices, collapsed altitude/schedule findings, or identity
+mismatches. This checks the captured inputs, not all possible future FAA syntax.
+
+```sh
+cargo run --manifest-path product/preprocessor/Cargo.toml \
+  -p preprocessor-live-feeds --example replay_tfr_details \
+  < detail-records.json > rebuilt-tfrs.json
+python3 tools/audit_tfr_attribution.py --state rebuilt-tfrs.json \
+  --details detail-records.json --require-xml-areas
+```
+
+### Six automated invariants
+
+The tests are fixture-free, included in ordinary Rust/Python suites and cheap
+preflight, and require no FAA connection. Producer tests live in
+`preprocessor-live-feeds/src/{lib,tfr_area_tests,tfr_detail_backfill,products}.rs`;
+core timing/label tests live in `app-core/src/map_overlay.rs`.
+
+1. **References cannot change ownership.** Own structured FDC identity wins;
+   replacements, SEE references, domestic notices, and foreign environments
+   cannot acquire another notice's polygon.
+2. **Order and duplication cannot change associations.** Reverse conflicting
+   owners, duplicate owners, and reorder/duplicate area groups. Compare complete
+   published output, including identities and counts; ambiguous owners stay
+   unresolved rather than choosing the first or last record.
+3. **Warm and clean caches agree.** Install an old revision, change revisions,
+   inject late old responses, reopen SQLite, and compare the whole publication
+   against a fresh cache holding the same current response. Production does not
+   run a cold rebuild on cache hits; this cost is confined to tests/audits.
+4. **Responses identify themselves.** Reject missing/wrong XML notice identity,
+   multiple notices, mismatched boundary ownership, and invalid coordinates.
+   Retain unrelated valid geometry when a response is rejected.
+5. **Area facts override broader defaults.** Identical footprints with different
+   AGL/MSL bands and windows stay distinct. Test overnight clipping, weekdays,
+   multiple windows, notice defaults, and core's visible status/altitude labels.
+6. **Valid records remain present.** Assert exact positive counts and preserved
+   unrelated WFS areas. Audit tools report missing drawable notices; dropping
+   all records cannot turn the audit green.
+
+Before implementation, the three new area-publication regressions failed (old
+code ignored XML and published two WFS polygons instead of three areas). The
+core multiple-window regression also failed: it claimed the interval had ended
+during the gap before a later window. Both failure modes are now covered.
+
+A narrow cross-product spot check found no repeated station IDs in current NOAA
+snapshots (5,272 METARs and 2,978 TAFs). Weather station/airport alias resolution
+already checks geographic distance; this was not a complete weather audit.

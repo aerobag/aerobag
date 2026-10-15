@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -292,6 +293,30 @@ def write_progress(artifact_root: Path, message: str) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(" ".join(message.split()) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+@contextmanager
+def reconciliation_locks(artifact_root: Path):
+    locks = artifact_root / "locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    # A duplicate controller is an error; an archive pin using the shared state
+    # lock is ordinary contention. Keep singleton ownership while waiting for it.
+    with (locks / "release-controller.lock").open("a+") as owner:
+        try:
+            fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit("another release reconciliation is already running") from None
+        with (locks / "release-reconciler.lock").open("a+") as state:
+            try:
+                fcntl.flock(state.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                message = "Waiting for release state lock (cycle archive pin or other state operation)"
+                write_progress(artifact_root, message)
+                print(message, flush=True)
+                fcntl.flock(state.fileno(), fcntl.LOCK_EX)
+                print("Release state lock acquired; continuing reconciliation", flush=True)
+            write_progress(artifact_root, "Reading release state")
+            yield
 
 
 class Controller:
@@ -1259,13 +1284,7 @@ class Controller:
 def main() -> int:
     args = parse_args()
     args.artifact_root.mkdir(parents=True, exist_ok=True)
-    lock_path = args.artifact_root / "locks/release-reconciler.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SystemExit("another release reconciliation is already running") from None
+    with reconciliation_locks(args.artifact_root):
         controller = Controller(args)
         if args.check_deployments_only:
             controller.check_active_deployments()

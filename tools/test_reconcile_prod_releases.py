@@ -24,6 +24,108 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import reconcile_prod_releases as controller  # noqa: E402
 import release_reconciler as releases  # noqa: E402
+from product_archive import locked  # noqa: E402
+
+
+class ReconciliationLockTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.state_lock = self.root / "locks/release-reconciler.lock"
+        self.progress = self.root / releases.RECONCILIATION_PROGRESS_RELATIVE_PATH
+        self.reached_wait = threading.Event()
+        self.results = []
+        args = SimpleNamespace(artifact_root=self.root, check_deployments_only=True)
+        self.instance = mock.Mock()
+        self.factory = mock.Mock(return_value=self.instance)
+        write_progress = controller.write_progress
+
+        def progress(root, message):
+            write_progress(root, message)
+            if message.startswith("Waiting for"):
+                self.reached_wait.set()
+
+        for patcher in (
+            mock.patch.object(controller, "parse_args", return_value=args),
+            mock.patch.object(controller, "Controller", self.factory),
+            mock.patch.object(controller, "write_progress", side_effect=progress),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def start_controller(self):
+        def run():
+            try:
+                self.results.append(controller.main())
+            except BaseException as error:
+                self.results.append(error)
+            finally:
+                self.reached_wait.set()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.assertTrue(self.reached_wait.wait(5), "controller neither waited nor completed")
+        return thread
+
+    def test_archive_pin_contention_waits_then_reads_fresh_state_under_lock(self):
+        state = self.root / "state-from-archive"
+
+        def load(args):
+            self.assertEqual(state.read_text(), "pin complete")
+            with self.assertRaises(BlockingIOError):
+                with locked(self.state_lock, blocking=False):
+                    pass
+            return self.instance
+
+        self.factory.side_effect = load
+        with locked(self.state_lock):
+            thread = self.start_controller()
+            self.assertEqual(self.results, [], "archive contention must not fail reconciliation")
+            self.factory.assert_not_called()
+            self.assertIn("Waiting for release state lock", self.progress.read_text())
+            state.write_text("pin complete")
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.results, [0])
+        self.factory.assert_called_once()
+        self.instance.check_active_deployments.assert_called_once()
+        self.assertNotIn("Waiting", self.progress.read_text())
+
+    def test_duplicate_reconciler_is_rejected_even_while_first_waits_for_archive(self):
+        with locked(self.state_lock):
+            thread = self.start_controller()
+            self.assertEqual(self.results, [])
+            progress = self.progress.read_text()
+            with self.assertRaisesRegex(SystemExit, "another release reconciliation"):
+                controller.main()
+            self.assertEqual(self.progress.read_text(), progress)
+            self.factory.assert_not_called()
+        thread.join(5)
+        self.assertEqual(self.results, [0])
+
+    def test_duplicate_reconciler_is_rejected_while_first_is_running(self):
+        def check():
+            with self.assertRaisesRegex(SystemExit, "another release reconciliation"):
+                controller.main()
+
+        self.instance.check_active_deployments.side_effect = check
+        self.assertEqual(controller.main(), 0)
+        self.factory.assert_called_once()
+
+    def test_protected_io_failure_is_not_misclassified_as_lock_contention(self):
+        self.instance.check_active_deployments.side_effect = BlockingIOError("state read failed")
+        with self.assertRaisesRegex(BlockingIOError, "state read failed"):
+            controller.main()
+        self.instance.check_active_deployments.side_effect = None
+        self.assertEqual(controller.main(), 0, "both locks must release after an error")
+
+    def test_lock_io_failure_remains_an_error(self):
+        with mock.patch.object(controller.fcntl, "flock", side_effect=OSError("lock IO failed")):
+            with self.assertRaisesRegex(OSError, "lock IO failed"):
+                controller.main()
+        self.factory.assert_not_called()
 
 
 class ForcedPromotionArgumentTests(unittest.TestCase):

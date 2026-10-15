@@ -134,15 +134,15 @@ for that interval, even if current-state collection is healthy again.
 ## Cycle capture and retention
 
 The Borg worker snapshots the production channel's `current_artifacts.json` and
-the complete publication directories it names. It briefly takes the existing
-release-controller lock while making hardlinks into
+the complete publication directories it names. It takes the shared release-state
+lock (`locks/release-reconciler.lock`) while making hardlinks into
 `artifacts/state/archive-cycle-pending` on the production data filesystem. This
-pins the immutable bytes against publication GC without holding the controller
+pins the immutable bytes against publication GC without holding the state
 lock during filesystem flushes or Borg's read. The ordering is:
 
-1. Hold the controller lock while selecting the generation, capturing metadata,
+1. Hold the state lock while selecting the generation, capturing metadata,
    and hardlinking every publication file. GC cannot remove sources mid-pin.
-2. Release the controller lock. The hardlinks now own independent references to
+2. Release the state lock. The hardlinks now own independent references to
    immutable bytes, even if GC deletes the original publication names.
 3. Flush the pending snapshot, then atomically write its `ready.json` marker.
    An interrupted flush never marks an incomplete snapshot ready.
@@ -151,14 +151,21 @@ lock during filesystem flushes or Borg's read. The ordering is:
 The independent `store.lock` remains held throughout the pass, including health
 updates. Only one pending snapshot is retained; a failed Borg operation leaves
 it available for retry. A ready snapshot can be archived even while the
-controller lock is busy. Incomplete preparations are rebuilt on retry.
+state lock is busy. Incomplete preparations are rebuilt on retry.
 
-If the controller lock is busy before a new pin, cycle capture is **deferred**
+If the state lock is busy before a new pin, cycle capture is **deferred**
 until the next timer invocation. This is not an archive failure and does not
 advance the last-success timestamp. Live-feed archival and retention still run.
 An overlapping store invocation exits without overwriting the active worker's
 status. Other IO failures, including `EAGAIN` outside lock acquisition, remain
 real failures.
+
+In the opposite direction, reconciliation waits for an existing pin rather than
+failing staging. It reports `Waiting for release state lock` in both its journal
+and progress file, then reads desired/observed state only after acquiring the
+lock. The separate `locks/release-controller.lock` rejects duplicate reconcilers
+even while the first is waiting. This is a kernel lock wait, not a retry of any
+build or deployment action; flush and Borg work remain outside the state lock.
 
 Borg discovers content equality independently of cache identity. It preserves
 shared chunks when an older archive is removed. Unchanged current manifests are

@@ -262,11 +262,15 @@ export function createJourneyRuntime({
       if (typeof contract?.complete !== "function") {
         throw new Error(`${description} must declare a semantic completion condition`);
       }
+      const intent = contract.intent ?? "activate";
+      if (!["activate", "select"].includes(intent)) {
+        throw new Error(`${description} has unknown action intent ${intent}`);
+      }
       return runtime.transition(description, {
         ...contract,
         readinessSamples: semanticActionReadinessSamples(driver),
         ready: () => driver.readAction(actionId),
-        act: (readyElement) => driver.performAction(actionId, readyElement),
+        act: (readyElement) => driver.performAction(actionId, readyElement, intent),
         diagnose: contract.diagnose ?? (async () => ({
           action: await driver.readAction(actionId),
           session_revision: await driver.readSessionRevision?.().catch(() => null) ?? null,

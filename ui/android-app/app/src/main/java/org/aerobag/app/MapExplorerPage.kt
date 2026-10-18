@@ -203,7 +203,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
@@ -427,31 +426,11 @@ private fun rasterPlanId(mapId: String, viewport: MapViewportState): String =
 private const val TerrainTileBitmapCacheMaxEntries = 256
 private const val NexradDecodedTileCacheMaxBytes = 32L * 1024L * 1024L
 private const val NexradViewportRefreshThrottleMs = 1_000L
-private const val NexradRenderFailureRetryMs = 1_000L
 private const val PerfScenarioKorsOwnshipSourceId = "perf:kors-terrain-ownship"
 private const val PerfScenarioKorsStressCenterLat = 48.6760
 private const val PerfScenarioKorsStressCenterLon = -122.8600
 private const val PerfScenarioKorsStressZoom = 10.8
 private const val PerfScenarioKorsStressAltitudeMslFt = 1_000.0
-
-internal class NexradRenderDeadlineState(
-    private val failureRetryMs: Long = NexradRenderFailureRetryMs,
-) {
-    var deadlineElapsedRealtimeMs: Long? = null
-        private set
-
-    fun consumeWake() {
-        deadlineElapsedRealtimeMs = null
-    }
-
-    fun renderCompleted(nowElapsedRealtimeMs: Long, coreDelayMs: Long?) {
-        deadlineElapsedRealtimeMs = coreDelayMs?.coerceAtLeast(0L)?.let(nowElapsedRealtimeMs::plus)
-    }
-
-    fun renderFailed(nowElapsedRealtimeMs: Long) {
-        deadlineElapsedRealtimeMs = nowElapsedRealtimeMs + failureRetryMs
-    }
-}
 
 internal fun buildMapFollowProbeTag(
     following: Boolean,
@@ -1037,37 +1016,29 @@ private fun rememberNexradLayerState(
         }
     }
     LaunchedEffect(uiSession, renderRequests) {
-        val deadlineState = NexradRenderDeadlineState()
-        while (true) {
-            val deadlineElapsedRealtimeMs = deadlineState.deadlineElapsedRealtimeMs
-            val request = if (deadlineElapsedRealtimeMs == null) {
-                renderRequests.receiveCatching()
-            } else {
-                val delayMs = (deadlineElapsedRealtimeMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
-                if (delayMs == 0L) {
-                    null
-                } else {
-                    withTimeoutOrNull(delayMs) { renderRequests.receiveCatching() }
+        runNexradRenderLoop(
+            requests = renderRequests,
+            elapsedRealtimeMs = SystemClock::elapsedRealtime,
+            epochMs = System::currentTimeMillis,
+            reportFailure = { error ->
+                Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
+            },
+            render = render@{ tileLoads ->
+                val effectStartMs = SystemClock.elapsedRealtime()
+                val currentSurfaceSize = latestSurfaceSize.value
+                if (currentSurfaceSize.width <= 0 || currentSurfaceSize.height <= 0) {
+                    frame = null
+                    perfLogInfo(MapLayerLogTag) { "nexrad skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                    return@render null
                 }
-            }
-            if (request?.isClosed == true) break
-            deadlineState.consumeWake()
-            val effectStartMs = SystemClock.elapsedRealtime()
-            val currentSurfaceSize = latestSurfaceSize.value
-            if (currentSurfaceSize.width <= 0 || currentSurfaceSize.height <= 0) {
-                frame = null
-                perfLogInfo(MapLayerLogTag) { "nexrad skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-                continue
-            }
-            if (!latestVisible.value || !latestEnabled.value) {
-                perfLogInfo(MapLayerLogTag) { "nexrad hidden cachedImages=${frame?.images?.size ?: 0} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-                continue
-            }
-            val currentViewport = latestViewport.value
-            val currentSurfaceWidthPx = latestSurfaceWidthPx.value
-            val currentSurfaceHeightPx = latestSurfaceHeightPx.value
-            val currentDevServerBaseUrl = latestDevServerBaseUrl.value
-            try {
+                if (!latestVisible.value || !latestEnabled.value) {
+                    perfLogInfo(MapLayerLogTag) { "nexrad hidden cachedImages=${frame?.images?.size ?: 0} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                    return@render null
+                }
+                val currentViewport = latestViewport.value
+                val currentSurfaceWidthPx = latestSurfaceWidthPx.value
+                val currentSurfaceHeightPx = latestSurfaceHeightPx.value
+                val currentDevServerBaseUrl = latestDevServerBaseUrl.value
                 var imageBytes = 0L
                 var fetchMs = 0L
                 var decodeMs = 0L
@@ -1083,15 +1054,13 @@ private fun rememberNexradLayerState(
                 }
                 val plannedCacheResources = overlay.cachePlan?.fetchResources.orEmpty()
                 if (overlay.tiles.isEmpty()) {
-                    deadlineState.renderCompleted(
-                        SystemClock.elapsedRealtime(),
-                        overlay.animation.nextUpdateDelayMs?.toLong(),
-                    )
                     frame = null
-                    perfLogInfo(MapLayerLogTag) {
-                        "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    perfLogInfo(NexradRenderLogTag) {
+                        "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextEpochMs=${overlay.animation.nextUpdateEpochMs} nowEpochMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                     }
-                    continue
+                    return@render NexradRenderSchedule(
+                        overlay.animation.nextUpdateEpochMs,
+                    )
                 }
                 val decodedImagesBySrc = LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
                 var decodedImageBytes = 0L
@@ -1099,13 +1068,14 @@ private fun rememberNexradLayerState(
                     overlay.tiles.map { tile ->
                         val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
                             decodedBitmapCache.get(tile.src) ?: run {
-                                val bytes = sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
-                                    val fetchStartMs = SystemClock.elapsedRealtime()
-                                    fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
-                                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                val bytes = tileLoads.load(tile.src) {
+                                    sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
+                                        val fetchStartMs = SystemClock.elapsedRealtime()
+                                        fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
+                                            fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                        }
                                     }
                                 }
-                                prefetchTracker.recordCompleted(listOf(tile.src))
                                 imageBytes += bytes.size
                                 val decodeStartMs = SystemClock.elapsedRealtime()
                                 val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -1123,6 +1093,7 @@ private fun rememberNexradLayerState(
                         NexradOverlayImage(tile = tile, bitmap = bitmap)
                     }
                 }
+                prefetchTracker.recordCompleted(decodedImagesBySrc.keys)
                 decodedImageBytes = decodedImagesBySrc.values.sumOf(::estimatedImageBitmapBytes)
                 frame = NexradOverlayFrame(
                     images = images,
@@ -1134,21 +1105,20 @@ private fun rememberNexradLayerState(
                     selectedFrameIndex = overlay.animation.selectedFrameIndex,
                     frameCount = overlay.animation.frameCount,
                 )
-                perfLogInfo(MapLayerLogTag) {
-                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                perfLogInfo(NexradRenderLogTag) {
+                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextEpochMs=${overlay.animation.nextUpdateEpochMs} nowEpochMs=${System.currentTimeMillis()} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
-                deadlineState.renderCompleted(
-                    SystemClock.elapsedRealtime(),
-                    overlay.animation.nextUpdateDelayMs?.toLong(),
-                )
-                val completedPrefetches = withContext(Dispatchers.IO) {
-                    prefetchNexradCacheResourcesBestEffort(
+                NexradRenderSchedule(
+                    overlay.animation.nextUpdateEpochMs,
+                ) {
+                    // Tracker ownership stays on this composition's dispatcher;
+                    // UiSessionWorkRunner owns background resource fetching.
+                    val completedPrefetches = prefetchNexradCacheResourcesBestEffort(
                         resources = prefetchTracker.pending(plannedCacheResources),
                         fetch = { planned ->
-                            sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
-                                val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
-                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                            tileLoads.load(planned.src) {
+                                sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
+                                    fetchNexradCoreResource(context, resource, currentDevServerBaseUrl)
                                 }
                             }
                         },
@@ -1160,15 +1130,10 @@ private fun rememberNexradLayerState(
                             )
                         },
                     )
+                    prefetchTracker.recordCompleted(completedPrefetches)
                 }
-                prefetchTracker.recordCompleted(completedPrefetches)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
-                deadlineState.renderFailed(SystemClock.elapsedRealtime())
-            }
-        }
+            },
+        )
     }
     LaunchedEffect(uiSession, viewportRefreshRequests) {
         for (ignored in viewportRefreshRequests) {

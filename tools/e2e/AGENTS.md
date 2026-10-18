@@ -63,6 +63,10 @@ shared drivers, and the platform code that supplies their readiness evidence.
   `selectClosingTrayOption`: require the picker to close AND the requested value
   to appear. Do not branch on an earlier label to skip or substitute the click,
   accept a preexisting postcondition, or accept merely any changed value.
+- Fixed-value closing pickers declare `intent: "select"`. Their previous
+  selected/checked state is not an input precondition; identity, enablement and
+  physical reachability still are. Do not apply this intent to toggles, whose
+  starting value determines the meaning of a click.
 - Browser protocol acknowledgement does not prove browser event delivery;
   delivery does not prove application behavior. Reuse
   [browser input observation](browser-input-observation.mjs) for gestures: check

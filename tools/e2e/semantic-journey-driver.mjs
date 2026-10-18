@@ -943,7 +943,7 @@ export async function establishRevealedElement({
   }
 }
 
-function activateAndroidSemanticTag(serial, tag, readyElement = null) {
+function activateAndroidSemanticTag(serial, tag, readyElement = null, intent = "activate") {
   if (!readyElement) {
     throw new Error(`Android semantic action ${tag} has no readiness evidence`);
   }
@@ -957,8 +957,12 @@ function activateAndroidSemanticTag(serial, tag, readyElement = null) {
     readyElement.semantic_path,
     {
       enabled: readyElement.enabled,
-      selected: readyElement.selected,
-      checked: readyElement.checked,
+      // Choosing a fixed value is valid even if sync selected it meanwhile.
+      // Toggles still require the observed starting state to avoid inversion.
+      ...(intent === "select" ? {} : {
+        selected: readyElement.selected,
+        checked: readyElement.checked,
+      }),
     },
   )) {
     throw new Error(`Android semantic action ${tag} was rejected`);
@@ -1173,12 +1177,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     };
   }
 
-  async performAction(actionId, readyElement = null) {
+  async performAction(actionId, readyElement = null, intent = "activate") {
     const readyTag = readyElement?.test_id ?? readyElement?.["resource-id"];
     if (!readyTag) {
       throw new Error(`Android action ${actionId} has no readiness evidence`);
     }
-    activateAndroidSemanticTag(this.serial, readyTag, readyElement);
+    activateAndroidSemanticTag(this.serial, readyTag, readyElement, intent);
   }
 
   async readRepeatedAction(actionId, retainedTarget) {

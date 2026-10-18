@@ -10,13 +10,22 @@ import org.junit.Test
 
 class NexradRenderDeadlineStateTest {
     @Test
-    fun successfulRenderSchedulesCoreOwnedDelayOnTheMonotonicClock() {
+    fun successfulRenderSchedulesCoreOwnedDeadlineOnTheMonotonicClock() {
         val state = NexradRenderDeadlineState()
 
-        state.renderCompleted(nowElapsedRealtimeMs = 10_000L, coreDelayMs = 2_345L)
+        state.renderCompleted(nowElapsedRealtimeMs = 10_000L, nowEpochMs = 100_000L, coreDeadlineEpochMs = 102_345L)
 
         assertEquals(12_345L, state.deadlineElapsedRealtimeMs)
         state.consumeWake()
+        assertNull(state.deadlineElapsedRealtimeMs)
+    }
+
+    @Test
+    fun expiredDeadlineQueriesImmediatelyAndHoldLatestRemovesTheTimer() {
+        val state = NexradRenderDeadlineState()
+        state.renderCompleted(10_000L, 100_000L, 99_000L)
+        assertEquals(10_000L, state.deadlineElapsedRealtimeMs)
+        state.renderCompleted(10_001L, 100_001L, null)
         assertNull(state.deadlineElapsedRealtimeMs)
     }
 

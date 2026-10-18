@@ -35,6 +35,33 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+The October 16/17 scheduled failures on `1b196720` exposed two different
+boundaries. An Android plate choice changed `selected` between readiness and
+native tap validation. Fixed-value closing pickers now declare `intent: "select"`:
+identity, enabled state and physical reachability remain mandatory, but the
+previous selected/checked state is not a precondition for selecting that value.
+Toggle actions retain those guards. The real runtime/Android driver regression
+rejects stale evidence before input, refreshes it, delivers exactly one tap, and
+still requires both picker closure and the requested value. Disabled or changed
+targets and lost clicks remain failures.
+
+The radar failure selected ANIMATE promptly but kept painting the newest frame.
+Controlled tests exposed two Android scheduling defects: adding core's relative
+delay after rendering postponed the frame boundary, and awaiting an entire
+prefetch batch blocked the animation loop. Android now obeys core's absolute
+deadline (as web does), with separate, conflated prefetch work. Concurrent
+prefetch/painting of one image shares its resource request. Controlled production
+loop tests cover render delay, held IO, expired/blank/idle deadlines, coalescing,
+errors, cancellation and shared image loads. Neither action nor animation
+deadlines were extended.
+
+Local verification used the retained October 17 publication fixture: the
+approach journey passed on web and Android; the rebuilt Android release APK
+passed the unchanged radar journey (resume-to-older-painted-frame: 1,777 ms).
+The 709 harness tests and 13 focused Android radar tests passed. This is focused
+regression evidence, not a replacement for full release qualification. E2E-only
+radar logs now retain the chosen frame, absolute deadline and landing time.
+
 Release `2026-10-14.1` (run `38613227107`) failed on two incomplete scroll
 traversals, not an application timeout. On web, the STAR journey revealed KPAE
 to inspect its invariant, then tried to click the CHINS5 header above the viewport.

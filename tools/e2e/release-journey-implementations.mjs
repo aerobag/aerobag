@@ -1174,6 +1174,7 @@ async function selectClosingTrayOption(runtime, description, actionId, {
   // Prove the interaction too: one choice click must close the picker AND
   // display the requested value. Never skip the click based on an earlier read.
   const result = await runtime.action(description, actionId, {
+    intent: "select",
     complete: async () => ({
       options: await runtime.driver.readProjection(optionsProjection),
       launcher: await runtime.driver.readElement(launcherId),

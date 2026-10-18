@@ -17,8 +17,10 @@ import {
   androidActionCandidates,
 } from "./semantic-journey-driver.mjs";
 import { createJourneyRuntime } from "./release-journey-runtime.mjs";
-import { selectAndroidSettingsSliderStop } from "./release-journey-implementations.mjs";
-import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds } from "./android-harness.mjs";
+import { selectAndroidSettingsSliderStop, selectTrayOptionMatching } from "./release-journey-implementations.mjs";
+import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds,
+  clickAndroidSemanticNode, androidSemanticTargetStateMatches, androidSemanticReadinessStateMatches,
+} from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 import { performTransition, TransientObservationError } from "./transition-contract.mjs";
 import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
@@ -100,6 +102,72 @@ function device() {
     onTap(callback) { context.clickAndroidSemanticNode = callback; },
     onProgress(callback) { context.setAndroidSemanticProgress = callback; },
   };
+}
+
+for (const intent of ["select", "activate"]) {
+  for (const change of ["selected", "checked", "enabled", "identity", "lost-click"]) {
+    test(`Android ${intent} action revalidates ${change} after stale pre-input evidence`, async t => {
+      const { driver, snapshots, onTap } = device();
+      const tag = "parity:tray-option:plate:KOMA:IAP-NE-ILS OR LOC RWY 32R.png";
+      const node = { "resource-id": tag, text: "ILS OR LOC RWY 32R", enabled: "true",
+        selected: "true", checked: "false", visible: "true", "center-reachable": "true",
+        bounds: "[185,1398][757,1545]", "semantic-path": "projection-provider:process:1413" };
+      snapshots.set(tag, node);
+      let taps = 0, attempts = 0, clock = 0, closed = false;
+      driver.readSessionRevision = async () => 123;
+      driver.readElement = async () => ({ enabled: true, text: node.text });
+      driver.waitForObservation = async () => { clock += 50; };
+      const click = runInNewContext(`(${clickAndroidSemanticNode})`, {
+        requiredSemanticDriver: () => ({ port: 19191 }),
+        waitForAndroidSemanticEvent: () => {},
+        androidSemanticTargetStateMatches, androidSemanticReadinessStateMatches,
+        queryAndroidExactProjection: () => [snapshots.get(tag)],
+        androidPhysicalTapTarget: (_port, id, bounds, path) => {
+          attempts++;
+          if (attempts === 1) {
+            snapshots.set(tag, { ...node, "semantic-path": "projection-provider:process:1438",
+              ...(change === "selected" ? { selected: "false" } : {}),
+              ...(change === "checked" ? { checked: "true" } : {}),
+              ...(change === "enabled" ? { enabled: "false" } : {}),
+              ...(change === "identity" ? { "resource-id": "different-plate" } : {}),
+            });
+            return null; // Native driver rejects stale evidence BEFORE delivering input.
+          }
+          assert.equal(id, tag);
+          assert.equal(bounds, node.bounds);
+          assert.equal(path, "projection-provider:process:1438");
+          taps++;
+          closed = change !== "lost-click";
+          if (closed) {
+            snapshots.delete(tag);
+            const viewportId = "org.aerobag.app:id/e2e_plate_viewport_projection";
+            snapshots.set(viewportId, { "resource-id": viewportId,
+              "state-description": `chart:${tag.slice("parity:tray-option:".length)}:zoom:1`, visible: "true" });
+          }
+          return { delivered: true };
+        },
+      });
+      onTap(click);
+      const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-choice-revalidation-"));
+      t.after(() => rmSync(artifactDir, { recursive: true, force: true }));
+      const runtime = createJourneyRuntime({ journey: { id: "test.choice-revalidation", assertions: [] },
+        platform: "android", driver, artifactDir });
+      const transition = runtime.transition;
+      runtime.transition = (description, contract) => transition(description, {
+        ...contract, scheduler: { now: () => clock, setTimeout, clearTimeout },
+      });
+      const operation = intent === "select"
+        ? selectTrayOptionMatching(runtime, "plate-chart-button", node.text)
+        : runtime.action("toggle", tag, { complete: () => closed });
+      if (intent === "select" && ["selected", "checked"].includes(change)) {
+        await operation;
+        assert.equal(taps, 1);
+      } else {
+        await assert.rejects(operation, /state changed|timed out/);
+        assert.equal(taps, change === "lost-click" ? 1 : 0);
+      }
+    });
+  }
 }
 
 test("Settings slider helper passes rendered identity and range input through the real Android driver", async t => {

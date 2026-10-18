@@ -10,9 +10,10 @@ internal const val VerbosePerfLogs = false
 internal const val VerboseDiagnosticLogs = false
 
 internal inline fun perfLogInfo(tag: String, message: () -> String) {
-    // Preserve the gesture/follow handoff in E2E failure artifacts without
+    // Preserve gesture/follow and radar frame timing in E2E artifacts without
     // enabling expensive general performance logging in production.
-    if (VerbosePerfLogs || (BuildConfig.AEROBAG_E2E_ENABLED && tag == MapViewportLogTag)) {
+    if (VerbosePerfLogs || (BuildConfig.AEROBAG_E2E_ENABLED &&
+            (tag == MapViewportLogTag || tag == NexradRenderLogTag))) {
         Log.i(tag, message())
     }
 }

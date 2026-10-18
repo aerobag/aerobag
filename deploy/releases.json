@@ -3,7 +3,9 @@
     "tag": "2026-10-14.2"
   },
   "schema_version": 2,
-  "staging": null,
+  "staging": {
+    "tag": "2026-10-18.1"
+  },
   "sunset": [
     {
       "live_feeds": "share_if_compatible",

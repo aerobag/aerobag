@@ -62,6 +62,11 @@ The 709 harness tests and 13 focused Android radar tests passed. This is focused
 regression evidence, not a replacement for full release qualification. E2E-only
 radar logs now retain the chosen frame, absolute deadline and landing time.
 
+The integrated preflight also exposed a scroll-helper model test whose 50 ms
+wall-clock budget expired before its third synchronous focus sample. Scroll
+ordering tests now advance a controlled clock, retaining exact bounded-failure
+diagnostics without depending on host load. Production deadlines are unchanged.
+
 Release `2026-10-14.1` (run `38613227107`) failed on two incomplete scroll
 traversals, not an application timeout. On web, the STAR journey revealed KPAE
 to inspect its invariant, then tried to click the CHINS5 header above the viewport.

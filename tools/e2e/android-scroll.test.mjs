@@ -15,10 +15,20 @@ const surface = { "resource-id": "parity:scroll:1", "semantic-path": "projection
   incarnation: "process", position: "0", forward: "true", backward: "false", moving: "false",
   bounds: "[0,0][100,200]", orientation: "vertical", visible: "true", "center-reachable": "true" };
 
+function observeWithTestClock(description, probe, options) {
+  // These synchronous device samples model ordering, not host scheduling speed.
+  let elapsed = 0;
+  return observeUntil(description, probe, {
+    ...options,
+    scheduler: { now: () => elapsed, setTimeout, clearTimeout },
+    waitForNextProbe: () => { elapsed += 1; },
+  });
+}
+
 function harness(samples) {
   let reads = 0, gestures = 0;
   const scroll = runInNewContext(`(${scrollAndroidAndAwait})`, {
-    E2E_TIMING: { userTransitionDeadlineMs: 50, pollIntervalMs: 0 }, observeUntil,
+    E2E_TIMING: { userTransitionDeadlineMs: 50, pollIntervalMs: 0 }, observeUntil: observeWithTestClock,
     queryAndroidExactProjection: () => {
       const sample = samples[Math.min(reads++, samples.length - 1)];
       if (sample instanceof Error) throw sample;
@@ -188,7 +198,7 @@ test("scroll search propagates observation and gesture failures without changing
 
 test("scroll discovery cannot select a clipped surface", async () => {
   const read = runInNewContext(`(${readAndroidScrollSurface})`, {
-    observeUntil, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
+    observeUntil: observeWithTestClock, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
     queryAndroidSemanticNodes: () => [
       surface, { ...surface, "resource-id": "parity:scroll:3", visible: "false" },
     ],
@@ -201,7 +211,7 @@ test("a newly drawn popup must gain input focus before discovery can choose its 
     let reads = 0;
     const popup = { ...surface, "resource-id": "parity:scroll:2" };
     const read = runInNewContext(`(${readAndroidScrollSurface})`, {
-      observeUntil, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
+      observeUntil: observeWithTestClock, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
       queryAndroidSemanticNodes: () => [...olderPage,
         { ...popup, "center-reachable": ++reads >= 3 ? "true" : "false" }],
     });
@@ -214,10 +224,12 @@ test("a newly drawn popup must gain input focus before discovery can choose its 
 test("a popup that never becomes actionable fails with its actual state, not end-of-list", async () => {
   const blocked = { ...surface, "center-reachable": "false" };
   const read = runInNewContext(`(${readAndroidScrollSurface})`, {
-    observeUntil, E2E_TIMING: { localReadyMs: 20, pollIntervalMs: 0 },
+    observeUntil: observeWithTestClock, E2E_TIMING: { localReadyMs: 20, pollIntervalMs: 0 },
     queryAndroidSemanticNodes: () => [blocked],
   });
   await assert.rejects(async () => read("test"), error => {
+    assert.equal(error.diagnostics.elapsed_ms, 20);
+    assert.equal(error.diagnostics.attempts, 20);
     assert.equal(error.diagnostics.last_value["resource-id"], surface["resource-id"]);
     assert.equal(error.diagnostics.last_value["center-reachable"], "false");
     return true;
@@ -228,7 +240,7 @@ test("scroll discovery preserves genuine absence and transport failure as distin
   for (const failure of [false, true]) {
     let reads = 0;
     const read = runInNewContext(`(${readAndroidScrollSurface})`, {
-      observeUntil, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
+      observeUntil: observeWithTestClock, E2E_TIMING: { localReadyMs: 50, pollIntervalMs: 0 },
       queryAndroidSemanticNodes: () => { reads++; if (failure) throw new Error("broken provider"); return []; },
     });
     if (failure) await assert.rejects(read("test"), /broken provider/);

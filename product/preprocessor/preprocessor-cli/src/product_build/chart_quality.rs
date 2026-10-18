@@ -158,6 +158,29 @@ pub(super) fn check_chart_visual_references(
     }
 }
 
+fn chart_source_files_fingerprint(roots: &[PathBuf]) -> anyhow::Result<String> {
+    // Filesystem identity decides whether a digest receipt is still usable,
+    // never whether pixels need checking/rendering again. Copies and device
+    // renumbering rehash once; identical bytes keep the same semantic key.
+    // Verify the actual tree, not just the fetch record: replaced/changed files
+    // behind an unchanged fetch identity must still invalidate the chart nodes.
+    let mut contents = Vec::new();
+    for (overlay, root) in roots.iter().enumerate() {
+        let mut files = Vec::new();
+        collect_files(root, root, &mut files)?;
+        for (relative, path) in files {
+            let verified = verified_artifact_file(&path)?;
+            contents.push(serde_json::json!([
+                overlay,
+                relative,
+                verified.size_bytes,
+                verified.sha256,
+            ]));
+        }
+    }
+    Ok(hash_text(&serde_json::to_string(&contents)?))
+}
+
 fn chart_quality_inputs(
     config: &ProductBuildConfig,
     family: ChartFamily,
@@ -165,28 +188,7 @@ fn chart_quality_inputs(
     source_id: &str,
     roots: &[PathBuf],
 ) -> anyhow::Result<BTreeMap<String, String>> {
-    // The fetched content identity is supplemented with actual file identities:
-    // replacing a source behind an unchanged fetch record must invalidate the
-    // verdict. This uses the same identity as artifact_verification: ctime is
-    // deliberately excluded because creating/removing render hardlinks changes
-    // ctime without changing pixels. This stats sources, not gigabytes of data.
-    let mut identities = Vec::new();
-    for (overlay, root) in roots.iter().enumerate() {
-        let mut files = Vec::new();
-        collect_files(root, root, &mut files)?;
-        for (relative, path) in files {
-            let stat = fs::metadata(path)?;
-            identities.push(serde_json::json!([
-                overlay,
-                relative,
-                stat.dev(),
-                stat.ino(),
-                stat.len(),
-                stat.mtime(),
-                stat.mtime_nsec(),
-            ]));
-        }
-    }
+    let verified_sources = chart_source_files_fingerprint(roots)?;
     let versions = Command::new("python3").args(["-c", "import sys,numpy; from osgeo import gdal; print(sys.version); print(numpy.__version__); print(gdal.VersionInfo('--version'))"]).output()?;
     if !versions.status.success() {
         bail!(
@@ -199,10 +201,7 @@ fn chart_quality_inputs(
         ("cycle".into(), cycle.into()),
         ("publication_id".into(), config.publish_label.clone()),
         ("source_content".into(), source_id.into()),
-        (
-            "source_files".into(),
-            hash_text(&serde_json::to_string(&identities)?),
-        ),
+        ("verified_source_files".into(), verified_sources),
         (
             "metadata_and_approvals".into(),
             hash_tree(&config.chart_metadata_root)?,
@@ -357,6 +356,101 @@ fn run_chart_visual_references(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn verified_chart_source_key_survives_relocation_but_detects_same_size_edits() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        let relocated = temp.path().join("relocated");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&relocated).unwrap();
+        let path = source.join("chart.tif");
+        fs::write(&path, b"original").unwrap();
+        let before = thread_artifact_verification_stats();
+        let key = chart_source_files_fingerprint(std::slice::from_ref(&source)).unwrap();
+        assert_eq!(
+            thread_artifact_verification_stats()
+                .since(before)
+                .hashed_files,
+            1
+        );
+
+        let before = thread_artifact_verification_stats();
+        assert_eq!(
+            chart_source_files_fingerprint(std::slice::from_ref(&source)).unwrap(),
+            key
+        );
+        assert_eq!(
+            thread_artifact_verification_stats()
+                .since(before)
+                .hashed_files,
+            0
+        );
+
+        let copy = relocated.join("chart.tif");
+        fs::copy(&path, &copy).unwrap();
+        assert_ne!(
+            fs::metadata(&path).unwrap().ino(),
+            fs::metadata(&copy).unwrap().ino()
+        );
+        let before = thread_artifact_verification_stats();
+        assert_eq!(
+            chart_source_files_fingerprint(std::slice::from_ref(&relocated)).unwrap(),
+            key
+        );
+        assert_eq!(
+            thread_artifact_verification_stats()
+                .since(before)
+                .hashed_files,
+            1
+        );
+
+        fs::write(&copy, b"modified").unwrap();
+        // No sleeps or dependency on the filesystem clock's resolution.
+        File::open(&copy)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(123)),
+            )
+            .unwrap();
+        let before = thread_artifact_verification_stats();
+        assert_ne!(chart_source_files_fingerprint(&[relocated]).unwrap(), key);
+        assert_eq!(
+            thread_artifact_verification_stats()
+                .since(before)
+                .hashed_files,
+            1
+        );
+    }
+
+    #[test]
+    fn verified_chart_source_key_tracks_names_inventory_and_overlay_order() {
+        let temp = tempdir().unwrap();
+        let primary = temp.path().join("primary");
+        let supplemental = temp.path().join("supplemental");
+        fs::create_dir(&primary).unwrap();
+        fs::create_dir(&supplemental).unwrap();
+        fs::write(primary.join("chart.tif"), b"primary").unwrap();
+        fs::write(supplemental.join("chart.tif"), b"supplemental").unwrap();
+        let roots = [primary.clone(), supplemental.clone()];
+        let key = chart_source_files_fingerprint(&roots).unwrap();
+        assert_ne!(
+            chart_source_files_fingerprint(&[supplemental, primary.clone()]).unwrap(),
+            key
+        );
+
+        fs::rename(primary.join("chart.tif"), primary.join("renamed.tif")).unwrap();
+        assert_ne!(chart_source_files_fingerprint(&roots).unwrap(), key);
+        fs::rename(primary.join("renamed.tif"), primary.join("chart.tif")).unwrap();
+        assert_eq!(chart_source_files_fingerprint(&roots).unwrap(), key);
+        fs::write(primary.join("extra.tif"), b"extra").unwrap();
+        assert_ne!(chart_source_files_fingerprint(&roots).unwrap(), key);
+        fs::remove_file(primary.join("extra.tif")).unwrap();
+        assert_eq!(chart_source_files_fingerprint(&roots).unwrap(), key);
+        fs::remove_file(primary.join("chart.tif")).unwrap();
+        assert_ne!(chart_source_files_fingerprint(&roots).unwrap(), key);
+    }
 
     #[test]
     fn quarantine_removes_work_links_and_metadata_not_original_inputs() {

@@ -30,11 +30,18 @@ Look for `subgraph_cache_hit=true children_not_expanded` in the plan-task log.
 ## Implemented: chart visual-check nodes
 
 `charts-<family>-quality` is a normal cached node. Its key covers fetched content
-identity, observed source-file identity, cycle/family, chart metadata and approved
-references, checker/cutline code, Python, NumPy and GDAL versions. File identity
-uses device/inode/size/mtime, as the existing artifact verifier does; hardlink
-ctime changes do not invalidate unchanged pixels. This relies on the existing
-immutable fetch-cache model, not protection against deliberate metadata forgery.
+identity, verified source-file contents, cycle/family, chart metadata and approved
+references, checker/cutline code, Python, NumPy and GDAL versions. Each actual
+source tree contributes relative filenames, sizes, SHA-256 digests and overlay
+order; the fetch record alone cannot hide replaced or edited source files.
+
+Source hashing uses the existing artifact verifier's device/inode/size/mtime
+receipts. Matching filesystem identity skips reading the bytes. A copy or device
+renumbering after reboot causes rehashing, but identical content preserves both
+the quality and render cache keys. Hardlink ctime changes still do not invalidate
+unchanged pixels. This relies on the existing immutable fetch-cache model, not
+protection against deliberate metadata forgery. Missing/unwritable receipts
+fall back to hashing; no new receipt store or GC policy is introduced.
 
 The cached output is the completed verdict plus review evidence. Reusing it does
 not rerun raster comparisons, create a checking attempt, or invent a new verified
@@ -46,6 +53,8 @@ explicitly quarantines some sheets can be reused; it retains that quarantine.
 Rendering depends on the quality fingerprint and publication decision. Build
 manifests retain the quality node for GC. Monitoring receives an atomic, bounded
 copy of review evidence, not symlinks outside the HTTP handler's permitted tree.
+The transition from filesystem-identity keys to verified-content keys causes one
+initial cache miss; subsequent identity-only changes do not rebuild the charts.
 
 ## Implemented: per-build preprocessor tools
 
@@ -164,7 +173,10 @@ render/thumbnail/package nodes, lazy warm expansion, parent invalidation with
 leaf reuse, missing-output repair, and executed GC preserving child roots.
 Chart fixtures exercise real GDAL comparisons, moved-sheet quarantine, explicit
 reapproval, render/package propagation, repeated-hit reuse, interrupted attempts,
-atomic evidence copying and bounded retention.
+atomic evidence copying and bounded retention. Relocating identical chart sources
+rehashes them without rerunning comparisons or rendering; edited pixels still
+invalidate the cache and exercise quarantine. Receipt tests separately simulate
+device renumbering and require one rehash followed by persisted reuse.
 
 Tool-cache unit tests cover warm reuse, corrupt binaries/resources, changed legacy
 checkouts, profile/flag identities, failed creation, concurrent leases, and GC.

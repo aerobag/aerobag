@@ -3124,6 +3124,47 @@ mod tests {
             quality.cache_hit,
             "report actual quality-node reuse to the build manifest"
         );
+
+        // Model copying the fetched tree to another filesystem: every file gets
+        // a new inode but exactly the same bytes. Reverify the contents without
+        // rerunning either visual comparisons or rendering.
+        let mut sources = Vec::new();
+        collect_files(&source_root, &source_root, &mut sources).unwrap();
+        let mut copied_bytes = 0;
+        for (index, (_, path)) in sources.iter().enumerate() {
+            let original_inode = fs::metadata(path).unwrap().ino();
+            let replacement = temp.path().join(format!("source-copy-{index}"));
+            copied_bytes += fs::copy(path, &replacement).unwrap();
+            fs::rename(replacement, path).unwrap();
+            assert_ne!(fs::metadata(path).unwrap().ino(), original_inode);
+        }
+        let before = thread_artifact_verification_stats();
+        let (relocated, relocated_quality) = render_nodes(ChartFamily::Sec);
+        assert!(relocated.cache_hit, "identical copies must not rerender");
+        assert!(
+            relocated_quality.cache_hit,
+            "identical copies must not recheck pixels"
+        );
+        assert_eq!(relocated.fingerprint, clean.fingerprint);
+        let verification = thread_artifact_verification_stats().since(before);
+        assert_eq!(verification.hashed_files, sources.len() as u64);
+        assert_eq!(verification.hashed_bytes, copied_bytes);
+        let before = thread_artifact_verification_stats();
+        assert!(render(ChartFamily::Sec).cache_hit);
+        assert_eq!(
+            thread_artifact_verification_stats()
+                .since(before)
+                .hashed_files,
+            0
+        );
+        assert_eq!(fs::read(&current).unwrap(), clean_report);
+        assert_eq!(
+            fs::read_dir(config.build_root.join("logs/chart-quality"))
+                .unwrap()
+                .count(),
+            attempts,
+        );
+
         let clean_tac = render(ChartFamily::Tac);
         let clean_fly = render(ChartFamily::Flyway);
         assert!(!tiles(&clean_tac).is_empty());

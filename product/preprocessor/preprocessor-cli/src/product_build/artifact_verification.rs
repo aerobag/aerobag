@@ -557,6 +557,40 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn device_renumbering_rehashes_once_without_changing_content_digest() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("source.tif");
+        fs::write(&path, b"unchanged chart").unwrap();
+        let original = fresh_cache().verify_file(&path).unwrap();
+        let file = File::open(&path).unwrap();
+        let mut receipt: VerificationReceipt =
+            serde_json::from_slice(&read_receipt_attribute(&file).unwrap()).unwrap();
+        // A persisted receipt from before a remount has the old device number,
+        // with exactly the same inode, size, mtime and contents. No real mounts
+        // or elevated privileges are needed to exercise receipt validation.
+        receipt.identity.device ^= 1;
+        assert!(write_receipt_attribute(
+            &file,
+            &serde_json::to_vec(&receipt).unwrap()
+        ));
+        let after_remount = fresh_cache();
+        assert_eq!(
+            after_remount.verify_file(&path).unwrap().sha256,
+            original.sha256
+        );
+        assert_eq!(after_remount.stats().unwrap().hashed_files, 1);
+        assert_eq!(after_remount.stats().unwrap().persisted_checks, 0);
+        let next_build = fresh_cache();
+        assert_eq!(
+            next_build.verify_file(&path).unwrap().sha256,
+            original.sha256
+        );
+        assert_eq!(next_build.stats().unwrap().hashed_files, 0);
+        assert_eq!(next_build.stats().unwrap().persisted_checks, 1);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn invalid_receipts_fall_back_to_hashing_and_audit_bypasses_valid_receipts() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("artifact.zip");

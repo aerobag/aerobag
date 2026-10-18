@@ -14,6 +14,10 @@ use preprocessor_live_feeds::nms_initial_load::NmsNotamClassification;
 
 fn main() -> anyhow::Result<()> {
     match Command::parse(std::env::args().skip(1))? {
+        Command::RepairRejected(state_root) => {
+            let repaired = NmsApiCollectorStore::new(state_root).repair_rejected_updates()?;
+            println!("{}", serde_json::json!({"recovered_payloads": repaired}));
+        }
         Command::Fetch(arguments) => {
             let config = NmsConfig::from_path(&arguments.config_path)?;
             let mut client = NmsClient::new(config);
@@ -98,6 +102,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 enum Command {
+    RepairRejected(PathBuf),
     Fetch(FetchArguments),
     Collect(CollectArguments),
     Inspect(InspectArguments),
@@ -108,6 +113,16 @@ enum Command {
 impl Command {
     fn parse(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Self> {
         match arguments.next().as_deref() {
+            Some("repair-rejected") => {
+                if arguments.next().as_deref() != Some("--state-root") {
+                    bail!("repair-rejected requires --state-root DIR (collector must be stopped)");
+                }
+                let root = arguments.next().context("--state-root requires a path")?;
+                if arguments.next().is_some() {
+                    bail!("unexpected repair-rejected argument");
+                }
+                Ok(Self::RepairRejected(PathBuf::from(root)))
+            }
             Some("fetch") => Ok(Self::Fetch(FetchArguments::parse(arguments)?)),
             Some("collect") => Ok(Self::Collect(CollectArguments::parse(arguments)?)),
             Some("inspect") => Ok(Self::Inspect(InspectArguments::parse(arguments)?)),
@@ -386,7 +401,7 @@ impl FetchArguments {
 
 fn print_usage() {
     println!(
-        "Usage:\n  nms-notams-fetch fetch --config PATH --output DIR [--classification DOMESTIC|FDC]...\n  nms-notams-fetch collect --config PATH --state-root DIR [--poll-seconds N] [--overlap-seconds N] [--duration-seconds N] [--max-polls N]\n  nms-notams-fetch inspect --input XML --classification DOMESTIC|FDC\n  nms-notams-fetch capture-fixture --initial-load DIR --state-root DIR --output DIR --captured-by-commit HASH\n  nms-notams-fetch audit-rendezvous --state-root DIR --nav-db DIR [--initial-load XML] [--keyword IAP|ODP|SID|STAR]"
+        "Usage:\n  nms-notams-fetch fetch --config PATH --output DIR [--classification DOMESTIC|FDC]...\n  nms-notams-fetch collect --config PATH --state-root DIR [--poll-seconds N] [--overlap-seconds N] [--duration-seconds N] [--max-polls N]\n  nms-notams-fetch repair-rejected --state-root DIR  (collector must be stopped)\n  nms-notams-fetch inspect --input XML --classification DOMESTIC|FDC\n  nms-notams-fetch capture-fixture --initial-load DIR --state-root DIR --output DIR --captured-by-commit HASH\n  nms-notams-fetch audit-rendezvous --state-root DIR --nav-db DIR [--initial-load XML] [--keyword IAP|ODP|SID|STAR]"
     );
 }
 

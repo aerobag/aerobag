@@ -44,6 +44,8 @@ DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 LIVE_FEED_FAILURE_WARNING_SECONDS = 2 * 60
 LIVE_FEED_FAILURE_CRITICAL_SECONDS = 10 * 60
+ARCHIVE_PROGRESS_WARNING_SECONDS = 15 * 60
+ARCHIVE_PROGRESS_CRITICAL_SECONDS = 60 * 60
 # Budgets for attempts, not grace periods for a known failed result.
 DEPLOYMENT_CHECK_BUDGET_SECONDS = 10 * 60
 CHART_CHECK_BUDGET_SECONDS = 15 * 60
@@ -662,36 +664,44 @@ def add_archive_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any], no
             timestamp = payload["attempted_at_utc"]
             if not isinstance(timestamp, str):
                 raise ValueError("archive timestamp must be a string")
-            age = (now - datetime.fromisoformat(timestamp.replace("Z", "+00:00"))).total_seconds()
+            reported_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            age = (now - reported_at).total_seconds()
             reference = payload["progress_reference_unix_seconds"]
-            if type(reference) is not int or reference < 0 or reference > now.timestamp():
+            if (type(reference) is not int or reference < 0 or age < 0
+                    or reference > reported_at.timestamp()):
                 raise ValueError("archive progress reference is invalid or in the future")
-            if age > (120 if worker == "collect" else 4 * 3600):
-                error = f"archive {worker} has not reported for {age:.0f}s"
         except (KeyError, TypeError, ValueError):
             error = error or "archive status has no valid timestamp"
         prefix = f"product_archive.{worker}"
         add_metric(metrics, metric_id=prefix + ".coverage", label=f"Archive {worker} reporting",
                    value=None if error else 0, severity="critical" if error else "ok",
-                   message=error or "Archive telemetry is current")
+                   message=error or f"Archive telemetry valid; last report {age:.0f}s ago")
         if error:
             continue
         activity = f"{payload['state']}: {payload['phase']}"
         add_metric(metrics, metric_id=prefix + ".activity", label=f"Archive {worker} activity",
                    value=None, severity="ok", message=activity)
         progress_age = int(now.timestamp()) - payload["progress_reference_unix_seconds"]
-        overdue = progress_age > (120 if worker == "collect" else 4 * 3600)
+        severity = ("critical" if progress_age >= ARCHIVE_PROGRESS_CRITICAL_SECONDS else
+                    "warning" if progress_age >= ARCHIVE_PROGRESS_WARNING_SECONDS else "ok")
+        if payload.get("error"):
+            activity += f"; {payload['error']}"
         add_metric(metrics, metric_id=prefix + ".progress_age_seconds", label=f"Archive {worker} completion age",
-                   value=progress_age, severity="critical" if overdue else "ok",
-                   message=f"No completed archive pass for {progress_age}s; {activity}" if overdue else
+                   value=progress_age, severity=severity, unit="seconds",
+                   warning_threshold=ARCHIVE_PROGRESS_WARNING_SECONDS,
+                   critical_threshold=ARCHIVE_PROGRESS_CRITICAL_SECONDS,
+                   message=f"No completed archive pass for {progress_age}s; {activity}" if severity != "ok" else
                            f"Completion age {progress_age}s; {activity}")
         for field in ("failure_count", "capture_gap_count", "buffer_bytes", "repository_bytes"):
             value = payload[field]
-            failed = field.endswith("count") and value > 0
+            # Failure/gap evidence remains visible. Only current lack of progress
+            # pages the operator; a recovered historical hole cannot be repaired
+            # by keeping an alarm latched forever.
+            message = (f"Recorded historical capture gaps: {value}" if field == "capture_gap_count" else
+                       payload.get("error") if field == "failure_count" and value else f"{field}: {value}")
             add_metric(metrics, metric_id=prefix + "." + field,
                        label=f"Archive {worker}: {field.replace('_', ' ')}", value=value,
-                       severity="critical" if failed else "ok",
-                       message=payload.get("error") if field == "failure_count" and failed else f"{field}: {value}")
+                       severity="ok", message=message)
 
 
 def collect_service_bulletins(root: Path, release_state: Any) -> dict[str, Any]:

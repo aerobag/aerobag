@@ -57,3 +57,9 @@ path = "product/preprocessor/preprocessor-live-feeds/tests/fixtures/nexrad-palet
 precedence = "override"
 SPDX-FileCopyrightText = "United States Government"
 SPDX-License-Identifier = "LicenseRef-US-Government-Public-Domain"
+
+[[annotations]]
+path = "product/preprocessor/preprocessor-live-feeds/tests/fixtures/nms_missing_year_*.xml"
+precedence = "override"
+SPDX-FileCopyrightText = "United States Government"
+SPDX-License-Identifier = "LicenseRef-US-Government-Public-Domain"

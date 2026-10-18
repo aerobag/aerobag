@@ -137,6 +137,9 @@ timestamp. Existing failure, gap, and size measurements retain their meanings;
 running and deferred passes do not supersede a completed result. The monitor
 alarms on completion age independently of report freshness, so repeated lock
 contention cannot hide indefinite starvation. These sources and descriptors
+retain their meanings when alert policy changes: archive progress warns after
+15 minutes and becomes critical after 60; recorded gaps and failure counts are
+diagnostics, not latched alarms. The sources and descriptors
 are runtime-fingerprinted and installed together by reconciliation; no client
 contract or product rebuild is required. See
 [archive health and recovery](../../docs/production-archive.md#health-and-recovery).

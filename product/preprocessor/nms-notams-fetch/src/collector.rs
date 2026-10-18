@@ -27,6 +27,10 @@ const NMS_API_STORE_SCHEMA_VERSION: u32 = 9;
 const SOURCE_EPOCH_METADATA_KEY: &str = "canonical_change_epoch";
 const SOURCE_SEQUENCE_METADATA_KEY: &str = "canonical_change_sequence";
 
+mod recovery;
+#[cfg(test)]
+mod recovery_tests;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NmsCollectorSnapshot {
     pub cursor: CanonicalNotamSourceCursor,
@@ -632,6 +636,11 @@ impl NmsApiCollectorStore {
         connection
             .busy_timeout(Duration::from_secs(5))
             .context("failed to set NMS API sqlite busy timeout")?;
+        Self::initialize_connection(&connection)?;
+        Ok(connection)
+    }
+
+    fn initialize_connection(connection: &Connection) -> anyhow::Result<()> {
         connection
             .execute_batch(
                 "PRAGMA journal_mode = WAL;
@@ -696,7 +705,7 @@ impl NmsApiCollectorStore {
                  );",
             )
             .context("failed to initialize NMS API sqlite schema")?;
-        Ok(connection)
+        Ok(())
     }
 }
 
@@ -737,6 +746,13 @@ pub fn run_collector_with_observer(
         );
     } else {
         store.verify_source_identity(&source.capture_source())?;
+    }
+    let repaired = store.recover_rejected_updates(Utc::now())?;
+    if repaired > 0 {
+        println!(
+            "{}",
+            serde_json::json!({"event": "nms_rejected_updates_recovered", "payloads": repaired})
+        );
     }
     observer(&NmsCollectorEvent::StateReady {
         installed_initial_load,
@@ -1650,7 +1666,8 @@ mod tests {
             None,
             "209907241405",
         )
-        .replace("<event:year>2026</event:year>", "");
+        .replace("<event:year>2026</event:year>", "")
+        .replace("<event:issued>2026-07-23T14:00:00Z</event:issued>", "");
         let poll_started = timestamp("2026-07-23T14:04:00Z");
         let summary = store.apply_poll(
             poll_started,
@@ -2172,20 +2189,20 @@ mod tests {
         }
     }
 
-    fn timestamp(value: &str) -> DateTime<Utc> {
+    pub(super) fn timestamp(value: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(value)
             .expect("test timestamp")
             .with_timezone(&Utc)
     }
 
-    struct UpdateIdentity<'a> {
-        nms_id: &'a str,
-        classification: &'a str,
-        location: &'a str,
-        number: &'a str,
+    pub(super) struct UpdateIdentity<'a> {
+        pub nms_id: &'a str,
+        pub classification: &'a str,
+        pub location: &'a str,
+        pub number: &'a str,
     }
 
-    fn update_xml(
+    pub(super) fn update_xml(
         identity: UpdateIdentity<'_>,
         notam_type: Option<&str>,
         local_text: &str,

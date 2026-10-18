@@ -272,7 +272,7 @@ def main():
     parser.add_argument("--mode", choices=("collect", "store"))
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--acknowledge-gaps", action="store_true",
-                        help="Clear latched capture-gap alarms after reviewing live-buffer/gaps")
+                        help="Clear reviewed live-buffer/gaps markers; preserve historical batch records")
     parser.add_argument("--export-live", type=Path, metavar="EXTRACTED_DAY")
     parser.add_argument("--product")
     parser.add_argument("--at")

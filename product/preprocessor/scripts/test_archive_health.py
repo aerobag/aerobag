@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Aerobag contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -34,11 +34,28 @@ class ArchiveHealthTests(unittest.TestCase):
         pipeline_health.add_archive_metrics(metrics, facts, self.now)
         return {m["id"]: m for m in metrics}
 
-    def test_valid_status_and_persistent_gap_alarm(self):
+    def test_recovered_gaps_are_history_not_active_alarms(self):
         metrics = self.metrics(self.payload)
         self.assertTrue(all(m["severity"] == "ok" for m in metrics.values()))
         metrics = self.metrics({**self.payload, "capture_gap_count": 1})
-        self.assertEqual(metrics["product_archive.collect.capture_gap_count"]["severity"], "critical")
+        self.assertTrue(all(m["severity"] == "ok" for m in metrics.values()))
+        self.assertEqual(metrics["product_archive.collect.capture_gap_count"]["value"], 1)
+
+    def test_progress_thresholds_clear_on_recovery_without_acknowledging_history(self):
+        for state in ("succeeded", "running", "deferred", "failed"):
+            for silent in (False, True):
+                for age, severity in ((899, "ok"), (900, "warning"), (3599, "warning"), (3600, "critical")):
+                    with self.subTest(state=state, silent=silent, age=age):
+                        reference = self.now - timedelta(seconds=age)
+                        payload = {**self.payload, "state": state, "capture_gap_count": 2,
+                                   "failure_count": int(state == "failed"),
+                                   "progress_reference_unix_seconds": int(reference.timestamp()),
+                                   "attempted_at_utc": reference.isoformat() if silent else self.payload["attempted_at_utc"]}
+                        metrics = self.metrics(payload)
+                        for worker in ("collect", "store"):
+                            self.assertEqual(metrics[f"product_archive.{worker}.progress_age_seconds"]["severity"], severity)
+                        recovered = self.metrics({**self.payload, "capture_gap_count": 2})
+                        self.assertTrue(all(m["severity"] == "ok" for m in recovered.values()))
 
     def test_missing_invalid_and_unclaimed_telemetry_are_coverage_errors(self):
         for field in ("failure_count", "capture_gap_count", "telemetry_contract", "schema_version",
@@ -72,11 +89,11 @@ class ArchiveHealthTests(unittest.TestCase):
         self.assertIn("deferred", metrics["product_archive.store.activity"]["message"])
         self.assertIn("release-reconciler.lock", metrics["product_archive.store.activity"]["message"])
 
-    def test_fresh_reports_cannot_hide_four_hours_without_completion(self):
+    def test_fresh_reports_cannot_hide_one_hour_without_completion(self):
         for state in ("deferred", "running", "failed"):
             with self.subTest(state=state):
                 payload = {**self.payload, "state": state,
-                           "progress_reference_unix_seconds": int(self.now.timestamp()) - 4 * 3600 - 1}
+                           "progress_reference_unix_seconds": int(self.now.timestamp()) - 3600}
                 metrics = self.metrics(payload)
                 self.assertEqual(metrics["product_archive.store.coverage"]["severity"], "ok")
                 self.assertEqual(metrics["product_archive.store.progress_age_seconds"]["severity"], "critical")
@@ -88,10 +105,14 @@ class ArchiveHealthTests(unittest.TestCase):
 
     def test_real_failure_is_not_hidden_by_running_or_deferred_state(self):
         for state in ("running", "deferred", "failed"):
-            metrics = self.metrics({**self.payload, "state": state, "failure_count": 1, "error": "disk full"})
+            metrics = self.metrics({**self.payload, "state": state, "failure_count": 1, "error": "disk full",
+                                    "progress_reference_unix_seconds": int(self.now.timestamp()) - 3600})
             failure = metrics["product_archive.store.failure_count"]
-            self.assertEqual(failure["severity"], "critical")
+            self.assertEqual(failure["severity"], "ok")
             self.assertEqual(failure["message"], "disk full")
+            progress = metrics["product_archive.store.progress_age_seconds"]
+            self.assertEqual(progress["severity"], "critical")
+            self.assertIn("disk full", progress["message"])
 
     def test_old_contract_and_invalid_activity_are_not_accepted(self):
         old_pin = {"id": "product-archive-v1", "sha256": "1955a0d664acd800a4ff312f0948d0d5fe20e88bb4b8376ffe4bbbd5c176c61a"}

@@ -190,10 +190,16 @@ archives.
 
 Pipeline health reads each worker's versioned status under
 `DATA_ROOT/health/archive/`. It checks the independently pinned `product-archive-v2`
-telemetry contract. Missing, malformed, mismatched, or stale promised telemetry
-is a critical coverage alarm. Worker failures and capture gaps are critical;
-buffer and repository sizes are gauges. Gaps remain latched after recovery until
-an operator reviews and acknowledges them:
+telemetry contract. Missing, malformed, or mismatched promised telemetry is a
+critical coverage alarm. For both collection and storage, lack of a completed
+successful pass warns after **15 minutes** and becomes critical after **60
+minutes**. A stale status file continues to age on the monitor's clock, so a dead
+worker cannot hide an interruption by going silent.
+
+Failure counts, recorded capture gaps, buffer sizes, and repository sizes remain
+visible diagnostics, not independent alarms. Recovery clears the progress alarm
+automatically, even when a historical gap cannot be filled. Review the retained
+gap records when investigating outages; acknowledgement is optional:
 
 ```sh
 cat /mnt/aerobag-archive/live-buffer/gaps/*.json
@@ -202,18 +208,20 @@ systemctl status aerobag-archive-collect.service aerobag-archive-store.timer
 journalctl -u aerobag-archive-collect -u aerobag-archive-store
 ```
 
-Acknowledgement clears the active alarms, not historical gap records already
-written into batches. Do not treat it as repairing missing data.
+Acknowledgement clears the reviewed gap markers, not historical gap records
+already written into batches. It is not required to clear an alarm and does not
+repair missing data.
 
 Status includes `running`, `deferred`, `succeeded`, or `failed`, plus the current
 phase. Running and deferred passes preserve any previous genuine failure until
 a complete successful pass supersedes it. The durable progress reference is the
 last successful pass, or the first tracked attempt if none has succeeded yet;
 deferrals and restarts cannot reset it. Pipeline health computes its age using
-the monitor's clock and raises a critical alarm after four hours without a
-completed store pass (two minutes for collection). Thus frequent deferral
-reports cannot hide starvation. Unchanged publications count as successful
-checks, so quiet product periods do not cause an alarm.
+the monitor's clock and uses the same 15/60-minute policy for both workers.
+Thus frequent failure, running, or deferral reports cannot hide starvation.
+Unchanged publications count as successful checks, so quiet product periods do
+not cause an alarm. An isolated failed pass below the warning threshold remains
+available in diagnostics without paging the operator.
 
 This is deployment tooling and telemetry, not a client or NAVDB contract
 change. After integration, the operator's `tools/prod_manage.py --reconcile`

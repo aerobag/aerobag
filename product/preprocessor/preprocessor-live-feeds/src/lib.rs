@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use notam_state::NotamRecord;
 use preprocessor_data::faa_procedure_id_candidate_groups;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
@@ -1805,7 +1805,31 @@ fn normalize_notam_xml(
     let notam_number = local_format_notam_number(local_text.as_deref())
         .or(hints.notam_number)
         .or_else(|| child_text(&notam_node, "number"));
-    let notam_year = child_text(&notam_node, "year");
+    let notam_year = match child_text(&notam_node, "year") {
+        Some(year) => year,
+        None => {
+            // NMS can omit event:year. The original issuance instant determines
+            // its year, never ingestion time, lastUpdated, or effectiveStart.
+            // Do not guess when issuance is absent/invalid or FDC identity conflicts.
+            let issued = child_text(&notam_node, "issued")
+                .context("NOTAM year is missing and issuance time is missing")?;
+            let year = DateTime::parse_from_rfc3339(&issued)
+                .context("NOTAM year is missing and issuance time is invalid")?
+                .with_timezone(&Utc)
+                .year();
+            if !(1000..=9999).contains(&year) {
+                bail!("NOTAM issuance year is outside the four-digit identity range");
+            }
+            if source_type.as_deref() == Some("F") {
+                if let Some((prefix, _)) = notam_number.as_deref().and_then(|n| n.split_once('/')) {
+                    if prefix != (year % 10).to_string() {
+                        bail!("NOTAM issuance year conflicts with FDC number");
+                    }
+                }
+            }
+            year.to_string()
+        }
+    };
     let notam_type = child_text(&notam_node, "type").or(hints.notam_type);
     let identity = CanonicalNotamIdentity::new(
         source_type.as_deref(),
@@ -1813,7 +1837,7 @@ fn normalize_notam_xml(
             .as_deref()
             .or(location_designator.as_deref())
             .or(icao_id.as_deref()),
-        notam_year.as_deref(),
+        Some(&notam_year),
         notam_type.as_deref(),
         notam_number.as_deref(),
     )?;

@@ -521,6 +521,88 @@ mod tests {
         include_str!("../tests/fixtures/nms_initial_load_fdc_without_location.xml");
 
     #[test]
+    fn captured_missing_year_updates_use_issuance_not_observation_dates() -> anyhow::Result<()> {
+        for (xml, classification, expected_id) in [
+            (
+                include_str!("../tests/fixtures/nms_missing_year_domestic.xml"),
+                NmsNotamClassification::Domestic,
+                "NMS:7292862494853778",
+            ),
+            (
+                include_str!("../tests/fixtures/nms_missing_year_fdc.xml"),
+                NmsNotamClassification::Fdc,
+                "NMS:6046133424189660",
+            ),
+        ] {
+            let update = parse_nms_api_update(xml, classification)?;
+            assert_eq!(update.record.id, expected_id);
+            assert_eq!(update.record.notam_year.as_deref(), Some("2026"));
+            assert_eq!(update.action, NmsApiUpdateAction::Upsert);
+            let explicit = xml.replace(
+                "<event:number>",
+                "<event:year>2026</event:year><event:number>",
+            );
+            assert_eq!(
+                update.record,
+                parse_nms_api_update(&explicit, classification)?.record
+            );
+            // Initial Load and incremental responses use the same normalization.
+            assert_eq!(
+                normalize_initial_load_fragment(xml, classification)?.notam_year,
+                update.record.notam_year
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_year_needs_unambiguous_original_issuance() -> anyhow::Result<()> {
+        let xml = update_xml(
+            "1000000000000100",
+            "DOM",
+            "OME",
+            "103",
+            "<event:type>N</event:type>",
+            "!OME 07/103 OME TEST",
+            "",
+        )
+        .replace("<event:year>2026</event:year>", "");
+        let rollover = xml.replace("2026-07-23T14:07:00.000Z", "2025-12-31T23:59:00Z");
+        assert_eq!(
+            parse_nms_api_update(&rollover, NmsNotamClassification::Domestic)?
+                .record
+                .notam_year
+                .as_deref(),
+            Some("2025")
+        );
+        let offset = xml.replace("2026-07-23T14:07:00.000Z", "2026-01-01T00:30:00+01:00");
+        assert_eq!(
+            parse_nms_api_update(&offset, NmsNotamClassification::Domestic)?
+                .record
+                .notam_year
+                .as_deref(),
+            Some("2025")
+        );
+        for bad in [
+            xml.replace("<event:issued>2026-07-23T14:07:00.000Z</event:issued>", ""),
+            xml.replace("2026-07-23T14:07:00.000Z", "not a timestamp"),
+            xml.replace(
+                "<event:number>",
+                "<event:year>oops</event:year><event:number>",
+            ),
+        ] {
+            assert!(parse_nms_api_update(&bad, NmsNotamClassification::Domestic).is_err());
+        }
+        let fdc = include_str!("../tests/fixtures/nms_missing_year_fdc.xml")
+            .replace("2026-10-17T10:07:00.000Z", "2025-10-17T10:07:00.000Z");
+        assert!(parse_nms_api_update(&fdc, NmsNotamClassification::Fdc)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts"));
+        Ok(())
+    }
+
+    #[test]
     fn parses_initial_load_into_canonical_records() -> anyhow::Result<()> {
         let parsed = parse_nms_initial_load(
             Cursor::new(FIXTURE.as_bytes()),

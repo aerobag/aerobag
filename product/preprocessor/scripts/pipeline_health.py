@@ -44,7 +44,7 @@ DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 LIVE_FEED_FAILURE_WARNING_SECONDS = 2 * 60
 LIVE_FEED_FAILURE_CRITICAL_SECONDS = 10 * 60
-ARCHIVE_PROGRESS_WARNING_SECONDS = 15 * 60
+ARCHIVE_PROGRESS_WARNING_SECONDS = {"collect": 15 * 60, "store": 30 * 60}
 ARCHIVE_PROGRESS_CRITICAL_SECONDS = 60 * 60
 # Budgets for attempts, not grace periods for a known failed result.
 DEPLOYMENT_CHECK_BUDGET_SECONDS = 10 * 60
@@ -682,13 +682,14 @@ def add_archive_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any], no
         add_metric(metrics, metric_id=prefix + ".activity", label=f"Archive {worker} activity",
                    value=None, severity="ok", message=activity)
         progress_age = int(now.timestamp()) - payload["progress_reference_unix_seconds"]
+        warning_seconds = ARCHIVE_PROGRESS_WARNING_SECONDS[worker]
         severity = ("critical" if progress_age >= ARCHIVE_PROGRESS_CRITICAL_SECONDS else
-                    "warning" if progress_age >= ARCHIVE_PROGRESS_WARNING_SECONDS else "ok")
+                    "warning" if progress_age >= warning_seconds else "ok")
         if payload.get("error"):
             activity += f"; {payload['error']}"
         add_metric(metrics, metric_id=prefix + ".progress_age_seconds", label=f"Archive {worker} completion age",
                    value=progress_age, severity=severity, unit="seconds",
-                   warning_threshold=ARCHIVE_PROGRESS_WARNING_SECONDS,
+                   warning_threshold=warning_seconds,
                    critical_threshold=ARCHIVE_PROGRESS_CRITICAL_SECONDS,
                    message=f"No completed archive pass for {progress_age}s; {activity}" if severity != "ok" else
                            f"Completion age {progress_age}s; {activity}")
@@ -2821,7 +2822,8 @@ def run_sample(config: MonitorConfig) -> dict[str, Any]:
     history_path = history_path_for_date(config.health_root, now.date())
     previous = read_history(config.health_root, now=now).records
     facts = collect_facts(config, now)
-    evaluation = evaluate_health(facts, previous, now)
+    # Producers may publish during collection; evaluate against its end, not start.
+    evaluation = evaluate_health(facts, previous, utc_now())
     history_record = compact_history_record(facts, evaluation, previous[-1] if previous else None)
     current_record = current_health_record(facts, evaluation)
     append_history(history_path, history_record)

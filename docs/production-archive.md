@@ -191,10 +191,16 @@ archives.
 Pipeline health reads each worker's versioned status under
 `DATA_ROOT/health/archive/`. It checks the independently pinned `product-archive-v2`
 telemetry contract. Missing, malformed, or mismatched promised telemetry is a
-critical coverage alarm. For both collection and storage, lack of a completed
-successful pass warns after **15 minutes** and becomes critical after **60
-minutes**. A stale status file continues to age on the monitor's clock, so a dead
-worker cannot hide an interruption by going silent.
+critical coverage alarm. Lack of a completed successful pass warns after **15
+minutes for collection** or **30 minutes for storage**, and becomes critical
+after **60 minutes for either worker**. Storage allows for timer waits, publication
+lock deferrals, and normal Borg archive/verification work. A stale status file
+continues to age on the monitor's clock, so a dead worker cannot hide an
+interruption by going silent.
+
+The monitor evaluates timestamps against the clock after collecting inputs, so
+a status written during collection is not mistaken for a future timestamp.
+Genuinely future or malformed timestamps still raise coverage alarms.
 
 Failure counts, recorded capture gaps, buffer sizes, and repository sizes remain
 visible diagnostics, not independent alarms. Recovery clears the progress alarm
@@ -217,7 +223,7 @@ phase. Running and deferred passes preserve any previous genuine failure until
 a complete successful pass supersedes it. The durable progress reference is the
 last successful pass, or the first tracked attempt if none has succeeded yet;
 deferrals and restarts cannot reset it. Pipeline health computes its age using
-the monitor's clock and uses the same 15/60-minute policy for both workers.
+the monitor's clock and uses the worker-specific warning thresholds above.
 Thus frequent failure, running, or deferral reports cannot hide starvation.
 Unchanged publications count as successful checks, so quiet product periods do
 not cause an alarm. An isolated failed pass below the warning threshold remains

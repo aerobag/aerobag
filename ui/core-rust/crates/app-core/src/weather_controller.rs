@@ -451,7 +451,11 @@ impl WeatherController {
                 self.nexrad_source().label(),
                 nexrad_frame_age_banner_value(self, input)
             ),
-            nexrad_action: nexrad_animation_action(self, input),
+            nexrad_action: Some(FlightDataCellAction {
+                action_id: "nexrad_options".into(),
+                accessibility_label: "Choose NEXRAD source and animation".into(),
+                symbol_id: None,
+            }),
         };
         self.projection_cache = Some(WeatherProjectionCache {
             revision: self.model.revision,
@@ -745,17 +749,6 @@ fn nexrad_frame_age_banner_value(
         .get(index)
         .cloned()
         .unwrap_or_else(|| "inop".to_string())
-}
-
-fn nexrad_animation_action(
-    _weather: &WeatherController,
-    input: WeatherProjectionInput,
-) -> Option<FlightDataCellAction> {
-    input.nexrad_visible.then(|| FlightDataCellAction {
-        action_id: "nexrad_options".into(),
-        accessibility_label: "Choose NEXRAD source and animation".into(),
-        symbol_id: None,
-    })
 }
 
 fn nexrad_choice(

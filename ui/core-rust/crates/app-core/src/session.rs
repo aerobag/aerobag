@@ -5000,7 +5000,7 @@ pub fn perform_flight_data_banner_cell_action_in_session(
             session.coordinator.time_display_mode = session.coordinator.time_display_mode.toggled();
             changed_session_update_outcome(session)
         }
-        "nexrad_age" if session.map.layer_state().nexrad.visible => {
+        "nexrad_age" => {
             session.situation.barometer_mut().close_editor();
             session.situation.altitude_target_mut().close_editor();
             session.weather.open_nexrad_editor();
@@ -26663,6 +26663,104 @@ mod tests {
     }
 
     #[test]
+    fn hidden_nexrad_cell_opens_source_controls_without_enabling_layer() {
+        for policy in [
+            LiveFeedAcquisitionPolicy::JitPublicResources,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        ] {
+            let init =
+                create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+            configure_test_live_feed_policy(init.handle, policy);
+            let snapshot = get_session_snapshot(init.handle).unwrap();
+            assert!(!snapshot.map_layer_state.nexrad.visible);
+            assert!(snapshot.app_ui_state.flight_data_banner.editor.is_none());
+            let cell = snapshot
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == "nexrad_age")
+                .unwrap();
+            assert_eq!(cell.value.as_deref(), Some("NET off"));
+            assert!(
+                cell.action.is_some(),
+                "the hidden radar cell must offer its source controls"
+            );
+
+            for (source, label, animation) in [
+                ("receiver", "ADSB off", "latest"),
+                ("internet", "NET off", "animate"),
+            ] {
+                perform_flight_data_banner_cell_action_in_session(init.handle, cell.id.clone())
+                    .expect("tap the projected cell");
+                let editor = get_session_snapshot(init.handle)
+                    .unwrap()
+                    .app_ui_state
+                    .flight_data_banner
+                    .editor
+                    .expect("hidden radar must still open its tray");
+                for choice in [source, animation] {
+                    let action = editor
+                        .action_rows
+                        .iter()
+                        .flatten()
+                        .find(|action| action.id == choice)
+                        .expect("choice is present in the rendered tray");
+                    assert!(action.enabled);
+                    complete_invalidations(
+                        perform_flight_data_command_in_session(
+                            init.handle,
+                            crate::FlightDataCommand::EditorAction {
+                                editor_id: editor.id.clone(),
+                                action_id: action.id.clone(),
+                            },
+                        )
+                        .unwrap(),
+                    );
+                }
+                let changed = get_session_snapshot(init.handle).unwrap();
+                assert!(!changed.map_layer_state.nexrad.visible);
+                let banner = &changed.app_ui_state.flight_data_banner;
+                let changed_cell = banner.cells.iter().find(|row| row.id == cell.id).unwrap();
+                assert_eq!(changed_cell.value.as_deref(), Some(label));
+                assert!(changed_cell.action.is_some());
+                let changed_editor = banner.editor.as_ref().unwrap();
+                for choice in [source, animation] {
+                    assert!(
+                        changed_editor
+                            .action_rows
+                            .iter()
+                            .flatten()
+                            .find(|action| action.id == choice)
+                            .unwrap()
+                            .selected
+                    );
+                }
+                complete_invalidations(
+                    perform_flight_data_command_in_session(
+                        init.handle,
+                        crate::FlightDataCommand::EditorAction {
+                            editor_id: editor.id,
+                            action_id: editor.dismiss_action_id,
+                        },
+                    )
+                    .unwrap(),
+                );
+                assert!(get_session_snapshot(init.handle)
+                    .unwrap()
+                    .app_ui_state
+                    .flight_data_banner
+                    .editor
+                    .is_none());
+            }
+            assert!(drain_session_resource_effects(init.handle)
+                .unwrap()
+                .is_empty());
+            destroy_session(init.handle);
+        }
+    }
+
+    #[test]
     fn live_nexrad_history_drives_animation_and_frame_age_status() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
@@ -26676,7 +26774,10 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("initial nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET off"));
-        assert!(nexrad_age_cell.action.is_none());
+        assert_eq!(
+            nexrad_age_cell.action.as_ref().unwrap().action_id,
+            "nexrad_options"
+        );
 
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
@@ -27088,7 +27189,10 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("hidden nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET off"));
-        assert!(nexrad_age_cell.action.is_none());
+        assert_eq!(
+            nexrad_age_cell.action.as_ref().unwrap().action_id,
+            "nexrad_options"
+        );
     }
 
     #[test]
@@ -33660,7 +33764,17 @@ mod tests {
                     .abs()
                     < 1e-6
             );
-            set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true).unwrap();
+            let hidden = get_session_snapshot(init.handle).unwrap();
+            assert!(!hidden.map_layer_state.nexrad.visible);
+            let cell = hidden
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == "nexrad_age")
+                .unwrap();
+            assert_eq!(cell.value.as_deref(), Some("NET off"));
+            assert!(cell.action.is_some());
             perform_flight_data_banner_cell_action_in_session(init.handle, "nexrad_age".into())
                 .unwrap();
             let editor = get_session_snapshot(init.handle)
@@ -33676,6 +33790,21 @@ mod tests {
             assert!(!editor.show_input);
             complete_invalidations(action(&editor.id, &editor.action_rows[0][1].id));
             complete_invalidations(action(&editor.id, &editor.action_rows[1][1].id));
+            let selected = get_session_snapshot(init.handle).unwrap();
+            assert!(!selected.map_layer_state.nexrad.visible);
+            assert_eq!(
+                selected
+                    .app_ui_state
+                    .flight_data_banner
+                    .cells
+                    .iter()
+                    .find(|cell| cell.id == "nexrad_age")
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some("ADSB off")
+            );
+            set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true).unwrap();
             let viewport = MapViewport {
                 center: LatLon {
                     lat: 47.0,

@@ -79,8 +79,8 @@ pub fn metar(text: &str) -> Observation {
                 }
             }
         }
-        // Four-digit metric visibility is positional: never interpret station
-        // identifiers, runway visual range, temperature, or remarks as visibility.
+        // Visibility follows wind in the observation, not in the header.
+        // This also excludes station identifiers ending in SM (such as KDSM).
         if past_wind && word.len() == 4 && word.bytes().all(|c| c.is_ascii_digit()) {
             visibility_count += 1;
             visibility = word
@@ -88,7 +88,7 @@ pub fn metar(text: &str) -> Observation {
                 .ok()
                 .map(|metres| visibility_category(metres / 1609.344));
         }
-        if let Some(sm) = word.strip_suffix("SM") {
+        if let Some(sm) = word.strip_suffix("SM").filter(|_| past_wind) {
             visibility_count += 1;
             let whole = index
                 .checked_sub(1)
@@ -252,6 +252,23 @@ mod tests {
                     Some(expected),
                     "{text}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn station_identifiers_are_not_statute_mile_visibility_groups() {
+        for station in ["KDSM", "KPSM", "CYSM"] {
+            for (visibility, expected) in [
+                ("10SM", Some(FlightCategory::Vfr)),
+                ("2 1/2SM", Some(FlightCategory::Ifr)),
+                ("", None),
+                ("10SM 1SM", None),
+            ] {
+                let text = format!(
+                    "METAR {station} 192254Z 12008KT {visibility} FEW220 SCT250 BKN300 18/06 A3029 RMK AO2"
+                );
+                assert_eq!(metar(&text).flight_category, expected, "{text}");
             }
         }
     }

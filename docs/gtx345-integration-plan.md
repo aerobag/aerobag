@@ -57,7 +57,15 @@
 
 ## Evidence And Limits
 
-**Current hardware evidence:** the October 10 Aerobag cockpit test captured one
+**Current hardware evidence:** the October 19 Aerobag flight captured 30m38s
+of sustained independent reception using small-blob mode: traffic with targets,
+valid ownship, METARs, TAFs, radar and other weather. Recorded writes confirm no
+setup-payload message was transmitted. There were no capture or decoder errors.
+An October 20 comparison with matching production-archived Internet radar
+supports the regional and CONUS geographic placement. Visible in-app rendering
+was not observed during that solo flight; see the desk-validation section below.
+
+The earlier October 10 Aerobag cockpit test captured one
 24.3-second connected session: 112 attitude reports, 112 pressure messages,
 22 traffic snapshots (no position fix/targets), and empty responses from all 11
 weather channels. Export/replay passed with no decoding errors or torn records.
@@ -83,6 +91,10 @@ than guessed. Do not describe offline replay as live validation.
 - [x] Offline integration validation and Android release build (not hardware validation)
 - [x] Independent parked connection (October 10; sensors and empty weather responses)
 - [ ] Independent nonempty weather, valid GPS/traffic, radar placement, and sustained reception validation
+
+The last item now has independent reception and broad geographic-alignment
+evidence; it remains open for visible application validation and finer radar
+geometry/coverage checks.
 
 ### Implemented Foundation (October 9)
 
@@ -555,6 +567,90 @@ One airport visit should collect more than a connection-success anecdote:
 
 No simulator/replay result establishes live handshake, nonempty independent
 weather reception, or geographic accuracy of the provisional radar decoder.
+
+### October 19 Flight And Desk Validation
+
+The phone's exported ABRX v2 capture was retrieved October 20 and preserved
+privately, SHA-256
+`73492f7f2cc7c9a6e80577a9e569b79926d5db156b4247a17f4fbf34760b3010`.
+The successful connection ran 22:48:37 to 23:19:15 UTC (15:48:37 to 16:19:15 PDT).
+It contains 1,798 traffic snapshots, each with 27-30 target records and a valid
+ownship position. Target records are not a count of distinct airborne aircraft.
+All 22,114 requested writes completed; none sent the omitted setup payload.
+
+Weather decode/normalization accepted all 1,370 METAR and 591 TAF report
+occurrences, including repeats. These comprise 368 distinct METAR texts from
+274 stations and 197 TAFs from 197 stations. No METAR/TAF timestamp is ahead of
+receipt. KRNT, KBFI, KSEA and KPAE carry the 22:53Z METAR; KSEA's amended TAF
+is issued at 21:22Z. Raw text and original timestamps are retained.
+
+The content audit found a shared-parser defect: a station ending in `SM`, such
+as KDSM, was counted as a statute-mile visibility group. Visibility parsing now
+requires the observation's post-wind position, just as metric visibility does.
+A regression fails before the correction and covers multiple station names,
+fractional visibility, absent visibility and conflicting visibility groups.
+Five other distinct METAR texts genuinely lack enough sky/visibility data for
+a complete classification; their raw reports remain readable.
+
+Radar includes 11 regional and two CONUS snapshots. The regional source grid
+is 480x500, approximately 43.67-51.99N and 127.99-116.01W. It includes
+precipitation elsewhere despite clear weather near Seattle.
+Production Borg retained independent Internet frames at 22:54:40Z and
+23:14:40Z. Comparing regional precipitation/no-precipitation patterns at those
+times gives smoothed correlations of 0.823 and 0.837. The first CONUS comparison
+gives 0.671. A +/-8 receiver-pixel translation search peaks at zero shift on
+both axes for all three comparisons; flipped alternatives correlate poorly.
+These are independent broad-placement/orientation checks, not pixel-perfect
+accuracy or intensity-calibration certification. Palettes, resolution, coverage,
+filtering and observation times differ. Comparison scripts, input extracts and
+the side-by-side figure are retained with the private capture.
+
+Current UI scope/defaults:
+
+- Receiver METAR/TAF selection uses the shared per-station query; Internet and
+  receiver stores remain separate. Observation/issue time wins, then correction
+  or amendment status. Exact-time/revision ties prefer Internet. Receipt order
+  does not confer freshness.
+- Traffic becomes available after a connection but remains off until selected.
+  Receiver ownship is also opt-in. BARO defaults to the device source; NEXRAD
+  defaults to Internet and a hidden layer. These policies were not changed by
+  this audit. The NEXRAD tray now opens even while the layer is off.
+- Receiver PIREPs, winds and NOTAMs are decoded/captured, but are not yet
+  integrated into those application products. Graphical METAR/SUA payloads
+  remain uninterpreted captured data. Reception counters do not prove display.
+- The Status page describes Internet product health, not merged receiver
+  availability. A newer receiver METAR can therefore be readable in WX while
+  Internet status is old or unavailable.
+
+#### Proposed Interactive Replay Scope
+
+Use the real app and normal receiver-delivery/query/rendering paths. Do not
+build a second weather viewer or remap receiver observations into an Internet
+product merely to make them visible.
+
+1. Extract a bounded, versioned input timeline from the validated capture;
+   omit outbound/setup data from the UI fixture. Preserve original receive and
+   observation times. Reuse the production product decoder and ingest reducer.
+2. Core owns play/pause/seek, the replay clock and receiver state reconstruction.
+   Seeking clears and rebuilds the replay source, including radar history.
+   Pausing freezes product age as well as sensor expiry. Do not refresh timestamps
+   to today's date or reuse GPS-only replay as a substitute for weather replay.
+3. Run in an explicitly labeled isolated session, with Cloud publishing and
+   writes to normal local preferences/weather caches disabled. Ordinary live
+   network products must not silently compete with historical fixture data.
+4. Optionally inject archived Internet products into their existing separate
+   store. Include receiver-newer, Internet-newer, missing-station and equal-time
+   cases so map symbols, FP WX, inspector WX and BARO all exercise the same query.
+5. Reuse core-owned transport controls on web and Android. The first useful
+   checkpoints are before reception, the first weather burst at 22:56Z, and
+   populated weather/traffic at 23:14Z. Leave source/layer defaults unchanged so
+   their discoverability can be evaluated rather than hidden by the fixture.
+6. Add actual visible-control tests for enabling traffic, opening WX, selecting
+   ADS-B radar while hidden, enabling/animating radar, and disconnected/stale
+   behavior. Synthetic captures remain the hermetic CI inputs; the real private
+   capture supplies exploratory validation, not a publicly committed fixture.
+
+This replay UI is proposed work, not an implemented control in the current app.
 
 Software evidence for these followups:
 

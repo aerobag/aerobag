@@ -48,8 +48,11 @@ receiver GPS fix was captured; the test was deliberately short and stationary.
 
 ## Setup-Payload Omission Experiment
 
-Status: implemented for the next hardware test. Normal remains the default;
-omission has only been exercised with synthetic peers, not a GTX 345.
+Status: implemented and exercised on a GTX 345 during the October 19 flight.
+The 30m38s connection received traffic, sensors, METARs, TAFs and radar using
+small-blob mode only. Replay of completed outbound writes confirms no setup
+payload message was sent. This establishes compatibility for the tested
+receiver/firmware and products, not every receiver. Normal remains the default.
 
 Question: can this receiver/firmware deliver the same requested data without
 sending application message ID 1? In particular, sensor reception alone does not

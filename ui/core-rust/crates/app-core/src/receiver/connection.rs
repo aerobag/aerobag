@@ -11,6 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::capture::{CaptureClock, CaptureKind, CaptureProgress, Recorder, MAX_CHUNK_BYTES};
 use super::{
+    reception::Reception,
+    setup::{SetupMetadata, SetupMode},
+};
+use super::{
     Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage, VendorProtocolBlobs, SERVICE_UUID,
 };
 
@@ -93,6 +97,8 @@ pub enum ConnectionPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionStatus {
+    pub setup_mode: SetupMode,
+    pub reception: Reception,
     pub phase: ConnectionPhase,
     pub last_fault: Option<Fault>,
     pub last_receive_monotonic_ms: Option<u64>,
@@ -142,6 +148,7 @@ struct PendingWrite {
 
 pub struct Connection<R: Recorder> {
     vendor_blobs: VendorProtocolBlobs,
+    setup: SetupMetadata,
     recorder: R,
     device: Option<String>,
     active: Option<ConnectionId>,
@@ -160,15 +167,25 @@ pub struct Connection<R: Recorder> {
 }
 
 impl<R: Recorder> Connection<R> {
-    pub fn new(vendor_blobs: VendorProtocolBlobs, recorder: R, clock: CaptureClock) -> Self {
+    pub fn new(
+        vendor_blobs: VendorProtocolBlobs,
+        mode: SetupMode,
+        build: Option<app_ui_contracts::session::ClientBuildInfo>,
+        recorder: R,
+        clock: CaptureClock,
+    ) -> Self {
         let captured = recorder.progress();
+        let setup = vendor_blobs.metadata(mode, build);
         Self {
             vendor_blobs,
+            setup,
             recorder,
             device: None,
             active: None,
             protocol: None,
             status: ConnectionStatus {
+                setup_mode: mode,
+                reception: Reception::default(),
                 phase: ConnectionPhase::Stopped,
                 last_fault: None,
                 last_receive_monotonic_ms: None,
@@ -264,8 +281,11 @@ impl<R: Recorder> Connection<R> {
                 if self.status.phase != ConnectionPhase::Connecting {
                     self.fail(Fault::UnexpectedCompletion, clock, &mut output);
                 } else if self.record(CaptureKind::Connected, clock, &[], &mut output) {
-                    match Protocol::connect(self.vendor_blobs.for_connection(), clock.monotonic_ms)
-                    {
+                    match Protocol::connect(
+                        self.vendor_blobs.for_connection(),
+                        self.setup.mode,
+                        clock.monotonic_ms,
+                    ) {
                         Ok((protocol, batch)) => {
                             self.protocol = Some(protocol);
                             self.protocol_output(batch, clock, &mut output);
@@ -363,16 +383,19 @@ impl<R: Recorder> Connection<R> {
             return;
         };
         let id = ConnectionId(id);
+        let setup = serde_json::to_vec(&self.setup).expect("setup metadata is JSON scalar data");
         if !self.record(
             CaptureKind::ConnectionRequested,
             clock,
             &id.0.to_le_bytes(),
             output,
-        ) || !self.checkpoint(clock, output)
+        ) || !self.record(CaptureKind::Setup, clock, &setup, output)
+            || !self.checkpoint(clock, output)
         {
             return;
         }
         self.active = Some(id);
+        self.status.reception = Reception::default();
         self.connect_since_ms = clock.monotonic_ms;
         self.status.phase = ConnectionPhase::Connecting;
         output.effects.push(Effect::Connect {
@@ -413,6 +436,7 @@ impl<R: Recorder> Connection<R> {
         self.dispatch_write(clock, output);
         if self.active.is_some() {
             for message in batch.messages {
+                self.status.reception.observe(&message, clock.monotonic_ms);
                 if message.product.is_ok() {
                     self.status.decoded_messages += 1;
                 } else {
@@ -601,6 +625,8 @@ mod tests {
         let memory = Memory::default();
         let connection = Connection::new(
             VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
+            SetupMode::Normal,
+            None,
             memory.clone(),
             clock(0),
         );
@@ -821,6 +847,39 @@ mod tests {
             connection.status().captured.durable_records,
             connection.status().captured.written_records
         );
+    }
+
+    #[test]
+    fn retries_keep_omission_mode_and_durable_metadata_before_every_open() {
+        let memory = Memory::default();
+        let mut connection = Connection::new(
+            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
+            SetupMode::OmitSetupPayload,
+            None,
+            memory.clone(),
+            clock(0),
+        );
+        let mut id = open(&mut connection, 0);
+        let mut now = 0;
+        for delay in [5000, 10_000, 20_000] {
+            connection.update(Event::Failed(id, IoFailure::Connection), clock(now));
+            now += delay;
+            let output = connection.update(Event::Tick, clock(now));
+            let Effect::Connect { id: next, .. } = output.effects[0] else {
+                panic!()
+            };
+            assert_ne!(next, id);
+            id = next;
+            assert_eq!(connection.status().setup_mode, SetupMode::OmitSetupPayload);
+            let store = memory.0.borrow();
+            assert_eq!(store.durable, store.records.len() as u64);
+            let (kind, bytes) = store.records.last().unwrap();
+            assert_eq!(*kind, CaptureKind::Setup);
+            assert_eq!(
+                serde_json::from_slice::<SetupMetadata>(bytes).unwrap().mode,
+                SetupMode::OmitSetupPayload
+            );
+        }
     }
 
     #[test]

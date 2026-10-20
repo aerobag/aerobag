@@ -85,7 +85,7 @@ pub enum ReceiverHostEvent {
     Tick,
 }
 
-// This private transport envelope can contain authentication bytes. Never log it.
+// Raw transport bytes belong in bounded captures, not ordinary application logs.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

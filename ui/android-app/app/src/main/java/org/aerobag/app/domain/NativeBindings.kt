@@ -674,7 +674,7 @@ object NativeBindings : NativeBridge {
 
     external fun configureGpsCaptureLogPath(path: String)
 
-    external fun initializeReceiver(root: String)
+    external fun initializeReceiver(root: String, build: String)
     external fun receiverHostEventJson(event: String, bytes: ByteArray, monotonicMs: Long, wallMs: Long): String
     external fun newReceiverConsumer(): Long
     external fun attachReceiverSession(consumer: Long)

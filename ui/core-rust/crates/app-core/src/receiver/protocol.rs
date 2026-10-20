@@ -27,6 +27,18 @@ pub struct VendorProtocolBlobs {
 }
 
 impl VendorProtocolBlobs {
+    pub(super) fn metadata(
+        &self,
+        mode: super::setup::SetupMode,
+        build: Option<app_ui_contracts::session::ClientBuildInfo>,
+    ) -> super::setup::SetupMetadata {
+        super::setup::SetupMetadata {
+            mode,
+            build,
+            challenge_seed: super::setup::BlobFingerprint::of(&self.challenge_seed),
+            setup_payload: super::setup::BlobFingerprint::of(&self.setup_payload),
+        }
+    }
     pub(super) fn for_connection(&self) -> Self {
         Self {
             challenge_seed: self.challenge_seed,
@@ -64,7 +76,23 @@ pub enum ProtocolPhase {
 pub struct ReceivedMessage {
     pub message_id: u32,
     pub attributes: u8,
+    pub payload_bytes: usize,
     pub product: Result<Product>,
+}
+
+impl ReceivedMessage {
+    pub(super) fn decode(message_id: u32, attributes: u8, data: &[u8]) -> Self {
+        Self {
+            message_id,
+            attributes,
+            payload_bytes: data.len(),
+            product: if attributes != 0 {
+                Err(DecodeError("unverified application file attributes"))
+            } else {
+                decode_product(message_id, data)
+            },
+        }
+    }
 }
 
 #[derive(Default)]
@@ -84,6 +112,7 @@ struct Pending {
 /// Protocol on reconnect; no assembly, sequence, or nonce survives a connection.
 pub struct Protocol {
     phase: ProtocolPhase,
+    setup_mode: super::setup::SetupMode,
     vendor_blobs: VendorProtocolBlobs,
     nonce: [u8; 16],
     expected_response: Option<[u8; 16]>,
@@ -101,21 +130,24 @@ pub struct Protocol {
 impl Protocol {
     pub fn connect(
         vendor_blobs: VendorProtocolBlobs,
+        setup_mode: super::setup::SetupMode,
         now_ms: u64,
     ) -> Result<(Self, ProtocolOutput)> {
         let mut nonce = [0u8; 16];
         getrandom::getrandom(&mut nonce)
             .map_err(|_| DecodeError("receiver nonce generation failed"))?;
-        Self::with_nonce(vendor_blobs, now_ms, nonce)
+        Self::with_nonce(vendor_blobs, setup_mode, now_ms, nonce)
     }
 
     fn with_nonce(
         vendor_blobs: VendorProtocolBlobs,
+        setup_mode: super::setup::SetupMode,
         now_ms: u64,
         nonce: [u8; 16],
     ) -> Result<(Self, ProtocolOutput)> {
         let mut state = Self {
             phase: ProtocolPhase::Negotiating,
+            setup_mode,
             vendor_blobs,
             nonce,
             expected_response: None,
@@ -295,17 +327,11 @@ impl Protocol {
                         if !self.advertised.contains(&0x1000) {
                             return Err(DecodeError("receiver has no product identity message"));
                         }
-                        self.send(
-                            2,
-                            [
-                                control(&requests),
-                                supported_ids(),
-                                message(1, &self.vendor_blobs.setup_payload),
-                            ]
-                            .concat(),
-                            now_ms,
-                            &mut output,
-                        )?;
+                        let mut setup = [control(&requests), supported_ids()].concat();
+                        if self.setup_mode == super::setup::SetupMode::Normal {
+                            setup.extend(message(1, &self.vendor_blobs.setup_payload));
+                        }
+                        self.send(2, setup, now_ms, &mut output)?;
                         self.transition(ProtocolPhase::Product, now_ms);
                     }
                     ApplicationRecord::Message {
@@ -337,16 +363,9 @@ impl Protocol {
                         }
                         // Setup/control payloads do not enter public diagnostics.
                         if message_id > 4 && self.phase == ProtocolPhase::Receiving {
-                            let product = if attributes != 0 {
-                                Err(DecodeError("unverified application file attributes"))
-                            } else {
-                                decode_product(message_id, &data)
-                            };
-                            output.messages.push(ReceivedMessage {
-                                message_id,
-                                attributes,
-                                product,
-                            });
+                            output
+                                .messages
+                                .push(ReceivedMessage::decode(message_id, attributes, &data));
                         }
                     }
                     _ => {}
@@ -494,8 +513,12 @@ mod tests {
     use super::*;
 
     fn client() -> Protocol {
+        client_mode(super::super::setup::SetupMode::Normal)
+    }
+    fn client_mode(mode: super::super::setup::SetupMode) -> Protocol {
         Protocol::with_nonce(
             VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
+            mode,
             0,
             [9; 16],
         )
@@ -516,42 +539,103 @@ mod tests {
     }
     fn complete_handshake() -> Protocol {
         let mut client = client();
-        rx(&mut client, 3, 1, NEGOTIATION.to_vec()).unwrap();
-        rx(
-            &mut client,
-            2,
-            2,
-            message(
-                0,
-                &[2u32, 4]
-                    .into_iter()
-                    .flat_map(u32::to_le_bytes)
-                    .collect::<Vec<_>>(),
-            ),
-        )
-        .unwrap();
-        rx(&mut client, 2, 3, message(2, &[8; 16])).unwrap();
-        assert_eq!(client.phase(), ProtocolPhase::VerifyResponse);
-        let response = client.expected_response.unwrap();
-        let ids = [0u32, 0x1000, 0x2100, 0x2200, 0x20000010, 0x20000000];
-        rx(
-            &mut client,
-            2,
-            4,
-            [
-                message(4, &response),
+        handshake(&mut client);
+        client
+    }
+    fn handshake(client: &mut Protocol) -> Vec<ApplicationRecord> {
+        let mut output = Vec::new();
+        for (kind, seq, payload) in [
+            (3, 1, NEGOTIATION.to_vec()),
+            (
+                2,
+                2,
                 message(
                     0,
-                    &ids.into_iter()
+                    &[2u32, 4]
+                        .into_iter()
                         .flat_map(u32::to_le_bytes)
                         .collect::<Vec<_>>(),
                 ),
-            ]
-            .concat(),
-        )
-        .unwrap();
+            ),
+            (2, 3, message(2, &[8; 16])),
+        ] {
+            output.extend(rx(client, kind, seq, payload).unwrap().transmissions);
+        }
+        assert_eq!(client.phase(), ProtocolPhase::VerifyResponse);
+        let response = client.expected_response.unwrap();
+        let ids = [0u32, 0x1000, 0x2100, 0x2200, 0x20000010, 0x20000000];
+        output.extend(
+            rx(
+                client,
+                2,
+                4,
+                [
+                    message(4, &response),
+                    message(
+                        0,
+                        &ids.into_iter()
+                            .flat_map(u32::to_le_bytes)
+                            .collect::<Vec<_>>(),
+                    ),
+                ]
+                .concat(),
+            )
+            .unwrap()
+            .transmissions,
+        );
         assert_eq!(client.phase(), ProtocolPhase::Product);
-        client
+        let mut app = ApplicationStream::default();
+        Framer::default()
+            .feed(&output.concat())
+            .unwrap()
+            .into_iter()
+            .flat_map(|frame| app.feed(&frame.payload).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn omission_changes_only_payload_message_not_handshake_subscriptions_or_fetches() {
+        use super::super::setup::SetupMode;
+        let mut normal = client_mode(SetupMode::Normal);
+        let mut small = client_mode(SetupMode::OmitSetupPayload);
+        let normal_records = handshake(&mut normal);
+        let small_records = handshake(&mut small);
+        let without_payload = normal_records
+            .iter()
+            .filter(|record| !matches!(record, ApplicationRecord::Message { message_id: 1, .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(normal_records.len(), without_payload.len() + 1);
+        assert_eq!(without_payload, small_records);
+        // Both modes subscribe identically, and respond identically to new-weather notifications.
+        for (sequence, payload) in [
+            (5, message(0x1000, &[0x47, 6])),
+            (
+                6,
+                control(&[[vec![2], 0x20000010u32.to_le_bytes().to_vec()].concat()]),
+            ),
+            (7, message(0x20000010, &[])),
+        ] {
+            assert_eq!(
+                rx(&mut normal, 2, sequence, payload.clone())
+                    .unwrap()
+                    .transmissions,
+                rx(&mut small, 2, sequence, payload).unwrap().transmissions
+            );
+        }
+        assert_eq!(small.phase(), ProtocolPhase::Receiving);
+    }
+
+    #[test]
+    fn peer_waiting_for_omitted_payload_hits_the_same_setup_deadline() {
+        let mut client = client_mode(super::super::setup::SetupMode::OmitSetupPayload);
+        handshake(&mut client);
+        rx(&mut client, 2, 5, Vec::new()).unwrap();
+        assert_eq!(
+            client.tick(15_004).err().unwrap().0,
+            "receiver setup deadline"
+        );
+        assert_eq!(client.phase(), ProtocolPhase::Failed);
     }
 
     #[test]

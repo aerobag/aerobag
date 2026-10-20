@@ -427,17 +427,17 @@ mod tests {
         use super::super::connection::{Connection, ConnectionPhase, Effect, Event, Fault};
         use super::super::VendorProtocolBlobs;
         let temp = Temp::new();
+        let blobs = VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap();
+        let mode = super::super::setup::SetupMode::Normal;
+        let metadata = serde_json::to_vec(&blobs.metadata(mode, None)).unwrap();
+        let limit = 256 + CaptureWriter::<FileSink>::encoded_record_bytes(metadata.len());
         let policy = CapturePolicy {
-            segment_bytes: 256,
-            total_bytes: 256,
+            segment_bytes: limit,
+            total_bytes: limit,
             max_segments: 5,
         };
         let archive = CaptureArchive::open(&temp.0, policy).unwrap();
-        let mut connection = Connection::new(
-            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
-            archive,
-            clock(0),
-        );
+        let mut connection = Connection::new(blobs, mode, None, archive, clock(0));
         let output = connection.start("paired-device".into(), clock(0));
         let Effect::Connect { id, .. } = output.effects[0] else {
             panic!()
@@ -454,7 +454,7 @@ mod tests {
             .update(Event::Tick, clock(100_000))
             .effects
             .is_empty());
-        assert_eq!(connection.status().captured.durable_records, 3);
+        assert_eq!(connection.status().captured.durable_records, 4);
         drop(connection);
         let path = fs::read_dir(&temp.0)
             .unwrap()
@@ -470,6 +470,7 @@ mod tests {
             kinds,
             vec![
                 CaptureKind::ConnectionRequested,
+                CaptureKind::Setup,
                 CaptureKind::Connected,
                 CaptureKind::WriteRequested
             ]

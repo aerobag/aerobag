@@ -11,7 +11,8 @@ use std::io::{self, Read, Write};
 
 use sha2::{Digest, Sha256};
 
-const MAGIC: &[u8; 8] = b"ABRX\x01\0\0\0";
+const MAGIC_V1: &[u8; 8] = b"ABRX\x01\0\0\0";
+const MAGIC: &[u8; 8] = b"ABRX\x02\0\0\0";
 pub const MAX_CHUNK_BYTES: usize = 65_535;
 const RECORD_METADATA_BYTES: usize = 25;
 const HASH_BYTES: usize = 32;
@@ -30,6 +31,8 @@ pub enum CaptureKind {
     WriteCompleted = 6,
     /// Payload: u64 connection ID. Recorded before opening the socket.
     ConnectionRequested = 7,
+    /// ABRX v2: JSON SetupMetadata, following ConnectionRequested and before IO.
+    Setup = 8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +199,7 @@ pub enum CaptureRead {
 
 pub struct CaptureReader<R> {
     input: R,
+    version: u8,
     next_sequence: u64,
     last_monotonic_ms: Option<u64>,
     ended: bool,
@@ -205,7 +209,7 @@ impl<R: Read> CaptureReader<R> {
     pub fn new(mut input: R) -> io::Result<Self> {
         let mut magic = [0u8; 8];
         input.read_exact(&mut magic)?;
-        if &magic != MAGIC {
+        if &magic != MAGIC && &magic != MAGIC_V1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unknown receiver capture format",
@@ -213,6 +217,7 @@ impl<R: Read> CaptureReader<R> {
         }
         Ok(Self {
             input,
+            version: magic[4],
             next_sequence: 0,
             last_monotonic_ms: None,
             ended: false,
@@ -282,6 +287,7 @@ impl<R: Read> CaptureReader<R> {
             5 => CaptureKind::WriteRequested,
             6 => CaptureKind::WriteCompleted,
             7 => CaptureKind::ConnectionRequested,
+            8 if self.version == 2 => CaptureKind::Setup,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -335,6 +341,25 @@ mod tests {
         fn sync_data(&mut self) -> io::Result<()> {
             self.synced = self.bytes.len();
             Ok(())
+        }
+    }
+
+    #[test]
+    fn explicit_v1_compatibility_does_not_accept_v2_setup_records() {
+        for kind in [CaptureKind::Received, CaptureKind::Setup] {
+            let mut writer = CaptureWriter::new(Memory::default(), 4096).unwrap();
+            writer.append(kind, 0, 0, b"data").unwrap();
+            let mut bytes = writer.finish().unwrap().bytes;
+            assert!(matches!(
+                CaptureReader::new(bytes.as_slice())
+                    .unwrap()
+                    .next_record()
+                    .unwrap(),
+                CaptureRead::Record(_)
+            ));
+            bytes[..8].copy_from_slice(MAGIC_V1);
+            let result = CaptureReader::new(bytes.as_slice()).unwrap().next_record();
+            assert_eq!(result.is_ok(), kind == CaptureKind::Received);
         }
     }
 

@@ -17,8 +17,10 @@ mod nmea;
 mod products;
 mod protocol;
 pub mod radar;
+mod reception;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime;
+pub mod setup;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod weather;

@@ -44,15 +44,17 @@ class SettingsPageTest {
 
     @Test fun receiverCoreActionsReceivePhysicalTapsOnNarrowSettingsPage() {
         val actions = mutableListOf<String>()
-        val panel = UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Private capture",
-            actions = listOf(UiReceiverAction(actionId = "opaque-device-17", label = "Connect test receiver", enabled = true)))
+        val panel = mutableStateOf(UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Private capture",
+            actions = listOf(
+                UiReceiverAction(actionId = "receiver:mode-small", label = "Experiment: small blob only", enabled = true),
+                UiReceiverAction(actionId = "opaque-device-17", label = "Connect test receiver", enabled = true))))
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {
             CompositionLocalProvider(LocalAerobagUiTheme provides theme,
                 LocalNavigationPageOptions provides NavigationPagePolicy(emptyList(), 2, AppPage.Map)) {
                 Box(Modifier.size(320.dp, 740.dp)) {
                     SettingsPage(page = AppPage.Settings,
-                        state = UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(UiSettingsPageBlock.Receiver(panel))),
+                        state = UiSettingsPageState(title = "Settings", summary = "", blocks = listOf(UiSettingsPageBlock.Receiver(panel.value))),
                         navElement = null, mostRecentChartOrPlatePage = AppPage.Map,
                         onOpenPlan = {}, onOpenRecentChartOrPlate = {}, onSelectPage = {},
                         onSettingsAction = { _, _ -> }, onAircraftLibraryAction = { _, _ -> },
@@ -60,8 +62,16 @@ class SettingsPageTest {
                 }
             }
         }
-        compose.onNodeWithTag("parity:receiver:opaque-device-17").assertIsDisplayed().performTouchInput { click() }
-        compose.runOnIdle { assertEquals(listOf("opaque-device-17"), actions) }
+        for (id in listOf("receiver:mode-small", "opaque-device-17")) {
+            compose.onNodeWithTag("parity:receiver:$id").performScrollTo().assertIsDisplayed().performTouchInput { click() }
+        }
+        compose.runOnIdle {
+            panel.value = panel.value.copy(status = "Receiving and recording",
+                detail = "Experiment: small blob only\n" + List(11) { "Weather family $it: 2 nonempty / 3 empty; 4000 bytes; last 10s ago; 0 decode errors.\n" }.joinToString(""),
+                actions = listOf(UiReceiverAction(actionId = "receiver:normal-stop", label = "Disconnect and return to Normal", enabled = true)))
+        }
+        compose.onNodeWithTag("parity:receiver:receiver:normal-stop").performScrollTo().assertIsDisplayed().performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("receiver:mode-small", "opaque-device-17", "receiver:normal-stop"), actions) }
     }
 
     @Test fun sliderDragPublishesNewIdentityAndUnmountRemovesIndexedControls() {

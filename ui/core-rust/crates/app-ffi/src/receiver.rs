@@ -14,9 +14,14 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_initializeRece
     mut env: JNIEnv,
     _class: JClass,
     root: JString,
+    build: JString,
 ) {
-    let result = get_java_string(&mut env, root)
-        .and_then(|root| runtime::initialize(std::path::Path::new(&root)));
+    let result = (|| {
+        let root = get_java_string(&mut env, root)?;
+        let build = serde_json::from_str(&get_java_string(&mut env, build)?)
+            .map_err(|error| format!("Invalid receiver build identity: {error}"))?;
+        runtime::initialize(std::path::Path::new(&root), build)
+    })();
     if let Err(error) = result {
         let _ = env.throw_new("java/lang/IllegalStateException", error);
     }

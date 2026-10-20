@@ -48,8 +48,8 @@ receiver GPS fix was captured; the test was deliberately short and stationary.
 
 ## Setup-Payload Omission Experiment
 
-Status: designed, not implemented or hardware-tested. Keep the known-working
-two-blob implementation unchanged until the experiment controls and tests exist.
+Status: implemented for the next hardware test. Normal remains the default;
+omission has only been exercised with synthetic peers, not a GTX 345.
 
 Question: can this receiver/firmware deliver the same requested data without
 sending application message ID 1? In particular, sensor reception alone does not
@@ -71,12 +71,14 @@ silently fall back to Normal: that would contaminate the experiment's evidence.
 Do not clear either blob, weather caches, or earlier captures when switching.
 Platforms only render the core's labels/actions and execute OS operations.
 
-Record structured session metadata before opening the socket: selected mode,
-app build, blob lengths/hashes, and available receiver identity/firmware. Keep
-that metadata in the exported evidence with raw RX/TX. Extend the versioned
-capture contract explicitly if needed; do not overload fault records with
-informational experiment markers. Offline analysis must verify the actual
-outbound message sequence, not just trust the selected-mode label.
+ABRX v2 records selected mode, app build and blob lengths/hashes durably before
+each socket open. The receiver's product-identity response remains in raw RX;
+its firmware fields are not yet interpreted. Export includes this evidence with
+raw RX/TX. The reader also supports ABRX v1, without inventing mode metadata.
+`receiver_capture_replay` reports each connection's reception counters and
+completed setup-payload transmissions. It rejects an experimental capture that
+actually transmitted message ID 1, or a payload with the wrong fingerprint.
+Uncompleted socket writes remain explicitly uncertain, not evidence of absence.
 
 Show per-connection progress for sensor reports and for each weather family:
 empty/nonempty response counts, received bytes, and last arrival. Report newly
@@ -122,7 +124,7 @@ the map. Recording must continue independently of UI delivery and decoding.
 | Nonempty weather in Experiment only after Normal | Warm-session compatibility; possible retained receiver state |
 | Sensors and nonempty weather in Experiment-first | Payload not required for observed products on this tested receiver/firmware; not a universal compatibility claim |
 
-### Required Software Tests Before Shipping The Experiment
+### Software Coverage
 
 - Compare synthetic-peer transcripts: the sole semantic difference is omission
   of message ID 1. The challenge response, supported-ID filtering, product

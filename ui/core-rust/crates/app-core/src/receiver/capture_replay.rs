@@ -13,7 +13,9 @@ use super::{
     capture::{CaptureClock, CaptureKind, CaptureRead, CaptureReader},
     capture_files::CapturePolicy,
     framing::ReceiveSequence,
-    ApplicationRecord, ApplicationStream, Frame, Framer,
+    reception::Reception,
+    setup::{BlobFingerprint, SetupMetadata, SetupMode},
+    ApplicationRecord, ApplicationStream, Frame, Framer, ReceivedMessage,
 };
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -29,6 +31,83 @@ pub struct ReplaySummary {
     pub duplicate_frames: u64,
     pub torn_tails: u64,
     pub incomplete_connections: u64,
+    pub attempts: Vec<ReplayAttempt>,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ReplayAttempt {
+    pub connection_id: Option<u64>,
+    pub started_at_epoch_ms: i64,
+    pub setup: Option<SetupMetadata>,
+    pub reception: Reception,
+    /// Completed socket writes, not proof that the receiver accepted the data.
+    pub setup_payload_messages: u64,
+    pub incomplete_writes: u64,
+}
+
+#[derive(Default)]
+struct Transmissions {
+    pending: Option<(u64, Vec<u8>)>,
+    framer: Framer,
+    sequence: ReceiveSequence,
+    application: ApplicationStream,
+}
+
+impl Transmissions {
+    fn requested(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if self.pending.is_some() || bytes.len() < 8 {
+            return Err(invalid("invalid captured write request"));
+        }
+        self.pending = Some((
+            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            bytes[8..].to_vec(),
+        ));
+        Ok(())
+    }
+
+    fn completed(&mut self, bytes: &[u8], attempt: &mut ReplayAttempt) -> io::Result<()> {
+        let id = u64::from_le_bytes(bytes.try_into().map_err(invalid)?);
+        let (expected, data) = self
+            .pending
+            .take()
+            .ok_or_else(|| invalid("write completion without request"))?;
+        if id != expected {
+            return Err(invalid("write completion ID mismatch"));
+        }
+        for frame in self.framer.feed(&data).map_err(invalid)? {
+            if frame.payload.is_empty() || !self.sequence.accept(&frame).map_err(invalid)? {
+                continue;
+            }
+            if frame.kind == 3 {
+                self.application.reset();
+                continue;
+            }
+            if frame.kind != 2 {
+                return Err(invalid("unknown transmitted transport kind"));
+            }
+            for record in self.application.feed(&frame.payload).map_err(invalid)? {
+                if let ApplicationRecord::Message {
+                    message_id: 1,
+                    data,
+                    ..
+                } = record
+                {
+                    attempt.setup_payload_messages += 1;
+                    if let Some(setup) = &attempt.setup {
+                        if setup.mode == SetupMode::OmitSetupPayload {
+                            return Err(invalid(
+                                "experimental connection transmitted the setup payload",
+                            ));
+                        }
+                        if BlobFingerprint::of(&data) != setup.setup_payload {
+                            return Err(invalid("transmitted setup payload fingerprint mismatch"));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub enum ReplayEvent {
@@ -44,6 +123,8 @@ struct Stream {
     sequence: ReceiveSequence,
     application: ApplicationStream,
     clock: Option<CaptureClock>,
+    attempt: Option<ReplayAttempt>,
+    transmissions: Transmissions,
 }
 
 impl Stream {
@@ -62,6 +143,11 @@ impl Stream {
         self.framer.reset();
         self.application.reset();
         self.sequence = ReceiveSequence::default();
+        if let Some(mut attempt) = self.attempt.take() {
+            attempt.incomplete_writes += u64::from(self.transmissions.pending.is_some());
+            summary.attempts.push(attempt);
+        }
+        self.transmissions = Transmissions::default();
     }
 
     fn frame(
@@ -86,7 +172,20 @@ impl Stream {
             return Ok(());
         }
         for record in self.application.feed(&frame.payload).map_err(invalid)? {
-            if matches!(record, ApplicationRecord::Message { .. }) {
+            if let ApplicationRecord::Message {
+                message_id,
+                attributes,
+                data,
+            } = &record
+            {
+                self.attempt
+                    .as_mut()
+                    .expect("connected attempt")
+                    .reception
+                    .observe(
+                        &ReceivedMessage::decode(*message_id, *attributes, data),
+                        clock.monotonic_ms,
+                    );
                 summary.messages += 1;
                 emit(clock, ReplayEvent::Message(record));
             }
@@ -124,14 +223,38 @@ impl Stream {
             summary.records += 1;
             match record.kind {
                 CaptureKind::Connected => {
-                    self.finish(summary, emit);
+                    if self.connected {
+                        return Err(invalid("duplicate connection without disconnect"));
+                    }
+                    self.attempt.get_or_insert_with(|| ReplayAttempt {
+                        started_at_epoch_ms: clock.wall_epoch_ms,
+                        ..Default::default()
+                    });
                     self.connected = true;
                     summary.connections += 1;
                     emit(clock, ReplayEvent::Connected);
                 }
-                CaptureKind::ConnectionRequested | CaptureKind::Disconnected => {
-                    self.finish(summary, emit)
+                CaptureKind::ConnectionRequested => {
+                    self.finish(summary, emit);
+                    self.attempt = Some(ReplayAttempt {
+                        connection_id: Some(u64::from_le_bytes(
+                            record.bytes.as_slice().try_into().map_err(invalid)?,
+                        )),
+                        started_at_epoch_ms: clock.wall_epoch_ms,
+                        ..Default::default()
+                    });
                 }
+                CaptureKind::Setup => {
+                    let attempt = self
+                        .attempt
+                        .as_mut()
+                        .ok_or_else(|| invalid("setup outside connection request"))?;
+                    if self.connected || attempt.setup.is_some() {
+                        return Err(invalid("duplicate or late setup metadata"));
+                    }
+                    attempt.setup = Some(serde_json::from_slice(&record.bytes).map_err(invalid)?);
+                }
+                CaptureKind::Disconnected => self.finish(summary, emit),
                 CaptureKind::Received => {
                     if !self.connected {
                         return Err(invalid("RX outside a captured connection"));
@@ -141,8 +264,22 @@ impl Stream {
                         self.frame(frame, clock, summary, emit)?;
                     }
                 }
-                CaptureKind::WriteRequested => summary.write_requests += 1,
-                CaptureKind::WriteCompleted => summary.completed_writes += 1,
+                CaptureKind::WriteRequested => {
+                    if !self.connected {
+                        return Err(invalid("TX outside a captured connection"));
+                    }
+                    self.transmissions.requested(&record.bytes)?;
+                    summary.write_requests += 1;
+                }
+                CaptureKind::WriteCompleted => {
+                    self.transmissions.completed(
+                        &record.bytes,
+                        self.attempt
+                            .as_mut()
+                            .ok_or_else(|| invalid("write completion outside connection"))?,
+                    )?;
+                    summary.completed_writes += 1;
+                }
                 CaptureKind::Transmitted | CaptureKind::Diagnostic => {}
             }
         }
@@ -277,6 +414,48 @@ mod tests {
         }
         .encode()
         .unwrap()
+    }
+
+    #[test]
+    fn replay_checks_completed_wire_bytes_not_just_the_experiment_label() {
+        use crate::receiver::VendorProtocolBlobs;
+        let seed = VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap();
+        let mut data = vec![1, (8 + b"GRM_SALTsynthetic".len()) as u8, 0, 12];
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(b"GRM_SALTsynthetic");
+        let raw = Frame {
+            kind: 2,
+            sequence: 1,
+            acknowledgement: 0,
+            payload: data,
+        }
+        .encode()
+        .unwrap();
+        let intent = [&1u64.to_le_bytes()[..], &raw].concat();
+        for mode in [SetupMode::Normal, SetupMode::OmitSetupPayload] {
+            let metadata = serde_json::to_vec(&seed.metadata(mode, None)).unwrap();
+            let id = 1u64.to_le_bytes();
+            let mut records = vec![
+                (CaptureKind::ConnectionRequested, 0, &id[..]),
+                (CaptureKind::Setup, 0, metadata.as_slice()),
+                (CaptureKind::Connected, 1, &[][..]),
+                (CaptureKind::WriteRequested, 2, intent.as_slice()),
+            ];
+            let pending =
+                replay_export(archive(vec![(name(1, 0), segment(&records))]), |_, _| {}).unwrap();
+            assert_eq!(pending.attempts[0].incomplete_writes, 1);
+            assert_eq!(pending.attempts[0].setup_payload_messages, 0);
+            records.push((CaptureKind::WriteCompleted, 3, &id));
+            let result = replay_export(archive(vec![(name(1, 0), segment(&records))]), |_, _| {});
+            if mode == SetupMode::Normal {
+                assert_eq!(result.unwrap().attempts[0].setup_payload_messages, 1);
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("experimental connection transmitted"));
+            }
+        }
     }
 
     #[test]

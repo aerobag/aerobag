@@ -5,6 +5,7 @@
 //! The separate, bounded mailbox retains an in-flight batch until UI publication
 //! succeeds, including resource paging. Raw evidence is independent of that path.
 
+use super::setup::SetupMode;
 use super::weather_cache::WeatherCache;
 use super::{
     capture::CaptureClock,
@@ -171,6 +172,9 @@ impl InventoryState {
 
 pub struct Runtime {
     root: PathBuf,
+    build: Option<app_ui_contracts::session::ClientBuildInfo>,
+    setup_mode: SetupMode,
+    now_ms: u64,
     connection: Option<Connection<CaptureArchive>>,
     inventory: InventoryState,
     inventory_generation: u64,
@@ -209,6 +213,9 @@ impl Runtime {
         }
         Self {
             root,
+            build: None,
+            setup_mode: SetupMode::Normal,
+            now_ms: 0,
             connection: None,
             inventory: InventoryState::NotChecked,
             inventory_generation: 0,
@@ -336,6 +343,7 @@ impl Runtime {
         bytes: &[u8],
         clock: CaptureClock,
     ) -> ReceiverHostOutput {
+        self.now_ms = clock.monotonic_ms;
         let mut effects = Vec::new();
         let mut output = Output::default();
         if self
@@ -440,12 +448,30 @@ impl Runtime {
                         request_id,
                         max_bytes: 4096,
                     });
-                } else if action_id == "receiver:stop" {
+                } else if action_id == "receiver:stop" || action_id == "receiver:normal-stop" {
                     if let Some(connection) = &mut self.connection {
                         output = connection.stop(clock);
                     }
                     // Drop releases the archive lock; reconnect opens a fresh recorder.
                     self.connection = None;
+                    if action_id == "receiver:normal-stop" {
+                        self.setup_mode = SetupMode::Normal;
+                    }
+                } else if matches!(
+                    action_id.as_str(),
+                    "receiver:mode-normal" | "receiver:mode-small"
+                ) {
+                    if self.active() {
+                        self.error =
+                            Some("Disconnect before changing the receiver setup mode".into());
+                    } else {
+                        self.connection = None;
+                        self.setup_mode = if action_id == "receiver:mode-small" {
+                            SetupMode::OmitSetupPayload
+                        } else {
+                            SetupMode::Normal
+                        };
+                    }
                 } else if action_id == "receiver:export" && !self.active() {
                     self.connection = None;
                     match self.export_capture() {
@@ -472,7 +498,15 @@ impl Runtime {
                                 &self.root.join("captures"),
                                 CapturePolicy::default(),
                             )
-                            .map(|archive| Connection::new(vendor_blobs, archive, clock))
+                            .map(|archive| {
+                                Connection::new(
+                                    vendor_blobs,
+                                    self.setup_mode,
+                                    self.build.clone(),
+                                    archive,
+                                    clock,
+                                )
+                            })
                             .map_err(|e| format!("Cannot open private receiver capture: {e}"))
                         }) {
                             Ok(mut connection) => {
@@ -742,6 +776,7 @@ impl Runtime {
     fn panel(&self) -> UiReceiverPanel {
         let status = self.connection.as_ref().map(Connection::status);
         let mut panel = empty_panel();
+        let mode = status.as_ref().map_or(self.setup_mode, |s| s.setup_mode);
         panel.status = if let Some(error) = &self.error {
             error.clone()
         } else {
@@ -763,6 +798,13 @@ impl Runtime {
                 status.captured.written_bytes / (1024*1024),status.decoded_messages,status.malformed_messages,
                 self.normalized,self.rejected,
                 status.last_fault.map(|fault| format!(" {}",fault.description())).unwrap_or_default());
+            panel
+                .detail
+                .push_str(&format!("\n{}", status.reception.description(self.now_ms)));
+        }
+        panel.detail = format!("{}\n{}", mode.label(), panel.detail);
+        if mode == SetupMode::OmitSetupPayload {
+            panel.detail.push_str("\nSetup payload is omitted on this connection and its retries. For a cold-start test, connect before Pilot or a Normal session. Return to Normal explicitly if needed; the app never switches modes automatically during a run.");
         }
         if let Some(error) = &self.weather_error {
             panel.detail.push_str(&format!(" {error}"));
@@ -787,6 +829,12 @@ impl Runtime {
             panel
                 .actions
                 .push(action("receiver:stop", "Disconnect and stop recording"));
+            if mode == SetupMode::OmitSetupPayload {
+                panel.actions.push(action(
+                    "receiver:normal-stop",
+                    "Disconnect and return to Normal",
+                ));
+            }
         } else {
             panel
                 .detail
@@ -824,6 +872,15 @@ impl Runtime {
                 refresh.disabled_reason = Some("Waiting for Android's paired-device list".into());
             }
             panel.actions.push(refresh);
+            for (id, choice) in [
+                ("receiver:mode-normal", SetupMode::Normal),
+                ("receiver:mode-small", SetupMode::OmitSetupPayload),
+            ] {
+                let mut button = action(id, choice.label());
+                button.enabled = mode != choice;
+                button.disabled_reason = (!button.enabled).then(|| "Already selected".into());
+                panel.actions.push(button);
+            }
             panel
                 .actions
                 .extend(
@@ -860,7 +917,10 @@ struct Owner {
 }
 static OWNER: OnceLock<Owner> = OnceLock::new();
 
-pub fn initialize(root: &Path) -> Result<(), String> {
+pub fn initialize(
+    root: &Path,
+    build: app_ui_contracts::session::ClientBuildInfo,
+) -> Result<(), String> {
     if let Some(owner) = OWNER.get() {
         return if owner.root == root {
             Ok(())
@@ -868,7 +928,8 @@ pub fn initialize(root: &Path) -> Result<(), String> {
             Err("Receiver owner already initialized for another private directory".into())
         };
     }
-    let runtime = Runtime::new(root.to_owned());
+    let mut runtime = Runtime::new(root.to_owned());
+    runtime.build = Some(build);
     let _ = OWNER.set(Owner {
         root: root.to_owned(),
         mailbox: runtime.mailbox.clone(),
@@ -924,6 +985,10 @@ pub fn delivery(id: u64) -> Result<Arc<Delivery>, String> {
         .filter(|delivery| delivery.id == id)
         .ok_or("Stale receiver delivery".into())
 }
+
+#[cfg(test)]
+#[path = "experiment_tests.rs"]
+mod experiment_tests;
 
 #[cfg(test)]
 mod tests {

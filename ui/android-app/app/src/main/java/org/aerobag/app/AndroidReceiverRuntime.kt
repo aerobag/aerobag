@@ -42,7 +42,10 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
     init {
         scope.launch {
             try {
-                NativeBindings.initializeReceiver(File(context.filesDir, "receiver").absolutePath)
+                NativeBindings.initializeReceiver(File(context.filesDir, "receiver").absolutePath,
+                    Json.encodeToString(ClientBuildInfo(platform = "android", version = BuildConfig.VERSION_NAME,
+                        builtAtUtc = BuildConfig.AEROBAG_BUILT_AT_UTC, commit = BuildConfig.AEROBAG_GIT_COMMIT,
+                        dirty = BuildConfig.AEROBAG_BUILD_DIRTY)))
                 inputs.send(Input(ReceiverHostEvent.RefreshInventory))
                 for (input in inputs) {
                     // Sample clocks here, not on callback producer threads: enqueue order can differ.

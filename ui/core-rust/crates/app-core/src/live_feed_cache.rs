@@ -3404,7 +3404,9 @@ mod tests {
                     installed.version.clone(),
                     LiveNexradInstalledState {
                         version: installed.version.clone(),
-                        package_blob_sha256: package_blob_sha256.clone(),
+                        storage: crate::weather_controller::NexradFrameStorage::Package {
+                            blob_sha256: package_blob_sha256.clone(),
+                        },
                         manifest: serde_json::from_slice(manifest).unwrap(),
                     },
                 );

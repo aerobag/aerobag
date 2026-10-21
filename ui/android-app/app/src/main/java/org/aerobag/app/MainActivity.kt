@@ -1325,6 +1325,7 @@ internal fun SituationStatusBadge(
     Box(modifier = modifier.wrapContentSize(unbounded = true, align = Alignment.TopEnd)) {
         MenuDock(
             launcherLabel = controls.launcherLabel,
+            launcherSymbolId = controls.launcherSymbolId,
             open = open,
             onToggle = onToggle,
             style = MenuDockStyle.Situation,

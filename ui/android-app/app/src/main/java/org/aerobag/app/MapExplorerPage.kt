@@ -1053,14 +1053,31 @@ private fun rememberNexradLayerState(
                     }
                 }
                 val plannedCacheResources = overlay.cachePlan?.fetchResources.orEmpty()
+                val schedule = NexradRenderSchedule(overlay.animation.nextUpdateEpochMs) {
+                    val completed = prefetchNexradCacheResourcesBestEffort(
+                        resources = prefetchTracker.pending(plannedCacheResources),
+                        fetch = { planned ->
+                            tileLoads.load(planned.src) {
+                                sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
+                                    fetchNexradCoreResource(context, resource, currentDevServerBaseUrl)
+                                }
+                            }
+                        },
+                        reportFailure = { planned, error ->
+                            Log.w("AerobagLayers", "NEXRAD prefetch failed for ${planned.src}", error)
+                        },
+                    )
+                    prefetchTracker.recordCompleted(completed)
+                    // Newly available pixels can change core's source selection,
+                    // including when the previous query had no drawable frame.
+                    if (completed.isNotEmpty()) renderRequests.trySend(Unit)
+                }
                 if (overlay.tiles.isEmpty()) {
                     frame = null
                     perfLogInfo(NexradRenderLogTag) {
                         "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextEpochMs=${overlay.animation.nextUpdateEpochMs} nowEpochMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                     }
-                    return@render NexradRenderSchedule(
-                        overlay.animation.nextUpdateEpochMs,
-                    )
+                    return@render schedule
                 }
                 val decodedImagesBySrc = LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
                 var decodedImageBytes = 0L
@@ -1108,30 +1125,7 @@ private fun rememberNexradLayerState(
                 perfLogInfo(NexradRenderLogTag) {
                     "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextEpochMs=${overlay.animation.nextUpdateEpochMs} nowEpochMs=${System.currentTimeMillis()} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
-                NexradRenderSchedule(
-                    overlay.animation.nextUpdateEpochMs,
-                ) {
-                    // Tracker ownership stays on this composition's dispatcher;
-                    // UiSessionWorkRunner owns background resource fetching.
-                    val completedPrefetches = prefetchNexradCacheResourcesBestEffort(
-                        resources = prefetchTracker.pending(plannedCacheResources),
-                        fetch = { planned ->
-                            tileLoads.load(planned.src) {
-                                sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
-                                    fetchNexradCoreResource(context, resource, currentDevServerBaseUrl)
-                                }
-                            }
-                        },
-                        reportFailure = { planned, error ->
-                            Log.w(
-                                "AerobagLayers",
-                                "NEXRAD background prefetch failed for ${planned.src}; continuing selected frame",
-                                error,
-                            )
-                        },
-                    )
-                    prefetchTracker.recordCompleted(completedPrefetches)
-                }
+                schedule
             },
         )
     }
@@ -2018,7 +2012,7 @@ internal fun MapExplorerPage(
     val currentMapInteraction = rememberUpdatedState(mapInteraction)
     var inspectionGeneration by remember { mutableLongStateOf(0L) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
-    LaunchedEffect(mapInteraction?.mode) {
+    LaunchedEffect(mapInteraction?.mode, mapInteraction?.inspect, mapInteraction?.hoverWeather) {
         inspectionGeneration += 1
         if (mapInteraction?.inspect != true) mapSelection = null
     }
@@ -2088,7 +2082,7 @@ internal fun MapExplorerPage(
             else -> MapInspectionCommand.Open
         })
     }
-    LaunchedEffect(mapInteraction?.mode) { chartSearchInspectionGate.invalidate() }
+    LaunchedEffect(mapInteraction?.mode, mapInteraction?.inspect) { chartSearchInspectionGate.invalidate() }
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -3439,7 +3433,8 @@ internal fun MapExplorerPage(
                     "metars:${displayedMapOverlay.visibleMetars.size}:" +
                         "pireps:${displayedMapOverlay.visiblePireps.size}:" +
                         "obstacles:${displayedMapOverlay.visibleFeatures.count { it.symbolKind == "obstacle" }}:" +
-                        "tfrs:${displayedMapOverlay.tfrPaths.size}",
+                        "tfrs:${displayedMapOverlay.tfrPaths.size}:" +
+                        "traffic:${displayedMapOverlay.visibleTraffic.size}",
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offset(x = 24.dp)

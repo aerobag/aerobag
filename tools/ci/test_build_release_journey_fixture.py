@@ -217,6 +217,7 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         fixture.write_json(source / "fixture.json", {
             "schema_version": 1,
             "publication_root": "published",
+            "capabilities": {"replay_trace": "replay/track-gap.json"},
         })
         fixture.write_json(source / "live-feeds" / "fresh" / "current.json", {
             "schema_version": 3,
@@ -228,6 +229,14 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         fixture.write_replay_fixture(source)
         output = self.root / "materialized"
         materializer.materialize(source, output)
+        generated = fixture.read_json(output / "fixture.json")
+        self.assertEqual("replay/receiver.json", generated["capabilities"]["receiver_replay_trace"])
+        receiver = fixture.read_json(output / "replay" / "receiver.json")
+        self.assertEqual("aerobag-receiver-replay", receiver["format"])
+        self.assertEqual(sorted(event["elapsed_ms"] for event in receiver["events"]),
+                         [event["elapsed_ms"] for event in receiver["events"]])
+        self.assertNotIn("receiver_replay_trace",
+                         fixture.read_json(source / "fixture.json")["capabilities"])
         self.assertEqual(
             b"tile",
             (output / "published" / "release-e2e-v1" / "unpacked" / "sample" / "tiles" / "1" / "2" / "3.webp").read_bytes(),

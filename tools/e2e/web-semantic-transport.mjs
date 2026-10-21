@@ -435,6 +435,30 @@ export class WebSemanticTransport {
     });
   }
 
+  async setProgress(selector, value, readyElement) {
+    const current = await this.readElement(selector);
+    const range = readyElement?.progress_range;
+    if (!range || !current || JSON.stringify(range) !== JSON.stringify(current.progress_range)) {
+      throw new TransientObservationError(`progress range changed: ${selector}`);
+    }
+    const fraction = (value - range.min) / (range.max - range.min);
+    if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) throw new Error("progress value outside published range");
+    const width = current.bounds.width;
+    const inset = range.inset;
+    if (!Number.isFinite(inset) || inset < 0 || width <= inset * 2) {
+      throw new Error(`invalid progress geometry: ${selector}`);
+    }
+    const point = await this.elementPoint(selector, (inset + fraction * (width - 2 * inset)) / width, 0.5);
+    return this.deliverInput(selector, point, readyElement, ["pointerdown", "pointerup"], async () => {
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse",
+      });
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse",
+      });
+    });
+  }
+
   async wheel(selector, amount, readyElement) {
     const point = await this.elementPoint(selector, 0.5, 0.5);
     return this.deliverInput(selector, point, readyElement, ["wheel"], async () => {
@@ -489,6 +513,13 @@ export class WebSemanticTransport {
         actionable: actionPoint !== null,
         action_point: actionPoint,
         focused: document.activeElement === element,
+        progress_range: element.hasAttribute("data-progress-min") && element.hasAttribute("data-progress-max")
+          ? {
+              min: Number(element.getAttribute("data-progress-min")),
+              max: Number(element.getAttribute("data-progress-max")),
+              inset: Number(element.getAttribute("data-progress-inset") ?? 0),
+            }
+          : null,
         bounds: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       };
     })()`);

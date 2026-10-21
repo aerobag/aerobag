@@ -28,8 +28,44 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type ActionSymbolId = "open_plan" | "swap_plans" | "copy_plan" | "vor" | "gnss" | "apply_route" | "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "start_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "find_route" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
+export type ActionSymbolId = "source_internet" | "source_receiver" | "source_device" | "open_plan" | "swap_plans" | "copy_plan" | "vor" | "gnss" | "apply_route" | "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "start_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "find_route" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
 export const actionSymbols = {
+  "source_internet": [
+    {
+      "path": "M 0 -18 C 9.941 -18 18 -9.941 18 0 C 18 9.941 9.941 18 0 18 C -9.941 18 -18 9.941 -18 0 C -18 -9.941 -9.941 -18 0 -18 M 0 -18 C -13 -6 -13 6 0 18 C 13 6 13 -6 0 -18 M -17 -6 H 17 M -17 6 H 17",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.4,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "source_receiver": [
+    {
+      "path": "M 0 -8 L -9 18 H 9 Z M -6 10 H 6 M 0 -8 V -14 M -8 -8 Q -15 -14 -8 -20 M 8 -8 Q 15 -14 8 -20 M -14 -3 Q -25 -14 -14 -25 M 14 -3 Q 25 -14 14 -25",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.4,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "source_device": [
+    {
+      "path": "M -11 -20 H 11 Q 14 -20 14 -17 V 17 Q 14 20 11 20 H -11 Q -14 20 -14 17 V -17 Q -14 -20 -11 -20 Z M -5 -15 H 5 M -4 14 H 4",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.4,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
   "open_plan": [
     {
       "path": "M -19 -15 H 19 V -7 H -19 Z",

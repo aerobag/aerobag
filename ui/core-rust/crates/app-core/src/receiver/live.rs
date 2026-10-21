@@ -34,6 +34,30 @@ pub struct LiveSnapshot {
 }
 
 impl LiveSnapshot {
+    pub(crate) fn source_status(&self, clock: CaptureClock) -> crate::OwnshipSourceStatusUpdate {
+        let sample = self.ownship_at(clock);
+        crate::OwnshipSourceStatusUpdate {
+            source_id: OwnshipSourceId(SOURCE_ID.into()),
+            connection_state: if sample.is_some() {
+                crate::SourceConnectionState::Connected
+            } else if self.connected {
+                crate::SourceConnectionState::Searching
+            } else {
+                crate::SourceConnectionState::Unavailable
+            },
+            enabled: true,
+            status_label: if sample.is_some_and(|sample| sample.altitude_msl_ft.is_some()) {
+                "Receiver GPS with MSL altitude"
+            } else if sample.is_some() {
+                "Receiver GPS; MSL altitude unavailable"
+            } else if self.connected {
+                "No current receiver GPS fix"
+            } else {
+                "Receiver disconnected"
+            }
+            .into(),
+        }
+    }
     pub(crate) fn pressure_at(&self, clock: CaptureClock) -> Option<(i64, f64)> {
         self.pressure
             .as_ref()

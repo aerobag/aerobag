@@ -232,6 +232,7 @@ pub struct UiSessionCreateTiming {
 }
 
 struct UiSession {
+    receiver_replay: Option<crate::receiver_replay::Reduction>,
     coordinator: SessionCoordinatorModel,
     projection_versions: SessionProjectionVersionState,
     settings: SettingsController,
@@ -1779,7 +1780,11 @@ fn session_wall_clock_utc(session: &UiSession) -> DateTime<Utc> {
 }
 
 fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
-    session.coordinator.wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms.max(epoch_ms);
+    session.coordinator.wall_clock_epoch_ms = match session.situation.playback().receiver_position()
+    {
+        Some((trace, elapsed_ms)) => trace.document.start_epoch_ms + elapsed_ms,
+        None => session.coordinator.wall_clock_epoch_ms.max(epoch_ms),
+    };
     if session
         .map
         .inspection()
@@ -2277,6 +2282,7 @@ fn create_ui_session_inner(
     let generation = NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed);
     let diagnostics = Arc::new(SessionDiagnosticsCounters::default());
     let mut session = UiSession {
+        receiver_replay: None,
         coordinator: SessionCoordinatorModel {
             guided_tour: None,
             tour_saved: None,
@@ -2578,6 +2584,11 @@ pub fn configure_platform_capabilities_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return Err(crate::receiver_replay::trace_error(
+            "Reload to reconfigure live platform storage".into(),
+        ));
+    }
     run_session_model_transaction_without_persistence(session, move |session| {
         session.coordinator.platform_capabilities = capabilities;
         session.coordinator.persistence_storage =
@@ -2623,6 +2634,11 @@ pub fn perform_cloud_ui_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return Err(crate::receiver_replay::trace_error(
+            "Cloud is disabled in this isolated session; reload to exit".into(),
+        ));
+    }
     if session.coordinator.platform_capabilities.cloud.is_none() {
         return Err(AppError {
             kind: AppErrorKind::InvalidCatalog,
@@ -2679,7 +2695,8 @@ pub fn take_cloud_provider_request_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.coordinator.guided_tour.is_some()
+    if session.receiver_replay.is_some()
+        || session.coordinator.guided_tour.is_some()
         || session.coordinator.platform_capabilities.cloud.is_none()
     {
         return Ok(None);
@@ -2700,7 +2717,7 @@ pub fn cloud_event_stream_plan_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.coordinator.guided_tour.is_some() {
+    if session.receiver_replay.is_some() || session.coordinator.guided_tour.is_some() {
         return Ok(None);
     }
     Ok(session.cloud.event_stream_plan())
@@ -2714,7 +2731,7 @@ pub fn report_cloud_event_stream_event_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.coordinator.guided_tour.is_some() {
+    if session.receiver_replay.is_some() || session.coordinator.guided_tour.is_some() {
         return unchanged_session_update_outcome(session);
     }
     run_session_model_transaction(session, |session| {
@@ -2735,6 +2752,9 @@ pub fn complete_cloud_provider_request_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     if session.coordinator.guided_tour.is_some() {
         session
             .runtime
@@ -3836,6 +3856,9 @@ pub fn register_ownship_source_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     let initially_paused = registration.power_state == Some(crate::OwnshipSourcePowerState::Paused);
     let source_id = registration.source_id.clone();
     session.situation.register_source(registration);
@@ -3854,6 +3877,9 @@ pub fn update_ownship_source_status_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     maybe_log_gps_capture_status(session, &update);
     session.situation.update_source_status(update);
     changed_session_update_outcome(session)
@@ -3866,6 +3892,9 @@ pub fn push_situation_sample_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     let motion = apply_ownship_sample(session, sample)?;
     changed_session_update_outcome_for_ownship_motion(session, Some(motion))
 }
@@ -4090,9 +4119,54 @@ pub fn load_playback_trace_in_session(
     source_path: &str,
     trace_json: &str,
 ) -> AppResult<HadOperationOutcome> {
+    #[derive(Deserialize)]
+    struct Header {
+        format: Option<String>,
+    }
+    let receiver = serde_json::from_str::<Header>(trace_json)
+        .ok()
+        .is_some_and(|header| header.format.as_deref() == Some(crate::receiver_replay::FORMAT));
+    let prepared = if receiver {
+        let trace = Arc::new(
+            crate::receiver_replay::Trace::parse(trace_json)
+                .map_err(crate::receiver_replay::trace_error)?,
+        );
+        // Validate all inputs before taking away the live session's IO. No
+        // malformed event halfway through a trace may strand a partial import.
+        crate::receiver_replay::Reduction::default()
+            .advance(
+                &trace,
+                &mut WeatherController::default(),
+                trace.document.duration_ms,
+            )
+            .map_err(crate::receiver_replay::trace_error)?;
+        Some(trace)
+    } else {
+        None
+    };
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if let Some(trace) = prepared {
+        session.coordinator.persistence_storage = None;
+        session.cloud = CloudController::default();
+        session.runtime.pending_resource_effects.clear();
+        let mut weather = WeatherController::default();
+        weather.copy_replay_controls_from(&session.weather);
+        session.weather = weather;
+        session.situation = SituationController::default();
+        session
+            .situation
+            .playback_mut()
+            .load_receiver(source_path.into(), trace);
+        session.receiver_replay = Some(Default::default());
+        return finish_receiver_replay(session);
+    }
+    if session.receiver_replay.is_some() {
+        return Err(crate::receiver_replay::trace_error(
+            "Reload the application to leave the isolated replay lab".into(),
+        ));
+    }
     let playback_state = session
         .situation
         .playback_mut()
@@ -4110,6 +4184,9 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let playback_state = session.situation.playback_mut().play(now_epoch_ms);
+    if session.receiver_replay.is_some() {
+        return finish_receiver_replay(session);
+    }
     let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
@@ -4123,6 +4200,9 @@ pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Ha
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let playback_state = session.situation.playback_mut().pause(now_epoch_ms);
+    if session.receiver_replay.is_some() {
+        return finish_receiver_replay(session);
+    }
     let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
@@ -4143,6 +4223,9 @@ pub fn seek_playback_in_session(
         .situation
         .playback_mut()
         .seek(cursor_seconds, now_epoch_ms);
+    if session.receiver_replay.is_some() {
+        return finish_receiver_replay(session);
+    }
     let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
@@ -4163,6 +4246,9 @@ pub fn set_playback_rate_in_session(
         .situation
         .playback_mut()
         .set_rate(rate, now_epoch_ms);
+    if session.receiver_replay.is_some() {
+        return finish_receiver_replay(session);
+    }
     let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
@@ -4176,12 +4262,59 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let playback_state = session.situation.playback_mut().tick(now_epoch_ms);
+    if session.receiver_replay.is_some() {
+        return finish_receiver_replay(session);
+    }
     let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
         .transpose()?;
     changed_session_update_outcome_for_ownship_motion(session, motion)
+}
+
+fn finish_receiver_replay(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
+    let (trace, target) = session
+        .situation
+        .playback()
+        .receiver_position()
+        .ok_or_else(|| {
+            crate::receiver_replay::trace_error("Receiver transport is not loaded".into())
+        })?;
+    let reduction = session.receiver_replay.as_mut().ok_or_else(|| {
+        crate::receiver_replay::trace_error("Receiver reduction is not initialized".into())
+    })?;
+    if target < reduction.elapsed_ms() {
+        let mut rebuilt = crate::receiver_replay::Reduction::default();
+        rebuilt
+            .sensors
+            .copy_replay_controls_from(&session.situation);
+        let mut weather = WeatherController::default();
+        weather.copy_replay_controls_from(&session.weather);
+        rebuilt
+            .advance(&trace, &mut weather, target)
+            .map_err(crate::receiver_replay::trace_error)?;
+        session.weather = weather;
+        *reduction = rebuilt;
+    } else {
+        reduction
+            .sensors
+            .copy_replay_controls_from(&session.situation);
+        reduction
+            .advance(&trace, &mut session.weather, target)
+            .map_err(crate::receiver_replay::trace_error)?;
+    }
+    session.situation.install_replay_sensors(&reduction.sensors);
+    advance_session_wall_clock(session, 0);
+    changed_session_update_outcome_with_invalidations(
+        session,
+        vec![
+            UiInvalidation::MapOverlay,
+            UiInvalidation::NexradOverlay,
+            UiInvalidation::TerrainOverlay,
+            UiInvalidation::SessionSnapshot,
+        ],
+    )
 }
 
 pub fn set_situation_in_session(
@@ -4981,12 +5114,14 @@ pub fn perform_flight_data_banner_cell_action_in_session(
     let session = &mut *session_guard;
     match cell_id.as_str() {
         crate::barometer::BAROMETER_CELL_ID if session.situation.barometer().available() => {
+            dismiss_map_inspector(session);
             session.weather.close_nexrad_editor();
             session.situation.altitude_target_mut().close_editor();
             session.situation.barometer_mut().open_editor();
             changed_session_update_outcome(session)
         }
         crate::altitude_target::TARGET_CELL_ID => {
+            dismiss_map_inspector(session);
             session.weather.close_nexrad_editor();
             session.situation.barometer_mut().close_editor();
             let barometer = session.situation.barometer().clone();
@@ -5001,6 +5136,7 @@ pub fn perform_flight_data_banner_cell_action_in_session(
             changed_session_update_outcome(session)
         }
         "nexrad_age" => {
+            dismiss_map_inspector(session);
             session.situation.barometer_mut().close_editor();
             session.situation.altitude_target_mut().close_editor();
             session.weather.open_nexrad_editor();
@@ -5016,12 +5152,30 @@ pub fn perform_flight_data_banner_cell_action_in_session(
     }
 }
 
+fn flight_data_editor_open(session: &UiSession) -> bool {
+    session.weather.nexrad_editor_open()
+        || session.situation.barometer().editor_open()
+        || session.situation.altitude_target().editor_open()
+}
+
+fn dismiss_map_inspector(session: &mut UiSession) {
+    session.map.inspection_mut().apply(
+        app_ui_contracts::session::MapInspectionCommand::Dismiss,
+        session.coordinator.wall_clock_epoch_ms,
+    );
+}
+
 pub fn perform_flight_data_command_in_session(
     handle: u32,
     command: crate::FlightDataCommand,
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
+    if session_guard.receiver_replay.is_some()
+        && matches!(&command, crate::FlightDataCommand::Observe { .. })
+    {
+        return unchanged_session_update_outcome(&session_guard);
+    }
     // Samples, target altitude, and altimeter calibration are session-local;
     // they must not serialize and synchronously rewrite settings on every edit.
     run_session_model_transaction_without_persistence(&mut session_guard, |session| {
@@ -5081,6 +5235,16 @@ pub fn perform_map_inspection_command_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
+    if flight_data_editor_open(&session_guard)
+        && matches!(
+            command,
+            app_ui_contracts::session::MapInspectionCommand::Open
+                | app_ui_contracts::session::MapInspectionCommand::DetailOpened
+        )
+    {
+        // A platform lifecycle report can arrive after a newer editor opened.
+        return unchanged_session_update_outcome(&session_guard);
+    }
     run_session_model_transaction(&mut session_guard, |session| {
         // Apply the user's activity before checking deadlines so an input queued
         // at the boundary does not dismiss the tray being touched.
@@ -6309,6 +6473,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let previous_data_status_model = live.data_status.checkpoint_model();
 
     let mut candidate = UiSession {
+        receiver_replay: None,
         coordinator: live.coordinator.clone(),
         projection_versions: live.projection_versions.clone(),
         settings: std::mem::take(&mut live.settings),
@@ -6569,6 +6734,13 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let previous_versions = session.projection_versions.versions();
+    if session.receiver_replay.is_some() {
+        return nav_db_maintenance_outcome(
+            session,
+            NavDbMaintenanceAction::None,
+            previous_versions,
+        );
+    }
     advance_session_wall_clock(session, epoch_ms);
     mark_cycle_product_freshness_dirty_if_deadline_due(session);
     sync_cycle_product_freshness_status_records_if_needed(session);
@@ -6957,6 +7129,9 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return Ok(());
+    }
     session.weather.runtime_mut().tfr_payload = Some(payload.clone());
     sync_live_feed_overlay_status_records(session);
     Ok(())
@@ -6966,6 +7141,9 @@ pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppRe
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return Ok(());
+    }
     install_station_tafs(session, payload.clone())?;
     Ok(())
 }
@@ -6978,6 +7156,9 @@ pub fn apply_receiver_delivery_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session = slot.lock_running()?;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(&session);
+    }
     advance_session_wall_clock(&mut session, clock.wall_epoch_ms);
     let weather_changed = session
         .weather
@@ -7015,29 +7196,7 @@ pub fn apply_receiver_delivery_in_session(
                 }
                 session
                     .situation
-                    .update_source_status(crate::OwnshipSourceStatusUpdate {
-                        source_id: crate::OwnshipSourceId(crate::receiver::live::SOURCE_ID.into()),
-                        connection_state: if sample.is_some() {
-                            crate::SourceConnectionState::Connected
-                        } else if live.connected {
-                            crate::SourceConnectionState::Searching
-                        } else {
-                            crate::SourceConnectionState::Unavailable
-                        },
-                        enabled: true,
-                        status_label: if sample
-                            .is_some_and(|sample| sample.altitude_msl_ft.is_some())
-                        {
-                            "Receiver GPS with MSL altitude"
-                        } else if sample.is_some() {
-                            "Receiver GPS; MSL altitude unavailable"
-                        } else if live.connected {
-                            "No current receiver GPS fix"
-                        } else {
-                            "Receiver disconnected"
-                        }
-                        .into(),
-                    });
+                    .update_source_status(live.source_status(clock));
                 session
                     .situation
                     .refresh_ownship_at(session.coordinator.wall_clock_epoch_ms);
@@ -7069,6 +7228,11 @@ pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome>
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
+    if session.receiver_replay.is_some() {
+        return Ok(HadOperationOutcome::complete(
+            serde_json::json!({ "products": [] }),
+        ));
+    }
     Ok(session
         .weather
         .live_feeds()
@@ -7107,7 +7271,12 @@ pub fn live_feed_runtime_decision_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    Ok(session.weather.runtime_decision(input))
+    let mut decision = session.weather.runtime_decision(input);
+    if session.receiver_replay.is_some() {
+        decision.commands.clear();
+        decision.connection_event = None;
+    }
+    Ok(decision)
 }
 
 pub fn ingest_live_feed_sse_event_in_session(
@@ -7144,6 +7313,9 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     for event in events.iter().filter(|event| {
         event.data.len() <= 4096
             && event.event.as_deref() == Some(product_contracts::service_bulletins::EVENT)
@@ -7199,12 +7371,24 @@ pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) 
     ingest_resource_in_session_at_epoch_ms(handle, resource_id, bytes, 0)
 }
 
+fn live_weather_resource(resource_id: &str) -> bool {
+    resource_id.starts_with("live_feeds/")
+        || resource_id.starts_with(LIVE_NAV_KV_RESOURCE_PREFIX)
+        || resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX)
+}
+
 pub fn ingest_resource_in_session_at_epoch_ms(
     handle: u32,
     resource_id: &str,
     bytes: &[u8],
     epoch_ms: i64,
 ) -> AppResult<()> {
+    if live_weather_resource(resource_id) {
+        let slot = session_slot(handle)?;
+        if slot.lock_running()?.receiver_replay.is_some() {
+            return Ok(());
+        }
+    }
     if crate::service_notifications::ServiceNotifications::handles_resource(resource_id) {
         let slot = session_slot(handle)?;
         let mut session = slot.lock_running()?;
@@ -7406,6 +7590,9 @@ pub fn report_live_feed_connection_event_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     let stream_failed = event.kind == LiveFeedConnectionEventKind::Error;
     record_live_feed_connection_event(session, event, epoch_ms);
     if stream_failed
@@ -7455,6 +7642,9 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return Ok(());
+    }
     let mut next_live_feeds = session.weather.live_feeds().clone();
     next_live_feeds.ingest_prepared_live_feed(resource_id, &envelope)?;
     if next_live_feeds.product_staged_version(&envelope_product) != Some(envelope_version.as_str())
@@ -7554,6 +7744,9 @@ where
     let mut session_guard = slot.lock_running()?;
     let lock_ms = elapsed_ms(lock_started_at);
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     let commit_started_at = crate::core_clock_ms();
     commit_durable_live_feed_install(session, installed, prepared)?;
     let commit_ms = elapsed_ms(commit_started_at);
@@ -7602,6 +7795,9 @@ pub fn install_prepared_live_feed_cache_product_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     commit_prepared_live_feed(session, prepared_payload)?;
     session
         .weather
@@ -8027,6 +8223,9 @@ pub fn sync_live_feed_catalog_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() {
+        return unchanged_session_update_outcome(session);
+    }
     session
         .weather
         .live_feeds_mut()
@@ -8242,7 +8441,9 @@ fn installed_nexrad_descriptor(
     }
     Ok(LiveNexradInstalledState {
         version: version.to_string(),
-        package_blob_sha256: package_blob_sha256.to_string(),
+        storage: crate::weather_controller::NexradFrameStorage::Package {
+            blob_sha256: package_blob_sha256.to_string(),
+        },
         manifest: render_manifest,
     })
 }
@@ -8264,6 +8465,9 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if session.receiver_replay.is_some() && live_weather_resource(resource_id) {
+        return unchanged_session_update_outcome(session);
+    }
     advance_session_wall_clock(session, epoch_ms);
     if crate::service_notifications::ServiceNotifications::handles_resource(resource_id) {
         session.coordinator.service_notifications.failed(
@@ -10380,6 +10584,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
             );
         }
     }
+    if session.receiver_replay.is_some() {
+        overlay.traffic_next_refresh_epoch_ms = None;
+    }
     let supplemental_started_at = crate::core_clock_ms();
     overlay
         .data_status_records
@@ -11611,25 +11818,43 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    let previous_nexrad_source = session.weather.nexrad_source();
     let previous_nexrad_banner_value = project_weather_for_session(session).nexrad_age_banner_value;
+    session.weather.runtime_mut().nexrad_view = Some((viewport, width_px, height_px));
     advance_session_wall_clock(session, epoch_ms);
     let mut freshness_invalidations = Vec::new();
     if previous_nexrad_banner_value != project_weather_for_session(session).nexrad_age_banner_value
+        || previous_nexrad_source != session.weather.nexrad_source()
     {
         freshness_invalidations.push(UiInvalidation::SessionSnapshot);
     }
     let source = session.weather.nexrad_source();
-    let retained_frame_versions = if source == crate::weather_controller::NexradSource::Receiver {
-        crate::weather_controller::nexrad_retained_frame_candidates(&session.weather)
-            .into_iter()
-            .map(|frame| frame.version)
-            .collect()
-    } else {
-        session
-            .weather
-            .live_feeds()
-            .client_retained_versions("nexrad")
-    };
+    let retained_frame_versions = session
+        .weather
+        .live_feeds()
+        .client_retained_versions("nexrad")
+        .into_iter()
+        .chain(session.weather.runtime().nexrad_installed.keys().cloned())
+        .chain(
+            session
+                .weather
+                .receiver_radar()
+                .frames
+                .iter()
+                .map(|frame| frame.id.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let retained_internet = retained_frame_versions.iter().collect::<HashSet<_>>();
+    session
+        .weather
+        .runtime_mut()
+        .nexrad_tile_cache
+        .retain(|src, _| {
+            nexrad_installed_member(src)
+                .is_some_and(|(version, _)| retained_internet.contains(&version))
+        });
     if !session.map.layer_state().nexrad.visible {
         return complete_nexrad_overlay_outcome_with_invalidations(
             session,
@@ -11656,17 +11881,28 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             kind: AppErrorKind::Internal,
             message: "platform did not declare a live-feed acquisition policy".to_string(),
         })?;
-    let use_jit_resources = source == crate::weather_controller::NexradSource::Internet
-        && (acquisition_policy == LiveFeedAcquisitionPolicy::JitPublicResources
-            || session.settings.nexrad_acquisition_preferences().coverage
-                == NexradCoverageMode::ViewportOnly);
-    if use_jit_resources {
+    let internet_jit = acquisition_policy == LiveFeedAcquisitionPolicy::JitPublicResources
+        || session.settings.nexrad_acquisition_preferences().coverage
+            == NexradCoverageMode::ViewportOnly;
+    let wants_internet = session.weather.nexrad_auto()
+        || source == crate::weather_controller::NexradSource::Internet;
+    if internet_jit && wants_internet && session.receiver_replay.is_none() {
         if let HadOperationOutcome::NeedResources { resources } = session
             .weather
             .live_feeds()
             .sync_product_outcome_at_epoch_ms("nexrad", session.coordinator.wall_clock_epoch_ms)
         {
-            return Ok(HadOperationOutcome::NeedResources { resources });
+            // A pending Internet download must not hide ready receiver imagery.
+            for resource in resources {
+                enqueue_session_resource_effect(
+                    session,
+                    resource,
+                    [
+                        UiInvalidation::NexradOverlay,
+                        UiInvalidation::SessionSnapshot,
+                    ],
+                );
+            }
         }
         let history_resources = session
             .weather
@@ -11691,6 +11927,40 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
         &session.weather,
         session.coordinator.wall_clock_epoch_ms,
     );
+    let mut fetch_resources = BTreeMap::new();
+    for candidate_source in [
+        crate::weather_controller::NexradSource::Internet,
+        crate::weather_controller::NexradSource::Receiver,
+    ] {
+        if candidate_source != source && !session.weather.nexrad_auto() {
+            continue;
+        }
+        if candidate_source == crate::weather_controller::NexradSource::Internet && !internet_jit {
+            continue;
+        }
+        for frame in crate::weather_controller::nexrad_displayable_frames_for_source(
+            &session.weather,
+            session.coordinator.wall_clock_epoch_ms,
+            candidate_source,
+        ) {
+            if let Ok(urls) =
+                nexrad_frame_tile_urls(&frame, candidate_source, &viewport, width_px, height_px)
+            {
+                for src in urls {
+                    fetch_resources
+                        .entry((frame.version.clone(), src.clone()))
+                        .or_insert(NexradOverlayCacheResource {
+                            frame_version: frame.version.clone(),
+                            src,
+                        });
+                }
+            }
+        }
+    }
+    let cache_plan = NexradOverlayCachePlan {
+        retained_frame_versions,
+        fetch_resources: fetch_resources.into_values().collect(),
+    };
     if frames.is_empty() {
         let status = if nexrad_freshest_frame_observed_at_utc(session).is_some() {
             NexradOverlayStatus::Ready { count: 0 }
@@ -11714,10 +11984,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
                 animation: NexradOverlayAnimation::idle(),
-                cache_plan: Some(NexradOverlayCachePlan {
-                    retained_frame_versions,
-                    fetch_resources: Vec::new(),
-                }),
+                cache_plan: Some(cache_plan),
             },
             freshness_invalidations,
         );
@@ -11727,27 +11994,6 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
         session.coordinator.wall_clock_epoch_ms,
         session.weather.nexrad_animation_mode(),
     );
-    let mut fetch_resources = BTreeMap::new();
-    if use_jit_resources || source == crate::weather_controller::NexradSource::Receiver {
-        for frame in &frames {
-            if let Ok(frame_query) =
-                nexrad_frame_overlay_query(frame, source, &viewport, width_px, height_px)
-            {
-                for tile in frame_query.tiles {
-                    fetch_resources
-                        .entry((frame.version.clone(), tile.src.clone()))
-                        .or_insert(NexradOverlayCacheResource {
-                            frame_version: frame.version.clone(),
-                            src: tile.src,
-                        });
-                }
-            }
-        }
-    }
-    let cache_plan = NexradOverlayCachePlan {
-        retained_frame_versions,
-        fetch_resources: fetch_resources.into_values().collect(),
-    };
     let selected_frame_index = animation.selected_frame_index;
     let mut query = match selected_frame_index {
         Some(index) => {
@@ -11783,6 +12029,12 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
         }
     };
     query.cache_plan = Some(cache_plan);
+    if session.receiver_replay.is_some() {
+        // The replay transport is the only clock driver. Its ticks invalidate
+        // radar; historical deadlines must never be scheduled on the host clock.
+        query.animation.next_update_epoch_ms = None;
+        query.animation.next_update_delay_ms = None;
+    }
     complete_nexrad_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
 }
 
@@ -11837,6 +12089,11 @@ pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> AppResult<HadOp
         if nexrad_tile_bytes_loaded(session, src)? {
             return Ok(HadOperationOutcome::complete(serde_json::Value::Null));
         }
+        if session.receiver_replay.is_some() {
+            return Err(crate::receiver_replay::trace_error(
+                "Replay radar tile is no longer available; live resources are isolated".into(),
+            ));
+        }
         nexrad_tile_resource_request(session, src)?
     };
     Ok(HadOperationOutcome::NeedResources {
@@ -11878,11 +12135,21 @@ fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<Cor
     let installed_member = nexrad_installed_member(src);
     if let Some((version, member_path)) = installed_member.as_ref() {
         if let Some(installed) = session.weather.runtime().nexrad_installed.get(version) {
+            let crate::weather_controller::NexradFrameStorage::Package { blob_sha256 } =
+                &installed.storage
+            else {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!(
+                        "Replay frame {version} is missing its local tile {member_path}"
+                    ),
+                });
+            };
             return Ok(CoreResourceRequest::live_feed_package_member(
                 resource_id,
                 "nexrad",
                 version.clone(),
-                installed.package_blob_sha256.clone(),
+                blob_sha256.clone(),
                 member_path.clone(),
                 false,
             ));
@@ -12051,7 +12318,56 @@ struct NexradSourceGridLevel {
     tile_rows: u32,
 }
 
-fn nexrad_frame_overlay_query(
+pub(crate) fn replay_nexrad_tile_urls(
+    version: &str,
+    value: &serde_json::Value,
+) -> Result<BTreeSet<String>, String> {
+    let manifest: NexradSourceGridManifest =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    if manifest.state_id != version
+        || version.is_empty()
+        || !version
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        || manifest.observed_at_utc.is_none()
+        || manifest.tile_path_template != "tiles/res{res}/{x}/{y}.png"
+        || !(1..=4096).contains(&manifest.tile_size)
+        || manifest.levels.is_empty()
+        || manifest.levels.len() > 32
+        || !manifest
+            .source_grid
+            .geo_transform
+            .iter()
+            .all(|n| n.is_finite())
+        || manifest.source_grid.geo_transform[1] == 0.0
+        || manifest.source_grid.geo_transform[5] == 0.0
+    {
+        return Err("Invalid replay NEXRAD manifest".into());
+    }
+    let mut urls = BTreeSet::new();
+    for level in manifest.levels {
+        if level.res > 24
+            || level.width == 0
+            || level.height == 0
+            || level.tile_cols != level.width.div_ceil(manifest.tile_size)
+            || level.tile_rows != level.height.div_ceil(manifest.tile_size)
+            || u64::from(level.tile_cols) * u64::from(level.tile_rows) > 8192
+        {
+            return Err("Invalid replay NEXRAD grid".into());
+        }
+        for x in 0..level.tile_cols {
+            for y in 0..level.tile_rows {
+                urls.insert(
+                    crate::weather_controller::NexradSource::Internet
+                        .tile_url(version, level.res, x, y),
+                );
+            }
+        }
+    }
+    Ok(urls)
+}
+
+pub(crate) fn nexrad_frame_overlay_query(
     frame: &crate::weather_controller::NexradFrameCandidate,
     source: crate::weather_controller::NexradSource,
     viewport: &MapViewport,
@@ -12097,21 +12413,95 @@ fn nexrad_frame_overlay_query(
     Ok(query)
 }
 
-fn nexrad_source_grid_overlay_query(
-    manifest: &serde_json::Value,
+enum NexradGridPlan {
+    Empty(NexradOverlayQueryResult),
+    Visible(NexradVisibleGrid),
+}
+
+struct NexradVisibleGrid {
+    manifest: NexradSourceGridManifest,
+    level: NexradSourceGridLevel,
+    grid_west: f64,
+    grid_east: f64,
+    grid_south: f64,
+    grid_north: f64,
+    x_start: u32,
+    x_end: u32,
+    y_start: u32,
+    y_end: u32,
+    source_rect: NexradSourceRect,
+}
+
+impl NexradVisibleGrid {
+    fn tile_coordinates(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        (self.y_start..=self.y_end).flat_map(|y| (self.x_start..=self.x_end).map(move |x| (x, y)))
+    }
+}
+
+fn nexrad_frame_tile_urls(
+    frame: &crate::weather_controller::NexradFrameCandidate,
     source: crate::weather_controller::NexradSource,
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-) -> AppResult<NexradOverlayQueryResult> {
+) -> AppResult<Vec<String>> {
+    let mut urls = Vec::new();
+    for manifest in &frame.manifests {
+        if let NexradGridPlan::Visible(grid) =
+            nexrad_source_grid_plan(manifest, viewport, width_px, height_px)?
+        {
+            urls.extend(
+                grid.tile_coordinates()
+                    .map(|(x, y)| source.tile_url(&grid.manifest.state_id, grid.level.res, x, y)),
+            );
+        }
+    }
+    Ok(urls)
+}
+
+// Source selection and image drawing share exactly the same tile/LOD plan.
+// Availability never needs the expensive screen-space tessellation below.
+pub(crate) fn nexrad_frame_tiles_ready(
+    frame: &crate::weather_controller::NexradFrameCandidate,
+    source: crate::weather_controller::NexradSource,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+    mut loaded: impl FnMut(&str) -> bool,
+) -> bool {
+    let mut visible = false;
+    for manifest in &frame.manifests {
+        match nexrad_source_grid_plan(manifest, viewport, width_px, height_px) {
+            Ok(NexradGridPlan::Visible(grid)) => {
+                visible = true;
+                for (x, y) in grid.tile_coordinates() {
+                    if !loaded(&source.tile_url(&grid.manifest.state_id, grid.level.res, x, y)) {
+                        return false;
+                    }
+                }
+            }
+            Ok(NexradGridPlan::Empty(query))
+                if matches!(query.status, NexradOverlayStatus::Ready { .. }) => {}
+            _ => return false,
+        }
+    }
+    visible
+}
+
+fn nexrad_source_grid_plan(
+    manifest: &serde_json::Value,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> AppResult<NexradGridPlan> {
     if width_px <= 0.0 || height_px <= 0.0 {
-        return Ok(NexradOverlayQueryResult {
+        return Ok(NexradGridPlan::Empty(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Ready { count: 0 },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
             animation: NexradOverlayAnimation::idle(),
             cache_plan: None,
-        });
+        }));
     }
     let manifest: NexradSourceGridManifest =
         serde_json::from_value(manifest.clone()).map_err(|err| AppError {
@@ -12119,7 +12509,7 @@ fn nexrad_source_grid_overlay_query(
             message: format!("failed to parse NEXRAD source-grid manifest: {err}"),
         })?;
     if manifest.tile_path_template != "tiles/res{res}/{x}/{y}.png" {
-        return Ok(NexradOverlayQueryResult {
+        return Ok(NexradGridPlan::Empty(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Unavailable {
                 reason: format!(
                     "unsupported NEXRAD tile path template: {}",
@@ -12130,14 +12520,13 @@ fn nexrad_source_grid_overlay_query(
             stats: NexradOverlayStats::default(),
             animation: NexradOverlayAnimation::idle(),
             cache_plan: None,
-        });
+        }));
     }
     let viewport_bounds = viewport_lat_lon_bounds(viewport, width_px, height_px);
     let [origin_lon, pixel_lon, _rot_x, origin_lat, _rot_y, pixel_lat] =
         manifest.source_grid.geo_transform;
-    let observed_at_utc = manifest.observed_at_utc;
     if pixel_lon == 0.0 || pixel_lat == 0.0 {
-        return Ok(NexradOverlayQueryResult {
+        return Ok(NexradGridPlan::Empty(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Unavailable {
                 reason: "NEXRAD source grid has invalid geo transform".to_string(),
             },
@@ -12145,7 +12534,7 @@ fn nexrad_source_grid_overlay_query(
             stats: NexradOverlayStats::default(),
             animation: NexradOverlayAnimation::idle(),
             cache_plan: None,
-        });
+        }));
     }
     let Some(level) = nexrad_level_for_viewport(
         &manifest.levels,
@@ -12155,7 +12544,7 @@ fn nexrad_source_grid_overlay_query(
         pixel_lon,
         pixel_lat,
     ) else {
-        return Ok(NexradOverlayQueryResult {
+        return Ok(NexradGridPlan::Empty(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Unavailable {
                 reason: "NEXRAD manifest has no resolution levels".to_string(),
             },
@@ -12163,13 +12552,11 @@ fn nexrad_source_grid_overlay_query(
             stats: NexradOverlayStats::default(),
             animation: NexradOverlayAnimation::idle(),
             cache_plan: None,
-        });
+        }));
     };
     let level_scale = 2_f64.powi(level.res as i32);
     let level_pixel_lon = pixel_lon * level_scale;
     let level_pixel_lat = pixel_lat * level_scale;
-    let tile_span_lon = level_pixel_lon.abs() * manifest.tile_size as f64;
-    let tile_span_lat = level_pixel_lat.abs() * manifest.tile_size as f64;
     let grid_west = origin_lon.min(origin_lon + level_pixel_lon * level.width as f64);
     let grid_east = origin_lon.max(origin_lon + level_pixel_lon * level.width as f64);
     let grid_south = origin_lat.min(origin_lat + level_pixel_lat * level.height as f64);
@@ -12179,23 +12566,81 @@ fn nexrad_source_grid_overlay_query(
     let south = viewport_bounds.south.max(grid_south);
     let north = viewport_bounds.north.min(grid_north);
     if west >= east || south >= north {
-        return Ok(NexradOverlayQueryResult {
+        return Ok(NexradGridPlan::Empty(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Ready { count: 0 },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
             animation: NexradOverlayAnimation::idle(),
             cache_plan: None,
-        });
+        }));
     }
 
-    let x_start = (((west - grid_west) / tile_span_lon).floor() as i64)
-        .clamp(0, level.tile_cols as i64 - 1) as u32;
-    let x_end = (((east - grid_west) / tile_span_lon).floor() as i64)
-        .clamp(0, level.tile_cols as i64 - 1) as u32;
-    let y_start = (((grid_north - north) / tile_span_lat).floor() as i64)
-        .clamp(0, level.tile_rows as i64 - 1) as u32;
-    let y_end = (((grid_north - south) / tile_span_lat).floor() as i64)
-        .clamp(0, level.tile_rows as i64 - 1) as u32;
+    // Clip before subdivision: receiver tiles can span thousands of screen
+    // pixels outside the viewport. Whole-tile meshes grow with zoom even when
+    // only a handful of source pixels can be seen. Round outward for coverage.
+    let pixel_range = |a: f64, b: f64, origin: f64, step: f64, size: u32| {
+        let a = (a - origin) / step;
+        let b = (b - origin) / step;
+        let start = a.min(b).floor().clamp(0.0, f64::from(size - 1)) as u32;
+        let end = a.max(b).ceil().clamp(f64::from(start + 1), f64::from(size)) as u32;
+        (start, end)
+    };
+    let (px0, px1) = pixel_range(west, east, origin_lon, level_pixel_lon, level.width);
+    let (py0, py1) = pixel_range(south, north, origin_lat, level_pixel_lat, level.height);
+    let x_start = px0 / manifest.tile_size;
+    let x_end = (px1 - 1) / manifest.tile_size;
+    let y_start = py0 / manifest.tile_size;
+    let y_end = (py1 - 1) / manifest.tile_size;
+
+    Ok(NexradGridPlan::Visible(NexradVisibleGrid {
+        manifest,
+        level,
+        grid_west,
+        grid_east,
+        grid_south,
+        grid_north,
+        x_start,
+        x_end,
+        y_start,
+        y_end,
+        source_rect: NexradSourceRect {
+            x: px0,
+            y: py0,
+            width: px1 - px0,
+            height: py1 - py0,
+        },
+    }))
+}
+
+fn nexrad_source_grid_overlay_query(
+    manifest: &serde_json::Value,
+    source: crate::weather_controller::NexradSource,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> AppResult<NexradOverlayQueryResult> {
+    let grid = match nexrad_source_grid_plan(manifest, viewport, width_px, height_px)? {
+        NexradGridPlan::Empty(query) => return Ok(query),
+        NexradGridPlan::Visible(grid) => grid,
+    };
+    let NexradVisibleGrid {
+        manifest,
+        level,
+        grid_west,
+        grid_east,
+        grid_south,
+        grid_north,
+        x_start,
+        x_end,
+        y_start,
+        y_end,
+        source_rect,
+    } = grid;
+    let [origin_lon, pixel_lon, _, origin_lat, _, pixel_lat] = manifest.source_grid.geo_transform;
+    let level_scale = 2_f64.powi(level.res as i32);
+    let level_pixel_lon = pixel_lon * level_scale;
+    let level_pixel_lat = pixel_lat * level_scale;
+    let observed_at_utc = manifest.observed_at_utc;
 
     const NEXRAD_RENDER_MAX_SOURCE_SLICE_PX: u32 = 256;
     const NEXRAD_RENDER_MAX_AFFINE_ERROR_PX: f64 = 1.0;
@@ -12227,7 +12672,13 @@ fn nexrad_source_grid_overlay_query(
             let image_width = manifest.tile_size.min(level.width - tile_level_x0);
             let image_height = manifest.tile_size.min(level.height - tile_level_y0);
             let src = source.tile_url(&manifest.state_id, level.res, x, y);
-            let mut stack = vec![(0, 0, image_width, image_height)];
+            let x0 = source_rect.x.max(tile_level_x0) - tile_level_x0;
+            let y0 = source_rect.y.max(tile_level_y0) - tile_level_y0;
+            let x1 = (source_rect.x + source_rect.width).min(tile_level_x0 + image_width)
+                - tile_level_x0;
+            let y1 = (source_rect.y + source_rect.height).min(tile_level_y0 + image_height)
+                - tile_level_y0;
+            let mut stack = vec![(x0, y0, x1 - x0, y1 - y0)];
             while let Some((source_x, source_y, source_width, source_height)) = stack.pop() {
                 stats.max_stack_depth = stats.max_stack_depth.max(stack.len() + 1);
                 let affine_error_px = nexrad_render_piece_affine_error_px(
@@ -12336,6 +12787,8 @@ fn nexrad_render_piece_affine_error_px(
     projection: &NexradAffineProjection<'_>,
     source: NexradSourceRect,
 ) -> f64 {
+    #[cfg(test)]
+    tests::NEXRAD_MESH_WORK.with(|work| work.set(work.get() + 1));
     let NexradAffineProjection {
         viewport,
         width_px,
@@ -13553,7 +14006,7 @@ fn try_snapshot_for_session(
         })
     });
     let next_nav_db_maintenance_epoch_ms = next_nav_db_maintenance_epoch_ms(session);
-    let snapshot = UiSessionSnapshot {
+    let mut snapshot = UiSessionSnapshot {
         guided_tour: session.coordinator.guided_tour.clone(),
         guided_tour_auto_start: session.coordinator.tour_introduction_offered == Some(false)
             && !session.settings.disclaimer_required()
@@ -13643,6 +14096,12 @@ fn try_snapshot_for_session(
             .cycle_product_freshness
             .next_check_epoch_ms,
     };
+    if session.receiver_replay.is_some() {
+        snapshot.next_session_snapshot_refresh_epoch_ms = i64::MAX;
+        snapshot.next_nav_db_maintenance_epoch_ms = None;
+        snapshot.next_cycle_product_freshness_check_epoch_ms = None;
+        snapshot.app_ui_state.ownship.controls.next_refresh_epoch_ms = None;
+    }
     refresh_session_projection_versions(session, &snapshot, next_nav_db_maintenance_epoch_ms);
     Ok(snapshot)
 }
@@ -14041,9 +14500,6 @@ fn project_map_layer_state_for_debug(
 }
 
 fn disable_internet_adsb(session: &mut UiSession) -> AppResult<()> {
-    if !session.situation.receiver().available {
-        session.map.set_layer_visibility(MapLayerId::Traffic, false);
-    }
     clear_data_status_record(session, ADSB_TRAFFIC_STATUS_ID);
     clear_data_status_record(session, ADSB_OWNSHIP_STATUS_ID);
     session
@@ -14232,6 +14688,11 @@ fn project_session_app_ui_state(
     );
     app_ui_state.map_interaction.inspector_dismissal_revision =
         session.map.inspection().dismissal_revision;
+    if flight_data_editor_open(session) {
+        app_ui_state.map_interaction.inspect = false;
+        app_ui_state.map_interaction.hover_weather = false;
+        app_ui_state.map_interaction.edit_route = false;
+    }
     refresh_registered_flight_plan_row_actions(session, open_ui)
         .map_err(|error| HadReadError::Fatal(error.message))?;
     app_ui_state.flight_data_banner = project_flight_data_banner(
@@ -15900,6 +16361,10 @@ mod tests {
     };
     use chrono::SecondsFormat;
 
+    thread_local! {
+        pub(super) static NEXRAD_MESH_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn tour_introduction_is_local_once_only_and_preserves_existing_users() {
         use app_ui_contracts::tour::UiTourAction;
@@ -16396,6 +16861,7 @@ mod tests {
             false,
         );
         UiSession {
+            receiver_replay: None,
             coordinator: SessionCoordinatorModel {
                 guided_tour: None,
                 tour_saved: None,
@@ -26625,6 +27091,222 @@ mod tests {
         assert_eq!(value["stats"]["source_tile_count"], serde_json::json!(0));
     }
 
+    #[test]
+    fn radar_auto_waits_for_pixels_and_then_switches_grid_and_overlay_together() {
+        use crate::weather_controller::NexradSource;
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true).unwrap();
+        let received = utc("2026-10-10T12:00:00Z").timestamp_millis();
+        let now = received + 9 * 60_000;
+        let mut live = crate::receiver::live::LiveInput::default();
+        live.set_connected(true);
+        live.ingest_radar(
+            &crate::receiver::test_support::radar(),
+            crate::receiver::capture::CaptureClock {
+                wall_epoch_ms: received,
+                monotonic_ms: 0,
+            },
+        )
+        .unwrap();
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session
+                .weather
+                .set_receiver_radar(live.snapshot().radar.clone());
+        }
+        let manifest = nexrad_live_test_manifest("fresh-net", "2026-10-10T12:06:00Z");
+        let catalog = live_feed_catalog_for_test(BTreeMap::from([(
+            "nexrad".into(),
+            live_current_product_for_test(
+                "nexrad",
+                "fresh-net",
+                "states/nexrad/fresh-net/manifest.json",
+                &canonical_json_sha256_value(&manifest).unwrap(),
+                Vec::new(),
+            ),
+        )]));
+        ingest_live_feed_catalog_for_test(init.handle, &catalog).unwrap();
+        ingest_nexrad_live_test_state(init.handle, "fresh-net", &manifest);
+        let view = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let query = |epoch| {
+            let HadOperationOutcome::Complete { result, .. } =
+                get_nexrad_overlay_in_session_at_epoch_ms(init.handle, view, 512.0, 512.0, epoch)
+                    .unwrap()
+            else {
+                panic!("Ready receiver imagery must not wait for Internet");
+            };
+            serde_json::from_value::<NexradOverlayQueryResult>(result).unwrap()
+        };
+        let before = query(now);
+        assert!(!before.tiles.is_empty());
+        assert!(before.tiles.iter().all(|tile| tile
+            .src
+            .starts_with(crate::receiver::radar::RESOURCE_PREFIX)));
+        let pending = before
+            .cache_plan
+            .unwrap()
+            .fetch_resources
+            .into_iter()
+            .filter(|resource| resource.frame_version == "fresh-net")
+            .collect::<Vec<_>>();
+        assert!(
+            !pending.is_empty(),
+            "Auto warms the alternate source in the background"
+        );
+        for resource in pending {
+            ingest_resource_in_session(
+                init.handle,
+                &nexrad_tile_resource_id(&resource.src).unwrap(),
+                b"pixels",
+            )
+            .unwrap();
+        }
+        let after = query(now);
+        assert!(!after.tiles.is_empty());
+        assert!(after
+            .tiles
+            .iter()
+            .all(|tile| tile.src.contains("fresh-net")));
+        let slot = session_slot(init.handle).unwrap();
+        let session = slot.lock_running().unwrap();
+        assert_eq!(session.weather.nexrad_source(), NexradSource::Internet);
+        assert_eq!(
+            session
+                .weather
+                .runtime()
+                .nexrad_transitions
+                .back()
+                .unwrap()
+                .1
+                .reason,
+            "fresher by hysteresis margin"
+        );
+    }
+
+    #[test]
+    fn receiver_replay_isolates_live_ingress_freezes_ages_and_rewinds_complete_frames() {
+        use crate::receiver_replay::{Document, Event, Input, FORMAT};
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let start = utc("2026-10-10T12:00:00Z").timestamp_millis();
+        let host = start + 7 * 86400_000;
+        let mut image = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(256, 256)
+            .write_to(&mut image, image::ImageFormat::Png)
+            .unwrap();
+        let png = STANDARD.encode(image.into_inner());
+        let document = Document {
+            format: FORMAT.into(),
+            schema_version: 1,
+            title: "Isolation".into(),
+            start_epoch_ms: start,
+            duration_ms: 120_000,
+            events: [
+                ("first", 0, "2026-10-10T12:00:00Z"),
+                ("second", 60_000, "2026-10-10T12:01:00Z"),
+            ]
+            .into_iter()
+            .map(|(version, elapsed_ms, time)| Event {
+                elapsed_ms,
+                input: Input::InternetRadar {
+                    version: version.into(),
+                    manifest: nexrad_live_test_manifest(version, time),
+                    tiles_base64: BTreeMap::from([(
+                        crate::weather_controller::NexradSource::Internet
+                            .tile_url(version, 0, 0, 0),
+                        png.clone(),
+                    )]),
+                },
+            })
+            .collect(),
+        };
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true).unwrap();
+        load_playback_trace_in_session(
+            init.handle,
+            "fixture",
+            &serde_json::to_string(&document).unwrap(),
+        )
+        .unwrap();
+        seek_playback_in_session(init.handle, 90.0, host as f64).unwrap();
+        let view = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let query = || {
+            let HadOperationOutcome::Complete { result, .. } =
+                get_nexrad_overlay_in_session_at_epoch_ms(init.handle, view, 512.0, 512.0, host)
+                    .unwrap()
+            else {
+                panic!("Replay must never fetch missing Internet state");
+            };
+            serde_json::from_value::<NexradOverlayQueryResult>(result).unwrap()
+        };
+        let paused = query();
+        assert_eq!(paused.animation.frame_count, 2);
+        assert_eq!(paused.animation.next_update_epoch_ms, None);
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/state/metars/late",
+            b"late corrupt payload",
+        )
+        .unwrap();
+        ingest_resource_in_session(init.handle, "live_feeds/nexrad_tile/late", b"late tile")
+            .unwrap();
+        assert!(take_cloud_provider_request_in_session(init.handle, host)
+            .unwrap()
+            .is_none());
+        get_session_snapshot_at_epoch_ms(init.handle, host + 86400_000).unwrap();
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let session = slot.lock_running().unwrap();
+            assert_eq!(session.coordinator.wall_clock_epoch_ms, start + 90_000);
+            assert!(session.coordinator.persistence_storage.is_none());
+            assert_eq!(session.weather.runtime().nexrad_tile_cache.len(), 2);
+        }
+        play_playback_in_session(init.handle, host as f64).unwrap();
+        assert_eq!(
+            query().animation.next_update_epoch_ms,
+            None,
+            "Only playback ticks drive the historical clock, never host deadlines"
+        );
+        pause_playback_in_session(init.handle, host as f64).unwrap();
+        seek_playback_in_session(init.handle, 0.0, host as f64).unwrap();
+        assert_eq!(query().animation.frame_count, 1);
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let session = slot.lock_running().unwrap();
+            assert_eq!(session.weather.runtime().nexrad_tile_cache.len(), 1);
+            assert!(!session
+                .weather
+                .runtime()
+                .nexrad_installed
+                .contains_key("second"));
+        }
+        seek_playback_in_session(init.handle, 90.0, host as f64).unwrap();
+        assert_eq!(
+            query(),
+            paused,
+            "Rebuild reproduces exactly the paused projection"
+        );
+        destroy_session(init.handle);
+    }
+
     fn nexrad_live_test_manifest(version: &str, observed_at_utc: &str) -> serde_json::Value {
         serde_json::json!({
             "product": "nexrad",
@@ -26643,6 +27325,144 @@ mod tests {
             "tile_size": 256,
             "tile_path_template": "tiles/res{res}/{x}/{y}.png",
         })
+    }
+
+    #[test]
+    fn radar_source_selection_does_not_tessellate_images() {
+        let mut weather = WeatherController::default();
+        let now = utc("2026-10-10T12:00:00Z").timestamp_millis();
+        let view = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 11.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        weather.runtime_mut().nexrad_view = Some((view, 1500.0, 900.0));
+        weather.runtime_mut().nexrad_installed.insert(
+            "frame".into(),
+            LiveNexradInstalledState {
+                version: "frame".into(),
+                storage: crate::weather_controller::NexradFrameStorage::Memory,
+                manifest: nexrad_live_test_manifest("frame", "2026-10-10T12:00:00Z"),
+            },
+        );
+        NEXRAD_MESH_WORK.with(|work| work.set(0));
+        // A stream of sensor/traffic packets changes the clock, not radar geometry.
+        for tick in 0..100 {
+            weather.refresh_nexrad_selection(now + tick * 40);
+        }
+        assert_eq!(
+            weather.nexrad_source(),
+            crate::weather_controller::NexradSource::Internet
+        );
+        assert_eq!(
+            NEXRAD_MESH_WORK.with(|work| work.get()),
+            0,
+            "availability checks must not build drawing meshes for each input packet"
+        );
+    }
+
+    #[test]
+    fn flight_data_editor_excludes_inspection_and_dismisses_without_a_sensor_tick() {
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        perform_map_inspection_command_in_session(
+            init.handle,
+            app_ui_contracts::session::MapInspectionCommand::Open,
+            1000,
+        )
+        .unwrap();
+        let before = get_session_snapshot(init.handle)
+            .unwrap()
+            .app_ui_state
+            .map_interaction
+            .inspector_dismissal_revision;
+        perform_flight_data_banner_cell_action_in_session(init.handle, "nexrad_age".into())
+            .unwrap();
+        let opened = get_session_snapshot(init.handle).unwrap();
+        assert!(opened.app_ui_state.flight_data_banner.editor.is_some());
+        assert!(!opened.app_ui_state.map_interaction.inspect);
+        assert!(
+            opened
+                .app_ui_state
+                .map_interaction
+                .inspector_dismissal_revision
+                > before
+        );
+        // A delayed inspector lifecycle notification must not reopen it under the editor.
+        perform_map_inspection_command_in_session(
+            init.handle,
+            app_ui_contracts::session::MapInspectionCommand::Open,
+            2000,
+        )
+        .unwrap();
+        perform_flight_data_command_in_session(
+            init.handle,
+            crate::FlightDataCommand::EditorAction {
+                editor_id: "nexrad_age".into(),
+                action_id: "close".into(),
+            },
+        )
+        .unwrap();
+        let closed = get_session_snapshot(init.handle).unwrap();
+        assert!(closed.app_ui_state.flight_data_banner.editor.is_none());
+        assert!(closed.app_ui_state.map_interaction.inspect);
+        let slot = session_slot(init.handle).unwrap();
+        assert_eq!(
+            slot.lock_running().unwrap().map.inspection().next_refresh(),
+            None
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn radar_availability_uses_the_same_visible_tiles_as_the_renderer() {
+        use crate::weather_controller::{NexradFrameCandidate, NexradSource};
+        let manifest = nexrad_live_test_manifest("frame", "2026-10-10T12:00:00Z");
+        let frame = NexradFrameCandidate {
+            version: "frame".into(),
+            manifests: vec![manifest],
+            observed_at_utc: None,
+        };
+        for source in [NexradSource::Internet, NexradSource::Receiver] {
+            for zoom in [5.0, 10.0, 16.0] {
+                for rotation_deg in [0.0, 35.0, 90.0] {
+                    for lat in [47.0, 60.0] {
+                        let view = MapViewport {
+                            center: LatLon { lat, lon: -122.0 },
+                            zoom,
+                            rotation_deg,
+                            pitch_deg: 0.0,
+                        };
+                        let query =
+                            nexrad_frame_overlay_query(&frame, source, &view, 1200.0, 900.0)
+                                .unwrap();
+                        let drawn: BTreeSet<_> =
+                            query.tiles.iter().map(|tile| tile.src.clone()).collect();
+                        let mut requested = BTreeSet::new();
+                        let ready =
+                            nexrad_frame_tiles_ready(&frame, source, &view, 1200.0, 900.0, |src| {
+                                requested.insert(src.to_string());
+                                true
+                            });
+                        assert_eq!(requested, drawn);
+                        assert_eq!(ready, !drawn.is_empty());
+                        if let Some(missing) = drawn.last() {
+                            assert!(!nexrad_frame_tiles_ready(
+                                &frame,
+                                source,
+                                &view,
+                                1200.0,
+                                900.0,
+                                |src| src != missing
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn ingest_nexrad_live_test_state(handle: u32, version: &str, manifest: &serde_json::Value) {
@@ -26681,15 +27501,15 @@ mod tests {
                 .iter()
                 .find(|cell| cell.id == "nexrad_age")
                 .unwrap();
-            assert_eq!(cell.value.as_deref(), Some("NET off"));
+            assert_eq!(cell.value.as_deref(), Some("off"));
             assert!(
                 cell.action.is_some(),
                 "the hidden radar cell must offer its source controls"
             );
 
-            for (source, label, animation) in [
-                ("receiver", "ADSB off", "latest"),
-                ("internet", "NET off", "animate"),
+            for (source, symbol, animation) in [
+                ("receiver", "source_receiver", "latest"),
+                ("internet", "source_internet", "animate"),
             ] {
                 perform_flight_data_banner_cell_action_in_session(init.handle, cell.id.clone())
                     .expect("tap the projected cell");
@@ -26722,8 +27542,11 @@ mod tests {
                 assert!(!changed.map_layer_state.nexrad.visible);
                 let banner = &changed.app_ui_state.flight_data_banner;
                 let changed_cell = banner.cells.iter().find(|row| row.id == cell.id).unwrap();
-                assert_eq!(changed_cell.value.as_deref(), Some(label));
-                assert!(changed_cell.action.is_some());
+                assert_eq!(changed_cell.value.as_deref(), Some("off"));
+                assert_eq!(
+                    changed_cell.action.as_ref().unwrap().symbol_id.as_deref(),
+                    Some(symbol)
+                );
                 let changed_editor = banner.editor.as_ref().unwrap();
                 for choice in [source, animation] {
                     assert!(
@@ -26773,7 +27596,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("initial nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET off"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
         assert_eq!(
             nexrad_age_cell.action.as_ref().unwrap().action_id,
             "nexrad_options"
@@ -26789,7 +27612,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("empty nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET inop"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("inop"));
         assert_eq!(
             nexrad_age_cell
                 .action
@@ -26933,7 +27756,7 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("nexrad age cell");
         assert_eq!(nexrad_age_cell.label, "NEXRAD");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET 30m"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("30m"));
         assert_eq!(
             nexrad_age_cell
                 .action
@@ -26991,7 +27814,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("held nexrad age cell");
-        assert_eq!(held_cell.value.as_deref(), Some("NET 0m"));
+        assert_eq!(held_cell.value.as_deref(), Some("0m"));
         assert_eq!(
             held_cell
                 .action
@@ -27053,7 +27876,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("second-frame nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET 25m"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("25m"));
 
         let latest_now =
             now + (versions.len() - 1) as i64 * NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS;
@@ -27101,7 +27924,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("latest-frame nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET 0m"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("0m"));
 
         let blank_now = latest_now + NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS;
         let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
@@ -27148,7 +27971,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("blank nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET ---"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("---"));
 
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, false)
             .expect("hide nexrad");
@@ -27188,7 +28011,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("hidden nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET off"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
         assert_eq!(
             nexrad_age_cell.action.as_ref().unwrap().action_id,
             "nexrad_options"
@@ -27885,7 +28708,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET 43m"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("43m"));
         let nexrad = data_status_box(&snapshot, LIVE_FEED_NEXRAD_STATUS_ID);
         assert_eq!(nexrad.value.as_deref(), Some("OLD"));
         assert_eq!(nexrad.detail, "NEXRAD data is 13m old.");
@@ -27912,7 +28735,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "nexrad_age")
             .expect("second nexrad age cell");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("NET 38m"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("38m"));
         let nexrad = data_status_box(&snapshot, LIVE_FEED_NEXRAD_STATUS_ID);
         assert_eq!(nexrad.detail, "NEXRAD data is 13m old.");
     }
@@ -33576,10 +34399,22 @@ mod tests {
     }
 
     #[test]
-    fn receiver_traffic_reaches_map_without_internet_and_expires_on_shared_deadline() {
+    fn receiver_traffic_defaults_on_without_internet_and_preserves_user_choice() {
         use crate::receiver::{capture::CaptureClock, live::LiveInput, test_support::traffic};
         let init =
             create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 1000).unwrap();
+        let initial = get_session_snapshot(init.handle).unwrap();
+        assert!(!initial.map_layer_state.traffic.visible);
+        assert!(!initial
+            .map_layer_state
+            .options
+            .iter()
+            .any(|option| option.layer_id == MapLayerId::Traffic));
+        assert!(drain_session_resource_effects(init.handle)
+            .unwrap()
+            .is_empty());
+        // Retiring the Internet source must not change the receiver-layer preference.
+        set_archived_internet_adsb_for_test(init.handle, false).unwrap();
         {
             let slot = session_slot(init.handle).unwrap();
             let mut session = slot.lock_running().unwrap();
@@ -33622,8 +34457,7 @@ mod tests {
             update.ownship.is_some(),
             "platforms must receive the new Receiver source option"
         );
-        let snapshot =
-            set_map_layer_visibility_in_session(init.handle, MapLayerId::Traffic, true).unwrap();
+        let snapshot = get_session_snapshot(init.handle).unwrap();
         assert!(snapshot
             .map_layer_state
             .options
@@ -33658,6 +34492,44 @@ mod tests {
                     .is_empty(),
                 "receiver traffic cannot start Internet ADS-B polling"
             );
+        }
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Traffic, false).unwrap();
+        for (now, connected) in [(16_000, false), (17_000, true)] {
+            input.set_connected(connected);
+            let clock = CaptureClock {
+                monotonic_ms: (now - 1000) as u64,
+                wall_epoch_ms: now,
+            };
+            input.ingest(&traffic(now), clock);
+            complete_invalidations(
+                apply_receiver_delivery_in_session(
+                    init.handle,
+                    &receiver_test_delivery(input.snapshot()),
+                    clock,
+                )
+                .unwrap(),
+            );
+            assert!(
+                !get_session_snapshot(init.handle)
+                    .unwrap()
+                    .map_layer_state
+                    .traffic
+                    .visible
+            );
+            let HadOperationOutcome::Complete { result, .. } =
+                get_map_overlay_in_session_at_epoch_ms(init.handle, viewport, 800.0, 600.0, now)
+                    .unwrap()
+            else {
+                panic!("disabled receiver traffic requires no resources");
+            };
+            let overlay: MapOverlayQueryResult = serde_json::from_value(result).unwrap();
+            assert!(
+                overlay.visible_traffic.is_empty(),
+                "reconnecting must not override the user's Traffic off selection"
+            );
+            assert!(drain_session_resource_effects(init.handle)
+                .unwrap()
+                .is_empty());
         }
         // A delayed lease on a new session cannot revive the old GPS fix.
         let late =
@@ -33773,8 +34645,11 @@ mod tests {
                 .iter()
                 .find(|cell| cell.id == "nexrad_age")
                 .unwrap();
-            assert_eq!(cell.value.as_deref(), Some("NET off"));
-            assert!(cell.action.is_some());
+            assert_eq!(cell.value.as_deref(), Some("off"));
+            assert_eq!(
+                cell.action.as_ref().unwrap().symbol_id.as_deref(),
+                Some("source_receiver")
+            );
             perform_flight_data_banner_cell_action_in_session(init.handle, "nexrad_age".into())
                 .unwrap();
             let editor = get_session_snapshot(init.handle)
@@ -33802,7 +34677,7 @@ mod tests {
                     .unwrap()
                     .value
                     .as_deref(),
-                Some("ADSB off")
+                Some("off")
             );
             set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true).unwrap();
             let viewport = MapViewport {
@@ -33859,7 +34734,11 @@ mod tests {
                 .iter()
                 .find(|cell| cell.id == "nexrad_age")
                 .unwrap();
-            assert_eq!(cell.value.as_deref(), Some("ADSB 1m"));
+            assert_eq!(cell.value.as_deref(), Some("1m"));
+            assert_eq!(
+                cell.action.as_ref().unwrap().symbol_id.as_deref(),
+                Some("source_receiver")
+            );
             complete_invalidations(action("nexrad_age", "animate"));
             let mut selected = BTreeSet::new();
             for offset in (0..5000).step_by(500) {
@@ -33878,13 +34757,7 @@ mod tests {
                 if let Some(index) = overlay.animation.selected_frame_index {
                     assert_eq!(
                         cell.value.as_deref(),
-                        Some(
-                            format!(
-                                "ADSB {}",
-                                overlay.animation.age_labels[index].trim_end_matches(" ago")
-                            )
-                            .as_str()
-                        )
+                        Some(overlay.animation.age_labels[index].trim_end_matches(" ago"))
                     );
                 }
             }
@@ -36468,6 +37341,157 @@ mod tests {
 
         assert!((bearing_degrees(from, north) - 0.0).abs() < 0.1);
         assert!((bearing_degrees(from, east) - 89.6).abs() < 0.5);
+    }
+
+    #[test]
+    fn nexrad_zoom_mesh_is_bounded_by_the_visible_region_without_losing_coverage() {
+        use crate::weather_controller::NexradSource;
+        let manifest = serde_json::json!({
+            "state_id": "large-region", "observed_at_utc": "2026-10-19T23:00:00Z",
+            "source_grid": {"geo_transform": [-180.0, 0.15, 0.0, 80.0, 0.0, -0.15]},
+            "tile_size": 256, "tile_path_template": "tiles/res{res}/{x}/{y}.png",
+            "levels": [{"res": 0, "width": 1200, "height": 500, "tile_cols": 5, "tile_rows": 2}]
+        });
+        for source in [NexradSource::Internet, NexradSource::Receiver] {
+            for zoom in [8.0, 11.0, 15.0] {
+                let view = MapViewport {
+                    center: LatLon {
+                        lat: 47.5,
+                        lon: -122.2,
+                    },
+                    zoom,
+                    rotation_deg: 0.0,
+                    pitch_deg: 0.0,
+                };
+                NEXRAD_MESH_WORK.with(|work| work.set(0));
+                let query =
+                    nexrad_source_grid_overlay_query(&manifest, source, &view, 1200.0, 900.0)
+                        .unwrap();
+                assert!(
+                    query.tiles.len() < 128,
+                    "zoom {zoom}: {} pieces for a small viewport",
+                    query.tiles.len()
+                );
+                assert!(NEXRAD_MESH_WORK.with(|work| work.get()) < 256);
+                let projection = NexradAffineProjection {
+                    viewport: &view,
+                    width_px: 1200.0,
+                    height_px: 900.0,
+                    origin_lon: -180.0,
+                    level_pixel_lon: 0.15,
+                    origin_lat: 80.0,
+                    level_pixel_lat: -0.15,
+                };
+                for (x, y) in [
+                    (0.0, 0.0),
+                    (1200.0, 0.0),
+                    (1200.0, 900.0),
+                    (0.0, 900.0),
+                    (600.0, 450.0),
+                ] {
+                    assert!(
+                        query.tiles.iter().any(|tile| {
+                            tile.corners.nw.x <= x
+                                && tile.corners.ne.x >= x
+                                && tile.corners.nw.y <= y
+                                && tile.corners.sw.y >= y
+                        }),
+                        "radar must cover viewport point ({x},{y}) at zoom {zoom}"
+                    );
+                }
+                for tile in &query.tiles {
+                    assert!(tile.source_x + tile.source_width <= tile.image_width);
+                    assert!(tile.source_y + tile.source_height <= tile.image_height);
+                    let error = nexrad_render_piece_affine_error_px(
+                        &projection,
+                        NexradSourceRect {
+                            x: tile.x * 256 + tile.source_x,
+                            y: tile.y * 256 + tile.source_y,
+                            width: tile.source_width,
+                            height: tile.source_height,
+                        },
+                    );
+                    assert!(
+                        error <= 1.0 || (tile.source_width == 1 && tile.source_height == 1),
+                        "preserve the error budget down to indivisible source pixels"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nexrad_history_prefetch_does_not_build_unselected_drawing_meshes() {
+        use crate::weather_controller::{NexradFrameCandidate, NexradFrameStorage, NexradSource};
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true).unwrap();
+        let view = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 11.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let now = utc("2026-10-19T23:00:00Z").timestamp_millis();
+        let manifest = nexrad_live_test_manifest("selected", "2026-10-19T23:00:00Z");
+        {
+            let slot = session_slot(init.handle).unwrap();
+            let mut session = slot.lock_running().unwrap();
+            session.weather.nexrad_editor_action("latest");
+            for version in ["older", "selected"] {
+                let time = if version == "older" {
+                    "2026-10-19T22:55:00Z"
+                } else {
+                    "2026-10-19T23:00:00Z"
+                };
+                session.weather.runtime_mut().nexrad_installed.insert(
+                    version.into(),
+                    LiveNexradInstalledState {
+                        version: version.into(),
+                        storage: NexradFrameStorage::Memory,
+                        manifest: nexrad_live_test_manifest(version, time),
+                    },
+                );
+            }
+        }
+        let selected = NexradFrameCandidate {
+            version: "selected".into(),
+            observed_at_utc: Some(utc("2026-10-19T23:00:00Z")),
+            manifests: vec![manifest],
+        };
+        NEXRAD_MESH_WORK.with(|work| work.set(0));
+        let expected =
+            nexrad_frame_overlay_query(&selected, NexradSource::Internet, &view, 1200.0, 900.0)
+                .unwrap();
+        let selected_work = NEXRAD_MESH_WORK.with(|work| work.get());
+        NEXRAD_MESH_WORK.with(|work| work.set(0));
+        let HadOperationOutcome::Complete { result, .. } =
+            get_nexrad_overlay_in_session_at_epoch_ms(init.handle, view, 1200.0, 900.0, now)
+                .unwrap()
+        else {
+            panic!("installed frames")
+        };
+        let query: NexradOverlayQueryResult = serde_json::from_value(result).unwrap();
+        assert_eq!(query.tiles, expected.tiles);
+        assert_eq!(
+            query
+                .cache_plan
+                .unwrap()
+                .fetch_resources
+                .iter()
+                .map(|r| r.frame_version.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["older", "selected"])
+        );
+        assert_eq!(
+            NEXRAD_MESH_WORK.with(|work| work.get()),
+            selected_work,
+            "prefetch needs image addresses, not meshes for every frame"
+        );
+        destroy_session(init.handle);
     }
 
     #[test]

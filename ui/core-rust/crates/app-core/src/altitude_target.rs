@@ -84,6 +84,10 @@ impl AltitudeTarget {
         self.editor = None;
     }
 
+    pub fn editor_open(&self) -> bool {
+        self.editor.is_some()
+    }
+
     pub fn set_input(&mut self, input: String) {
         let Some(editor) = self.editor.as_mut() else {
             return;

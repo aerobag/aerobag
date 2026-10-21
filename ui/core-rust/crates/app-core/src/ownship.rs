@@ -309,6 +309,8 @@ pub struct OwnshipControlModel {
     pub mode: OwnshipMode,
     pub selection: OwnshipSelectionCommand,
     pub launcher_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher_symbol_id: Option<String>,
     pub launcher_tone: OwnshipControlTone,
     pub launcher_text_tone: OwnshipLauncherTextTone,
     pub sources: Vec<OwnshipSourceMenuItem>,
@@ -344,6 +346,7 @@ impl Default for OwnshipState {
                 mode: resolved.mode,
                 selection: OwnshipSelectionCommand::Auto,
                 launcher_label: "No GPS".to_string(),
+                launcher_symbol_id: None,
                 launcher_tone: OwnshipControlTone::Unavailable,
                 launcher_text_tone: OwnshipLauncherTextTone::Unavailable,
                 sources: Vec::new(),
@@ -1043,6 +1046,16 @@ fn project_controls(
             },
         },
         launcher_label,
+        launcher_symbol_id: selected
+            .as_ref()
+            .and_then(|source| match source.source_kind {
+                OwnshipSourceKind::DeviceGps => Some("source_device".into()),
+                OwnshipSourceKind::ExternalGps | OwnshipSourceKind::ExternalAhrs => {
+                    Some("source_receiver".into())
+                }
+                OwnshipSourceKind::LiveNetworkTrack => Some("source_internet".into()),
+                _ => None,
+            }),
         launcher_tone,
         launcher_text_tone,
         sources: menu_sources,

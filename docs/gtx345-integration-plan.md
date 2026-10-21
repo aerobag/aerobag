@@ -611,10 +611,12 @@ Current UI scope/defaults:
   receiver stores remain separate. Observation/issue time wins, then correction
   or amendment status. Exact-time/revision ties prefer Internet. Receipt order
   does not confer freshness.
-- Traffic becomes available after a connection but remains off until selected.
-  Receiver ownship is also opt-in. BARO defaults to the device source; NEXRAD
-  defaults to Internet and a hidden layer. These policies were not changed by
-  this audit. The NEXRAD tray now opens even while the layer is off.
+- Traffic defaults on, but is inactive without a source. Receiver connection
+  enables its display without another layer click; an explicit Traffic off
+  choice remains off across receiver reconnects. This does not enable Internet
+  traffic polling. Receiver ownship remains opt-in. BARO defaults to the device
+  source; NEXRAD defaults to Auto (initial preference Internet) and a hidden layer. The NEXRAD tray opens
+  even while the layer is off.
 - Receiver PIREPs, winds and NOTAMs are decoded/captured, but are not yet
   integrated into those application products. Graphical METAR/SUA payloads
   remain uninterpreted captured data. Reception counters do not prove display.
@@ -622,7 +624,62 @@ Current UI scope/defaults:
   availability. A newer receiver METAR can therefore be readable in WX while
   Internet status is old or unavailable.
 
-#### Proposed Interactive Replay Scope
+#### Approved Radar Selection And Source Indicators
+
+Core owns source policy, selection state, readiness, labels, actions and
+transition reasons. Platforms render the shared models and forward actions.
+The policy below is implemented in `radar_selection.rs`, with drawable-image
+readiness supplied by the shared weather controller.
+
+- Add Auto, Internet only and ADS-B only modes to the existing NEXRAD tiny tray.
+  Auto is the new default and has a preferred initial source, initially
+  Internet. If only one source is drawable, use it; if both are drawable when
+  first choosing, use the preference. Neither mode selection nor incoming data
+  enables a hidden NEXRAD layer.
+- Manual modes select the requested source immediately and never automatically
+  leave it. Selecting an unavailable source displays no data; it does not
+  silently substitute the other source.
+- Auto is sticky, not a race for the newest frame. Keep the selected source
+  while its newest usable imagery is less than 10 minutes old. At or beyond
+  10 minutes, switch only if the alternative is drawable and its observation
+  time is at least 5 minutes newer. These are named core constants, initially
+  not user-facing numerical settings.
+- Preference is an initial tie-breaker, not a mandate to switch back when a
+  preferred source recovers. After a switch, the same hysteresis applies in
+  either direction. Explicit user source choices take effect immediately.
+- Display expiry is separate from the soft switching threshold. The existing
+  maximum display age is 60 minutes. If the active source is no longer
+  displayable, use a displayable alternative without requiring the five-minute
+  improvement; if neither is displayable, show no data. Do not discard the only
+  usable imagery merely because it crosses the ten-minute switching threshold.
+- Use observation time, never packet receipt time or the animation cursor, for
+  age comparisons. Repeated delivery of an unchanged observation cannot renew
+  its freshness. Readiness requires actual renderable imagery, not just an
+  Internet manifest or a connected network/Bluetooth socket. Covered clear
+  weather is valid data; missing coverage is not clear weather.
+- Replace a drawable source only when the alternative imagery is ready, and
+  switch the source's complete animation history atomically. Do not blend the
+  palettes or let individual frames come from different sources.
+- Grid and source controls expose the effective source, not merely the
+  preferred one. Use the existing shared vector-symbol mechanism for globe,
+  receiver/antenna and device indicators, not platform-dependent emoji.
+  Apply the same source vocabulary to BARO and the ownship launcher. Receiver
+  pressure and ownship remain explicit selections; radar Auto does not imply
+  auto-selection for either sensor.
+
+The actual capture motivates separating switch and display deadlines: a
+regional image received at 23:10:29Z still represented the 23:04 observation,
+and the two CONUS receptions were approximately fourteen minutes apart.
+
+Core-driven behavior tests must cover both initial-source choices, a single
+available source, neither source, exact threshold boundaries, alternating
+nominal updates without oscillation, stalled observations despite continuing
+receipts, outages, recovery without automatic preference reclamation, and
+manual selection without substitution. Also prove that incomplete Internet
+downloads cannot displace drawable receiver radar, and animation phase changes
+cannot trigger source selection.
+
+#### Approved Interactive Replay Scope
 
 Use the real app and normal receiver-delivery/query/rendering paths. Do not
 build a second weather viewer or remap receiver observations into an Internet
@@ -632,25 +689,113 @@ product merely to make them visible.
    omit outbound/setup data from the UI fixture. Preserve original receive and
    observation times. Reuse the production product decoder and ingest reducer.
 2. Core owns play/pause/seek, the replay clock and receiver state reconstruction.
-   Seeking clears and rebuilds the replay source, including radar history.
+   Seeking rebuilds isolated source stores by replaying input events forward
+   through the requested cursor, including radar history and sensor filters.
+   It must remove everything received after that cursor, even reports whose
+   observation time precedes the cursor. Publish the reconstructed state
+   atomically and reject outstanding work from the superseded replay generation.
+   Advance core deadlines between input events as well: expiry and sticky Auto
+   selection have history and cannot simply be copied from the later session.
    Pausing freezes product age as well as sensor expiry. Do not refresh timestamps
    to today's date or reuse GPS-only replay as a substitute for weather replay.
 3. Run in an explicitly labeled isolated session, with Cloud publishing and
    writes to normal local preferences/weather caches disabled. Ordinary live
    network products must not silently compete with historical fixture data.
-4. Optionally inject archived Internet products into their existing separate
-   store. Include receiver-newer, Internet-newer, missing-station and equal-time
-   cases so map symbols, FP WX, inspector WX and BARO all exercise the same query.
+4. For Internet comparison scenarios, use the existing full/delta decoder in
+   an offline fixture builder to materialize complete product versions. The
+   replay boundary is after validated full/delta reconstruction and before
+   normal installation in the Internet source store. Preserve replacements and
+   removals, and include required radar image assets. Do not reverse deltas or
+   write another delta decoder. Archive publication times define the comparison
+   scenario, not evidence of reception on the phone. Include receiver-newer,
+   Internet-newer, missing-station and equal-time cases so ordinary map, FP and
+   inspector consumers exercise the same weather-selection query. Transport
+   and full/delta reconstruction retain their separate regression coverage.
 5. Reuse core-owned transport controls on web and Android. The first useful
    checkpoints are before reception, the first weather burst at 22:56Z, and
    populated weather/traffic at 23:14Z. Leave source/layer defaults unchanged so
    their discoverability can be evaluated rather than hidden by the fixture.
-6. Add actual visible-control tests for enabling traffic, opening WX, selecting
-   ADS-B radar while hidden, enabling/animating radar, and disconnected/stale
-   behavior. Synthetic captures remain the hermetic CI inputs; the real private
-   capture supplies exploratory validation, not a publicly committed fixture.
+6. Add actual visible-control tests for traffic appearing by default and obeying
+   the off choice, opening WX, selecting ADS-B radar while hidden,
+   enabling/animating radar, and disconnected/stale behavior. Synthetic captures
+   remain the hermetic CI inputs; the real private capture supplies exploratory
+   validation, not a publicly committed fixture.
+7. Given the same initial state and control inputs, assert that forward playback
+   and seeking to the same time yield equivalent source contents, ages,
+   automatic source selection and rendered products. Include rewind across a report
+   replacement/removal, a radar update, a source failover and an expiry. Sensor
+   and weather state must not retain knowledge of future events after rewind.
+   Record automatic radar transitions with source ages and reasons so the
+   real-flight comparison can also expose unnecessary source switching.
+8. Begin with reconstruction from the start of the bounded trace. Add
+   checkpoints only if measurement warrants them; they must preserve the same
+   state as replaying from the beginning.
 
-This replay UI is proposed work, not an implemented control in the current app.
+The existing Load/Play/Pause/Seek widget accepts `aerobag-receiver-replay`,
+schema 1. A receiver replay is labeled `REPLAY LAB` and requires a reload to
+leave. It does not automatically select receiver ownship or pressure. Select
+those explicitly using their normal trays; the playback transport remains
+visible while using receiver ownship.
+
+The replay clock is the sole driver of historical deadlines. Host-time radar,
+traffic and session-refresh timers are suppressed in the lab; transport ticks
+invalidate the normal projections. A rewind reconstructs the source stores and
+sensor filters before publishing their new snapshot. Late live products,
+Bluetooth deliveries and device sensor callbacks cannot populate that state.
+Missing replay radar pixels are an error, never an invitation to fetch from the
+current live server. Cloud operations and normal document writes are detached.
+
+#### Desk Replay
+
+Export a captured receiver session with the native core example:
+
+```sh
+cargo run --manifest-path ui/core-rust/Cargo.toml -p app-core \
+  --example export_receiver_replay -- CAPTURE.zip OUTPUT.json
+```
+
+Optionally append the read-only Internet archive SQLite index and the extracted
+radar archive directory. That adds complete radar publications at the archive's
+publication times, including their PNGs. The timeline also supports complete
+Internet METAR and TAF replacements; it never contains reverse deltas or a
+second delta decoder. The current archive exporter extracts radar only.
+
+Validate a generated document without loading the UI:
+
+```sh
+cargo run --manifest-path ui/core-rust/Cargo.toml -p app-core \
+  --example export_receiver_replay -- --validate OUTPUT.json
+```
+
+The October 19 flight comparison is available on this development host as
+`/tmp/aerobag-gps-captures/receiver-flight.json`, served by Vite at
+`/gps-captures/receiver-flight.json`. It contains 46,559 inbound events over
+30.6 minutes, including two archived Internet radar publications, and is
+18.5 MiB. It excludes outbound/setup data. Use the ordinary Replay URL field
+to load it, then seek to approximately +8 minutes or +26 minutes for the
+weather bursts. This private capture is not a committed test fixture.
+
+`shared.receiver-replay` uses protocol bytes generated by
+`tools/ci/receiver_replay_fixture.py` during fixture materialization. It exercises
+the actual decoder and visible controls on both platforms: default-on traffic,
+hidden-radar source selection, rendered animation, receiver WX text, explicit
+traffic off across rewind, and disconnect expiry. It requires no receiver,
+Internet weather service, captured personal flight, or manufacturer blobs.
+
+Radar readiness uses the same visible tile/LOD plan as painting, but must never
+build screen-space meshes. Receiver packets can arrive dozens of times per
+second; using the renderer to answer availability made real replay unable to
+keep up. A work-count regression forbids tessellation in source selection,
+and tile-set tests prove readiness and rendering agree, including missing pixels
+and views outside coverage. Full-capture measurements supplement the small,
+hermetic UI fixture.
+
+Flight-data editors exclude map inspection through core's interaction policy.
+Opening one dismisses an existing inspector, cancels outstanding platform
+selection work, and rejects delayed inspector-open lifecycle reports. The replay
+journey dismisses an inspector and opens/dismisses radar options during playback,
+then verifies that normal inspection still works. Controlled core and request-owner
+tests cover the delayed-completion orderings that ordinary clicks cannot guarantee.
 
 Software evidence for these followups:
 

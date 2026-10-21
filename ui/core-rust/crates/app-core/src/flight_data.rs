@@ -325,11 +325,11 @@ impl FlightDataComputer {
                             });
                         // Availability controls the reading/editor, not visibility.
                         // Only the user's preference removes the BARO slot.
-                        cell.action = input.barometer.as_ref().map(|_| {
+                        cell.action = input.barometer.as_ref().map(|reading| {
                             flight_data_cell_action(
                                 crate::barometer::BAROMETER_CELL_ID,
                                 "Set barometric altimeter",
-                                None,
+                                Some(reading.symbol_id),
                             )
                         });
                     }
@@ -1105,6 +1105,7 @@ mod tests {
         for reading in [None, Some(Some(1234.0)), Some(None), None] {
             let banner = computer.banner(FlightDataBannerInput {
                 barometer: reading.map(|altitude_ft| crate::BarometerReading {
+                    symbol_id: "source_device",
                     altitude_ft,
                     editor: None,
                     warning: None,

@@ -15,6 +15,10 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
@@ -54,6 +58,36 @@ import org.robolectric.shadows.ShadowToast
 @OptIn(ExperimentalTestApi::class)
 class BarometerSettingTrayTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun radarTrayDismissesThroughItsPhysicalBackdropAfterBackgroundUpdates() {
+        val editor = mutableStateOf<FlightDataEditor?>(FlightDataEditor(
+            id = "nexrad_age", title = "NEXRAD", showInput = false,
+            label = "NEXRAD", unit = "", input = "", inputRevision = 0,
+            notice = "Radar frame 1", dismissActionId = "close", closeLabel = "CLOSE",
+            actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
+                id = "receiver", label = "ADS-B", enabled = true, selected = true))),
+        ))
+        val commands = mutableListOf<FlightDataCommand>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                editor.value?.let { FlightDataSettingTray(it) { command ->
+                    commands.add(command)
+                    if (command == FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = "close")) {
+                        editor.value = null
+                    }
+                } }
+            }
+        }
+        compose.runOnIdle { editor.value = requireNotNull(editor.value).copy(notice = "Radar frame 2") }
+        val panel = compose.onNodeWithTag("nexrad_age-tray").fetchSemanticsNode().boundsInRoot
+        compose.onNode(isRoot().and(hasAnyDescendant(hasTestTag("nexrad_age-tray"))))
+            .performTouchInput { click(Offset(panel.center.x, panel.top / 2)) }
+        compose.onNodeWithTag("nexrad_age-tray").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(listOf(FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = "close")), commands)
+        }
+    }
 
     @Test fun sharedEditorPublishesAddressableControlsAndClearsThemOnUnmount() {
         val mounted = mutableStateOf(true)

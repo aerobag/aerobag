@@ -1969,6 +1969,7 @@ internal fun PlateFolderGrid(
 internal fun MenuDock(
     modifier: Modifier = Modifier,
     launcherLabel: String,
+    launcherSymbolId: String? = null,
     @DrawableRes launcherIconResId: Int? = null,
     launcherTestTag: String? = null,
     optionTestTagPrefix: String? = null,
@@ -2012,6 +2013,7 @@ internal fun MenuDock(
         CompactSquareButton(
             label = launcherLabel,
             iconResId = launcherIconResId,
+            actionSymbolId = launcherSymbolId,
             maxLines = style.launcherMaxLines,
             enabled = !disabled,
             selected = open && !situationLauncher,

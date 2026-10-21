@@ -30,6 +30,7 @@ from build_e2e_package_fixture import (
     update_package_file,
     write_json,
 )
+from receiver_replay_fixture import receiver_replay_fixture
 
 
 FIXTURE_SCHEMA_VERSION = 1
@@ -445,6 +446,7 @@ def fixture_capabilities(reference_epoch_ms: int) -> dict[str, Any]:
             "other": {"airport_id": "KSEA", "label_contains": "AIRPORT DIAGRAM"},
         },
         "replay_trace": "replay/track-gap.json",
+        "receiver_replay_trace": "replay/receiver.json",
         "second_publication": {"generator": "nav_db_rollover_lab"},
         "live_feeds": {
             "empty": "live-feeds/empty",
@@ -646,6 +648,7 @@ def write_replay_fixture(root: Path) -> Path:
 
 def write_auxiliary_fixtures(root: Path, live_feed_source: Path) -> list[dict[str, Any]]:
     write_replay_fixture(root)
+    write_json(root / "replay" / "receiver.json", receiver_replay_fixture())
     empty = root / "live-feeds" / "empty"
     fresh = root / "live-feeds" / "fresh"
     mixed = root / "live-feeds" / "mixed"

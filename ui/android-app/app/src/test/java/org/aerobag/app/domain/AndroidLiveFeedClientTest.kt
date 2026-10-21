@@ -29,6 +29,48 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AndroidLiveFeedClientTest {
+    @Test fun noReconnectCommandStopsAfterTheFailedConnection() = runBlocking {
+        val server = ServerSocket(0)
+        val executor = Executors.newSingleThreadExecutor()
+        val root = "http://127.0.0.1:${server.localPort}"
+        val requests = AtomicInteger()
+        executor.submit {
+            while (!server.isClosed) {
+                server.accept().use { socket ->
+                    requests.incrementAndGet()
+                    val reader = socket.getInputStream().bufferedReader()
+                    while (!reader.readLine().isNullOrEmpty()) { }
+                    socket.getOutputStream().write("HTTP/1.0 503 Unavailable\r\nContent-Length: 0\r\n\r\n".toByteArray())
+                }
+            }
+        }
+        val json = Json { encodeDefaults = true }
+        val bridge = Proxy.newProxyInstance(NativeBridge::class.java.classLoader, arrayOf(NativeBridge::class.java)) { _, method, _ ->
+            when (method.name) {
+                "createLiveFeedCache" -> 1L
+                "liveFeedEventsUrl" -> "$root/events"
+                "liveFeedStatusUrl" -> "$root/status"
+                "liveFeedCacheRuntimeDecisionJson" -> json.encodeToString(LiveFeedRuntimeDecision(
+                    transportPolicy = SseTransportPolicy(15_000, 3_000, 65_000, 5_000, 65_000), commands = emptyList(),
+                ))
+                "destroyLiveFeedCache" -> Unit
+                else -> error("Unexpected bridge operation: ${method.name}")
+            }
+        } as NativeBridge
+        val cache = LiveFeedCache(root, bridge = bridge)
+        try {
+            withTimeout(3_000) {
+                AndroidLiveFeedClient(ApplicationProvider.getApplicationContext(), cache, root)
+                    .bootstrapAndRun(promote = {}, onChanged = {}, onSessionEvents = {})
+            }
+            assertEquals(1, requests.get())
+        } finally {
+            server.close()
+            executor.shutdownNow()
+            cache.close()
+        }
+    }
+
     @Test fun bulletinDeliveryDoesNotWaitForAProductDownload() = runBlocking {
         val server = ServerSocket(0)
         val executor = Executors.newCachedThreadPool()

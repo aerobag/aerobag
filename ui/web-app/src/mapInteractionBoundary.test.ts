@@ -195,7 +195,7 @@ describe("map interaction boundaries", () => {
     expect(functionSource("setViewportGestureActive")).toContain("if (active) cancelMapSelectionRequests()");
     expect(appSource).toContain("if (layoutInvalidatesSelection) cancelMapSelectionRequests()");
     expect(appSource).toContain("return () => mapSelectionRequests.cancel()");
-    expect(appSource).toContain("[mapInteraction.mode, page, uiSession]");
+    expect(appSource).toContain("[mapInteraction.mode, mapInteraction.inspect, mapInteraction.hover_weather, page, uiSession]");
   });
 
   it("refreshes NEXRAD for viewport changes before the first frame lands", () => {

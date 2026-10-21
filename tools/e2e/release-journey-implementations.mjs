@@ -3041,8 +3041,8 @@ async function selectReplaySource(runtime) {
   });
 }
 
-async function loadReplayFixture(runtime) {
-  const tracePath = runtime.fixtureUrl(runtime.capability("replay_trace"));
+async function loadReplayFixture(runtime, capability = "replay_trace") {
+  const tracePath = runtime.fixtureUrl(runtime.capability(capability));
   const traceUrl = runtime.platform === "web"
     ? (() => {
         const url = new URL(tracePath);
@@ -3238,6 +3238,89 @@ async function preparedLiveFeeds(runtime) {
     Boolean(detail && overlay.metars > 0 && overlay.pireps > 0),
     `${JSON.stringify(overlay)} ${detail.text.slice(0, 240)}`,
   );
+}
+
+async function receiverReplay(runtime) {
+  await runtime.reset();
+  await acceptDisclaimer(runtime);
+  await runtime.openPage("map");
+  await loadReplayFixture(runtime, "receiver_replay_trace");
+  const readPlayback = async () => playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+  const trafficCount = async () => {
+    const id = idOf(await runtime.driver.readProjection("parity:live-overlay:"));
+    const match = /:traffic:(\d+)/.exec(id ?? "");
+    return match ? Number(match[1]) : null;
+  };
+  const seek = (seconds) => runtime.transition(`seek receiver replay to ${seconds}s`, {
+    ready: () => runtime.driver.readElement("playback-overview"),
+    act: (ready) => runtime.driver.setProgress("playback-overview", seconds, ready),
+    complete: readPlayback,
+    completionSatisfied: (state) => state?.status === "paused" && Math.abs(state.cursor - seconds) < 1,
+  });
+  await seek(18);
+  const traffic = await runtime.observe("receiver traffic painted by default", trafficCount, (count) => count > 0);
+  runtime.check("receiver.traffic-default", traffic > 0);
+  await runtime.action("open hidden radar source tray", "flight-data-cell:nexrad_age", {
+    complete: () => runtime.driver.readElement("nexrad_age-receiver"),
+  });
+  await runtime.action("select receiver radar", "nexrad_age-receiver", {
+    complete: () => runtime.driver.readElement("nexrad_age-receiver"),
+    completionSatisfied: selectedSemantic,
+  });
+  await runtime.transition("close radar source tray", {
+    ready: () => runtime.driver.readElement("nexrad_age-receiver"),
+    act: () => runtime.driver.back(),
+    complete: async () => !await runtime.driver.readElement("nexrad_age-receiver"),
+  });
+  await setLayerVisible(runtime, "nexrad", true);
+  await runtime.action("play receiver timeline", "playback-play-toggle", {
+    complete: readPlayback, completionSatisfied: (state) => state?.status === "playing",
+  });
+  const frames = await observeNexradFrameAdvance(runtime);
+  runtime.check("receiver.radar-animation", Boolean(frames.next));
+  await selectAirportFromMapSearch(runtime, "KSEA");
+  // The inspector's backdrop intentionally blocks grid controls. Dismiss it
+  // physically before opening the next editor; late-result exclusion is tested
+  // with controlled completions in core and the platform request owner.
+  await dismissMapSelectionIfPresent(runtime, "dismiss inspector during receiver playback");
+  await runtime.action("open radar options during playback", "flight-data-cell:nexrad_age", {
+    complete: async () => ({
+      editor: await runtime.driver.readElement("nexrad_age-receiver"),
+      inspector: await runtime.driver.readElement("map-selection-tray"),
+    }),
+    completionSatisfied: ({ editor, inspector }) => Boolean(editor) && !inspector,
+  });
+  await runtime.transition("dismiss radar options during playback", {
+    ready: () => runtime.driver.readElement("nexrad_age-receiver"),
+    act: () => runtime.driver.back(),
+    complete: async () => ({
+      editor: await runtime.driver.readElement("nexrad_age-receiver"),
+      inspector: await runtime.driver.readElement("map-selection-tray"),
+    }),
+    completionSatisfied: ({ editor, inspector }) => !editor && !inspector,
+  });
+  await runtime.action("pause receiver timeline", "playback-play-toggle", {
+    complete: readPlayback, completionSatisfied: (state) => state?.status === "paused",
+  });
+  await selectAirportFromMapSearch(runtime, "KSEA");
+  await waitForMapSelectionAction(runtime, "wx", "receiver weather action");
+  const detail = await runtime.action("read receiver weather", "wx", {
+    complete: () => runtime.driver.readModal("weather-detail-modal"),
+    completionSatisfied: (modal) => /RECEIVER FIXTURE/.test(modal?.text ?? ""),
+  });
+  runtime.check("receiver.weather-modal", Boolean(detail));
+  await closeMapDetail(runtime, "weather-detail-modal");
+  await dismissMapSelectionIfPresent(runtime, "dismiss weather inspector");
+  await setLayerVisible(runtime, "traffic", false);
+  await seek(2);
+  await seek(18);
+  const off = await runtime.observe("traffic remains explicitly off after rewind", trafficCount, (count) => count === 0);
+  runtime.check("receiver.traffic-off", off === 0);
+  await setLayerVisible(runtime, "traffic", true);
+  await runtime.observe("traffic restored", trafficCount, (count) => count > 0);
+  await seek(60);
+  const disconnected = await runtime.observe("disconnected traffic removed", trafficCount, (count) => count === 0);
+  runtime.check("receiver.rewind-expiry", disconnected === 0);
 }
 
 export async function setNexradAnimationHeld(runtime, held) {
@@ -3832,6 +3915,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.altitude-planner": altitudePlanner,
   "shared.replay-track-up": replayTrackUp,
   "shared.prepared-live-feeds": preparedLiveFeeds,
+  "shared.receiver-replay": receiverReplay,
   "shared.live-feed-provider-cutover": (runtime) => liveFeedProviderCutover(runtime, {
     acceptDisclaimer, appendRoute, setLayerVisible, selectAirportFromMapSearch,
     closeMapDetail, setFixtureControl, fixtureHealth, planRows,

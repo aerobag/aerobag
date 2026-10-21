@@ -142,6 +142,12 @@ describe("loadBestAvailableAdapter", () => {
         expect(response.state).toBe("complete");
         return response.result;
       });
+    vi.spyOn(navKv, "runCoreHadSessionResultOperation")
+      .mockImplementation(async (_sessionHandle, operation) => {
+        const response = JSON.parse(await operation(1));
+        expect(response.state).toBe("complete");
+        return response.result;
+      });
     const mutationOutcomeJson = () => JSON.stringify({
       state: "complete",
       result: {
@@ -302,6 +308,7 @@ describe("loadBestAvailableAdapter", () => {
       nav_kv_destroy: async () => {},
       attach_nav_kv_store_to_session: async () => {},
       core_had_operation: async () => JSON.stringify({ state: "complete", result: null }),
+      prepare_nexrad_tile_in_session: async () => JSON.stringify({ state: "complete", result: null }),
       sync_live_feeds_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       configure_live_feed_source_in_session: async () => {},
       live_feed_events_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/v3/events`,
@@ -549,6 +556,30 @@ describe("createLiveFeedSubscription", () => {
     expect(FakeEventSource.instances[0].closed).toBe(true);
     subscription.close();
   });
+
+  it.each(["error", "connect_timeout", "idle_timeout", "online", "decision_failure"])(
+    "does not invent a reconnect after %s without a core command", async (event) => {
+      vi.useFakeTimers();
+      (globalThis as unknown as TestGlobal).EventSource = FakeEventSource;
+      const subscription = createLiveFeedSubscription(
+        () => "https://feeds.example.test/events",
+        async (input) => {
+          if (event === "decision_failure" && input.kind === "error") throw new Error("core failure");
+          return {event_names: [], transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: []};
+        }, async () => {}, () => {},
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        const source = FakeEventSource.instances[0];
+        if (event === "online") subscription.notifyOnline();
+        else if (event === "idle_timeout") source.markOpen();
+        else if (event !== "connect_timeout") source.emitError();
+        await vi.advanceTimersByTimeAsync(TEST_SSE_TRANSPORT_POLICY.idle_timeout_ms * 3);
+        expect(FakeEventSource.instances).toHaveLength(1);
+        expect(source.closed).toBe(true);
+      } finally { subscription.close(); }
+    },
+  );
 
   it("reopens the stream on online even if EventSource still reports open", async () => {
     vi.useFakeTimers();

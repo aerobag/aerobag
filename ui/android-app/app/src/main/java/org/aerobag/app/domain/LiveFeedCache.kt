@@ -552,7 +552,8 @@ class AndroidLiveFeedClient(
                         )
                     }
                 }
-                reconnectDelayMs(decision)?.takeIf { it > 0 }?.let { delay(it) }
+                val retryAfter = reconnectDelayMs(decision) ?: break
+                delay(retryAfter)
             }
         } finally {
             networkCallback.close()

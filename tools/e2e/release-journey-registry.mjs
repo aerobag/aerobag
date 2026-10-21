@@ -128,6 +128,10 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "cloud.confirm-account-upgrade", "cloud.peer-resumes", "cloud.updated-client-keeps-edits",
   ], { android_isolated: true, cloud_server: true }),
   journey("shared.prepared-live-feeds", "p1", shared, ["livefeed.metar-taf-pirep-notam"]),
+  journey("shared.receiver-replay", "p1", shared, [
+    "receiver.traffic-default", "receiver.radar-animation", "receiver.weather-modal",
+    "receiver.traffic-off", "receiver.rewind-expiry",
+  ]),
   journey("shared.live-feed-provider-cutover", "p0", shared, [
     "cutover.old-weather", "cutover.retained-stream", "cutover.map-state-preserved",
     "cutover.new-weather", "cutover.full-resync", "cutover.next-update", "cutover.plan-preserved",

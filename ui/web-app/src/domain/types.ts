@@ -675,6 +675,7 @@ export type OwnshipRenderState = {
 };
 
 export type OwnshipControlModel = {
+  launcher_symbol_id?: string | null;
   mode: OwnshipMode;
   selection?: OwnshipSelectionCommand;
   policy?: OwnshipSelectionCommand;

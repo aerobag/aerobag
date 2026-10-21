@@ -83,6 +83,19 @@ pub(crate) struct SituationController {
 }
 
 impl SituationController {
+    pub(crate) fn copy_replay_controls_from(&mut self, other: &Self) {
+        self.set_policy(other.model.ownship.policy.clone());
+        self.model
+            .barometer
+            .copy_controls_from(&other.model.barometer);
+    }
+
+    pub(crate) fn install_replay_sensors(&mut self, sensors: &Self) {
+        self.model.ownship = sensors.model.ownship.clone();
+        self.model.receiver = sensors.model.receiver.clone();
+        self.model.barometer = sensors.model.barometer.clone();
+        self.note_change();
+    }
     pub fn receiver(&self) -> &std::sync::Arc<crate::receiver::live::LiveSnapshot> {
         &self.model.receiver
     }
@@ -341,8 +354,9 @@ impl SituationController {
             },
             playback_ui_state: self.model.playback.ui_state(),
             playback_panel_state: UiPlaybackPanelState {
-                visible: selected_ownship_source_kind(&self.model.ownship)
-                    .is_some_and(is_replay_source_kind),
+                visible: self.model.playback.receiver_trace().is_some()
+                    || selected_ownship_source_kind(&self.model.ownship)
+                        .is_some_and(is_replay_source_kind),
             },
             map_follow_ui_state,
             map_follow_target_viewport,

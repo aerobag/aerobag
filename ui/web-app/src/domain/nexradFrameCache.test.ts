@@ -18,6 +18,29 @@ function plan(
 }
 
 describe("NEXRAD frame image cache", () => {
+  it("renders ready imagery without waiting for the alternate source and reports its later readiness", async () => {
+    let finish!: (blob: Blob) => void;
+    const pending = new Promise<Blob>((resolve) => { finish = resolve; });
+    const loaded = vi.fn();
+    const loader = vi.fn((src: string) => src === "internet" ? pending : Promise.resolve(new Blob(["receiver"])));
+    const cache = new NexradFrameImageCache(loader, () => "blob:image", () => {});
+    const selection = plan(["net", "adsb"], [["net", "internet"], ["adsb", "receiver"]]);
+    await expect(cache.applyPlan(selection, loader, new Set(["receiver"]), loaded))
+      .resolves.toEqual({ loaded: 1, failed: 0 });
+    expect(cache.imageUrlFor("receiver")).toBe("blob:image");
+    expect(cache.imageUrlFor("internet")).toBeNull();
+    expect(loaded).not.toHaveBeenCalled();
+    // Repeated animation queries share one transfer and one completion signal.
+    for (let index = 0; index < 4; index += 1) {
+      await cache.applyPlan(selection, loader, new Set(["receiver"]), loaded);
+    }
+    finish(new Blob(["internet"]));
+    await cache.applyPlan(selection, loader);
+    expect(loaded).toHaveBeenCalledTimes(1);
+    await cache.applyPlan(selection, loader, new Set(["receiver"]), loaded);
+    expect(loaded).toHaveBeenCalledTimes(1);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
   it("uses the supplied local resource loader and the same pruning path without network fetches", async () => {
     const network = vi.fn(async () => { throw new Error("unexpected network"); });
     const local = vi.fn(async () => new Blob([new Uint8Array([1,2,3])], {type: "image/png"}));
@@ -96,19 +119,24 @@ describe("NEXRAD frame image cache", () => {
     };
     const pendingBlob = new Promise<Blob>((resolve) => { finishLoad = resolve; });
     const revokeObjectUrl = vi.fn();
+    const backgroundReady = vi.fn();
+    const loader = () => pendingBlob;
     const cache = new NexradFrameImageCache(
-      () => pendingBlob,
+      loader,
       () => "blob:late",
       revokeObjectUrl,
     );
 
-    const pending = cache.applyPlan(plan(["v1"], [["v1", "/v1/tile.png"]]));
+    const selection = plan(["v1"], [["v1", "/v1/tile.png"]]);
+    await cache.applyPlan(selection, loader, new Set(), backgroundReady);
+    const pending = cache.applyPlan(selection);
     await cache.applyPlan(plan([], []));
     finishLoad(new Blob(["late"]));
     await pending;
 
     expect(cache.imageUrlFor("/v1/tile.png")).toBeNull();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:late");
+    expect(backgroundReady).not.toHaveBeenCalled();
   });
 
   it("cancels pending transfers without discarding completed fresh frames", async () => {

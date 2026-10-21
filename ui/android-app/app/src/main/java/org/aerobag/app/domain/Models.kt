@@ -720,6 +720,7 @@ data class OwnshipRenderState(
 )
 
 data class OwnshipControlModel(
+    val launcherSymbolId: String? = null,
     val mode: OwnshipMode = OwnshipMode.None,
     val selection: OwnshipSelection = OwnshipSelection.Auto,
     val launcherLabel: String = "No GPS",

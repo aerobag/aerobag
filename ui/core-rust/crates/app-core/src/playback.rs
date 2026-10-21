@@ -122,8 +122,34 @@ pub struct PlaybackOwnshipState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+enum PlaybackContent {
+    Ownship(PlaybackTrace),
+    Receiver(crate::receiver_replay::SharedTrace),
+}
+
+impl PlaybackContent {
+    fn duration(&self) -> f64 {
+        match self {
+            Self::Ownship(trace) => duration_seconds(trace),
+            Self::Receiver(trace) => trace.duration_seconds(),
+        }
+    }
+    fn seek(&self, seconds: f64) -> f64 {
+        let seconds = if seconds.is_finite() {
+            seconds.clamp(0.0, self.duration())
+        } else {
+            0.0
+        };
+        match self {
+            Self::Ownship(trace) => skip_gap_at_or_after(trace, seconds),
+            Self::Receiver(_) => seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackSessionState {
-    trace: Option<PlaybackTrace>,
+    trace: Option<PlaybackContent>,
     source_path: Option<String>,
     status: PlaybackStatus,
     rate: f64,
@@ -154,7 +180,7 @@ impl PlaybackSessionState {
     ) -> AppResult<PlaybackOwnshipState> {
         let trace = parse_trace_json(trace_json)?;
         let initial_state = ownship_state_at_cursor(&trace, 0.0);
-        self.trace = Some(trace);
+        self.trace = Some(PlaybackContent::Ownship(trace));
         self.source_path = Some(source_path);
         self.status = PlaybackStatus::Paused;
         self.rate = DEFAULT_PLAYBACK_RATE;
@@ -162,6 +188,31 @@ impl PlaybackSessionState {
         self.anchor_wallclock_epoch_ms = None;
         self.anchor_cursor_seconds = 0.0;
         Ok(initial_state)
+    }
+
+    pub(crate) fn load_receiver(
+        &mut self,
+        source_path: String,
+        trace: crate::receiver_replay::SharedTrace,
+    ) {
+        *self = Self {
+            trace: Some(PlaybackContent::Receiver(trace)),
+            source_path: Some(source_path),
+            status: PlaybackStatus::Paused,
+            ..Self::default()
+        };
+    }
+
+    pub(crate) fn receiver_trace(&self) -> Option<crate::receiver_replay::SharedTrace> {
+        match &self.trace {
+            Some(PlaybackContent::Receiver(trace)) => Some(trace.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn receiver_position(&self) -> Option<(crate::receiver_replay::SharedTrace, i64)> {
+        self.receiver_trace()
+            .map(|trace| (trace, (self.cursor_seconds * 1000.0).round() as i64))
     }
 
     pub fn play(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
@@ -183,7 +234,7 @@ impl PlaybackSessionState {
 
     pub fn seek(&mut self, cursor_seconds: f64, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         let trace = self.trace.as_ref()?;
-        self.cursor_seconds = skip_gap_at_or_after(trace, clamp_cursor(trace, cursor_seconds));
+        self.cursor_seconds = trace.seek(cursor_seconds);
         if self.status == PlaybackStatus::Playing {
             self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
             self.anchor_cursor_seconds = self.cursor_seconds;
@@ -193,7 +244,12 @@ impl PlaybackSessionState {
 
     pub fn jog(&mut self, delta_seconds: f64, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         let trace = self.trace.as_ref()?;
-        self.cursor_seconds = move_cursor_skipping_gaps(trace, self.cursor_seconds, delta_seconds);
+        self.cursor_seconds = match trace {
+            PlaybackContent::Ownship(trace) => {
+                move_cursor_skipping_gaps(trace, self.cursor_seconds, delta_seconds)
+            }
+            _ => trace.seek(self.cursor_seconds + delta_seconds),
+        };
         if self.status == PlaybackStatus::Playing {
             self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
             self.anchor_cursor_seconds = self.cursor_seconds;
@@ -218,7 +274,7 @@ impl PlaybackSessionState {
     }
 
     pub fn tick(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
-        let duration_seconds = duration_seconds(self.trace.as_ref()?);
+        let duration_seconds = self.trace.as_ref()?.duration();
         if self.status != PlaybackStatus::Playing {
             return self.current_ownship_state();
         }
@@ -234,6 +290,23 @@ impl PlaybackSessionState {
     pub fn ui_state(&self) -> PlaybackUiState {
         let Some(trace) = self.trace.as_ref() else {
             return PlaybackUiState::default();
+        };
+        if let PlaybackContent::Receiver(trace) = trace {
+            return PlaybackUiState {
+                status: self.status.clone(),
+                source_path: self.source_path.clone(),
+                title_label: format!("REPLAY LAB: {} (reload to exit)", trace.document.title),
+                point_count: trace.document.events.len(),
+                duration_seconds: trace.duration_seconds(),
+                cursor_seconds: self.cursor_seconds,
+                cursor_label: format_playback_clock(self.cursor_seconds),
+                duration_label: format_playback_clock(trace.duration_seconds()),
+                rate: self.rate,
+                ..PlaybackUiState::default()
+            };
+        }
+        let PlaybackContent::Ownship(trace) = trace else {
+            unreachable!()
         };
         PlaybackUiState {
             status: self.status.clone(),
@@ -261,8 +334,12 @@ impl PlaybackSessionState {
     }
 
     pub fn current_ownship_state(&self) -> Option<PlaybackOwnshipState> {
-        let trace = self.trace.as_ref()?;
-        Some(ownship_state_at_cursor(trace, self.cursor_seconds))
+        match self.trace.as_ref()? {
+            PlaybackContent::Ownship(trace) => {
+                Some(ownship_state_at_cursor(trace, self.cursor_seconds))
+            }
+            PlaybackContent::Receiver(_) => None,
+        }
     }
 
     pub fn current_situation(&self) -> Option<Situation> {
@@ -277,11 +354,9 @@ impl PlaybackSessionState {
             return;
         };
         let elapsed_seconds = ((now_epoch_ms - anchor_wallclock_epoch_ms) / 1000.0).max(0.0);
-        let raw_cursor_seconds = clamp_cursor(
-            trace,
-            self.anchor_cursor_seconds + elapsed_seconds * self.rate,
-        );
-        let skipped_cursor_seconds = skip_gap_at_or_after(trace, raw_cursor_seconds);
+        let raw_cursor_seconds =
+            (self.anchor_cursor_seconds + elapsed_seconds * self.rate).clamp(0.0, trace.duration());
+        let skipped_cursor_seconds = trace.seek(raw_cursor_seconds);
         self.cursor_seconds = skipped_cursor_seconds;
         if (skipped_cursor_seconds - raw_cursor_seconds).abs() > f64::EPSILON {
             self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);

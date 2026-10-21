@@ -1756,6 +1756,13 @@ pub fn get_scheduled_terrain_overlay_in_session(
 }
 
 #[wasm_bindgen]
+pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> Result<String, JsValue> {
+    let outcome = app_core::prepare_nexrad_tile_in_session(handle, src)
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> Result<Vec<u8>, JsValue> {
     app_core::nexrad_tile_bytes_in_session(handle, src)
         .map_err(|error| JsValue::from_str(&error.to_string()))

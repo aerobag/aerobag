@@ -1109,6 +1109,7 @@ type WasmModule = {
   query_glide_ring_in_session(handle: number, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   nexrad_tile_bytes_in_session(handle: number, src: string): Promise<Uint8Array> | Uint8Array;
+  prepare_nexrad_tile_in_session(handle: number, src: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot_paged(handle: number): Promise<SessionSnapshotOperationJson> | SessionSnapshotOperationJson;
@@ -2213,7 +2214,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
         ),
-      readNexradImageBytes: async (src) => this.module.nexrad_tile_bytes_in_session(handle, src),
+      readNexradImageBytes: async (src) => {
+        await runSessionResult<null>(
+          () => this.module.prepare_nexrad_tile_in_session(handle, src),
+          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+        );
+        return this.module.nexrad_tile_bytes_in_session(handle, src);
+      },
       queryNexradOverlay: (viewport, widthPx, heightPx) =>
         uiSessionWorkRunner.run("nexrad_overlay", "nexrad_overlay", () =>
           runSessionResult<NexradOverlayQueryResult>(
@@ -2508,6 +2515,7 @@ async function loadBestAvailableAdapterUncached(
     "query_glide_ring_in_session",
     "get_nexrad_overlay_in_session",
     "nexrad_tile_bytes_in_session",
+    "prepare_nexrad_tile_in_session",
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot_paged",
@@ -2801,8 +2809,8 @@ export function createLiveFeedSubscription(
         closeEventSource(nextEvents);
         clearConnectionTimers();
         void runtimeEvent({ kind, message })
-          .then((timeoutDecision) => scheduleReconnect(reconnectDelay(timeoutDecision) ?? 0))
-          .catch(() => scheduleReconnect(0));
+          .then((timeoutDecision) => scheduleReconnect(reconnectDelay(timeoutDecision)))
+          .catch(() => {});
       };
       const armIdleTimer = () => {
         if (idleTimer !== null) {
@@ -2856,22 +2864,25 @@ export function createLiveFeedSubscription(
           return;
         }
         log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
+        // Disable EventSource's own retry. Only core may authorize reconnection.
+        events = null;
+        closeEventSource(nextEvents);
         clearConnectionTimers();
         probeState.errors += 1;
         probeState.last_ready_state = nextEvents.readyState;
         void runtimeEvent({ kind: "error", message: "EventSource error" })
-          .then((errorDecision) => scheduleReconnect(reconnectDelay(errorDecision) ?? 0))
-          .catch(() => scheduleReconnect(0));
+          .then((errorDecision) => scheduleReconnect(reconnectDelay(errorDecision)))
+          .catch(() => {});
       };
     }).catch((error: unknown) => {
       log("live_feeds.sse.url.failed", { message: error instanceof Error ? error.message : String(error) });
       void runtimeEvent({ kind: "error", message: error instanceof Error ? error.message : String(error) })
-        .then((errorDecision) => scheduleReconnect(reconnectDelay(errorDecision) ?? 0))
-        .catch(() => scheduleReconnect(0));
+        .then((errorDecision) => scheduleReconnect(reconnectDelay(errorDecision)))
+        .catch(() => {});
     });
   };
-  const scheduleReconnect = (delayMs: number) => {
-    if (closed) {
+  const scheduleReconnect = (delayMs: number | null) => {
+    if (closed || delayMs === null) {
       return;
     }
     if (reconnectTimer !== null) {
@@ -2897,8 +2908,8 @@ export function createLiveFeedSubscription(
     probeState.online_events += 1;
     clearReconnectTimer();
     void runtimeEvent({ kind: "online" })
-      .then((decision) => scheduleReconnect(reconnectDelay(decision) ?? 0))
-      .catch(() => scheduleReconnect(0));
+      .then((decision) => scheduleReconnect(reconnectDelay(decision)))
+      .catch(() => {});
   };
   if (typeof window !== "undefined") {
     window.addEventListener("online", handleOnline);

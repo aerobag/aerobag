@@ -9,6 +9,7 @@ type CacheEntry = {
   objectUrl: string | null;
   load: Promise<string>;
   abortController: AbortController;
+  onBackgroundLoaded?: () => void;
 };
 
 export type NexradFrameCacheLoadResult = {
@@ -41,7 +42,12 @@ export class NexradFrameImageCache {
     private readonly revokeObjectUrl: ObjectUrlReleaser = (url) => URL.revokeObjectURL(url),
   ) {}
 
-  async applyPlan(plan: NexradOverlayCachePlan, loadBlob: BlobLoader = this.loadBlob): Promise<NexradFrameCacheLoadResult> {
+  async applyPlan(
+    plan: NexradOverlayCachePlan,
+    loadBlob: BlobLoader = this.loadBlob,
+    visibleSources?: ReadonlySet<string>,
+    onBackgroundLoaded?: () => void,
+  ): Promise<NexradFrameCacheLoadResult> {
     const retainedVersions = new Set(plan.retained_frame_versions);
     this.prune(retainedVersions);
 
@@ -50,9 +56,18 @@ export class NexradFrameImageCache {
         .filter((resource) => retainedVersions.has(resource.frame_version))
         .map((resource) => [resource.src, resource] as const),
     );
-    const settled = await Promise.allSettled(
-      Array.from(resources.values(), (resource) => this.ensureLoaded(resource.frame_version, resource.src, loadBlob)),
-    );
+    const foreground: Promise<string>[] = [];
+    for (const resource of resources.values()) {
+      const load = this.ensureLoaded(resource.frame_version, resource.src, loadBlob);
+      if (!visibleSources || visibleSources.has(resource.src)) {
+        foreground.push(load);
+      } else {
+        const entry = this.entries.get(resource.src);
+        if (entry && !entry.objectUrl) entry.onBackgroundLoaded = onBackgroundLoaded;
+        void load.catch(() => {});
+      }
+    }
+    const settled = await Promise.allSettled(foreground);
     return {
       loaded: settled.filter((result) => result.status === "fulfilled").length,
       failed: settled.filter((result) => result.status === "rejected").length,
@@ -100,6 +115,8 @@ export class NexradFrameImageCache {
           return objectUrl;
         }
         entry.objectUrl = objectUrl;
+        entry.onBackgroundLoaded?.();
+        entry.onBackgroundLoaded = undefined;
         return objectUrl;
       })
       .catch((error: unknown) => {

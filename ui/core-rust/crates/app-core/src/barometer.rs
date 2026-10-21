@@ -120,6 +120,7 @@ fn metar_setting_inhg(text: &str) -> Option<f64> {
 
 #[derive(Debug, Clone)]
 pub struct BarometerReading {
+    pub symbol_id: &'static str,
     pub altitude_ft: Option<f64>,
     pub editor: Option<FlightDataEditor>,
     pub warning: Option<String>,
@@ -204,8 +205,17 @@ impl Default for Barometer {
 }
 
 impl Barometer {
+    pub(crate) fn copy_controls_from(&mut self, other: &Self) {
+        self.source = other.source;
+        self.setting_inhg = other.setting_inhg;
+        self.editor = other.editor.clone();
+    }
     pub fn reading(&self, now: i64, nearest: Option<&NearbyAltimeter>) -> Option<BarometerReading> {
         self.available().then(|| BarometerReading {
+            symbol_id: match self.source {
+                Source::Device => "source_device",
+                Source::Receiver => "source_receiver",
+            },
             altitude_ft: self.altitude_ft(now),
             warning: self.setting_warning(now, nearest),
             editor: self.editor().map(|mut editor| {
@@ -380,6 +390,10 @@ impl Barometer {
 
     pub fn close_editor(&mut self) {
         self.editor = None;
+    }
+
+    pub fn editor_open(&self) -> bool {
+        self.editor.is_some()
     }
 
     pub fn altitude_ft(&self, now: i64) -> Option<f64> {

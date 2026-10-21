@@ -525,6 +525,10 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     return this.transport.wheel(webTestIdSelector(surfaceId), amount, readyElement);
   }
 
+  async setProgress(controlId, value, readyElement) {
+    return this.transport.setProgress(webTestIdSelector(controlId), value, readyElement);
+  }
+
   async hover(elementId) {
     await this.transport.hoverTestId(elementId);
   }

@@ -311,7 +311,7 @@ fn default_map_layer_state() -> UiMapLayerState {
         vectors: enabled_layer(true),
         metars: enabled_layer(true),
         nexrad: enabled_layer(false),
-        traffic: enabled_layer(false),
+        traffic: enabled_layer(true),
         terrain_warning: enabled_layer(true),
         glide_ring: enabled_layer(false),
         offline_regions: enabled_layer(false),

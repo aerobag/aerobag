@@ -144,6 +144,7 @@ data class WireOwnshipControlModel(
     val mode: WireOwnshipMode = WireOwnshipMode.None,
     val selection: WireOwnshipSelection = WireOwnshipSelection.Auto,
     val launcher_label: String = "No GPS",
+    val launcher_symbol_id: String? = null,
     val launcher_tone: WireOwnshipControlTone = WireOwnshipControlTone.Unavailable,
     val launcher_text_tone: WireOwnshipLauncherTextTone = WireOwnshipLauncherTextTone.Unavailable,
     val sources: List<WireOwnshipSourceMenuItem> = emptyList(),

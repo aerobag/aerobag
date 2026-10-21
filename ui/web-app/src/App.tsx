@@ -88,7 +88,6 @@ import {
 import type { UiAircraftSymbol } from "./generated/sessionPageWire";
 import {
   loadBestAvailableAdapter,
-  resolveLiveFeedResourceUrl,
   type AdapterBackendKind,
   type AppCoreAdapter,
   type AirportInfoUiView,
@@ -173,7 +172,7 @@ import { MapInspectionBackdrop, MapInspectionPane, useMapInspectionLifecycle } f
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { fetchTextResource } from "./domain/fetchTextResource";
-import { NexradFrameImageCache, fetchImageBlob } from "./domain/nexradFrameCache";
+import { NexradFrameImageCache } from "./domain/nexradFrameCache";
 import { e2eRasterTileStallUrl } from "./domain/rasterTileLoadRecovery";
 import { RasterTileImage } from "./RasterTileImage";
 import { appPageUrl } from "./domain/webRouteUrl";
@@ -1329,23 +1328,17 @@ async function preloadNexradOverlayImages(
   query: NexradOverlayQueryResult,
   cache: NexradFrameImageCache,
   session: UiSession,
+  onBackgroundLoaded: () => void,
 ): Promise<{ loaded: number; failed: number }> {
   if (!query.cache_plan) {
     return { loaded: 0, failed: 0 };
   }
-  return cache.applyPlan({
-    retained_frame_versions: query.cache_plan.retained_frame_versions,
-    fetch_resources: query.cache_plan.fetch_resources.map((resource) => ({
-      frame_version: resource.frame_version,
-      src: resolveLiveFeedResourceUrl(resource.src),
-    })),
-  }, async (src, signal) => {
-    if (!src.startsWith("core-image:")) return fetchImageBlob(src, signal);
+  return cache.applyPlan(query.cache_plan, async (src, signal) => {
     signal.throwIfAborted();
     const bytes = await session.readNexradImageBytes(src);
     signal.throwIfAborted();
     return new Blob([new Uint8Array(bytes)], { type: "image/png" });
-  });
+  }, new Set(query.tiles.map((tile) => tile.src)), onBackgroundLoaded);
 }
 
 type NavigationPageOption = { id: AppPage; label: string; launcherLabel: string; iconSrc?: string };
@@ -5235,7 +5228,8 @@ function MapPage(props: {
               continue;
             }
             const preloadStartedAt = performance.now();
-            const preload = await preloadNexradOverlayImages(query, nexradFrameCacheRef.current!, request.session);
+            const preload = await preloadNexradOverlayImages(query, nexradFrameCacheRef.current!, request.session,
+              () => setNexradAnimationTick((tick) => tick + 1));
             const preloadDoneAt = performance.now();
             if (nexradQueryRequestRef.current?.id !== request.id) {
               continue;
@@ -6207,7 +6201,6 @@ function MapPage(props: {
       setNexradOverlayFrame(null);
       return;
     }
-    nexradFrameCacheRef.current?.cancelPendingLoads();
     nexradQueryRequestRef.current = {
       id: ++nexradQueryRequestIdRef.current,
       session: uiSession,
@@ -6437,7 +6430,7 @@ function MapPage(props: {
     if (!mapInteraction.inspect) setMapSelection(null);
     if (!mapInteraction.hover_weather) setHoverWeather(null);
     return () => mapSelectionRequests.cancel();
-  }, [mapInteraction.mode, page, uiSession]);
+  }, [mapInteraction.mode, mapInteraction.inspect, mapInteraction.hover_weather, page, uiSession]);
 
   const overlayTransform = useMemo(() => {
     if (!mapOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -7760,7 +7753,7 @@ function MapPage(props: {
           style={{ display: "none" }}
         />
         <div
-          data-testid={`parity:live-overlay:metars:${mapOverlay.visible_metars.length}:pireps:${mapOverlay.visible_pireps.length}:obstacles:${mapOverlay.visible_features.filter((feature) => feature.symbol_kind === "obstacle").length}:tfrs:${mapOverlay.tfr_paths.length}`}
+          data-testid={`parity:live-overlay:metars:${mapOverlay.visible_metars.length}:pireps:${mapOverlay.visible_pireps.length}:obstacles:${mapOverlay.visible_features.filter((feature) => feature.symbol_kind === "obstacle").length}:tfrs:${mapOverlay.tfr_paths.length}:traffic:${mapOverlay.visible_traffic.length}`}
           aria-hidden="true"
           style={{ display: "none" }}
         />
@@ -7861,7 +7854,7 @@ function MapPage(props: {
                       overflow="hidden"
                     >
                       <image
-                        href={nexradFrameCacheRef.current?.imageUrlFor(resolveLiveFeedResourceUrl(tile.src)) ?? undefined}
+                        href={nexradFrameCacheRef.current?.imageUrlFor(tile.src) ?? undefined}
                         x={0}
                         y={0}
                         width={tile.image_width}
@@ -9269,6 +9262,9 @@ function PlaybackWidget(props: {
         ref={scrubRef}
         className="playbackWidgetOverview"
         data-testid="playback-overview"
+        data-progress-min={0}
+        data-progress-max={durationSeconds}
+        data-progress-inset={knobRadius}
         onPointerDown={(event) => {
           stopPointer(event);
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -11288,6 +11284,7 @@ function PrimaryNavigationDock(props: {
 
 function TrayDock(props: {
   launcherLabel: string;
+  launcherSymbolId?: string | null;
   launcherImageSrc?: string;
   launcherStyle?: CSSProperties;
   open: boolean;
@@ -11381,6 +11378,8 @@ function TrayDock(props: {
           : onToggle}
       >
         {launcherImageSrc ? <img className="chartButtonIcon" src={launcherImageSrc} alt="" aria-hidden="true" /> : null}
+        {props.launcherSymbolId && actionSymbol(props.launcherSymbolId)
+          ? <ActionIcon layers={actionSymbol(props.launcherSymbolId)!} /> : null}
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
       {open && typeof document !== "undefined"
@@ -14064,6 +14063,7 @@ function SituationStatusBadge(props: {
   return (
     <TrayDock
       launcherLabel={props.controls.launcher_label}
+      launcherSymbolId={props.controls.launcher_symbol_id}
       launcherClassName={`situationStatusLauncher situationStatus-${props.controls.launcher_tone} situationStatusText-${props.controls.launcher_text_tone}`}
       open={props.open}
       onToggle={props.onToggle}

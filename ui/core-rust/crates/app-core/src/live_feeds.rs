@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
 use product_contracts::{
@@ -52,9 +53,11 @@ struct LiveFeedProductState {
     install_profile_refs: BTreeMap<String, LiveFeedPayloadRef>,
     delta_from_previous: Option<LiveFeedDeltaRef>,
     recent_deltas: Vec<LiveFeedDeltaRef>,
-    version_manifest: Option<Value>,
-    state_manifest: Option<Value>,
-    catalog_state_manifest: Option<Value>,
+    // Catalog synchronization and session snapshots must not deep-copy national
+    // payloads or radar tile manifests. Updates replace these immutable trees.
+    version_manifest: Option<Arc<Value>>,
+    state_manifest: Option<Arc<Value>>,
+    catalog_state_manifest: Option<Arc<Value>>,
     history: Vec<LiveFeedProductHistoryState>,
 }
 
@@ -70,8 +73,8 @@ struct LiveFeedProductHistoryState {
     state_ref: Option<LiveFeedPayloadRef>,
     install_state_ref: Option<LiveFeedPayloadRef>,
     install_profile_refs: BTreeMap<String, LiveFeedPayloadRef>,
-    version_manifest: Option<Value>,
-    state_manifest: Option<Value>,
+    version_manifest: Option<Arc<Value>>,
+    state_manifest: Option<Arc<Value>>,
 }
 
 pub struct LiveFeedLoadedStateManifest<'a> {
@@ -592,7 +595,7 @@ impl LiveFeedsState {
                 history.state_ref = Some(manifest.state);
                 history.install_state_ref = manifest.install_state;
                 history.install_profile_refs = manifest.install_profiles;
-                history.version_manifest = Some(manifest_json);
+                history.version_manifest = Some(Arc::new(manifest_json));
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
                 return Ok(());
@@ -607,7 +610,7 @@ impl LiveFeedsState {
             entry.install_profile_refs = manifest.install_profiles;
             entry.delta_from_previous = manifest.delta_from_previous;
             entry.recent_deltas = manifest.recent_deltas;
-            entry.version_manifest = Some(manifest_json);
+            entry.version_manifest = Some(Arc::new(manifest_json));
             self.resource_failure_retry_after_epoch_ms
                 .remove(resource_id);
             return Ok(());
@@ -636,7 +639,7 @@ impl LiveFeedsState {
                         )));
                     }
                 }
-                history.state_manifest = Some(parsed);
+                history.state_manifest = Some(Arc::new(parsed));
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
                 return Ok(());
@@ -664,7 +667,8 @@ impl LiveFeedsState {
                     )));
                 }
             }
-            entry.catalog_state_manifest = Some(parsed.clone());
+            let parsed = Arc::new(parsed);
+            entry.catalog_state_manifest = Some(Arc::clone(&parsed));
             entry.state_manifest = Some(parsed);
             entry.loaded_version = Some(version);
             self.resource_failure_retry_after_epoch_ms
@@ -732,7 +736,7 @@ impl LiveFeedsState {
                     delta_ref.to_state_sha256, next_state_sha256
                 )));
             }
-            entry.state_manifest = Some(next_state);
+            entry.state_manifest = Some(Arc::new(next_state));
             entry.loaded_version = Some(to_version);
             self.resource_failure_retry_after_epoch_ms
                 .remove(resource_id);
@@ -937,15 +941,18 @@ impl LiveFeedsState {
         {
             return None;
         }
-        entry.state_manifest.as_ref()
+        entry.state_manifest.as_deref()
     }
 
     pub fn loaded_product_state_manifest(&self, product: &str) -> Option<&Value> {
-        self.products.get(product)?.state_manifest.as_ref()
+        self.products.get(product)?.state_manifest.as_deref()
     }
 
     pub fn current_product_catalog_state_manifest(&self, product: &str) -> Option<&Value> {
-        self.products.get(product)?.catalog_state_manifest.as_ref()
+        self.products
+            .get(product)?
+            .catalog_state_manifest
+            .as_deref()
     }
 
     pub fn current_product_temporal_coverage(
@@ -1178,7 +1185,8 @@ impl LiveFeedsState {
             entry.collected_at_utc = collected_at_utc;
         }
         if let Some(state_manifest) = state_manifest {
-            entry.catalog_state_manifest = Some(state_manifest.clone());
+            let state_manifest = Arc::new(state_manifest);
+            entry.catalog_state_manifest = Some(Arc::clone(&state_manifest));
             entry.state_manifest = Some(state_manifest);
         }
     }
@@ -1269,7 +1277,7 @@ impl LiveFeedsState {
                     DurableNexradRequest {
                         product,
                         version,
-                        version_manifest: entry.version_manifest.as_ref(),
+                        version_manifest: entry.version_manifest.as_deref(),
                         version_manifest_url: entry.version_manifest_url.as_deref(),
                         full_ref: entry
                             .install_profile_refs
@@ -1294,7 +1302,7 @@ impl LiveFeedsState {
                         DurableNexradRequest {
                             product,
                             version: &history.version,
-                            version_manifest: history.version_manifest.as_ref(),
+                            version_manifest: history.version_manifest.as_deref(),
                             version_manifest_url: history.version_manifest_url.as_deref(),
                             full_ref: history
                                 .install_profile_refs
@@ -2775,6 +2783,128 @@ mod tests {
 
     const TEST_LIVE_FEED_ROOT: &str = "http://live.test";
 
+    fn populated_manifest_catalog() -> LiveFeedsState {
+        let manifest = serde_json::json!({
+            "levels": [{"tiles": [{"path": "tiles/0.png", "sha256": "tile-hash"}]}]
+        });
+        LiveFeedsState {
+            catalog_loaded: true,
+            products: HashMap::from([(
+                "nexrad".to_string(),
+                LiveFeedProductState {
+                    current_version: Some("v2".to_string()),
+                    loaded_version: Some("v2".to_string()),
+                    version_manifest: Some(manifest.clone().into()),
+                    state_manifest: Some(manifest.clone().into()),
+                    catalog_state_manifest: Some(manifest.clone().into()),
+                    history: vec![LiveFeedProductHistoryState {
+                        version: "v1".to_string(),
+                        version_manifest: Some(manifest.clone().into()),
+                        state_manifest: Some(manifest.into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+
+    fn manifest_trees(state: &LiveFeedsState) -> [&Value; 5] {
+        let entry = &state.products["nexrad"];
+        [
+            entry.version_manifest.as_ref().unwrap(),
+            entry.state_manifest.as_ref().unwrap(),
+            entry.catalog_state_manifest.as_ref().unwrap(),
+            entry.history[0].version_manifest.as_ref().unwrap(),
+            entry.history[0].state_manifest.as_ref().unwrap(),
+        ]
+    }
+
+    #[test]
+    fn catalog_snapshot_shares_immutable_manifest_trees() {
+        let source = populated_manifest_catalog();
+        let snapshot = source.clone();
+        assert_eq!(source, snapshot);
+        for (index, (original, copied)) in manifest_trees(&source)
+            .into_iter()
+            .zip(manifest_trees(&snapshot))
+            .enumerate()
+        {
+            assert!(
+                std::ptr::eq(original, copied),
+                "snapshot deep-copied manifest {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_merge_shares_immutable_manifest_trees() {
+        let source = populated_manifest_catalog();
+        let mut session = LiveFeedsState::default();
+        session.merge_catalog_from(&source);
+        assert_eq!(source, session);
+        for (index, (original, merged)) in manifest_trees(&source)
+            .into_iter()
+            .zip(manifest_trees(&session))
+            .enumerate()
+        {
+            assert!(
+                std::ptr::eq(original, merged),
+                "merge deep-copied manifest {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn durable_install_shares_catalog_and_loaded_manifest_without_aliasing_updates() {
+        let mut source = LiveFeedsState::default();
+        source.mark_durable_product_loaded(
+            "metars".into(),
+            "v1".into(),
+            "hash1".into(),
+            None,
+            Some(metar_state("v1", &[("KSEA", "first report")])),
+        );
+        assert!(
+            std::ptr::eq(
+                source.loaded_product_state_manifest("metars").unwrap(),
+                source
+                    .current_product_catalog_state_manifest("metars")
+                    .unwrap(),
+            ),
+            "install duplicated the loaded manifest for catalog metadata"
+        );
+        let snapshot = source.clone();
+        let mut session = source.clone();
+        source.mark_durable_product_loaded(
+            "metars".into(),
+            "v2".into(),
+            "hash2".into(),
+            None,
+            Some(metar_state("v2", &[("KSEA", "second report")])),
+        );
+        session.merge_catalog_from(&source);
+        assert_eq!(
+            snapshot.loaded_product_state_manifest("metars").unwrap()["version_label"],
+            "v1"
+        );
+        assert_eq!(
+            session.loaded_product_state_manifest("metars").unwrap()["version_label"],
+            "v1"
+        );
+        assert_eq!(
+            session
+                .current_product_catalog_state_manifest("metars")
+                .unwrap()["version_label"],
+            "v2"
+        );
+        assert_eq!(
+            source.loaded_product_state_manifest("metars").unwrap()["version_label"],
+            "v2"
+        );
+    }
+
     fn live_feeds_state() -> LiveFeedsState {
         let mut state = LiveFeedsState::default();
         state.set_source_root_url(TEST_LIVE_FEED_ROOT).unwrap();
@@ -3360,6 +3490,13 @@ mod tests {
         state
             .ingest_resource(&format!("live_feeds/state/{product}/v1"), &v1_bytes)
             .unwrap();
+        assert!(std::ptr::eq(
+            state.loaded_product_state_manifest(product).unwrap(),
+            state
+                .current_product_catalog_state_manifest(product)
+                .unwrap(),
+        ));
+        let prior_catalog = state.clone();
 
         state
             .ingest_sse_event(LiveFeedSseEvent {
@@ -3448,6 +3585,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state.product_state_manifest(product), Some(&v2));
+        assert_eq!(prior_catalog.product_state_manifest(product), Some(&v1));
         let outcome = state.sync_outcome_with_invalidations();
         let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
             panic!("expected complete");

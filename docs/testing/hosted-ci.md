@@ -35,6 +35,33 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+The October 21 scheduled run `39617536579` on `e30884bd` failed the Android
+NEXRAD resume transition. This was application contention, not a lost click:
+ANIMATE became selected, but the first older frame became ready about 6.1 s
+after input. The retained thread dump caught
+`live_feed_cache_sync_catalog_in_session_json` deep-cloning JSON BTreeMaps and
+strings while holding Android's session command monitor. During that journey,
+31 catalog syncs took median 355 ms, p90 674 ms, maximum 1,275 ms. Repeated feed
+updates made otherwise millisecond radar queries wait behind that work.
+
+Core now retains immutable current, catalog and history manifest trees in
+`Arc<Value>`; catalog snapshots/merges copy references rather than national
+payloads. Ingestion and deltas replace trees, never mutate shared snapshots.
+Three new tests were demonstrated red before the change: clone and merge must
+preserve tree identity, and durable installation must not duplicate its state
+tree for catalog metadata. Delta/full-state tests also verify an older snapshot
+retains its original contents. These are ownership assertions, not flaky timing
+thresholds, and no wire format or journey deadline changed.
+
+The unchanged hosted APK passed locally, so a rerun alone was not causal proof.
+Using that run's retained fixture, before/after local catalog-sync samples
+(70 each) improved from median/p90 64/84 ms to 2/11 ms. The rebuilt Android
+release APK passed the unchanged radar journey with a 196 ms resume response.
+All 1,192 enabled core tests (28 ignored), six FFI tests,
+13 Android radar tests and the wasm32 app check passed. This is focused evidence,
+not a new hosted qualification or a full web journey run. Failure artifacts and
+the local comparison were retained under `/tmp/aerobag-e2e-e30884b`.
+
 The October 16/17 scheduled failures on `1b196720` exposed two different
 boundaries. An Android plate choice changed `selected` between readiness and
 native tap validation. Fixed-value closing pickers now declare `intent: "select"`:

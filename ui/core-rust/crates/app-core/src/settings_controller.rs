@@ -1307,7 +1307,7 @@ fn project_disclaimer_state(preferences: &SettingsPreferences) -> UiDisclaimerSt
             .accepted_disclaimer_agreement_ids
             .contains(NO_WARRANTY_DISCLAIMER_AGREEMENT_ID),
         html: NO_WARRANTY_DISCLAIMER_HTML.to_string(),
-        text: no_warranty_disclaimer_text(),
+        text: disclaimer_plain_text(NO_WARRANTY_DISCLAIMER_HTML),
         accept_label: "I understand and agree".to_string(),
     }
 }
@@ -1323,8 +1323,15 @@ fn filtered_flight_data_banner(
     filtered
 }
 
-fn no_warranty_disclaimer_text() -> String {
-    let stripped = NO_WARRANTY_DISCLAIMER_HTML
+fn disclaimer_plain_text(mut html: &str) -> String {
+    // The bundled notice uses p/strong markup; source comments are not UI text.
+    let mut visible = String::with_capacity(html.len());
+    while let Some((before, comment)) = html.split_once("<!--") {
+        visible.push_str(before);
+        html = comment.split_once("-->").map_or("", |(_, after)| after);
+    }
+    visible.push_str(html);
+    let stripped = visible
         .replace("<p>", "")
         .replace("</p>", "")
         .replace("<strong>", "")
@@ -1936,6 +1943,37 @@ mod tests {
             serde_json::from_str::<NexradAcquisitionPreferences>("{}").unwrap(),
             expected,
             "missing persisted fields must use the same low-data defaults",
+        );
+    }
+
+    #[test]
+    fn disclaimer_plain_text_contains_only_the_user_facing_notice() {
+        let state = project_disclaimer_state(&SettingsPreferences::default());
+        assert!(state.required);
+        assert_eq!(state.agreement_id, "no-warranty-v1");
+        assert_eq!(
+            state.text,
+            "NO WARRANTY: Every single line of this software was vibe coded. Nobody has \
+             tested it. It might be wrong or misleading in dangerous ways. If you're using \
+             it in the flight simulator, have fun! If you're using it in the cockpit, \
+             do so entirely at your own risk. It is not warranted \
+             to be suitable for any purpose; by using it, you idemnify and agree to hold \
+             harmless any developer associated with the software."
+        );
+    }
+
+    #[test]
+    fn disclaimer_plain_text_omits_comments_without_losing_visible_text() {
+        assert_eq!(
+            disclaimer_plain_text(
+                "<!-- source\nmetadata -->\n<p><strong>NO<!-- inline > comment --> WARRANTY</strong>: \
+                 Use at your own risk.</p><!-- trailing <p>comment</p> -->"
+            ),
+            "NO WARRANTY: Use at your own risk."
+        );
+        assert_eq!(
+            disclaimer_plain_text("<p>Visible notice.</p><!-- unfinished comment"),
+            "Visible notice."
         );
     }
 

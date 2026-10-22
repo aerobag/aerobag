@@ -39,6 +39,18 @@ fn bad_publication_keeps_real_daemon_serving_other_products_and_reporting_failur
         live.join("v3/versions/metars/cached.json"),
         b"{\"cached\":true}",
     )?;
+    fs::write(
+        live.join("v3/current.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 3, "generated_at_utc": "2026-10-22T08:00:00Z",
+            "products": {"metars": {
+                "current": "cached", "version_manifest_url": "versions/metars/cached.json",
+                "state_url": "states/metars/cached.json.xz", "state_sha256": "hash",
+                "collected_at_utc": "2026-10-22T07:00:00Z",
+                "published_at_utc": "2026-10-22T08:00:00Z"
+            }}
+        }))?,
+    )?;
     let credentials = temp.path().join("nms.json");
     fs::write(
         &credentials,
@@ -114,6 +126,11 @@ fn bad_publication_keeps_real_daemon_serving_other_products_and_reporting_failur
             "missing {product}: {status}"
         );
     }
+    let metars = &status["products"]["metars"];
+    assert_eq!(metars["current_version"], "cached");
+    assert_eq!(metars["last_source_timestamp_utc"], "2026-10-22T07:00:00Z");
+    assert_eq!(metars["last_published_at_utc"], "2026-10-22T08:00:00Z");
+    assert!(metars["last_success_at_utc"].is_null());
     let (headers, cached) = request(addr, "/live-feeds/v3/versions/metars/cached.json")?;
     assert!(headers.starts_with("HTTP/1.1 200 OK"));
     assert_eq!(cached["cached"], true);

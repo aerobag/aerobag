@@ -475,6 +475,27 @@ impl DaemonStatus {
         history.nominal_interval_seconds = Some(nominal_interval.as_secs());
     }
 
+    fn restore_publication_status(&self, live_root: &Path) -> anyhow::Result<()> {
+        let Some(catalog) = read_live_feed_catalog(live_root)? else {
+            return Ok(());
+        };
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        for (product, published) in catalog.products {
+            let Some(history) = state.products.get_mut(&product) else {
+                continue;
+            };
+            if history.initialization_failed || history.current_version.is_some() {
+                continue;
+            }
+            // This is evidence of retained publication, not a successful poll
+            // by this process. Preserve its actual age; audits run on first tick.
+            history.current_version = Some(published.current);
+            history.last_published_at_utc = published.published_at_utc;
+            history.last_source_timestamp_utc = published.collected_at_utc;
+        }
+        Ok(())
+    }
+
     fn record_tick_result(&self, result: &LiveFeedTickResult) {
         for update in &result.published {
             let recovered = !result
@@ -584,8 +605,8 @@ impl DaemonStatus {
             state.notam_delivery.set_tfr(update.version.clone(), ids);
         }
         let history = state.products.entry(update.product.clone()).or_default();
-        let content_version_changed =
-            history.current_version.as_deref() != Some(update.version.as_str());
+        let content_version_changed = history.last_update_at_utc.is_none()
+            || history.current_version.as_deref() != Some(update.version.as_str());
         history.last_attempt_at_utc = Some(observed_at_utc);
         history.last_success_at_utc = Some(observed_at_utc);
         history.last_published_at_utc = update.published_at_utc.clone();
@@ -1291,6 +1312,15 @@ fn start_live_feed_driver(
     }
     for task in &tasks {
         status.register_product(task.product_id(), task.nominal_interval());
+    }
+    if let Err(error) = status.restore_publication_status(&live_root) {
+        for task in &tasks {
+            status.record_product_failure(&preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                product: task.product_id().to_string(),
+                phase: LiveFeedTaskPhase::Publish,
+                error: format!("failed to restore publication status: {error:#}"),
+            });
+        }
     }
     compatibility.configure_products(
         tasks
@@ -4125,6 +4155,70 @@ mod tests {
     }
 
     #[test]
+    fn startup_status_retains_publication_age_without_fabricating_a_success() -> anyhow::Result<()>
+    {
+        let temp = tempdir()?;
+        write_json_pretty_file(
+            &temp.path().join("current.json"),
+            &serde_json::json!({
+                "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                "generated_at_utc": "2026-10-22T08:00:00Z",
+                "products": {"metars": {
+                    "current": "retained", "version_manifest_url": "versions/metars/retained.json",
+                    "state_url": "states/metars/retained.json.xz", "state_sha256": "hash",
+                    "collected_at_utc": "2026-10-22T07:00:00Z",
+                    "published_at_utc": "2026-10-22T08:00:00Z"
+                }}
+            }),
+        )?;
+        let status = DaemonStatus::default();
+        status.register_product("metars", Duration::from_secs(60));
+        status.register_product("tafs", Duration::from_secs(300));
+        status.restore_publication_status(temp.path())?;
+        let snapshot = status.snapshot();
+        let metars = &snapshot.products["metars"];
+        assert_eq!(metars.current_version.as_deref(), Some("retained"));
+        assert_eq!(
+            metars.last_source_timestamp_utc.as_deref(),
+            Some("2026-10-22T07:00:00Z")
+        );
+        assert_eq!(
+            metars.last_published_at_utc.as_deref(),
+            Some("2026-10-22T08:00:00Z")
+        );
+        assert!(metars.last_success_at_utc.is_none());
+        assert!(metars.last_attempt_at_utc.is_none());
+        assert!(metars.attempts.is_empty());
+        assert!(metars.samples.is_empty());
+        assert!(metars.quality.is_none());
+        assert!(snapshot.products["tafs"]
+            .last_source_timestamp_utc
+            .is_none());
+
+        let disabled = DaemonStatus::default();
+        disabled.restore_publication_status(temp.path())?;
+        assert!(disabled.snapshot().products.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn startup_status_distinguishes_no_catalog_from_corrupt_catalog() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let status = DaemonStatus::default();
+        status.register_product("metars", Duration::from_secs(60));
+        status.restore_publication_status(temp.path())?;
+        assert!(status.snapshot().products["metars"]
+            .last_source_timestamp_utc
+            .is_none());
+        fs::write(temp.path().join("current.json"), b"broken")?;
+        assert!(status.restore_publication_status(temp.path()).is_err());
+        assert!(status.snapshot().products["metars"]
+            .last_source_timestamp_utc
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
     fn server_allows_browser_cors_preflight_for_live_feeds() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let response = request_once(
@@ -4202,6 +4296,21 @@ mod tests {
             publication_ack: None,
             notam_compaction: None,
         };
+        write_json_pretty_file(
+            &temp.path().join("current.json"),
+            &serde_json::json!({
+                "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                "generated_at_utc": "2026-07-25T16:00:00Z",
+                "products": {"obstacles": {
+                    "current": "v1", "version_manifest_url": update.version_manifest_url,
+                    "state_url": update.state_url, "state_sha256": update.state_sha256,
+                    "collected_at_utc": "2026-07-25T16:00:00Z"
+                }}
+            }),
+        )?;
+        status.register_product("obstacles", Duration::from_secs(6 * 3600));
+        status.restore_publication_status(temp.path())?;
+        assert!(status.snapshot().products["obstacles"].samples.is_empty());
         status.record_tick_result(&LiveFeedTickResult {
             published: vec![update.clone()],
             failures: Vec::new(),

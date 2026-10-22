@@ -2063,6 +2063,158 @@ class ReleaseProductDiagnosticsTests(unittest.TestCase):
         self.assertEqual(channel["inputs"]["product_facts"], [])
 
 
+class LiveFeedStartupTests(unittest.TestCase):
+    start = datetime(2026, 10, 22, 9, 4, 56, tzinfo=timezone.utc)
+
+    def at(self, seconds):
+        return pipeline_health.iso_utc(self.start + timedelta(seconds=seconds))
+
+    def setUp(self):
+        self.payload = {
+            "schema_version": 5, "started_at_utc": self.at(0), "active_sse_clients": 0,
+            "product_policies": [
+                {"product_id": product, "display_name": display,
+                 "operator_health": {"warning_after_seconds": warning, "critical_after_seconds": critical}}
+                for product, (display, warning, critical) in TEST_LIVE_FEED_HEALTH_POLICIES.items()
+            ],
+            "products": {product: {
+                "last_success_at_utc": None, "last_source_timestamp_utc": None,
+                "last_published_at_utc": None, "current_version": None,
+                "failure_episodes": {}, "attempts": [], "quality": None,
+                "metadata_error_count": 0, "metadata_errors": [],
+            } for product in TEST_LIVE_FEED_HEALTH_POLICIES},
+        }
+
+    def metrics(self, seconds):
+        metrics = []
+        pipeline_health.add_live_feed_metrics(
+            metrics, {"inputs": {"live_feeds_status": {"payload": self.payload}}},
+            self.start + timedelta(seconds=seconds))
+        return {m["id"].removeprefix("live_feed."): m for m in metrics}
+
+    def publish(self, product, seconds):
+        self.payload["products"][product].update(
+            last_success_at_utc=self.at(seconds), last_source_timestamp_utc=self.at(seconds),
+            last_published_at_utc=self.at(seconds), current_version="v1")
+        if product == "notams":
+            self.payload["products"][product]["quality"] = (
+                NotamDeliveryMetricTests().facts()["inputs"]["live_feeds_status"]["payload"]
+                ["products"]["notams"]["quality"])
+
+    def test_restart_initializing_then_success_never_alarms_or_invents_zeroes(self):
+        # The actual restart: all products registered, then first publications
+        # arrive over ten seconds; the next monitor sample is at +61 seconds.
+        for seconds in [0, 1, 10, 61]:
+            if seconds == 1:
+                for product in ["metars", "tafs"]:
+                    self.publish(product, seconds)
+            if seconds == 10:
+                for product in self.payload["products"]:
+                    self.publish(product, seconds)
+            metrics = self.metrics(seconds)
+            self.assertEqual([m for m in metrics.values() if m["severity"] in ("warning", "critical")], [])
+            if seconds == 0:
+                pending = [m for m in metrics.values() if m["severity"] == "unknown"]
+                self.assertEqual(len(pending), 13)
+                for metric in pending:
+                    self.assertIsNone(metric["value"])
+                    self.assertIn("initializing", metric["message"])
+            if seconds == 61:
+                self.assertTrue(all(m["severity"] == "ok" for m in metrics.values()))
+
+    def test_initialization_deadline_is_from_daemon_start_not_monitor_samples(self):
+        for seconds, stale, audit in [(119, "unknown", "unknown"), (120, "critical", "warning"),
+                                      (3600, "critical", "warning")]:
+            with self.subTest(seconds=seconds):
+                metrics = self.metrics(seconds)
+                self.assertEqual(metrics["metars.stale_seconds"]["severity"], stale)
+                self.assertEqual(metrics["notams.source_record_count"]["severity"], audit)
+                self.assertEqual(metrics["notams.without_delivery_count"]["severity"], audit)
+
+    def test_shared_daemon_does_not_fan_restart_into_39_channel_alerts(self):
+        facts = {"inputs": {
+            "release_channels": {"error": None},
+            "deploy_health": {"error": None, "payload": {}},
+            "build_watch": {"error": None, "payload": {"result": {"status": "pass"}}},
+            "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+        }, "channels": {
+            scope: {"role": role, "tag": scope, "inputs": {
+                "current_artifacts": {"error": None, "payload": []}, "product_facts": [],
+                "live_feeds_status": {"payload": self.payload},
+            }} for scope, role in [("production", "production"),
+                                  ("release-2026-10-13.3", "sunset"),
+                                  ("release-2026-10-14.2", "sunset")]
+        }}
+        for seconds, expected in [(0, 0), (119, 0), (120, 39)]:
+            with self.subTest(seconds=seconds):
+                result = pipeline_health.evaluate_health(facts, [], self.start + timedelta(seconds=seconds))
+                alerts = [a for a in result["alerts"] if ".live_feed." in a["metric_id"]]
+                self.assertEqual(len(alerts), expected)
+
+    def test_missing_bad_or_future_start_time_never_buys_grace(self):
+        for start in [None, "garbage", self.at(1), self.at(-120)]:
+            with self.subTest(start=start):
+                self.payload["started_at_utc"] = start
+                self.assertEqual(self.metrics(0)["metars.stale_seconds"]["severity"], "critical")
+
+    def test_retained_publication_keeps_actual_age_even_during_startup(self):
+        status = self.payload["products"]["metars"]
+        status.update(current_version="retained", last_source_timestamp_utc=self.at(-1800),
+                      last_published_at_utc=self.at(-60))
+        metrics = self.metrics(0)
+        self.assertEqual(metrics["metars.stale_seconds"]["value"], 1800)
+        self.assertEqual(metrics["metars.stale_seconds"]["severity"], "critical")
+        status.update(last_source_timestamp_utc=None, last_published_at_utc=self.at(-1800))
+        self.assertEqual(self.metrics(0)["metars.stale_seconds"]["value"], 1800)
+
+    def test_known_failure_or_malformed_status_is_not_initializing(self):
+        for fields in [
+            {"failure_episodes": {"publication": {
+                "first_failure_at_utc": self.at(0), "last_failure_at_utc": self.at(0),
+                "failure_count": 1, "phase": "build", "error": "initialization failed"}}},
+            {"failure_episodes": None}, {"attempts": ["broken"]},
+            {"last_source_timestamp_utc": "broken"},
+            {"last_success_at_utc": "broken"},
+            {"metadata_error_count": 1, "metadata_errors": ["invalid catalog"]},
+        ]:
+            with self.subTest(fields=fields):
+                self.setUp()
+                self.payload["products"]["notams"].update(fields)
+                metrics = self.metrics(0)
+                self.assertEqual(metrics["notams.stale_seconds"]["severity"], "critical")
+                self.assertEqual(metrics["notams.source_record_count"]["severity"], "warning")
+        self.assertEqual(metrics["notams.metadata_error_count"]["severity"], "critical")
+
+    def test_missing_quality_after_success_and_bad_quality_before_success_still_alarm(self):
+        self.publish("notams", 1)
+        self.payload["products"]["notams"]["quality"] = None
+        self.assertEqual(self.metrics(2)["notams.source_record_count"]["severity"], "warning")
+        self.setUp()
+        self.payload["products"]["notams"]["quality"] = {"source_record_count": -1}
+        self.assertEqual(self.metrics(0)["notams.source_record_count"]["severity"], "warning")
+
+    def test_audit_waits_for_tfr_but_not_for_failed_or_completed_tfr(self):
+        self.publish("notams", 1)
+        quality = self.payload["products"]["notams"]["quality"]
+        quality["delivery_audit"] = {
+            "tfr_version": None, "tfr_overlap_count": None, "without_delivery_count": None,
+            "error": "Waiting for NOTAM and TFR publication evidence",
+        }
+        self.assertEqual(self.metrics(2)["notams.without_delivery_count"]["severity"], "unknown")
+        self.assertEqual(self.metrics(120)["notams.without_delivery_count"]["severity"], "warning")
+        quality["delivery_audit"]["error"] = "TFR delivery audit decode: corrupt"
+        self.assertEqual(self.metrics(2)["notams.without_delivery_count"]["severity"], "warning")
+        quality["delivery_audit"]["error"] = "Waiting for NOTAM and TFR publication evidence"
+        self.payload["products"]["tfrs"]["failure_episodes"] = {"publication": {
+            "first_failure_at_utc": self.at(1), "last_failure_at_utc": self.at(1),
+            "failure_count": 1, "phase": "build", "error": "TFR build failed",
+        }}
+        self.assertEqual(self.metrics(2)["notams.without_delivery_count"]["severity"], "warning")
+        self.payload["products"]["tfrs"]["failure_episodes"] = {}
+        self.publish("tfrs", 3)
+        self.assertEqual(self.metrics(4)["notams.without_delivery_count"]["severity"], "warning")
+
+
 class LiveFeedRecoveryTests(unittest.TestCase):
     start = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 

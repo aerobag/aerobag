@@ -438,6 +438,29 @@ History begins when the updated monitor is installed; old samples are not
 backfilled. Install with `tools/prod_manage.py --reconcile` after committing and
 pushing; no new app release or live-feed daemon rebuild is needed.
 
+**Live-feed restart monitoring:** a normal daemon restart gets at most two
+minutes to populate first-publication freshness and NOTAM delivery accounting.
+Those unavailable measurements remain null and visibly **initializing**, not
+healthy zeroes. The deadline is anchored to the daemon's `started_at_utc`, not
+the monitor's start or latest poll. Completed checks become authoritative
+immediately; missing measurements after success, malformed telemetry, metadata
+errors, and explicit failures do not earn this startup allowance. The NOTAM/TFR
+cross-check can wait for the other product's first publication, but a failed TFR
+decode still alarms. After two minutes, the normal missing-data alarms apply.
+
+The daemon restores retained publication version/source/publication timestamps
+from its existing current ledger before starting product workers. It does not
+claim a new successful poll, invent quality counts, or reset the retained data's
+age. Stale retained data still alarms during initialization. A corrupt ledger
+is a publication failure, not an empty healthy startup. No live-feed status
+contract changes: v4 accounting is already promised only after publication,
+and v5 metadata diagnostics remain mandatory from startup.
+
+The bounded monitor policy installs via `tools/prod_manage.py --reconcile` and
+also covers existing v3/v4/v5 daemons. Retained-timestamp restoration requires a
+release containing the updated live-feed daemon. Neither change modifies the
+downstream alarm consumer's policy.
+
 `/pipeline-health/` checks availability of the merged production publication,
 but derives production cycle-product errors and warnings from
 `channel-current/releases/<production-tag>/packages/current_artifacts.json`.

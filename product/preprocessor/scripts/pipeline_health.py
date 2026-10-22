@@ -44,6 +44,7 @@ DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 LIVE_FEED_FAILURE_WARNING_SECONDS = 2 * 60
 LIVE_FEED_FAILURE_CRITICAL_SECONDS = 10 * 60
+LIVE_FEED_INITIALIZATION_SECONDS = 2 * 60
 ARCHIVE_PROGRESS_WARNING_SECONDS = {"collect": 15 * 60, "store": 30 * 60}
 ARCHIVE_PROGRESS_CRITICAL_SECONDS = 60 * 60
 # Budgets for attempts, not grace periods for a known failed result.
@@ -1652,7 +1653,34 @@ def add_total_live_feed_client_metric(metrics: list[dict[str, Any]], facts: dict
 NOTAM_EXCLUSION_CATEGORIES = ("AIRSPACE", "No keyword", "NAV", "OBST", "COM", "SVC", "Other")
 
 
-def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, version: int) -> None:
+def live_feed_initializing(payload: dict, status: Any, now: datetime) -> bool:
+    started = parse_time(payload.get("started_at_utc"))
+    if (payload.get("schema_version") not in (3, 4, 5) or started is None
+            or not 0 <= (now - started).total_seconds() < LIVE_FEED_INITIALIZATION_SECONDS
+            or not isinstance(status, dict)):
+        return False
+    # Only a not-yet-completed first publication earns startup time. Explicit
+    # errors and malformed/promised telemetry are never initialization evidence.
+    return (
+        "last_success_at_utc" in status and status["last_success_at_utc"] is None
+        and status.get("failure_episodes") == {}
+        and isinstance(status.get("attempts"), list)
+        and all(isinstance(a, dict) for a in status["attempts"])
+        and not any(a.get("result") in ("success", "failure") and a.get("phase") != "source"
+                    for a in status["attempts"])
+        and all(status.get(key) is None or parse_time(status[key]) is not None
+                for key in ("last_source_timestamp_utc", "last_published_at_utc"))
+        and (payload["schema_version"] != 5 or (
+            type(status.get("metadata_error_count")) is int
+            and status["metadata_error_count"] == 0 and status.get("metadata_errors") == []))
+    )
+
+
+def add_notam_delivery_metrics(
+    metrics: list[dict[str, Any]], quality: Any, version: int, *,
+    initializing: bool = False, tfr_initializing: bool = False,
+) -> None:
+    accounting_pending = initializing and quality is None
     quality = quality if isinstance(quality, dict) else {}
     source, client = quality.get("source_record_count"), quality.get("client_record_count")
     counts = quality.get("server_only_records_by_keyword")
@@ -1661,7 +1689,7 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
              and isinstance(counts, dict)
              and all(isinstance(k, str) and k and valid_count(v) for k, v in counts.items())
              and sum(counts.values()) == source - client)
-    unavailable = "warning" if version in (4, 5) else "unknown"
+    unavailable = "unknown" if accounting_pending else "warning" if version in (4, 5) else "unknown"
     for name, label, value in [
         ("source_record_count", "NOTAM source records", source),
         ("client_record_count", "NOTAM client records", client),
@@ -1671,7 +1699,8 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
                    value=value if valid else None, unit="records",
                    severity="ok" if valid else unavailable,
                    message=("Current retained state, including future-effective notices. Exclusions may still reach the TFR feed."
-                            if valid else "Missing or inconsistent NOTAM source/client/category accounting"))
+                            if valid else f"NOTAM accounting is initializing; awaiting first publication (startup limit: {LIVE_FEED_INITIALIZATION_SECONDS}s)"
+                            if accounting_pending else "Missing or inconsistent NOTAM source/client/category accounting"))
         if valid and name == "server_only_record_count":
             breakdown = dict.fromkeys(NOTAM_EXCLUSION_CATEGORIES, 0)
             for keyword, count in counts.items():
@@ -1681,6 +1710,10 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
             metrics[-1]["details"] = {"excluded_by_keyword": counts}
 
     audit = quality.get("delivery_audit")
+    audit_pending = accounting_pending or (valid and tfr_initializing and audit == {
+        "tfr_version": None, "tfr_overlap_count": None, "without_delivery_count": None,
+        "error": "Waiting for NOTAM and TFR publication evidence",
+    })
     audit_valid = (valid and isinstance(audit, dict) and audit.get("error") is None
                    and isinstance(audit.get("tfr_version"), str) and bool(audit["tfr_version"])
                    and valid_count(audit.get("tfr_overlap_count"))
@@ -1693,10 +1726,12 @@ def add_notam_delivery_metrics(metrics: list[dict[str, Any]], quality: Any, vers
         value = audit[name] if available else None
         add_metric(metrics, metric_id=f"live_feed.notams.{name}", label=label,
                    value=value, unit="records",
-                   severity=("ok" if available else "warning" if supported else "not_instrumented"),
+                   severity=("ok" if available else "unknown" if supported and audit_pending
+                             else "warning" if supported else "not_instrumented"),
                    message=("Measured against the latest published NOTAM and TFR states; not a proof of UI reachability."
                             if available else "Delivery cross-check is not instrumented in this status version"
-                            if not supported else f"NOTAM delivery audit unavailable: {audit.get('error') if isinstance(audit, dict) else 'missing audit'}"),
+                            if not supported else f"NOTAM delivery audit is initializing; awaiting first NOTAM/TFR publications (startup limit: {LIVE_FEED_INITIALIZATION_SECONDS}s)"
+                            if audit_pending else f"NOTAM delivery audit unavailable: {audit.get('error') if isinstance(audit, dict) else 'missing audit'}"),
                    details={"tfr_version": audit.get("tfr_version") if isinstance(audit, dict) else None})
 
 
@@ -1797,9 +1832,10 @@ def add_live_feed_metrics(
             )
             continue
         attempts = live_feed_attempts(status, now)
+        initializing = live_feed_initializing(payload, status, now)
         source_time = parse_time(status.get("last_source_timestamp_utc")) or parse_time(
             status.get("last_success_at_utc")
-        )
+        ) or parse_time(status.get("last_published_at_utc"))
         if status_schema_version == 2 and any(
             attempt.get("phase") == "source" for attempt in attempts
         ):
@@ -1822,10 +1858,11 @@ def add_live_feed_metrics(
                 label=f"{display} stale age",
                 value=None,
                 unit="seconds",
-                severity="critical",
+                severity="unknown" if initializing else "critical",
                 warning_threshold=warning_seconds,
                 critical_threshold=critical_seconds,
-                message=f"{display} has no successful source timestamp",
+                message=(f"{display} is initializing; awaiting first publication (startup limit: {LIVE_FEED_INITIALIZATION_SECONDS}s)"
+                         if initializing else f"{display} has no successful source timestamp"),
             )
         else:
             stale_seconds = max(0, int((now - source_time).total_seconds()))
@@ -1981,7 +2018,11 @@ def add_live_feed_metrics(
             )
         if product == "notams":
             add_notam_metadata_metric(metrics, status, status_schema_version)
-            add_notam_delivery_metrics(metrics, status.get("quality"), status_schema_version)
+            add_notam_delivery_metrics(
+                metrics, status.get("quality"), status_schema_version,
+                initializing=initializing,
+                tfr_initializing=live_feed_initializing(payload, products.get("tfrs"), now),
+            )
             source_samples = status.get("source_samples")
             recent_source_rejections: list[dict[str, Any]] = []
             if isinstance(source_samples, list):

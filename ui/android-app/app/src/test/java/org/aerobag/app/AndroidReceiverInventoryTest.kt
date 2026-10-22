@@ -50,7 +50,9 @@ class AndroidReceiverInventoryTest {
         val device = adapter.getRemoteDevice("00:00:00:00:00:01")
         shadowOf(device).setName("GTX test")
         shadowOf(adapter).setBondedDevices(setOf(device))
-        assertEquals(ReceiverInventoryResult.Ready(listOf(ReceiverDevice(device.address, "GTX test"))),
+        val service = android.os.ParcelUuid.fromString("58e1f790-aa26-11e3-a5e2-0800200c9a66")
+        shadowOf(device).setUuids(arrayOf(service))
+        assertEquals(ReceiverInventoryResult.Ready(listOf(ReceiverDevice(device.address, "GTX test", listOf(service.toString())))),
             AndroidRfcomm(app).inventory())
     }
 

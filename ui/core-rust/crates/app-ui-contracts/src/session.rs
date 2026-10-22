@@ -184,6 +184,7 @@ pub struct FlightDataBannerModel {
 pub struct FlightDataEditor {
     pub id: String,
     pub title: Option<String>,
+    pub help_text: Option<String>,
     pub show_input: bool,
     /// Accessible input name, not another visible heading.
     pub label: String,
@@ -195,9 +196,20 @@ pub struct FlightDataEditor {
     pub notice: String,
     pub detail: Option<String>,
     pub warning: Option<String>,
-    pub action_rows: Vec<Vec<FlightDataEditorAction>>,
+    pub action_groups: Vec<Vec<FlightDataEditorAction>>,
+    #[serde(default)]
+    pub action_layout: FlightDataActionLayout,
     pub dismiss_action_id: String,
     pub close_label: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FlightDataActionLayout {
+    #[default]
+    Rows,
+    Columns,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

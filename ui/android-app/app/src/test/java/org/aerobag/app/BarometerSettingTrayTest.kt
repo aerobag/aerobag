@@ -64,7 +64,7 @@ class BarometerSettingTrayTest {
             id = "nexrad_age", title = "NEXRAD", showInput = false,
             label = "NEXRAD", unit = "", input = "", inputRevision = 0,
             notice = "Radar frame 1", dismissActionId = "close", closeLabel = "CLOSE",
-            actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
+            actionGroups = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
                 id = "receiver", label = "ADS-B", enabled = true, selected = true))),
         ))
         val commands = mutableListOf<FlightDataCommand>()
@@ -94,7 +94,7 @@ class BarometerSettingTrayTest {
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         val editor = FlightDataEditor(id = "nexrad_age", title = "NEXRAD", showInput = false,
             label = "NEXRAD", unit = "", input = "", inputRevision = 0, notice = "Receiver radar",
-            dismissActionId = "close", closeLabel = "CLOSE", actionRows = listOf(listOf(
+            dismissActionId = "close", closeLabel = "CLOSE", actionGroups = listOf(listOf(
                 org.aerobag.app.generated.FlightDataEditorAction(id = "latest", label = "LATEST", enabled = true, selected = true))))
         compose.setContent {
             CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
@@ -120,12 +120,16 @@ class BarometerSettingTrayTest {
         }
     }
 
-    @Test fun actionOnlyTrayHasNoInputAndRoutesPhysicalSourceAndAnimationTaps() {
+    @Test fun actionOnlyTrayKeepsSourceColumnTogetherAndHelpUsesTheStandardToast() {
+        val groups = listOf(
+            listOf("internet" to "INTERNET ONLY", "auto_internet" to "AUTO: PREFER NET",
+                "auto_receiver" to "AUTO: PREFER ADS-B", "receiver" to "ADS-B ONLY"),
+            listOf("animate" to "ANIMATE", "latest" to "LATEST"))
         val editor = FlightDataEditor(id = "nexrad_age", title = "NEXRAD", showInput = false,
-            label = "NEXRAD", unit = "", input = "", inputRevision = 0, notice = "Receiver radar",
-            dismissActionId = "close", closeLabel = "CLOSE", actionRows = listOf(
-                listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "receiver", label = "ADS-B", enabled = true, selected = false)),
-                listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "latest", label = "LATEST", enabled = true, selected = false))))
+            label = "NEXRAD", unit = "", input = "", inputRevision = 0, notice = "",
+            helpText = "Gray shading is no coverage.", actionLayout = org.aerobag.app.generated.FlightDataActionLayout.Columns,
+            dismissActionId = "close", closeLabel = "CLOSE", actionGroups = groups.map { group -> group.map { (id, label) ->
+                org.aerobag.app.generated.FlightDataEditorAction(id = id, label = label, enabled = true, selected = false) } })
         val commands = mutableListOf<FlightDataCommand>()
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {
@@ -134,12 +138,21 @@ class BarometerSettingTrayTest {
             }
         }
         compose.onNodeWithTag("parity:nexrad_age-setting").assertDoesNotExist()
-        compose.onNodeWithTag("parity:nexrad_age-receiver").assertIsDisplayed().performTouchInput { click() }
-        compose.onNodeWithTag("parity:nexrad_age-latest").assertIsDisplayed().performTouchInput { click() }
+        compose.onNodeWithText(editor.helpText!!).assertDoesNotExist()
+        compose.onNodeWithTag("parity:nexrad_age-help").assertIsDisplayed().performTouchInput { click() }
         compose.runOnIdle {
-            assertEquals(listOf(
-                FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = "receiver"),
-                FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = "latest")), commands)
+            assertEquals(editor.helpText, ShadowToast.getTextOfLatestToast())
+            assertTrue(commands.isEmpty())
+        }
+        val sourceBounds = groups[0].map { (id, _) -> compose.onNodeWithTag("parity:nexrad_age-$id").fetchSemanticsNode().boundsInRoot }
+        val animationBounds = compose.onNodeWithTag("parity:nexrad_age-animate").fetchSemanticsNode().boundsInRoot
+        assertTrue(sourceBounds.all { it.left == sourceBounds[0].left && it.right <= animationBounds.left })
+        assertTrue(sourceBounds.zipWithNext().all { (a, b) -> a.bottom <= b.top })
+        for ((id, _) in groups.flatten()) {
+            compose.onNodeWithTag("parity:nexrad_age-$id").assertIsDisplayed().performTouchInput { click() }
+        }
+        compose.runOnIdle {
+            assertEquals(groups.flatten().map { (id, _) -> FlightDataCommand.EditorAction(editorId = "nexrad_age", actionId = id) }, commands)
         }
     }
 
@@ -147,7 +160,7 @@ class BarometerSettingTrayTest {
         val editor = mutableStateOf(FlightDataEditor(id = "barometer", showInput = true, label = "Altimeter setting", unit = "inHg",
             input = "29.92", inputRevision = 0, dismissActionId = "close", closeLabel = "CLOSE",
             notice = "BARO ALT from device is cabin alt. Cross-check.",
-            actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
+            actionGroups = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
                 id = "nearest", label = "NEAREST", secondaryLabel = "KSMP 52min old", enabled = true, selected = false,
                 weatherBadge = org.aerobag.app.generated.FlightPlanWeatherBadgeUiView("vfr", "clear"),
             )))))
@@ -190,7 +203,7 @@ class BarometerSettingTrayTest {
         val editor = FlightDataEditor(id = "altitude_target", showInput = true, title = "Target altitude", label = "BARO target ft",
             unit = "ft", dismissActionId = "close",
             input = "2500", inputRevision = 0, notice = "Use the aircraft altimeter for assigned altitudes and altitude restrictions.",
-            actionRows = listOf("gps", "baro", "decrease", "increase", "off").map {
+            actionGroups = listOf("gps", "baro", "decrease", "increase", "off").map {
                 org.aerobag.app.generated.FlightDataEditorAction(id = it, label = it, enabled = true, selected = false)
             }.chunked(2), closeLabel = "CLOSE")
         checkKeyboardAvoidance(editor, "off")
@@ -204,7 +217,7 @@ class BarometerSettingTrayTest {
             input = "29.90", inputRevision = 0,
             notice = "BARO ALT from device is cabin alt. Cross-check.",
             warning = "Check baro setting:\nKBFI 30.07 66 min ago",
-            actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
+            actionGroups = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
                 id = "nearest", label = "NEAREST", secondaryLabel = "KBFI 66min old",
                 enabled = true, selected = false))), closeLabel = "CLOSE")
         checkKeyboardAvoidance(editor, "nearest")
@@ -252,7 +265,7 @@ class BarometerSettingTrayTest {
     @Test fun openingAndReopeningTargetSelectsValueWithoutReselectingOnCoreEcho() {
         var editor = FlightDataEditor(id = "altitude_target", showInput = true, title = "Target altitude", label = "GPS target ft",
             unit = "ft", dismissActionId = "close",
-            input = "2500", inputRevision = 0, notice = "Use the aircraft altimeter.", actionRows = emptyList(), closeLabel = "CLOSE")
+            input = "2500", inputRevision = 0, notice = "Use the aircraft altimeter.", actionGroups = emptyList(), closeLabel = "CLOSE")
         val banner = mutableStateOf(FlightDataBannerModel(cells = listOf(
             FlightDataCell(id = "altitude_target", label = "TGT GPS", value = "2500",
                 action = FlightDataCellAction("altitude_target", "Set target altitude", symbolId = null)),
@@ -305,7 +318,7 @@ class BarometerSettingTrayTest {
             input = "1500", inputRevision = 0,
             notice = "Prediction uses this device's cabin-pressure altitude. Cross-check with the aircraft altimeter.",
             warning = "Approaching target altitude. Cross-check aircraft altimeter.",
-            actionRows = listOf(
+            actionGroups = listOf(
                 org.aerobag.app.generated.FlightDataEditorAction(id = "gps", label = "GPS", enabled = true, selected = false),
                 org.aerobag.app.generated.FlightDataEditorAction(id = "baro", label = "BARO", enabled = true, selected = true),
                 org.aerobag.app.generated.FlightDataEditorAction(id = "increase", label = "+100", enabled = true, selected = false),
@@ -362,7 +375,7 @@ class BarometerSettingTrayTest {
         val editor = FlightDataEditor(id = "barometer", showInput = true, title = null, label = "Altimeter setting", input = "29.92", inputRevision = 0,
             unit = "inHg", dismissActionId = "close",
             notice = "BARO ALT from device is cabin alt. Cross-check.",
-            actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "nearest", label = "NEAREST", enabled = false, selected = false, disabledReason = disabledReason))), closeLabel = "CLOSE")
+            actionGroups = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(id = "nearest", label = "NEAREST", enabled = false, selected = false, disabledReason = disabledReason))), closeLabel = "CLOSE")
         val banner = mutableStateOf(FlightDataBannerModel(cells = listOf(
             FlightDataCell(id = "barometer", label = "BARO ft", value = "336",
                 action = FlightDataCellAction("barometer", "Set barometric altimeter", symbolId = null)),
@@ -399,7 +412,7 @@ class BarometerSettingTrayTest {
             assertEquals(listOf(FlightDataCommand.SetInput(editorId = "barometer", input = "29.97")), commands)
         }
         compose.onNodeWithText(editor.notice).assertIsDisplayed()
-        compose.runOnIdle { banner.value = banner.value.copy(editor = editor.copy(actionRows = editor.actionRows.map { row -> row.map { it.copy(enabled = true) } })) }
+        compose.runOnIdle { banner.value = banner.value.copy(editor = editor.copy(actionGroups = editor.actionGroups.map { row -> row.map { it.copy(enabled = true) } })) }
         compose.onNodeWithTag("parity:barometer-nearest").performTouchInput { click() }
         compose.runOnIdle { assertEquals(FlightDataCommand.EditorAction(editorId = "barometer", actionId = "nearest"), commands.last()) }
         compose.onNodeWithTag("parity:barometer-setting").assertTextEquals("30.01")
@@ -415,7 +428,7 @@ class BarometerSettingTrayTest {
             id = "altitude_target", title = "Target altitude", label = "GPS target ft", input = "2500", inputRevision = 0,
             unit = "ft", dismissActionId = "close",
             notice = "Use the aircraft altimeter.", closeLabel = "CLOSE",
-            actionRows = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
+            actionGroups = listOf(listOf(org.aerobag.app.generated.FlightDataEditorAction(
                 id = "baro", label = "BARO", enabled = false, selected = false, disabledReason = reason))),
         ))
         val commands = mutableListOf<FlightDataCommand>()

@@ -14,6 +14,7 @@ data class UiTheme(
     val aviation: AviationTheme,
     val flightPlanRoute: FlightPlanRouteTheme,
     val plateFolder: PlateFolderTheme,
+    val receiverActivity: Map<String, Color>,
 )
 
 data class ControlsTheme(
@@ -112,6 +113,7 @@ private data class WireUiTheme(
     val aviation: WireAviationTheme,
     val flight_plan_route: WireFlightPlanRouteTheme,
     val plate_folder: WirePlateFolderTheme,
+    val receiver_activity: Map<String, String>,
 )
 
 @Serializable
@@ -219,6 +221,7 @@ object UiThemeLoader {
         val payload = context.assets.open(ASSET_PATH).bufferedReader().use { it.readText() }
         val wire = json.decodeFromString<WireUiTheme>(payload)
         return UiTheme(
+            receiverActivity = wire.receiver_activity.mapValues { (_, value) -> value.toColor() },
             controls = ControlsTheme(
                 buttonChecked = wire.controls.button_checked.toColor(),
                 buttonUnchecked = wire.controls.button_unchecked.toColor(),

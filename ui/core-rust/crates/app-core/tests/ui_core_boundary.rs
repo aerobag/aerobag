@@ -1498,9 +1498,9 @@ fn flight_data_banner_activation_policy_is_core_owned() {
 
     let android_editor =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightDataSettingTray.kt");
-    assert!(android_editor.contains("editor.actionRows.forEach"));
+    assert!(android_editor.contains("editor.actionGroups.forEach"));
     assert!(android_editor.contains("action(editor.dismissActionId)"));
-    assert!(web_banner.contains("props.editor.action_rows.map"));
+    assert!(web_banner.contains("props.editor.action_groups.map"));
     assert!(web_banner.contains("action(props.editor.dismiss_action_id)"));
     for source in [&android_editor, web_banner] {
         assert!(!source.contains("\"barometer\""));

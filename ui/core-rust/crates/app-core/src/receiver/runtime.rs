@@ -28,6 +28,18 @@ use std::{
 
 const BATCH_SIZE: usize = 32;
 const INVENTORY_TIMEOUT_MS: u64 = 5_000;
+
+fn is_receiver_candidate(device: &ReceiverDevice) -> bool {
+    device
+        .service_uuids
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(super::SERVICE_UUID))
+        || device
+            .name
+            .to_ascii_uppercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "GTX" || word == "GTX345")
+}
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
 
 /// Pure identity allocation, called when a publisher is constructed, before any
@@ -175,6 +187,7 @@ pub struct Runtime {
     connection: Option<Connection<CaptureArchive>>,
     inventory: InventoryState,
     inventory_generation: u64,
+    show_all_devices: bool,
     error: Option<String>,
     host_failed: bool,
     normalized: u64,
@@ -182,6 +195,9 @@ pub struct Runtime {
     weather_cache: Option<WeatherCache>,
     weather_error: Option<String>,
     last_delivery_signal_ms: Option<u64>,
+    activity: super::activity::Activity,
+    activity_view: Option<app_ui_contracts::receiver::UiReceiverActivity>,
+    activity_view_second: Option<u64>,
     live: super::live::LiveInput,
     mailbox: Arc<Mutex<Mailbox>>,
 }
@@ -212,6 +228,7 @@ impl Runtime {
             connection: None,
             inventory: InventoryState::NotChecked,
             inventory_generation: 0,
+            show_all_devices: false,
             error: None,
             host_failed: false,
             normalized: 0,
@@ -219,6 +236,9 @@ impl Runtime {
             weather_cache,
             weather_error,
             last_delivery_signal_ms: None,
+            activity: Default::default(),
+            activity_view: None,
+            activity_view_second: None,
             live,
             mailbox: Arc::new(Mutex::new(Mailbox {
                 next_id: 1,
@@ -331,6 +351,10 @@ impl Runtime {
                         devices.retain(|device| {
                             device.address.len() <= 64 && device.name.len() <= 256
                         });
+                        for device in devices.iter_mut() {
+                            device.service_uuids.truncate(64);
+                            device.service_uuids.retain(|id| id.len() <= 64);
+                        }
                         devices.sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
                         devices.dedup_by(|a, b| a.address == b.address);
                     }
@@ -352,6 +376,10 @@ impl Runtime {
                 self.error = None;
                 if action_id == "receiver:permission" {
                     effects.push(ReceiverHostEffect::RequestPermission);
+                } else if action_id == "receiver:bluetooth-settings" && !self.active() {
+                    effects.push(ReceiverHostEffect::OpenBluetoothSettings);
+                } else if action_id == "receiver:show-all" && !self.active() {
+                    self.show_all_devices = !self.show_all_devices;
                 } else if action_id == "receiver:refresh" {
                     self.refresh_inventory(clock, &mut effects);
                 } else if action_id == "receiver:stop" {
@@ -376,7 +404,10 @@ impl Runtime {
                         .devices()
                         .iter()
                         .enumerate()
-                        .find(|(index, _)| action_id == self.device_action(*index))
+                        .find(|(index, device)| {
+                            action_id == self.device_action(*index)
+                                && (self.show_all_devices || is_receiver_candidate(device))
+                        })
                         .map(|(_, device)| device.address.clone());
                     if let Some(device) = device.filter(|_| !self.active()) {
                         // Blocked owners must release the file lock before opening a new archive.
@@ -465,7 +496,12 @@ impl Runtime {
             .set_connected(self.connection.as_ref().is_some_and(|connection| {
                 connection.status().phase == ConnectionPhase::Protocol(ProtocolPhase::Receiving)
             }));
+        self.activity
+            .advance(clock.monotonic_ms, self.live.snapshot().connected);
         for message in output.messages {
+            if let Ok(product) = &message.product {
+                self.activity.observe(product, clock.monotonic_ms);
+            }
             if let Ok(Product::Traffic(traffic)) = &message.product {
                 self.live.ingest(traffic, clock);
             }
@@ -495,11 +531,19 @@ impl Runtime {
             }
         }
         self.live.expire(clock);
+        if self.activity_view_second != Some(clock.monotonic_ms / 1000) {
+            self.activity_view = self.activity.view(clock.monotonic_ms);
+            self.activity_view_second = Some(clock.monotonic_ms / 1000);
+        }
         let panel = self.panel();
+        // The graph travels only on the throttled session delivery, not on
+        // every OS callback's foreground-notification response.
+        let mut session_panel = panel.clone();
+        session_panel.activity = self.activity_view.clone();
         self.mailbox
             .lock()
             .unwrap()
-            .publish(panel.clone(), self.live.snapshot());
+            .publish(session_panel, self.live.snapshot());
         let pending = {
             let mailbox = self.mailbox.lock().unwrap();
             mailbox.dirty || !mailbox.pending.is_empty() || mailbox.in_flight.is_some()
@@ -524,6 +568,11 @@ impl Runtime {
                 .chain(pending.then_some(clock.monotonic_ms.saturating_add(1000)))
                 .chain(self.live.next_wake_ms())
                 .chain(self.inventory.deadline())
+                .chain(
+                    self.activity_view
+                        .as_ref()
+                        .map(|_| (clock.monotonic_ms / 1000 + 1) * 1000),
+                )
                 .min(),
         }
     }
@@ -657,7 +706,7 @@ impl Runtime {
         let live = self.live.snapshot();
         if live.connected {
             panel.detail.push_str(&format!(
-                " {} traffic records. Receiver GPS: {}. Enable ADS-B Traffic in Layers; choose Receiver in the ownship menu. Use BARO and NEXRAD grid trays to select receiver sources.",
+                " {} traffic records. Receiver GPS: {}. Choose Receiver in the ownship menu to use its GPS. BARO and NEXRAD have their own source selectors.",
                 live.aircraft.len(), if live.ownship.is_some() { "fix available" } else { "no current fix" },
             ));
         }
@@ -679,6 +728,9 @@ impl Runtime {
             panel
                 .actions
                 .push(action("receiver:export", "Export receiver capture"));
+            panel
+                .actions
+                .push(action("receiver:bluetooth-settings", "Bluetooth settings"));
             if matches!(
                 self.inventory,
                 InventoryState::Checked {
@@ -697,28 +749,44 @@ impl Runtime {
                 refresh.disabled_reason = Some("Waiting for Android's paired-device list".into());
             }
             panel.actions.push(refresh);
-            panel
-                .actions
-                .extend(
-                    self.inventory
-                        .devices()
-                        .iter()
-                        .enumerate()
-                        .map(|(index, device)| {
-                            action(
-                                &self.device_action(index),
-                                &format!("Connect {} ({})", device.name, device.address),
-                            )
-                        }),
-                );
+            let other_count = self
+                .inventory
+                .devices()
+                .iter()
+                .filter(|device| !is_receiver_candidate(device))
+                .count();
+            if other_count > 0 {
+                panel.detail.push_str("\nSuggested receivers use their Bluetooth name or advertised service. If yours is missing, show all paired devices.");
+                panel.actions.push(action(
+                    "receiver:show-all",
+                    if self.show_all_devices {
+                        "Show suggested receivers"
+                    } else {
+                        "Show all paired devices"
+                    },
+                ));
+            }
+            panel.actions.extend(
+                self.inventory
+                    .devices()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, device)| self.show_all_devices || is_receiver_candidate(device))
+                    .map(|(index, device)| {
+                        action(
+                            &self.device_action(index),
+                            &format!("Connect {} ({})", device.name, device.address),
+                        )
+                    }),
+            );
         }
         panel
     }
 }
 
 fn empty_panel() -> UiReceiverPanel {
-    UiReceiverPanel { title:"ADS-B receiver (experimental)".into(),status:"Disconnected".into(),
-        detail:"Pair the GTX 345 in Android Bluetooth settings first. Connecting automatically records a receiver capture (256 MiB limit). Select Receiver in the ownship menu for GPS; BARO/NEXRAD grid trays choose pressure and radar sources. Radar placement is experimental; AHRS is recorded but not displayed.".into(),actions:Vec::new() }
+    UiReceiverPanel { title:"ADS-B receiver".into(),status:"Disconnected".into(),
+        detail:"Pair your GTX 345 in Bluetooth settings, then refresh and connect. Traffic and weather are received automatically. Receiver GPS remains an explicit ownship choice. Diagnostic recording is automatic (256 MiB limit); attitude is recorded but not displayed. Compatibility with other receiver firmware is not yet verified.".into(),actions:Vec::new(), activity:None }
 }
 
 // Single process owner survives activity rotation and UI session replacement.
@@ -824,6 +892,7 @@ mod tests {
             devices: vec![ReceiverDevice {
                 address: "00:00:00:00:00:01".into(),
                 name: "Test receiver".into(),
+                service_uuids: vec![super::super::SERVICE_UUID.into()],
             }],
         }
     }
@@ -872,6 +941,76 @@ mod tests {
             DateTime::from_timestamp_millis(clock(0).wall_epoch_ms).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn receiver_chooser_suggests_services_and_names_without_hiding_other_devices_permanently() {
+        let root = root();
+        let mut runtime = Runtime::new(root.path().into());
+        let devices = vec![
+            ReceiverDevice {
+                address: "1".into(),
+                name: "Renamed airplane".into(),
+                service_uuids: vec![super::super::SERVICE_UUID.to_uppercase()],
+            },
+            ReceiverDevice {
+                address: "2".into(),
+                name: "GTX 345".into(),
+                service_uuids: vec![],
+            },
+            ReceiverDevice {
+                address: "3".into(),
+                name: "Headphones".into(),
+                service_uuids: vec![],
+            },
+        ];
+        let panel = refresh(&mut runtime, ReceiverInventoryResult::Ready { devices }, 0).panel;
+        let names = |panel: &UiReceiverPanel| {
+            panel
+                .actions
+                .iter()
+                .filter(|a| a.action_id.starts_with("receiver:device:"))
+                .map(|a| a.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&panel),
+            ["Connect GTX 345 (2)", "Connect Renamed airplane (1)"]
+        );
+        assert!(matches!(
+            runtime
+                .update(action("receiver:bluetooth-settings"), &[], clock(1))
+                .effects
+                .as_slice(),
+            [ReceiverHostEffect::OpenBluetoothSettings]
+        ));
+        let panel = runtime
+            .update(action("receiver:show-all"), &[], clock(2))
+            .panel;
+        assert_eq!(names(&panel).len(), 3);
+        let renamed = panel
+            .actions
+            .iter()
+            .find(|a| a.label == "Connect Renamed airplane (1)")
+            .unwrap();
+        let connected = runtime.update(action(&renamed.action_id), &[], clock(3));
+        assert!(connected.keep_alive);
+        assert_eq!(
+            connected
+                .panel
+                .actions
+                .iter()
+                .map(|a| a.action_id.as_str())
+                .collect::<Vec<_>>(),
+            ["receiver:stop"]
+        );
+        let stopped = runtime.update(action("receiver:stop"), &[], clock(4));
+        assert!(!stopped.keep_alive);
+        let suggested = runtime.update(action("receiver:show-all"), &[], clock(5));
+        assert_eq!(
+            names(&suggested.panel),
+            ["Connect GTX 345 (2)", "Connect Renamed airplane (1)"]
+        );
     }
 
     #[test]

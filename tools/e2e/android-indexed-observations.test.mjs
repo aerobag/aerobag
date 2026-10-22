@@ -553,9 +553,11 @@ test("all Settings controls register with the same index their driver reads", ()
   // physical SettingsPageTest also verifies slider geometry, input and disposal
   // with indexing enabled; this guard runs in the fixture-free harness suite.
   assert.doesNotMatch(page, /\.testTag\("parity:settings-/);
-  for (const [kind, modifier] of [["slider", "e2eIndexedHorizontalProgress"], ["help", "e2eIndexedControl"]]) {
-    assert.match(page, new RegExp(`\\.${modifier}\\(\\s*semanticTag = "parity:settings-${kind}:`));
-  }
+  assert.match(page, /\.e2eIndexedHorizontalProgress\(\s*semanticTag = "parity:settings-slider:/);
+  assert.match(page, /InlineHelpButton\(helpText, "parity:settings-help:/);
+  const help = readFileSync(new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/InlineHelpButton.kt", import.meta.url), "utf8");
+  assert.match(help, /\.e2eIndexedControl\(semanticTag = tag, enabled = true, text = text\)/);
+  assert.match(help, /showActionToast\(context, text, long = true\)/);
 });
 
 test("Settings reveal uses the control index before and after lazy-list traversal", async () => {

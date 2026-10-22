@@ -158,11 +158,13 @@ export type FlightDataBannerModel = {
 };
 
 export type FlightDataEditor = {
-  action_rows: FlightDataEditorAction[][];
+  action_groups: FlightDataEditorAction[][];
+  action_layout: FlightDataActionLayout;
   close_label: string;
   detail?: string | null;
   dismiss_action_id: string;
   error?: string | null;
+  help_text?: string | null;
   id: string;
   input: string;
   input_correction?: FlightDataInputCorrection | null;
@@ -174,6 +176,8 @@ export type FlightDataEditor = {
   unit: string;
   warning?: string | null;
 };
+
+export type FlightDataActionLayout = "rows" | "columns";
 
 export type FlightDataCommand = { available: boolean; kind: "observe"; observed_epoch_ms: number; pressure_hpa?: number | null; received_epoch_ms: number } | { editor_id: string; input: string; kind: "set_input" } | { action_id: string; editor_id: string; kind: "editor_action" };
 
@@ -512,14 +516,44 @@ export type UiReceiverAction = {
 
 export type UiReceiverPanel = {
   actions: UiReceiverAction[];
+  activity?: UiReceiverActivity | null;
   detail: string;
   status: string;
   title: string;
 };
 
+export type UiReceiverActivity = {
+  axis_end: string;
+  axis_start: string;
+  detail: string;
+  strips: UiReceiverActivityStrip[];
+  title: string;
+};
+
+export type UiReceiverActivityStrip = {
+  legend: UiReceiverActivityLegend[];
+  rects: UiReceiverActivityRect[];
+  scale_label: string;
+  title: string;
+};
+
+export type UiReceiverActivityRect = {
+  color_key: string;
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+};
+
+export type UiReceiverActivityLegend = {
+  color_key: string;
+  text: string;
+};
+
 export type ReceiverDevice = {
   address: string;
   name: string;
+  service_uuids: string[];
 };
 
 export type ReceiverInventoryResult = { devices: ReceiverDevice[]; kind: "ready" } | { kind: "permission_required" } | { kind: "bluetooth_off" } | { kind: "unavailable" } | { kind: "failed" };
@@ -528,7 +562,7 @@ export type ReceiverIoFailure = "connection" | "read" | "write" | "permission" |
 
 export type ReceiverHostEvent = { kind: "host_failed" } | { kind: "host_unavailable" } | { kind: "refresh_inventory" } | { kind: "inventory"; request_id: number; result: ReceiverInventoryResult } | { action_id: string; kind: "action" } | { connection_id: number; kind: "connected" } | { connection_id: number; kind: "received" } | { connection_id: number; kind: "written"; write_id: number } | { connection_id: number; failure: ReceiverIoFailure; kind: "failed" } | { kind: "tick" };
 
-export type ReceiverHostEffect = { kind: "share_file"; mime_type: string; path: string; title: string } | { kind: "request_permission" } | { kind: "refresh_inventory"; request_id: number } | { connection_id: number; device: string; kind: "connect"; service_uuid: string } | { connection_id: number; kind: "close" } | { bytes_base64: string; connection_id: number; kind: "write"; write_id: number };
+export type ReceiverHostEffect = { kind: "share_file"; mime_type: string; path: string; title: string } | { kind: "request_permission" } | { kind: "open_bluetooth_settings" } | { kind: "refresh_inventory"; request_id: number } | { connection_id: number; device: string; kind: "connect"; service_uuid: string } | { connection_id: number; kind: "close" } | { bytes_base64: string; connection_id: number; kind: "write"; write_id: number };
 
 export type ReceiverHostOutput = {
   delivery_ready: boolean;

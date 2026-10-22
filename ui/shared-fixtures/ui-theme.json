@@ -44,6 +44,16 @@
     "compass_north": "#d83a2e",
     "compass_south": "#aab2b8"
   },
+  "receiver_activity": {
+    "traffic": "#2375ad",
+    "sensors": "#8496aa",
+    "metar": "#238463",
+    "taf": "#b58521",
+    "radar": "#9867ad",
+    "other": "#b96339",
+    "unobserved": "#f0f2f4",
+    "disconnected": "#c1c8ce"
+  },
   "aviation": {
     "class_b_d_blue": "#245ee0",
     "class_c_magenta": "#be32a0",

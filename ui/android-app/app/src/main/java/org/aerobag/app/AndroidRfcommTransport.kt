@@ -44,7 +44,9 @@ internal class AndroidRfcomm(private val context: Context) {
         val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
             ?: return@readBluetoothInventory ReceiverInventoryResult.Unavailable
         if (!adapter.isEnabled) return@readBluetoothInventory ReceiverInventoryResult.BluetoothOff
-        ReceiverInventoryResult.Ready(adapter.bondedDevices.map { ReceiverDevice(it.address, it.name ?: it.address) })
+        ReceiverInventoryResult.Ready(adapter.bondedDevices.map {
+            ReceiverDevice(it.address, it.name ?: it.address, it.uuids?.map { uuid -> uuid.toString() }.orEmpty())
+        })
     }
 
     @SuppressLint("MissingPermission")

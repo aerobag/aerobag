@@ -5,6 +5,7 @@
 //! Receive-only avionics input. No OS IO and no transponder configuration.
 //! Capture bytes before calling these decoders; errors must not destroy evidence.
 
+pub(crate) mod activity;
 pub mod capture;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod capture_files;

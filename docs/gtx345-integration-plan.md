@@ -2,6 +2,18 @@
 
 ## Agreed Contract
 
+- The receiver panel shows a core-owned one-hour reception history in 60
+  one-minute buckets. Flight data (traffic, ownship/sensors) and weather
+  (METAR, TAF, radar, other decoded weather) have independent stacked scales.
+  Empty responses and malformed/undecoded products do not count; retransmitted
+  decoded data does. This measures reception, not freshness or completeness.
+  Core supplies geometry, legend ages, and gap shading; both platforms paint it
+  using the shared theme. The live partial minute updates at most once a second
+  through session delivery, not per-packet OS responses. History is bounded,
+  volatile, and retained across reconnects and UI rotation. Replay uses the same
+  reducer on its timeline; rewind reconstructs history without future events or
+  cached/Internet products appearing as receiver reception.
+
 - Android supplies Classic Bluetooth RFCOMM, permissions, paired-device
   discovery, private file IO, and monotonic/wall clocks. Rust core owns the
   protocol, subscriptions, decoding, source selection, status, and UI actions.
@@ -345,7 +357,11 @@ semantics are documented in the receiver handoff and
 
 The BARO tiny tray now offers DEVICE and RECEIVER. Each source has its own
 bounded filter/history; changing source cannot mix readings or vertical-speed
-samples. The default remains device pressure. Receiver pressure uses only the
+samples. Initial selection waits for the device's hardware-capability report:
+use device pressure when a sensor exists, otherwise select receiver pressure
+when it becomes available. An absent sample is not absent hardware, and callback
+order does not change the decision. Subsequent source changes are explicit.
+Receiver pressure uses only the
 verified enhanced-traffic pressure-altitude field, converted through the inverse
 of the existing standard-atmosphere equation before applying the selected
 altimeter setting. It works without selecting receiver GPS or having a device
@@ -373,8 +389,9 @@ Both sources use one source-grid mesh projector and animation policy. Core-owned
 image URIs use the existing tile-byte bridge on Android and a WASM byte bridge on
 web; browser object URLs use the existing frame-cache lifecycle. Missing local
 images fail locally, never turn into HTTP requests. Internet eager/durable vs
-viewport acquisition preferences are unchanged. Receiver radar's placement
-remains explicitly experimental in the tray pending an independent comparison.
+viewport acquisition preferences are unchanged. The recorded-flight comparison
+with archived Internet radar supports the broad georeference; it is not an
+exhaustive validation across receiver firmware and radar products.
 
 Tests exercise source controls through a real core session under both platform
 acquisition policies, receiver PNG bytes and no-data pixels, map/grid animation
@@ -610,8 +627,9 @@ Current UI scope/defaults:
 - Traffic defaults on, but is inactive without a source. Receiver connection
   enables its display without another layer click; an explicit Traffic off
   choice remains off across receiver reconnects. This does not enable Internet
-  traffic polling. Receiver ownship remains opt-in. BARO defaults to the device
-  source; NEXRAD defaults to Auto (initial preference Internet) and a hidden layer. The NEXRAD tray opens
+  traffic polling. Live receiver ownship remains opt-in. BARO initially prefers
+  device hardware when present, otherwise receiver pressure; NEXRAD defaults to
+  Auto (initial preference Internet) and a hidden layer. The NEXRAD tray opens
   even while the layer is off.
 - Receiver PIREPs, winds and NOTAMs are decoded/captured, but are not yet
   integrated into those application products. Graphical METAR/SUA payloads
@@ -660,8 +678,8 @@ readiness supplied by the shared weather controller.
   preferred one. Use the existing shared vector-symbol mechanism for globe,
   receiver/antenna and device indicators, not platform-dependent emoji.
   Apply the same source vocabulary to BARO and the ownship launcher. Receiver
-  pressure and ownship remain explicit selections; radar Auto does not imply
-  auto-selection for either sensor.
+  ownship remains an explicit selection in live operation; radar Auto does not
+  change pressure or ownship selection.
 
 The actual capture motivates separating switch and display deadlines: a
 regional image received at 23:10:29Z still represented the 23:04 observation,
@@ -729,9 +747,27 @@ product merely to make them visible.
 
 The existing Load/Play/Pause/Seek widget accepts `aerobag-receiver-replay`,
 schema 1. A receiver replay is labeled `REPLAY LAB` and requires a reload to
-leave. It does not automatically select receiver ownship or pressure. Select
-those explicitly using their normal trays; the playback transport remains
-visible while using receiver ownship.
+leave. Schema 1 carries no device GPS or pressure samples. Loading it selects
+receiver ownship and declares device pressure unavailable, so the first receiver
+pressure report is usable without a source click. Rewinding preserves these
+controls and reconstructs readings. This does not change live ownship opt-in.
+The playback transport remains visible while using receiver ownship.
+
+### Receiver And Source Controls
+
+Core owns the receiver panel, paired-device suggestions, progress, failures and
+actions. Android supplies cached Bluetooth service UUIDs/names and executes the
+OS permission, pairing-settings and socket operations. Suggested devices have
+the receiver service UUID or a GTX name; Show all paired devices exposes renamed
+devices without known service metadata. A suggestion is not proof of compatibility
+or range. Refresh explicitly reports waiting, success, timeout or OS failure.
+During connection/setup/retry/reception, Disconnect remains available; connection
+setup and retries stay in the existing core connection machine. Diagnostic
+recording is automatic and exportable after disconnect, not a reception prerequisite.
+
+The NEXRAD tray uses the shared flight-data editor's column layout: four source
+choices together, animation/latest in the other column. Core supplies title help
+instead of inline explanatory text; both renderers use their existing help toast.
 
 The replay clock is the sole driver of historical deadlines. Host-time radar,
 traffic and session-refresh timers are suppressed in the lab; transport ticks

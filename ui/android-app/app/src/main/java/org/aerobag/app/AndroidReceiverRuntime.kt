@@ -34,6 +34,7 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
     private var keepingAlive = false
     private var foregroundSummary: Pair<String, String>? = null
     val permissionRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val bluetoothSettingsRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val shareRequests = MutableSharedFlow<ReceiverHostEffect.ShareFile>(extraBufferCapacity = 1)
     val deliveries = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
 
@@ -108,6 +109,7 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
         when (effect) {
             is ReceiverHostEffect.ShareFile -> shareRequests.tryEmit(effect)
             ReceiverHostEffect.RequestPermission -> permissionRequests.tryEmit(Unit)
+            ReceiverHostEffect.OpenBluetoothSettings -> bluetoothSettingsRequests.tryEmit(Unit)
             is ReceiverHostEffect.RefreshInventory -> scope.launch {
                 // Binder work must not block core's progress publication or refresh deadline.
                 val result = withContext(Dispatchers.IO) { rfcomm.inventory() }

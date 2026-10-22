@@ -50,6 +50,13 @@
       "title": "DebugFlagId",
       "type": "string"
     },
+    "FlightDataActionLayout": {
+      "enum": [
+        "rows",
+        "columns"
+      ],
+      "type": "string"
+    },
     "FlightDataAttention": {
       "additionalProperties": false,
       "properties": {
@@ -279,7 +286,7 @@
     "FlightDataEditor": {
       "additionalProperties": false,
       "properties": {
-        "action_rows": {
+        "action_groups": {
           "items": {
             "items": {
               "$ref": "#/$defs/FlightDataEditorAction"
@@ -287,6 +294,10 @@
             "type": "array"
           },
           "type": "array"
+        },
+        "action_layout": {
+          "$ref": "#/$defs/FlightDataActionLayout",
+          "default": "rows"
         },
         "close_label": {
           "type": "string"
@@ -301,6 +312,12 @@
           "type": "string"
         },
         "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "help_text": {
           "type": [
             "string",
             "null"
@@ -361,7 +378,7 @@
         "input",
         "input_revision",
         "notice",
-        "action_rows",
+        "action_groups",
         "dismiss_action_id",
         "close_label"
       ],
@@ -820,11 +837,19 @@
         },
         "name": {
           "type": "string"
+        },
+        "service_uuids": {
+          "description": "Cached service identifiers reported by the OS; core interprets them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
         "address",
-        "name"
+        "name",
+        "service_uuids"
       ],
       "type": "object"
     },
@@ -860,6 +885,19 @@
           "properties": {
             "kind": {
               "const": "request_permission",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "open_bluetooth_settings",
               "type": "string"
             }
           },
@@ -2604,6 +2642,116 @@
       ],
       "type": "object"
     },
+    "UiReceiverActivity": {
+      "properties": {
+        "axis_end": {
+          "type": "string"
+        },
+        "axis_start": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "strips": {
+          "items": {
+            "$ref": "#/$defs/UiReceiverActivityStrip"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "detail",
+        "axis_start",
+        "axis_end",
+        "strips"
+      ],
+      "type": "object"
+    },
+    "UiReceiverActivityLegend": {
+      "properties": {
+        "color_key": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "color_key",
+        "text"
+      ],
+      "type": "object"
+    },
+    "UiReceiverActivityRect": {
+      "description": "Core lays out the graph in a 60000 x 1000 coordinate system. Hosts only paint.",
+      "properties": {
+        "color_key": {
+          "type": "string"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "x": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "y": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height",
+        "color_key"
+      ],
+      "type": "object"
+    },
+    "UiReceiverActivityStrip": {
+      "properties": {
+        "legend": {
+          "items": {
+            "$ref": "#/$defs/UiReceiverActivityLegend"
+          },
+          "type": "array"
+        },
+        "rects": {
+          "items": {
+            "$ref": "#/$defs/UiReceiverActivityRect"
+          },
+          "type": "array"
+        },
+        "scale_label": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "scale_label",
+        "rects",
+        "legend"
+      ],
+      "type": "object"
+    },
     "UiReceiverPanel": {
       "properties": {
         "actions": {
@@ -2611,6 +2759,16 @@
             "$ref": "#/$defs/UiReceiverAction"
           },
           "type": "array"
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiReceiverActivity"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "detail": {
           "type": "string"
@@ -3459,6 +3617,7 @@
     "FlightDataColumn",
     "FlightDataBannerModel",
     "FlightDataEditor",
+    "FlightDataActionLayout",
     "FlightDataCommand",
     "FlightDataEditorAction",
     "FlightDataInputCorrection",
@@ -3514,6 +3673,10 @@
     "UiSettingsPageBlock",
     "UiReceiverAction",
     "UiReceiverPanel",
+    "UiReceiverActivity",
+    "UiReceiverActivityStrip",
+    "UiReceiverActivityRect",
+    "UiReceiverActivityLegend",
     "ReceiverDevice",
     "ReceiverInventoryResult",
     "ReceiverIoFailure",

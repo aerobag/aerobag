@@ -4155,6 +4155,22 @@ pub fn load_playback_trace_in_session(
         weather.copy_replay_controls_from(&session.weather);
         session.weather = weather;
         session.situation = SituationController::default();
+        // This trace format carries receiver sensors, never device GPS/pressure.
+        session
+            .situation
+            .select_source(crate::ownship::OwnshipSelectionCommand::Source {
+                source_id: crate::ownship::OwnshipSourceId(crate::receiver::live::SOURCE_ID.into()),
+            });
+        session.situation.barometer_mut().apply(
+            crate::FlightDataCommand::Observe {
+                available: false,
+                pressure_hpa: None,
+                observed_epoch_ms: trace.document.start_epoch_ms,
+                received_epoch_ms: trace.document.start_epoch_ms,
+            },
+            trace.document.start_epoch_ms,
+            None,
+        );
         session
             .situation
             .playback_mut()
@@ -4305,6 +4321,13 @@ fn finish_receiver_replay(session: &mut UiSession) -> AppResult<HadOperationOutc
             .map_err(crate::receiver_replay::trace_error)?;
     }
     session.situation.install_replay_sensors(&reduction.sensors);
+    session.settings.set_receiver_panel(app_ui_contracts::receiver::UiReceiverPanel {
+        title: "ADS-B receiver replay".into(),
+        status: if reduction.live.snapshot().connected { "Receiving (replay)" } else { "Disconnected (replay)" }.into(),
+        detail: "Reception activity follows the replay clock. Seeking rebuilds the recorded history; Internet comparison products are excluded.".into(),
+        actions: Vec::new(),
+        activity: reduction.activity.view(target as u64),
+    });
     advance_session_wall_clock(session, 0);
     changed_session_update_outcome_with_invalidations(
         session,
@@ -5296,7 +5319,7 @@ fn project_barometer_reading(
             .as_ref()
             .and_then(|aliases| aliases.airport_id_for_station(&nearest.station, nearest.position))
             .unwrap_or(&nearest.station);
-        editor.action_rows[0][0].symbol_feature =
+        editor.action_groups[0][0].symbol_feature =
             crate::had_ops::nav_symbol_feature(store, &NavRef::Airport(airport_id.into()))?;
     }
     Ok(reading)
@@ -23818,6 +23841,7 @@ mod tests {
                 status: "Receiving and recording".into(),
                 detail: "Synthetic receiver".into(),
                 actions: Vec::new(),
+                activity: None,
             },
             reports: vec![report],
         };
@@ -27194,6 +27218,79 @@ mod tests {
     }
 
     #[test]
+    fn receiver_replay_selects_its_only_ownship_source_on_load_and_rewind() {
+        use crate::receiver_replay::{Document, Event, Input, FORMAT};
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        // One valid enhanced-traffic packet, with ownship and no targets.
+        let mut packet = vec![0u8; 120];
+        packet[0] = 1;
+        packet[24] = 10;
+        packet[25] = 10;
+        packet[26..28].copy_from_slice(&2026u16.to_le_bytes());
+        packet[28..30].copy_from_slice(&12i16.to_le_bytes());
+        packet[32..40].copy_from_slice(&47.45f64.to_radians().to_le_bytes());
+        packet[40..48].copy_from_slice(&(-122.31f64).to_radians().to_le_bytes());
+        packet[60..64].copy_from_slice(&2000f32.to_le_bytes());
+        packet[64..68].copy_from_slice(&2400f32.to_le_bytes());
+        packet[108..112].copy_from_slice(&(1u32 | 8 | 32).to_le_bytes());
+        let document = Document {
+            format: FORMAT.into(),
+            schema_version: 1,
+            title: "Receiver only".into(),
+            start_epoch_ms: utc("2026-10-10T12:00:00Z").timestamp_millis(),
+            duration_ms: 120_000,
+            events: vec![
+                Event {
+                    elapsed_ms: 0,
+                    input: Input::Connection { connected: true },
+                },
+                Event {
+                    elapsed_ms: 0,
+                    input: Input::Receiver {
+                        message_id: 0x20000000,
+                        bytes_base64: STANDARD.encode(packet),
+                    },
+                },
+            ],
+        };
+        load_playback_trace_in_session(
+            init.handle,
+            "fixture",
+            &serde_json::to_string(&document).unwrap(),
+        )
+        .unwrap();
+        for elapsed in [0.0, 90.0, 0.0] {
+            seek_playback_in_session(init.handle, elapsed, 1_800_000_200_000.0).unwrap();
+            let slot = session_slot(init.handle).unwrap();
+            let session = slot.lock_running().unwrap();
+            assert_eq!(session.situation.ownship().render.position.is_some(), elapsed == 0.0,
+                "The only recorded GPS drives the plane without a source click; rewind restores it after expiry");
+            if elapsed == 0.0 {
+                assert!(
+                    (session
+                        .situation
+                        .barometer()
+                        .altitude_ft(document.start_epoch_ms)
+                        .unwrap()
+                        - 2000.0)
+                        .abs()
+                        < 1e-6
+                );
+            }
+            assert_eq!(
+                session.situation.ownship().policy.selection,
+                crate::ownship::OwnshipSelectionPolicy::Manual {
+                    source_id: crate::ownship::OwnshipSourceId(
+                        crate::receiver::live::SOURCE_ID.into()
+                    )
+                }
+            );
+        }
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn receiver_replay_isolates_live_ingress_freezes_ages_and_rewinds_complete_frames() {
         use crate::receiver_replay::{Document, Event, Input, FORMAT};
         use base64::{engine::general_purpose::STANDARD, Engine};
@@ -27521,7 +27618,7 @@ mod tests {
                     .expect("hidden radar must still open its tray");
                 for choice in [source, animation] {
                     let action = editor
-                        .action_rows
+                        .action_groups
                         .iter()
                         .flatten()
                         .find(|action| action.id == choice)
@@ -27551,7 +27648,7 @@ mod tests {
                 for choice in [source, animation] {
                     assert!(
                         changed_editor
-                            .action_rows
+                            .action_groups
                             .iter()
                             .flatten()
                             .find(|action| action.id == choice)
@@ -27774,12 +27871,12 @@ mod tests {
             .editor
             .unwrap();
         assert!(!editor.show_input);
-        assert_eq!(editor.action_rows[1][1].id, "latest");
+        assert_eq!(editor.action_groups[1][1].id, "latest");
         perform_flight_data_command_in_session(
             init.handle,
             crate::FlightDataCommand::EditorAction {
                 editor_id: editor.id,
-                action_id: editor.action_rows[1][1].id.clone(),
+                action_id: editor.action_groups[1][1].id.clone(),
             },
         )
         .expect("hold latest NEXRAD frame");
@@ -28216,7 +28313,7 @@ mod tests {
                 .editor
                 .unwrap()
         };
-        assert!(!editor().action_rows[0][0].enabled);
+        assert!(!editor().action_groups[0][0].enabled);
         {
             let slot = session_slot(init.handle).unwrap();
             let mut session = slot.lock_running().unwrap();
@@ -28249,7 +28346,7 @@ mod tests {
             .unwrap();
         }
         assert!(
-            editor().action_rows[0][0].enabled,
+            editor().action_groups[0][0].enabled,
             "arrival of weather must update the already-open editor"
         );
         let snapshot = get_session_snapshot(init.handle).unwrap();
@@ -28264,7 +28361,7 @@ mod tests {
         .unwrap();
         assert_eq!(editor().input, "29.97");
         assert_eq!(
-            editor().action_rows[0][0].secondary_label.as_deref(),
+            editor().action_groups[0][0].secondary_label.as_deref(),
             Some("KBFI 80min old")
         );
         assert!(editor().detail.is_none());
@@ -28284,7 +28381,7 @@ mod tests {
                 .flight_data_banner
                 .editor
                 .unwrap()
-                .action_rows[0][0]
+                .action_groups[0][0]
                 .enabled
         );
         perform_flight_data_command_in_session(
@@ -28412,11 +28509,11 @@ mod tests {
             assert!(editor.title.is_none());
             assert_eq!(editor.unit, "inHg");
             assert!(editor.detail.is_none());
-            assert_eq!(editor.action_rows.len(), 2);
-            assert_eq!(editor.action_rows[1][0].id, "source_device");
-            assert_eq!(editor.action_rows[1][1].id, "source_receiver");
-            assert_eq!(editor.action_rows[0].len(), 1);
-            let button = &editor.action_rows[0][0];
+            assert_eq!(editor.action_groups.len(), 2);
+            assert_eq!(editor.action_groups[1][0].id, "source_device");
+            assert_eq!(editor.action_groups[1][1].id, "source_receiver");
+            assert_eq!(editor.action_groups[0].len(), 1);
+            let button = &editor.action_groups[0][0];
             assert!(button.enabled);
             assert_eq!(button.label, "NEAREST");
             assert_eq!(button.secondary_label, Some(format!("{station} 52min old")));
@@ -28457,7 +28554,7 @@ mod tests {
                 .unwrap()
                 .editor
                 .unwrap();
-            let button = &editor.action_rows[0][0];
+            let button = &editor.action_groups[0][0];
             assert!(!button.enabled);
             assert!(button.secondary_label.is_none());
             assert!(button.weather_badge.is_none());
@@ -34394,6 +34491,7 @@ mod tests {
                 status: "Synthetic connection".into(),
                 detail: "".into(),
                 actions: vec![],
+                activity: None,
             },
         }
     }
@@ -34578,6 +34676,18 @@ mod tests {
             let init =
                 create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, now).unwrap();
             configure_test_live_feed_policy(init.handle, policy);
+            complete_invalidations(
+                perform_flight_data_command_in_session(
+                    init.handle,
+                    crate::FlightDataCommand::Observe {
+                        available: false,
+                        pressure_hpa: None,
+                        observed_epoch_ms: now,
+                        received_epoch_ms: now,
+                    },
+                )
+                .unwrap(),
+            );
             let clock = CaptureClock {
                 monotonic_ms: 0,
                 wall_epoch_ms: now,
@@ -34618,11 +34728,15 @@ mod tests {
                 .unwrap();
             assert!(editor.show_input);
             assert!(
-                !editor.action_rows[1][0].enabled,
+                !editor.action_groups[1][0].enabled,
                 "no device barometer was supplied"
             );
-            assert!(editor.action_rows[1][1].enabled);
-            complete_invalidations(action(&editor.id, &editor.action_rows[1][1].id));
+            assert!(editor.action_groups[1][1].enabled);
+            assert!(
+                editor.action_groups[1][1].selected,
+                "receiver is the initial pressure source on hardware without a barometer"
+            );
+            complete_invalidations(action(&editor.id, &editor.action_groups[1][1].id));
             assert!(
                 (session_slot(init.handle)
                     .unwrap()
@@ -34663,8 +34777,15 @@ mod tests {
                 "opening NEXRAD replaces the BARO tray"
             );
             assert!(!editor.show_input);
-            complete_invalidations(action(&editor.id, &editor.action_rows[0][1].id));
-            complete_invalidations(action(&editor.id, &editor.action_rows[1][1].id));
+            complete_invalidations(action(
+                &editor.id,
+                &editor.action_groups[0]
+                    .iter()
+                    .find(|a| a.id == "receiver")
+                    .unwrap()
+                    .id,
+            ));
+            complete_invalidations(action(&editor.id, &editor.action_groups[1][1].id));
             let selected = get_session_snapshot(init.handle).unwrap();
             assert!(!selected.map_layer_state.nexrad.visible);
             assert_eq!(

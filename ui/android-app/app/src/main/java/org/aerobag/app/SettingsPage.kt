@@ -178,6 +178,7 @@ internal fun SettingsReceiverPanel(state: org.aerobag.app.generated.UiReceiverPa
         verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
         Text(state.title, color = colors.panelFg, fontWeight = FontWeight.Bold)
         Text(state.status, color = colors.panelFg)
+        state.activity?.let { ReceiverActivityView(it) }
         Text(state.detail, color = colors.panelFg)
         state.actions.forEach { action ->
             CompactSquareButton(label = action.label, wide = true,
@@ -575,7 +576,6 @@ private fun SettingsPageRowSurface(
 
 @Composable
 private fun SettingsPageRowHeader(row: UiSettingsPageRow) {
-    val context = LocalContext.current
     val foreground = Color(0xFF101820)
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -598,30 +598,7 @@ private fun SettingsPageRowHeader(row: UiSettingsPageRow) {
             SettingsSyncIndicatorView(indicator, row.id)
         }
         row.helpText?.takeIf(String::isNotBlank)?.let { helpText ->
-            Box(
-                modifier = Modifier
-                    .size(26.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, foreground, CircleShape)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        role = Role.Button,
-                    ) { showActionToast(context, helpText, long = true) }
-                    .e2eIndexedControl(
-                        semanticTag = "parity:settings-help:${row.id}",
-                        enabled = true,
-                        text = helpText,
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "?",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = foreground,
-                )
-            }
+            InlineHelpButton(helpText, "parity:settings-help:${row.id}", foreground)
         }
     }
 }

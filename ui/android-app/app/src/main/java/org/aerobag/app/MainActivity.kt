@@ -3007,6 +3007,11 @@ internal fun AerobagApp(
     LaunchedEffect(receiverRuntime, context, "receiver-share") {
         receiverRuntime.shareRequests.collect { (context as? MainActivity)?.shareReceiverFile(it) }
     }
+    LaunchedEffect(receiverRuntime, context, "receiver-settings") {
+        receiverRuntime.bluetoothSettingsRequests.collect {
+            context.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+        }
+    }
     LaunchedEffect(liveFeedRuntime, backgroundEffectsEnabled) {
         if (backgroundEffectsEnabled) {
             liveFeedRuntime.start()

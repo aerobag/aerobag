@@ -48,6 +48,8 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import org.aerobag.app.generated.FlightDataCommand
 import org.aerobag.app.generated.FlightDataEditor
+import org.aerobag.app.generated.FlightDataEditorAction
+import org.aerobag.app.generated.FlightDataActionLayout
 
 @Composable
 internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightDataCommand) -> Unit) {
@@ -95,7 +97,13 @@ internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightD
                 val availableHeight = maxHeight
                 MenuPanel(modifier = Modifier.align(Alignment.Center).testTag("${editor.id}-tray"), width = ThumbSize * 3.8f) {
                     Column(Modifier.heightIn(max = availableHeight).observedVerticalScroll(rememberScrollState())) {
-                        editor.title?.let { MenuPanelHeader(it, false, ThumbSize * 2.8f) }
+                        editor.title?.let { title ->
+                            Row(Modifier.fillMaxWidth().padding(ThumbGap), verticalAlignment = Alignment.CenterVertically) {
+                                Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                                    color = theme.controls.panelFg)
+                                editor.helpText?.let { InlineHelpButton(it, "parity:${editor.id}-help", theme.controls.panelFg) }
+                            }
+                        }
                         if (editor.showInput) Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
                             BasicTextField(
@@ -129,28 +137,40 @@ internal fun FlightDataSettingTray(editor: FlightDataEditor, onCommand: (FlightD
                         editor.error?.let { Text(it, color = theme.controls.dataStatusWarningStroke, modifier = Modifier.padding(ThumbGap)) }
                         editor.warning?.let { Text(it, color = theme.controls.panelFg,
                             modifier = Modifier.fillMaxWidth().background(theme.controls.dataStatusCautionBg).padding(ThumbGap)) }
-                        Column(modifier = Modifier.padding(top = ThumbGap), verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
-                            editor.actionRows.forEach { row ->
+                        if (editor.actionLayout == FlightDataActionLayout.Columns) {
+                            Row(Modifier.padding(top = ThumbGap), horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                                editor.actionGroups.forEach { group ->
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                                        group.forEach { item -> FlightDataActionButton(editor.id, item, Modifier.fillMaxWidth(), action) }
+                                    }
+                                }
+                            }
+                        } else Column(modifier = Modifier.padding(top = ThumbGap), verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                            editor.actionGroups.forEach { row ->
                                 Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
                                     row.forEach { item ->
-                                        MenuPanelRow(item.label, active = item.selected, enabled = item.enabled,
-                                            secondaryLabel = item.secondaryLabel,
-                                            trailingContent = if (item.symbolFeature != null || item.weatherBadge != null) {
-                                                { PlanWaypointSymbol(item.symbolFeature, weatherBadge = item.weatherBadge,
-                                                    modifier = Modifier.testTag("${editor.id}-${item.id}-symbol")) }
-                                            } else null,
-                                            disabledReason = item.disabledReason,
-                                            modifier = Modifier.weight(1f), testTag = "parity:${editor.id}-${item.id}",
-                                            onSelect = { action(item.id) })
+                                        FlightDataActionButton(editor.id, item, Modifier.weight(1f), action)
                                     }
                                 }
                             }
                         }
-                        Text(editor.notice, modifier = Modifier.padding(ThumbGap))
+                        if (editor.notice.isNotEmpty()) Text(editor.notice, modifier = Modifier.padding(ThumbGap))
                         editor.detail?.let { Text(it, modifier = Modifier.padding(ThumbGap)) }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun FlightDataActionButton(editorId: String, item: FlightDataEditorAction, modifier: Modifier, action: (String) -> Unit) {
+    MenuPanelRow(item.label, active = item.selected, enabled = item.enabled,
+        secondaryLabel = item.secondaryLabel,
+        trailingContent = if (item.symbolFeature != null || item.weatherBadge != null) {
+            { PlanWaypointSymbol(item.symbolFeature, weatherBadge = item.weatherBadge,
+                modifier = Modifier.testTag("$editorId-${item.id}-symbol")) }
+        } else null,
+        disabledReason = item.disabledReason, modifier = modifier, testTag = "parity:$editorId-${item.id}",
+        onSelect = { action(item.id) })
 }

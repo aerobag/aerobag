@@ -2046,6 +2046,14 @@ button {
   display: grid;
   margin-top: var(--thumb-gap);
   gap: var(--thumb-gap);
+  align-items: start;
+}
+
+.flightDataSettingTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--thumb-gap);
 }
 
 .flightDataSettingActionRow {
@@ -3708,6 +3716,14 @@ button {
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 800;
 }
+
+.receiverActivity { display: grid; gap: 12px; color: var(--theme-panel-fg); }
+.receiverActivity h3, .receiverActivity p { margin: 0; }
+.receiverActivity svg { display: block; width: 100%; height: 88px; background: var(--theme-text-input-bg); border-bottom: 1px solid var(--theme-panel-muted); }
+.receiverActivityHeading { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.receiverActivityLegend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; }
+.receiverActivityLegend span { display: inline-flex; align-items: center; gap: 6px; }
+.receiverActivityLegend i { display: inline-block; width: 10px; height: 10px; flex-shrink: 0; }
 
 .settingsPageRows {
   display: grid;

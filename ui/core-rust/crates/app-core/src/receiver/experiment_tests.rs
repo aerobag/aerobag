@@ -141,6 +141,7 @@ impl Peer {
                 request_id,
                 result: ReceiverInventoryResult::Ready {
                     devices: vec![app_ui_contracts::receiver::ReceiverDevice {
+                        service_uuids: vec![crate::receiver::SERVICE_UUID.into()],
                         address: "TEST".into(),
                         name: "Synthetic".into(),
                     }],
@@ -319,8 +320,20 @@ fn exercise_reception(capture_unavailable: bool) {
             .frames
             .is_empty());
         // UI-session replacement (rotation/reload) preserves reception and delivery.
+        peer.now = 1000;
+        let output = runtime.update(ReceiverHostEvent::Tick, &[], clock(peer.now));
+        assert!(
+            output.panel.activity.is_none(),
+            "per-packet OS responses must not carry the graph"
+        );
         runtime.attach(2).unwrap();
         let delivery = runtime.mailbox.lock().unwrap().begin_for(2).unwrap();
+        let activity = delivery.panel.activity.as_ref().unwrap();
+        assert_eq!(activity.strips[0].scale_label, "0-4 messages/min");
+        assert_eq!(activity.strips[1].scale_label, "0-2 messages/min");
+        assert!(activity.strips[1].legend[0].text.contains("last received"));
+        assert!(activity.strips[1].legend[2].text.contains("last received"));
+        assert_eq!(activity.strips[1].legend[1].text, "TAF: not received");
         assert_eq!(delivery.reports.len(), 1);
         assert_eq!(delivery.live.aircraft.len(), 1);
         assert_eq!(
@@ -373,6 +386,10 @@ fn exercise_reception(capture_unavailable: bool) {
         // Restart needs no imported files and preserves received weather.
         drop(runtime);
         let mut runtime = Runtime::new(root.path().into());
+        assert!(
+            runtime.activity.view(peer.now).is_none(),
+            "restored caches must not fabricate reception history"
+        );
         assert_eq!(runtime.weather_cache.as_ref().unwrap().reports().count(), 1);
         let _peer = Peer::start(&mut runtime, peer.now + 1);
         assert!(

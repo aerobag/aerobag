@@ -373,17 +373,19 @@ impl WeatherController {
             id: "nexrad_age".into(), title: Some("NEXRAD".into()),
             show_input: false, label: "NEXRAD".into(), unit: String::new(), input: String::new(),
             input_revision: 0, input_correction: None, error: None, warning: None, detail: None,
-            notice: format!("{} Gray shading is no coverage, not clear weather. Radar sources and palettes are never blended.",
+            notice: String::new(),
+            help_text: Some(format!("{} Gray shading is no coverage, not clear weather. Radar sources and palettes are never blended.",
                 if self.nexrad_auto() {
                     "Auto stays with its source until it is at least 10m old and the alternative is at least 5m fresher, or the source expires."
-                } else { "Source locked: no automatic substitution." }),
-            action_rows: vec![
+                } else { "Source locked: no automatic substitution." })),
+            action_layout: app_ui_contracts::session::FlightDataActionLayout::Columns,
+            action_groups: vec![
                 vec![nexrad_choice("internet", "INTERNET ONLY", self.model.nexrad_selection.mode == crate::radar_selection::Mode::Only(NexradSource::Internet)),
+                    nexrad_choice("auto_internet", "AUTO: PREFER NET", self.nexrad_auto() && self.model.nexrad_selection.preferred == NexradSource::Internet),
+                    nexrad_choice("auto_receiver", "AUTO: PREFER ADS-B", self.nexrad_auto() && self.model.nexrad_selection.preferred == NexradSource::Receiver),
                     nexrad_choice("receiver", "ADS-B ONLY", self.model.nexrad_selection.mode == crate::radar_selection::Mode::Only(NexradSource::Receiver))],
                 vec![nexrad_choice("animate", "ANIMATE", self.nexrad_animation_mode() == NexradAnimationMode::Animating),
                     nexrad_choice("latest", "LATEST", self.nexrad_animation_mode() == NexradAnimationMode::HoldLatest)],
-                vec![nexrad_choice("auto_internet", "AUTO: PREFER NET", self.nexrad_auto() && self.model.nexrad_selection.preferred == NexradSource::Internet),
-                    nexrad_choice("auto_receiver", "AUTO: PREFER ADS-B", self.nexrad_auto() && self.model.nexrad_selection.preferred == NexradSource::Receiver)],
             ], dismiss_action_id: "close".into(), close_label: "CLOSE".into(),
         })
     }
@@ -922,6 +924,54 @@ fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radar_tray_has_independent_source_and_animation_columns_with_on_demand_help() {
+        let mut weather = WeatherController::default();
+        weather.open_nexrad_editor();
+        for choice in ["internet", "auto_internet", "auto_receiver", "receiver"] {
+            weather.nexrad_editor_action(choice);
+            for animation in ["latest", "animate"] {
+                weather.nexrad_editor_action(animation);
+                let editor = weather.nexrad_editor().unwrap();
+                assert_eq!(
+                    editor.action_layout,
+                    app_ui_contracts::session::FlightDataActionLayout::Columns
+                );
+                assert_eq!(
+                    editor
+                        .action_groups
+                        .iter()
+                        .map(Vec::len)
+                        .collect::<Vec<_>>(),
+                    [4, 2]
+                );
+                assert_eq!(
+                    editor.action_groups[0]
+                        .iter()
+                        .map(|a| a.id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["internet", "auto_internet", "auto_receiver", "receiver"]
+                );
+                for (group, selected) in editor.action_groups.iter().zip([choice, animation]) {
+                    assert_eq!(
+                        group
+                            .iter()
+                            .filter(|a| a.selected)
+                            .map(|a| a.id.as_str())
+                            .collect::<Vec<_>>(),
+                        [selected]
+                    );
+                    assert!(group.iter().all(|a| a.enabled));
+                }
+                assert!(editor.notice.is_empty());
+                assert!(editor
+                    .help_text
+                    .unwrap()
+                    .contains("Gray shading is no coverage"));
+            }
+        }
+    }
 
     #[test]
     fn radar_cell_keeps_source_in_its_symbol_without_crowding_the_value() {

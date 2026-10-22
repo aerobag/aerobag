@@ -133,6 +133,14 @@ enum Source {
     Receiver,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Selection {
+    #[default]
+    AwaitingDeviceCapability,
+    AwaitingReceiver,
+    Selected(Source),
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 struct PressureSensor {
     available: bool,
@@ -181,11 +189,11 @@ impl PressureSensor {
     }
 }
 
-/// Explicitly selected pressure source. Device cabin pressure never enters
-/// ownship navigation/terrain/traffic, and source histories never mix.
+/// Initial selection waits for device capability, not sample freshness. Once
+/// selected, only the pilot can change sources; source histories never mix.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Barometer {
-    source: Source,
+    source: Selection,
     device: PressureSensor,
     receiver: PressureSensor,
     setting_inhg: f64,
@@ -195,7 +203,7 @@ pub(crate) struct Barometer {
 impl Default for Barometer {
     fn default() -> Self {
         Self {
-            source: Source::Device,
+            source: Selection::default(),
             device: PressureSensor::default(),
             receiver: PressureSensor::default(),
             setting_inhg: 29.92,
@@ -211,15 +219,18 @@ impl Barometer {
         self.editor = other.editor.clone();
     }
     pub fn reading(&self, now: i64, nearest: Option<&NearbyAltimeter>) -> Option<BarometerReading> {
+        let Selection::Selected(source) = self.source else {
+            return None;
+        };
         self.available().then(|| BarometerReading {
-            symbol_id: match self.source {
+            symbol_id: match source {
                 Source::Device => "source_device",
                 Source::Receiver => "source_receiver",
             },
             altitude_ft: self.altitude_ft(now),
             warning: self.setting_warning(now, nearest),
             editor: self.editor().map(|mut editor| {
-                let action = &mut editor.action_rows[0][0];
+                let action = &mut editor.action_groups[0][0];
                 action.enabled = nearest.is_some();
                 action.disabled_reason = nearest.is_none().then(|| NO_NEARBY_ALTIMETER.into());
                 editor.warning = self.setting_warning(now, nearest);
@@ -240,10 +251,11 @@ impl Barometer {
         self.device.available || self.receiver.available
     }
 
-    fn sensor(&self) -> &PressureSensor {
+    fn sensor(&self) -> Option<&PressureSensor> {
         match self.source {
-            Source::Device => &self.device,
-            Source::Receiver => &self.receiver,
+            Selection::Selected(Source::Device) => Some(&self.device),
+            Selection::Selected(Source::Receiver) => Some(&self.receiver),
+            _ => None,
         }
     }
 
@@ -260,6 +272,13 @@ impl Barometer {
             .filter(|feet| feet.is_finite() && (-2_000.0..=60_000.0).contains(feet))
             .map(|feet| 29.92 * HPA_PER_INHG * (1.0 - feet * 0.3048 / 44_330.0).powf(5.255));
         self.receiver.observe(available, pressure, time, now);
+        self.select_initial_receiver();
+    }
+
+    fn select_initial_receiver(&mut self) {
+        if self.source == Selection::AwaitingReceiver && self.receiver.available {
+            self.source = Selection::Selected(Source::Receiver);
+        }
     }
 
     pub fn apply(
@@ -277,6 +296,14 @@ impl Barometer {
             } => {
                 self.device
                     .observe(available, pressure_hpa, observed_epoch_ms, now);
+                if self.source == Selection::AwaitingDeviceCapability {
+                    self.source = if available {
+                        Selection::Selected(Source::Device)
+                    } else {
+                        Selection::AwaitingReceiver
+                    };
+                    self.select_initial_receiver();
+                }
                 if !self.available() {
                     self.editor = None;
                 }
@@ -319,11 +346,11 @@ impl Barometer {
                 }
                 match action_id.as_str() {
                     "source_device" if self.device.available => {
-                        self.source = Source::Device;
+                        self.source = Selection::Selected(Source::Device);
                         return;
                     }
                     "source_receiver" if self.receiver.available => {
-                        self.source = Source::Receiver;
+                        self.source = Selection::Selected(Source::Receiver);
                         return;
                     }
                     _ => {}
@@ -348,6 +375,8 @@ impl Barometer {
             self.editor = Some(FlightDataEditor {
                 id: BAROMETER_CELL_ID.into(),
                 title: None,
+                help_text: None,
+                action_layout: Default::default(),
                 show_input: true,
                 label: "Altimeter setting".into(),
                 unit: "inHg".into(),
@@ -358,7 +387,7 @@ impl Barometer {
                 notice: "BARO ALT from device is cabin alt. Cross-check.".into(),
                 detail: None,
                 warning: None,
-                action_rows: vec![vec![app_ui_contracts::session::FlightDataEditorAction {
+                action_groups: vec![vec![app_ui_contracts::session::FlightDataEditorAction {
                     id: "nearest".into(),
                     label: "NEAREST".into(),
                     enabled: false,
@@ -377,12 +406,13 @@ impl Barometer {
     pub fn editor(&self) -> Option<FlightDataEditor> {
         self.editor.clone().map(|mut editor| {
             editor.notice = match self.source {
-                Source::Device => "BARO ALT from device is cabin alt. Cross-check.",
-                Source::Receiver => "BARO ALT from receiver pressure altitude, adjusted by this setting. Cross-check.",
+                Selection::Selected(Source::Device) => "BARO ALT from device is cabin alt. Cross-check.",
+                Selection::Selected(Source::Receiver) => "BARO ALT from receiver pressure altitude, adjusted by this setting. Cross-check.",
+                _ => "Waiting for pressure source availability.",
             }.into();
-            editor.action_rows.push(vec![
-                source_action("source_device", "DEVICE", self.device.available, self.source == Source::Device),
-                source_action("source_receiver", "RECEIVER", self.receiver.available, self.source == Source::Receiver),
+            editor.action_groups.push(vec![
+                source_action("source_device", "DEVICE", self.device.available, self.source == Selection::Selected(Source::Device)),
+                source_action("source_receiver", "RECEIVER", self.receiver.available, self.source == Selection::Selected(Source::Receiver)),
             ]);
             editor
         })
@@ -397,7 +427,7 @@ impl Barometer {
     }
 
     pub fn altitude_ft(&self, now: i64) -> Option<f64> {
-        let sensor = self.sensor();
+        let sensor = self.sensor()?;
         let (timestamp, pressure) = sensor.sample?;
         if !sensor.available
             || now < timestamp
@@ -414,11 +444,11 @@ impl Barometer {
     pub fn vertical_speed_fpm(&self, now: i64) -> Option<f64> {
         self.altitude_ft(now)?;
         crate::ownship::estimate_vertical_speed_fpm(
-            self.sensor()
+            self.sensor()?
                 .history
                 .iter()
                 .map(|&(time, altitude)| (time, altitude, Some(3.0))),
-            self.sensor().sample?.0,
+            self.sensor()?.sample?.0,
         )
     }
 
@@ -439,7 +469,7 @@ impl Barometer {
     }
 
     pub fn next_refresh(&self, now: i64) -> Option<i64> {
-        self.sensor()
+        self.sensor()?
             .sample
             .map(|(time, _)| time.saturating_add(SAMPLE_LIFETIME_MS))
             .filter(|deadline| *deadline > now)
@@ -472,6 +502,59 @@ fn pressure_altitude(pressure: f64, setting_inhg: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn absent_device_barometer_defaults_to_receiver_regardless_of_callback_order() {
+        for receiver_first in [false, true] {
+            let mut baro = Barometer::default();
+            if receiver_first {
+                baro.observe_receiver(true, Some(5000.0), 10_000, 10_000);
+                assert_eq!(
+                    baro.altitude_ft(10_000),
+                    None,
+                    "Device capability is not known yet"
+                );
+            }
+            baro.apply(
+                FlightDataCommand::Observe {
+                    available: false,
+                    pressure_hpa: None,
+                    observed_epoch_ms: 10_000,
+                    received_epoch_ms: 10_000,
+                },
+                10_000,
+                None,
+            );
+            if !receiver_first {
+                baro.observe_receiver(true, Some(5000.0), 10_000, 10_000);
+            }
+            assert!((baro.altitude_ft(10_000).unwrap() - 5000.0).abs() < 1e-6);
+            assert_eq!(
+                baro.reading(10_000, None).unwrap().symbol_id,
+                "source_receiver"
+            );
+            baro.open_editor();
+            assert!(baro.editor().unwrap().action_groups[1][1].selected);
+            baro.observe_receiver(false, None, 10_001, 10_001);
+            observe(&mut baro, Some(900.0), 10_001);
+            assert_eq!(
+                baro.altitude_ft(10_001),
+                None,
+                "A chosen source must never silently change"
+            );
+            assert!(baro.editor().unwrap().action_groups[1][1].selected);
+        }
+    }
+
+    #[test]
+    fn present_device_without_a_sample_is_not_absent_hardware() {
+        let mut baro = Barometer::default();
+        baro.observe_receiver(true, Some(5000.0), 10_000, 10_000);
+        observe(&mut baro, None, 10_000);
+        assert_eq!(baro.altitude_ft(10_000), None);
+        baro.open_editor();
+        assert!(baro.editor().unwrap().action_groups[1][0].selected);
+    }
+
+    #[test]
     fn pressure_source_selection_is_explicit_and_never_blends_or_falls_back() {
         let mut baro = Barometer::default();
         observe(&mut baro, Some(1002.64), 10_000);
@@ -485,7 +568,7 @@ mod tests {
         };
         baro.apply(choose("source_receiver"), 10_000, None);
         assert!((baro.altitude_ft(10_000).unwrap() - 5000.0).abs() < 1e-6);
-        assert!(baro.editor().unwrap().action_rows[1][1].selected);
+        assert!(baro.editor().unwrap().action_groups[1][1].selected);
         observe(&mut baro, Some(900.0), 16_000);
         assert_eq!(
             baro.altitude_ft(16_000),
@@ -499,7 +582,7 @@ mod tests {
         assert!((baro.altitude_ft(16_000).unwrap() - 5100.0).abs() < 1e-6);
         baro.observe_receiver(true, None, 16_001, 16_001);
         assert_eq!(baro.altitude_ft(16_001), None);
-        assert!(baro.editor().unwrap().action_rows[1][1].selected);
+        assert!(baro.editor().unwrap().action_groups[1][1].selected);
     }
 
     #[test]
@@ -869,10 +952,10 @@ mod tests {
             now,
         );
         let editor = baro.reading(now, nearest.as_ref()).unwrap().editor.unwrap();
-        assert!(editor.action_rows[0][0].enabled);
-        assert!(editor.action_rows[0][0].disabled_reason.is_none());
+        assert!(editor.action_groups[0][0].enabled);
+        assert!(editor.action_groups[0][0].disabled_reason.is_none());
         assert_eq!(
-            editor.action_rows[0][0].secondary_label.as_deref(),
+            editor.action_groups[0][0].secondary_label.as_deref(),
             Some("TEST 1min old")
         );
         assert!(editor.detail.is_none());
@@ -889,9 +972,9 @@ mod tests {
         assert!(baro.editor().unwrap().error.is_none());
         assert!((baro.altitude_ft(now).unwrap() - 336.0).abs() < 1.0);
         let editor = baro.reading(now, None).unwrap().editor.unwrap();
-        assert!(!editor.action_rows[0][0].enabled);
+        assert!(!editor.action_groups[0][0].enabled);
         assert_eq!(
-            editor.action_rows[0][0].disabled_reason.as_deref(),
+            editor.action_groups[0][0].disabled_reason.as_deref(),
             Some(NO_NEARBY_ALTIMETER)
         );
         let before = baro.clone();

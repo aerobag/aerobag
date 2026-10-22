@@ -949,6 +949,7 @@ function useDisabledActionToast() {
 }
 
 type UiThemeJson = {
+  receiver_activity: Record<string, string>;
   controls: {
     button_checked: string;
     button_unchecked: string;
@@ -8778,7 +8779,10 @@ function FlightDataSettingTray(props: {
     <section className="chartTray chartTrayPortal isOpen flightDataSettingTray" role="dialog" aria-modal="true" aria-label={props.editor.title ?? props.editor.label}
       onPointerDown={stopPointer} onPointerMove={stopPointer} onPointerUp={stopPointer} onPointerCancel={stopPointer}
       onWheel={stopWheel} onClick={stopClick} onDoubleClick={stopDoubleClick}>
-      {props.editor.title ? <strong>{props.editor.title}</strong> : null}
+      {props.editor.title ? <div className="flightDataSettingTitle"><strong>{props.editor.title}</strong>
+        {props.editor.help_text ? <InlineHelpButton title={props.editor.title} text={props.editor.help_text}
+          testId={`${props.editor.id}-help`} onHelp={props.onDisabledAction} /> : null}
+      </div> : null}
       {props.editor.show_input ? <div className="flightDataSettingInput">
         <input aria-label={props.editor.label} ref={inputElement} data-testid={`${props.editor.id}-setting`} inputMode="decimal" value={input}
           onKeyDown={(event) => {
@@ -8796,9 +8800,10 @@ function FlightDataSettingTray(props: {
       </div> : null}
       {props.editor.error ? <p role="alert">{props.editor.error}</p> : null}
       {props.editor.warning ? <p className="flightDataSettingWarning" role="status">{props.editor.warning}</p> : null}
-      <div className="flightDataSettingActions">
-        {props.editor.action_rows.map((row, index) => <div className="flightDataSettingActionRow" key={index}
-          style={{gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))`}}>
+      <div className="flightDataSettingActions" data-layout={props.editor.action_layout}
+        style={props.editor.action_layout === "columns" ? {gridTemplateColumns: `repeat(${props.editor.action_groups.length}, minmax(0, 1fr))`} : undefined}>
+        {props.editor.action_groups.map((row, index) => <div className="flightDataSettingActionRow" key={index}
+          style={props.editor.action_layout === "columns" ? undefined : {gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))`}}>
         {row.map((item) => {
           const reason = disabledReasonText(item.disabled_reason);
           return <button key={item.id} className={`trayButton${item.selected ? " isActive" : ""}${!item.enabled ? " isDisabled" : ""}`}
@@ -8812,7 +8817,7 @@ function FlightDataSettingTray(props: {
               fullWidthLabel={!item.symbol_feature && !item.weather_badge} /></button>;
         })}</div>)}
       </div>
-      <p>{props.editor.notice}</p>
+      {props.editor.notice ? <p>{props.editor.notice}</p> : null}
       {props.editor.detail ? <p>{props.editor.detail}</p> : null}
     </section>
   </>;
@@ -13503,7 +13508,9 @@ export function SettingsPage(props: {
                   onAction={props.onAircraftLibraryAction} onDisabledAction={showSettingsHelp} />;
               case "receiver":
                 return <section key={index} className="settingsPageSection">
-                  <h2>{block.panel.title}</h2><p>{block.panel.status}</p><p>{block.panel.detail}</p>
+                  <h2>{block.panel.title}</h2><p>{block.panel.status}</p>
+                  {block.panel.activity && <ReceiverActivityView state={block.panel.activity} />}
+                  <p>{block.panel.detail}</p>
                 </section>;
               case "section":
                 return <SettingsPageSectionView key={index} section={block.section}
@@ -13522,6 +13529,26 @@ export function SettingsPage(props: {
 }
 
 type SettingsBlock = UiSessionSnapshot["settings_page_state"]["blocks"][number];
+type ReceiverActivity = NonNullable<Extract<SettingsBlock, { kind: "receiver" }>["panel"]["activity"]>;
+
+export function ReceiverActivityView({ state }: { state: ReceiverActivity }) {
+  const palette = loadedUiTheme.receiver_activity;
+  return <section className="receiverActivity" aria-label={state.title}>
+    <h3>{state.title}</h3>
+    {state.strips.map((strip) => <section key={strip.title}>
+      <div className="receiverActivityHeading"><strong>{strip.title}</strong><span>{strip.scale_label}</span></div>
+      <svg viewBox="0 0 60000 1000" preserveAspectRatio="none" role="img" aria-label={`${strip.title}: ${strip.scale_label}`}>
+        {strip.rects.map((rect, index) => <rect key={index} x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill={palette[rect.color_key]} />)}
+      </svg>
+      <div className="receiverActivityHeading"><span>{state.axis_start}</span><span>{state.axis_end}</span></div>
+      <div className="receiverActivityLegend">{strip.legend.map((item) => <span key={item.color_key}>
+        <i style={{ background: palette[item.color_key] }} />{item.text}
+      </span>)}</div>
+    </section>)}
+    <p>{state.detail}</p>
+  </section>;
+}
+
 type AircraftLibraryState = Extract<SettingsBlock, { kind: "aircraft_library" }>["library"];
 
 function SettingsAircraftLibrary(props: {
@@ -13750,6 +13777,11 @@ function SettingsPageRowView(props: {
   );
 }
 
+function InlineHelpButton(props: { title: string; text: string; testId: string; onHelp: (message: string) => void }) {
+  return <span className="settingsPageRowHelp"><button type="button" aria-label={`Help for ${props.title}`}
+    title={props.text} data-testid={props.testId} onClick={() => props.onHelp(props.text)}>?</button></span>;
+}
+
 function SettingsPageRowTitle(props: {
   row: SettingsPageRowState;
   onHelp: (message: string) => void;
@@ -13764,17 +13796,7 @@ function SettingsPageRowTitle(props: {
         onHelp={props.onHelp}
       />
       {helpText ? (
-        <span className="settingsPageRowHelp">
-          <button
-            type="button"
-            aria-label={`Help for ${props.row.title}`}
-            title={helpText}
-            data-testid={`settings-help-${props.row.id}`}
-            onClick={() => props.onHelp(helpText)}
-          >
-            ?
-          </button>
-        </span>
+        <InlineHelpButton title={props.row.title} text={helpText} testId={`settings-help-${props.row.id}`} onHelp={props.onHelp} />
       ) : null}
     </div>
   );

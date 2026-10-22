@@ -67,9 +67,21 @@ class SettingsPageTest {
         }
         compose.runOnIdle {
             panel.value = panel.value.copy(status = "Receiving and recording",
+                activity = UiReceiverActivity(title = "Reception activity", detail = "Decoded messages", axisStart = "60 minutes ago", axisEnd = "Now",
+                    strips = listOf(UiReceiverActivityStrip(title = "Weather", scaleLabel = "0-4 messages/min",
+                        rects = listOf(UiReceiverActivityRect(x = 59100, y = 500, width = 800, height = 500, colorKey = "metar")),
+                        legend = listOf(UiReceiverActivityLegend(colorKey = "metar", text = "METAR: last received 3s ago"))))),
                 detail = List(11) { "Weather family $it: 2 nonempty / 3 empty; 4000 bytes; last 10s ago; 0 decode errors.\n" }.joinToString(""),
                 actions = listOf(UiReceiverAction(actionId = "receiver:stop", label = "Disconnect", enabled = true)))
         }
+        compose.onNodeWithText("METAR: last received 3s ago").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            val activity = panel.value.activity!!
+            panel.value = panel.value.copy(activity = activity.copy(strips = activity.strips.map {
+                it.copy(rects = emptyList(), legend = listOf(UiReceiverActivityLegend(colorKey = "metar", text = "METAR: not received")))
+            }))
+        }
+        compose.onNodeWithText("METAR: not received").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("parity:receiver:receiver:stop").performScrollTo().assertIsDisplayed().performTouchInput { click() }
         compose.runOnIdle { assertEquals(listOf("receiver:refresh", "opaque-device-17", "receiver:stop"), actions) }
     }

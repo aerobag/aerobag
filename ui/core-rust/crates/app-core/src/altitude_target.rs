@@ -61,6 +61,8 @@ impl AltitudeTarget {
         self.editor = Some(FlightDataEditor {
             id: TARGET_CELL_ID.into(),
             title: Some("Target altitude".into()),
+            help_text: None,
+            action_layout: Default::default(),
             show_input: true,
             label: "Target altitude".into(),
             unit: "ft".into(),
@@ -74,7 +76,7 @@ impl AltitudeTarget {
             notice: String::new(),
             detail: None,
             warning: None,
-            action_rows: vec![],
+            action_groups: vec![],
             dismiss_action_id: "close".into(),
             close_label: "CLOSE".into(),
         });
@@ -163,7 +165,7 @@ impl AltitudeTarget {
             .attention
             .as_ref()
             .map(|attention| attention.message.clone());
-        editor.action_rows = vec![
+        editor.action_groups = vec![
             vec![
                 editor_action("gps", "GPS", None, reference == Reference::Gps),
                 editor_action(
@@ -643,11 +645,11 @@ mod tests {
         ] {
             target.set_input(altitude.into());
             let editor = target.editor(&baro).unwrap();
-            for action in editor.action_rows.iter().flatten() {
+            for action in editor.action_groups.iter().flatten() {
                 assert_eq!(action.enabled, action.disabled_reason.is_none());
             }
             let action = editor
-                .action_rows
+                .action_groups
                 .iter()
                 .flatten()
                 .find(|action| action.id == disabled_id)
@@ -667,7 +669,7 @@ mod tests {
         );
         let editor = target.editor(&baro).unwrap();
         let action = editor
-            .action_rows
+            .action_groups
             .iter()
             .flatten()
             .find(|action| action.id == "baro")

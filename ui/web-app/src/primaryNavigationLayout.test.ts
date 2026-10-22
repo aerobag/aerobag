@@ -35,8 +35,10 @@ describe("primary navigation layout", () => {
     const settingsPage = sourceBetween("function SettingsPage(", "function DataStatusPage(");
 
     expect(settingsPage).toContain("useDisabledActionToast()");
-    expect(settingsPage).toContain("title={helpText}");
-    expect(settingsPage).toContain("onClick={() => props.onHelp(helpText)}");
+    expect(settingsPage).toContain('<InlineHelpButton title={props.row.title} text={helpText}');
+    const helpButton = sourceBetween("function InlineHelpButton(", "function SettingsPageRowTitle(");
+    expect(helpButton).toContain("title={props.text}");
+    expect(helpButton).toContain("onClick={() => props.onHelp(props.text)}");
     expect(settingsPage).toContain('className="mapSelectionToast"');
     expect(settingsPage).not.toContain("settingsPageRowHelpText");
     expect(styles).not.toContain(".settingsPageRowHelpText");

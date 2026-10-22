@@ -19,6 +19,44 @@ pub struct UiReceiverPanel {
     pub status: String,
     pub detail: String,
     pub actions: Vec<UiReceiverAction>,
+    pub activity: Option<UiReceiverActivity>,
+}
+
+/// Core lays out the graph in a 60000 x 1000 coordinate system. Hosts only paint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiReceiverActivityRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub color_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiReceiverActivityLegend {
+    pub color_key: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiReceiverActivityStrip {
+    pub title: String,
+    pub scale_label: String,
+    pub rects: Vec<UiReceiverActivityRect>,
+    pub legend: Vec<UiReceiverActivityLegend>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiReceiverActivity {
+    pub title: String,
+    pub detail: String,
+    pub axis_start: String,
+    pub axis_end: String,
+    pub strips: Vec<UiReceiverActivityStrip>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +64,8 @@ pub struct UiReceiverPanel {
 pub struct ReceiverDevice {
     pub address: String,
     pub name: String,
+    /// Cached service identifiers reported by the OS; core interprets them.
+    pub service_uuids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +132,7 @@ pub enum ReceiverHostEffect {
         title: String,
     },
     RequestPermission,
+    OpenBluetoothSettings,
     RefreshInventory {
         request_id: u64,
     },

@@ -5074,7 +5074,7 @@ internal fun MapSelectionTray(
             }
         }
     }
-    val actionRows = actionSlots.chunked(3)
+    val actionGroups = actionSlots.chunked(3)
     Surface(
         modifier = modifier
             .e2eIndexedElement(
@@ -5127,7 +5127,7 @@ internal fun MapSelectionTray(
             ) {
                 Column(modifier = Modifier.padding(ThumbGap * 0.6f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
                     MapSelectionHeader(selectedItem)
-                    actionRows.firstOrNull()?.let { actions ->
+                    actionGroups.firstOrNull()?.let { actions ->
                         MapSelectionActionRow(
                             actions = actions,
                             selectedItem = selectedItem,
@@ -5139,7 +5139,7 @@ internal fun MapSelectionTray(
                     if (selectedItem?.detailText != null) {
                         MapSelectionInlineDetailText(selectedItem.detailText)
                     } else {
-                        actionRows.drop(1).forEachIndexed { row, actions ->
+                        actionGroups.drop(1).forEachIndexed { row, actions ->
                             MapSelectionActionRow(
                                 actions = actions,
                                 selectedItem = selectedItem,

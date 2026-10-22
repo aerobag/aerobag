@@ -146,6 +146,7 @@ impl Trace {
 
 pub(crate) struct Reduction {
     pub live: LiveInput,
+    pub activity: crate::receiver::activity::Activity,
     pub sensors: crate::situation_controller::SituationController,
     index: usize,
     elapsed_ms: i64,
@@ -155,6 +156,7 @@ impl Default for Reduction {
     fn default() -> Self {
         Self {
             live: LiveInput::default(),
+            activity: Default::default(),
             sensors: Default::default(),
             index: 0,
             elapsed_ms: 0,
@@ -183,8 +185,16 @@ impl Reduction {
             }
             self.advance_deadlines(trace, weather, event.elapsed_ms);
             let clock = self.clock(trace, event.elapsed_ms);
+            self.activity
+                .advance(clock.monotonic_ms, self.live.snapshot().connected);
+            if let Some(product) = trace.decoded[self.index].as_ref() {
+                self.activity.observe(product, clock.monotonic_ms);
+            }
             match &event.input {
-                Input::Connection { connected } => self.live.set_connected(*connected),
+                Input::Connection { connected } => {
+                    self.live.set_connected(*connected);
+                    self.activity.advance(clock.monotonic_ms, *connected);
+                }
                 Input::Receiver { .. } => match trace.decoded[self.index].as_ref().unwrap() {
                     Product::Traffic(traffic) => self.live.ingest(traffic, clock),
                     Product::Nmea { sentence } => self.live.ingest_nmea(sentence, clock),
@@ -291,6 +301,8 @@ impl Reduction {
         self.advance_deadlines(trace, weather, target_ms);
         self.live.expire(self.clock(trace, target_ms));
         let clock = self.clock(trace, target_ms);
+        self.activity
+            .advance(clock.monotonic_ms, self.live.snapshot().connected);
         let live = self.live.snapshot();
         if live.available {
             self.sensors.update_source_status(live.source_status(clock));
@@ -474,6 +486,11 @@ mod tests {
                 "sensor state at {target}"
             );
             assert_eq!(
+                playing.activity.view(target as u64),
+                seeking.activity.view(target as u64),
+                "activity history at {target}"
+            );
+            assert_eq!(
                 weather.runtime().station_weather.snapshot().unwrap(),
                 sought_weather.runtime().station_weather.snapshot().unwrap(),
                 "weather at {target}"
@@ -492,6 +509,12 @@ mod tests {
         let mut rewind = Reduction::default();
         let mut earlier = WeatherController::default();
         rewind.advance(&trace, &mut earlier, MINUTE).unwrap();
+        let activity = rewind.activity.view(MINUTE as u64).unwrap();
+        assert_eq!(activity.strips[1].legend[0].text, "METAR: not received", "neither later receiver weather nor earlier Internet weather counts as receiver reception");
+        assert_eq!(
+            activity.strips[1].legend[2].text,
+            "Radar: last received 1m ago"
+        );
         let report = earlier
             .runtime()
             .station_weather

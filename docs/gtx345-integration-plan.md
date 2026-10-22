@@ -5,11 +5,11 @@
 - Android supplies Classic Bluetooth RFCOMM, permissions, paired-device
   discovery, private file IO, and monotonic/wall clocks. Rust core owns the
   protocol, subscriptions, decoding, source selection, status, and UI actions.
-- Use the established challenge-response setup unchanged. The two vendor protocol
-  blobs are shared setup data. Flight captures remain private because they contain
-  flight/device information. Send no transponder
-  configuration, firmware, or calibration commands. See
-  [vendor blob evidence and experiment](receiver-vendor-blobs.md).
+- Use the established challenge-response exchange with the bundled 48-byte
+  compatibility constant. Do not send the larger setup payload. Flight captures
+  remain private because they contain flight/device information. Send no
+  transponder configuration, firmware, or calibration commands. See
+  [protocol mechanics and hardware coverage](receiver-vendor-blobs.md).
 - Live input and replay use the same bounded incremental decoder. Capture raw
   RX/TX before interpretation, including unknown and malformed messages, with
   clock context. Capture must not depend on successful rendering or decoding.
@@ -142,7 +142,8 @@ ignored, so restoring preferences cannot restart that experiment.
   unsupported subscriptions, duplicate delivery, sequence gaps, retry bounds,
   sensor validity, decompression limits, UTC month rollover, report selection,
   source isolation, dateline geography, offline cache restart, and torn capture
-  recovery. Tests use synthetic vendor blobs; recorded flight data is not in fixtures.
+  recovery. Peers and product payloads are synthetic; the handshake uses the
+  bundled compatibility constant. Recorded flight data is not in fixtures.
 
 ### Offline Evidence
 
@@ -186,10 +187,12 @@ build, journey, or independent live-device validation.
 bounded queued transmissions, checkpoint timing, and reconnect backoff (5 seconds
 doubling to 65 seconds, reset only after a minute of receiving). An old socket's
 late data/error/completion cannot affect a replacement connection. Quiet weather
-does not trigger a disconnect. Storage failures are latched: stop the connection,
-preserve the durable prefix, and require a freshly opened recorder. A quota fault
-has a distinct status asking the user to export/remove captures. No automatic
-retry can make a failed capture appear healthy.
+does not trigger a disconnect. Diagnostic recording is independent of reception:
+an open, append, quota, or checkpoint failure stops recording, preserves the
+complete prefix where storage permits, and leaves reception and reconnects running.
+The receiver panel retains the recording-failure diagnostic separately from
+connection status. No automatic retry resumes a recording across missing events.
+A new recording requires a new recorder; old capture files are not deleted.
 
 `receiver/capture_files.rs` supplies a native private archive: 16 MiB immutable
 segments, a 256 MiB total cap, and a 512-segment cap, including previous runs.
@@ -212,16 +215,13 @@ receiver worker and a connected-device foreground service. While explicitly
 connected, the service holds a partial wake lock so screen sleep does not suspend
 recording, and releases it on stop. Settings receives a typed panel from core.
 Kotlin renders labels and forwards opaque action IDs;
-generated contracts carry Bluetooth/file effects and completions. Permission and
-document selection are OS plumbing. Core owns selection, stale action rejection,
-vendor-blob validation/storage, retries, status and export contents.
+generated contracts carry Bluetooth and capture-export effects and completions.
+Permissions are OS plumbing. Core owns selection, stale action rejection,
+protocol compatibility data, retries, status and export contents.
 
-Vendor blobs are imported using the two document-picker actions for the challenge
-seed and setup payload. Core bounds and validates them before atomically storing
-device-local copies beneath `files/receiver/`, separate from preferences and cloud
-state. This build imports them rather than bundling them in the APK. Pairing remains
-an Android system-settings operation. No connection starts without an explicit
-device selection.
+The 48-byte compatibility constant is bundled in core; no protocol file picker
+or device-local blob storage is needed. Pairing remains an Android system-settings
+operation. No connection starts without an explicit device selection.
 
 The capture worker has no UI session reference. Its bounded mailbox coalesces
 already-committed weather changes by station/product, leases at
@@ -279,7 +279,7 @@ retained session and does not reset the worker. A process restart deliberately
 does not automatically reconnect. Browser Classic RFCOMM is not implemented;
 web does not receive the native receiver Settings block.
 
-Component checks cover vendor-blob import and stale picker results,
+Component checks cover fresh-install connection without protocol imports,
 real archive/export identity, socket callbacks after disconnect, bounded/retried
 session deliveries while capture continues, and physical taps on the Settings
 receiver controls. The existing session test now enters via the production
@@ -387,25 +387,26 @@ GPS fixes, and exercises MSL fusion without decoder or normalization failures.
 ### First Parked Validation
 
 Use the release preview APK built from this work; do not treat synthetic replay
-or component tests as independent avionics validation. No vendor blobs are built
-into the APK. No Bluetooth connection starts automatically on process restart.
+or component tests as independent avionics validation. Core bundles only the
+48-byte protocol compatibility constant; no file imports are needed. No
+Bluetooth connection starts automatically on process restart.
 
 1. Pair the tablet and GTX 345 in Android system settings while parked.
-2. In Settings / experimental receiver, import `vendor-challenge-seed.bin` and
-   `vendor-setup-payload.bin`, grant Bluetooth permission, then explicitly connect
-   to the paired receiver. Capture starts before interpretation.
+2. In Settings / experimental receiver, grant Bluetooth permission, refresh the
+   paired-device list, then explicitly connect to the receiver. Capture starts
+   before interpretation when recording storage is available.
 3. Confirm receiving/message/capture counters advance. Select Receiver for
    ownship, enable ADS-B Traffic, and explicitly choose receiver pressure/radar
    in their grid trays if desired. Compare GPS/MSL and pressure with the panel;
    do not infer verified standalone-pressure units from a plausible number.
 4. Disconnect and export the sealed capture. It includes flight locations and
    device identifiers; preserve it outside Git and public artifact serving. The
-   capture quota is 256 MiB; reaching it stops the connection rather than silently
-   discarding evidence.
+   capture quota is 256 MiB; reaching it stops recording with an explicit warning,
+   not reception. Existing evidence is retained.
 5. Replay the capture for protocol ordering and data validation, then compare a
    future radar capture against independent archived government imagery. Live
-   nonempty weather reception and radar geographic accuracy are not yet proven
-   by an independent Aerobag connection.
+   nonempty weather reception was demonstrated by Aerobag on October 19; radar
+   geographic accuracy still needs independent comparison.
 
 For the ZIP exported by the application (not the older Pilot JSONL):
 
@@ -504,15 +505,11 @@ correction. Original failed UI-run evidence is retained under
 
 ### Maximize The Next Hardware Experiment (October 10)
 
-The October 6 handoff supplied two vendor protocol blobs. On October 11, a
-second user's installed Pilot copy produced identical lengths and SHA-256 hashes
-for both. They are shared protocol setup data. The full hashes, observed wire
-roles, and second-blob experiment are recorded in [the evidence note](receiver-vendor-blobs.md).
-Development copies use the descriptive filenames `vendor-challenge-seed.bin`
-and `vendor-setup-payload.bin` under `/root/aerobag-vendor/gtx345/`. Import through
-the existing receiver Settings file pickers. Existing tablet installs receive a
-one-time storage-name migration; no reimport or change of wire bytes is required.
-Flight recordings retain ordinary privacy protections independently of the blobs.
+The October 19 flight demonstrated traffic and nonempty weather without the
+larger payload. Core now bundles only the 48-byte compatibility constant and
+always omits that payload. File imports and selectable setup modes are removed.
+See [protocol mechanics and hardware coverage](receiver-vendor-blobs.md).
+Flight recordings retain ordinary privacy protections.
 
 Before installation, complete these software followups and their validation:
 
@@ -543,9 +540,8 @@ Before installation, complete these software followups and their validation:
 
 One airport visit should collect more than a connection-success anecdote:
 
-- At home: install the matching app/data, import vendor blobs, warm Internet
-  weather, confirm offline packages, and verify recording space. No need to
-  discover vendor-blob/file-picker problems at the airport.
+- At home: install the matching app/data, warm Internet weather, confirm offline
+  packages, and verify recording space. Protocol setup needs no imported files.
 - Refresh paired devices only rereads Android's bonded-device list; it neither
   scans for nearby devices nor connects. Core shows refresh progress, a UTC
   completion time/count (including unchanged and empty lists), or the specific
@@ -780,7 +776,7 @@ weather bursts. This private capture is not a committed test fixture.
 the actual decoder and visible controls on both platforms: default-on traffic,
 hidden-radar source selection, rendered animation, receiver WX text, explicit
 traffic off across rewind, and disconnect expiry. It requires no receiver,
-Internet weather service, captured personal flight, or manufacturer blobs.
+Internet weather service, captured personal flight, or external protocol files.
 
 Radar readiness uses the same visible tile/LOD plan as painting, but must never
 build screen-space meshes. Receiver packets can arrive dozens of times per

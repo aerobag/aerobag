@@ -5,21 +5,13 @@ use app_ui_contracts::session::ClientBuildInfo;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Frozen ABRX v2 values. Normal is retained for reading historical captures,
+/// not as a selectable connection mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupMode {
-    #[default]
     Normal,
     OmitSetupPayload,
-}
-
-impl SetupMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "Normal: both blobs",
-            Self::OmitSetupPayload => "Experiment: small blob only",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,8 +30,8 @@ impl BlobFingerprint {
     }
 }
 
-/// ABRX v2 setup record, durable before the socket is opened. Synthetic and
-/// standalone core callers may not have a platform build identity.
+/// ABRX v2 setup record, durable before socket open while recording is healthy.
+/// Standalone core callers may not have a platform build identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetupMetadata {
@@ -47,4 +39,15 @@ pub struct SetupMetadata {
     pub build: Option<ClientBuildInfo>,
     pub challenge_seed: BlobFingerprint,
     pub setup_payload: BlobFingerprint,
+}
+
+impl SetupMetadata {
+    pub(super) fn current(build: Option<ClientBuildInfo>) -> Self {
+        Self {
+            mode: SetupMode::OmitSetupPayload,
+            build,
+            challenge_seed: BlobFingerprint::of(&super::compatibility::CHALLENGE_SEED),
+            setup_payload: BlobFingerprint::of(&[]),
+        }
+    }
 }

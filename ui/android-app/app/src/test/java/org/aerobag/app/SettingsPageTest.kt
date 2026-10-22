@@ -44,9 +44,9 @@ class SettingsPageTest {
 
     @Test fun receiverCoreActionsReceivePhysicalTapsOnNarrowSettingsPage() {
         val actions = mutableListOf<String>()
-        val panel = mutableStateOf(UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Private capture",
+        val panel = mutableStateOf(UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Pair the receiver in Android settings",
             actions = listOf(
-                UiReceiverAction(actionId = "receiver:mode-small", label = "Experiment: small blob only", enabled = true),
+                UiReceiverAction(actionId = "receiver:refresh", label = "Refresh paired devices", enabled = true),
                 UiReceiverAction(actionId = "opaque-device-17", label = "Connect test receiver", enabled = true))))
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {
@@ -62,16 +62,16 @@ class SettingsPageTest {
                 }
             }
         }
-        for (id in listOf("receiver:mode-small", "opaque-device-17")) {
+        for (id in listOf("receiver:refresh", "opaque-device-17")) {
             compose.onNodeWithTag("parity:receiver:$id").performScrollTo().assertIsDisplayed().performTouchInput { click() }
         }
         compose.runOnIdle {
             panel.value = panel.value.copy(status = "Receiving and recording",
-                detail = "Experiment: small blob only\n" + List(11) { "Weather family $it: 2 nonempty / 3 empty; 4000 bytes; last 10s ago; 0 decode errors.\n" }.joinToString(""),
-                actions = listOf(UiReceiverAction(actionId = "receiver:normal-stop", label = "Disconnect and return to Normal", enabled = true)))
+                detail = List(11) { "Weather family $it: 2 nonempty / 3 empty; 4000 bytes; last 10s ago; 0 decode errors.\n" }.joinToString(""),
+                actions = listOf(UiReceiverAction(actionId = "receiver:stop", label = "Disconnect", enabled = true)))
         }
-        compose.onNodeWithTag("parity:receiver:receiver:normal-stop").performScrollTo().assertIsDisplayed().performTouchInput { click() }
-        compose.runOnIdle { assertEquals(listOf("receiver:mode-small", "opaque-device-17", "receiver:normal-stop"), actions) }
+        compose.onNodeWithTag("parity:receiver:receiver:stop").performScrollTo().assertIsDisplayed().performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("receiver:refresh", "opaque-device-17", "receiver:stop"), actions) }
     }
 
     @Test fun sliderDragPublishesNewIdentityAndUnmountRemovesIndexedControls() {

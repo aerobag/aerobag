@@ -34,9 +34,7 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
     private var keepingAlive = false
     private var foregroundSummary: Pair<String, String>? = null
     val permissionRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val fileRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val shareRequests = MutableSharedFlow<ReceiverHostEffect.ShareFile>(extraBufferCapacity = 1)
-    @Volatile private var pendingFile: ReceiverHostEffect.ReadPrivateFile? = null
     val deliveries = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
 
     init {
@@ -102,21 +100,6 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
     fun refreshInventory() = send(ReceiverHostEvent.RefreshInventory)
     fun hostStopped() = send(ReceiverHostEvent.HostUnavailable)
 
-    fun fileSelected(uri: android.net.Uri?) {
-        val request = pendingFile ?: return
-        pendingFile = null
-        scope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                runCatching {
-                    uri?.let { context.contentResolver.openInputStream(it)?.use { stream ->
-                        readResourceBytes(stream, request.maxBytes.toLong() + 1)
-                    } }
-                }.getOrNull()
-            }
-            inputs.send(Input(ReceiverHostEvent.FileRead(requestId = request.requestId, succeeded = bytes != null), bytes ?: byteArrayOf()))
-        }
-    }
-
     private fun send(event: ReceiverHostEvent) {
         scope.launch { inputs.send(Input(event)) }
     }
@@ -124,7 +107,6 @@ internal class AndroidReceiverRuntime private constructor(private val context: C
     private fun execute(effect: ReceiverHostEffect) {
         when (effect) {
             is ReceiverHostEffect.ShareFile -> shareRequests.tryEmit(effect)
-            is ReceiverHostEffect.ReadPrivateFile -> { pendingFile = effect; fileRequests.tryEmit(Unit) }
             ReceiverHostEffect.RequestPermission -> permissionRequests.tryEmit(Unit)
             is ReceiverHostEffect.RefreshInventory -> scope.launch {
                 // Binder work must not block core's progress publication or refresh deadline.

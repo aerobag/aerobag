@@ -55,10 +55,6 @@ pub enum ReceiverIoFailure {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ReceiverHostEvent {
     HostFailed,
-    FileRead {
-        request_id: String,
-        succeeded: bool,
-    },
     HostUnavailable,
     RefreshInventory,
     Inventory {
@@ -94,10 +90,6 @@ pub enum ReceiverHostEffect {
         path: String,
         mime_type: String,
         title: String,
-    },
-    ReadPrivateFile {
-        request_id: String,
-        max_bytes: u32,
     },
     RequestPermission,
     RefreshInventory {

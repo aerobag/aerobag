@@ -9,14 +9,12 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::capture::{CaptureClock, CaptureKind, CaptureProgress, Recorder, MAX_CHUNK_BYTES};
-use super::{
-    reception::Reception,
-    setup::{SetupMetadata, SetupMode},
+use super::capture::{
+    CaptureClock, CaptureFailure, CaptureKind, CaptureProgress, DiagnosticCapture, Recorder,
+    MAX_CHUNK_BYTES,
 };
-use super::{
-    Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage, VendorProtocolBlobs, SERVICE_UUID,
-};
+use super::{reception::Reception, setup::SetupMetadata};
+use super::{Protocol, ProtocolOutput, ProtocolPhase, ReceivedMessage, SERVICE_UUID};
 
 const CONNECT_TIMEOUT_MS: u64 = 15_000;
 const WRITE_TIMEOUT_MS: u64 = 5_000;
@@ -52,8 +50,6 @@ pub enum Fault {
     ConnectDeadline,
     WriteDeadline,
     WriteQueueLimit,
-    Capture,
-    CaptureFull,
     ClockRegressed,
     UnexpectedCompletion,
     ConnectionIdsExhausted,
@@ -71,12 +67,6 @@ impl Fault {
             Self::ConnectDeadline => "Receiver connection timed out",
             Self::WriteDeadline => "Receiver write timed out; transmitted extent unknown",
             Self::WriteQueueLimit => "Receiver output queue limit reached",
-            Self::Capture => {
-                "Receiver capture unavailable; connection stopped to preserve evidence"
-            }
-            Self::CaptureFull => {
-                "Receiver capture storage is full; export and remove captures before reconnecting"
-            }
             Self::ClockRegressed => "Receiver monotonic clock regressed",
             Self::UnexpectedCompletion => "Unexpected receiver IO completion",
             Self::ConnectionIdsExhausted => {
@@ -97,12 +87,12 @@ pub enum ConnectionPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionStatus {
-    pub setup_mode: SetupMode,
     pub reception: Reception,
     pub phase: ConnectionPhase,
     pub last_fault: Option<Fault>,
     pub last_receive_monotonic_ms: Option<u64>,
     pub captured: CaptureProgress,
+    pub capture_failure: Option<CaptureFailure>,
     pub decoded_messages: u64,
     pub malformed_messages: u64,
     pub ignored_stale_callbacks: u64,
@@ -147,9 +137,8 @@ struct PendingWrite {
 }
 
 pub struct Connection<R: Recorder> {
-    vendor_blobs: VendorProtocolBlobs,
     setup: SetupMetadata,
-    recorder: R,
+    recorder: DiagnosticCapture<R>,
     device: Option<String>,
     active: Option<ConnectionId>,
     protocol: Option<Protocol>,
@@ -168,28 +157,26 @@ pub struct Connection<R: Recorder> {
 
 impl<R: Recorder> Connection<R> {
     pub fn new(
-        vendor_blobs: VendorProtocolBlobs,
-        mode: SetupMode,
         build: Option<app_ui_contracts::session::ClientBuildInfo>,
-        recorder: R,
+        recorder: std::io::Result<R>,
         clock: CaptureClock,
     ) -> Self {
+        let recorder = DiagnosticCapture::new(recorder);
         let captured = recorder.progress();
-        let setup = vendor_blobs.metadata(mode, build);
+        let setup = SetupMetadata::current(build);
         Self {
-            vendor_blobs,
             setup,
             recorder,
             device: None,
             active: None,
             protocol: None,
             status: ConnectionStatus {
-                setup_mode: mode,
                 reception: Reception::default(),
                 phase: ConnectionPhase::Stopped,
                 last_fault: None,
                 last_receive_monotonic_ms: None,
                 captured,
+                capture_failure: None,
                 decoded_messages: 0,
                 malformed_messages: 0,
                 ignored_stale_callbacks: 0,
@@ -210,6 +197,7 @@ impl<R: Recorder> Connection<R> {
     pub fn status(&self) -> ConnectionStatus {
         let mut status = self.status.clone();
         status.captured = self.recorder.progress();
+        status.capture_failure = self.recorder.failure().cloned();
         status
     }
 
@@ -219,14 +207,16 @@ impl<R: Recorder> Connection<R> {
         match self.status.phase {
             ConnectionPhase::Stopped | ConnectionPhase::Blocked => None,
             ConnectionPhase::WaitingToRetry { at_monotonic_ms } => Some(at_monotonic_ms),
-            _ => Some(periodic.min(self.last_checkpoint_ms.saturating_add(CHECKPOINT_MS))),
+            _ if self.recorder.failure().is_none() => {
+                Some(periodic.min(self.last_checkpoint_ms.saturating_add(CHECKPOINT_MS)))
+            }
+            _ => Some(periodic),
         }
     }
 
     pub fn start(&mut self, device: String, clock: CaptureClock) -> Output {
         let mut output = self.stop(clock);
-        // Storage/clock failure needs a new, successfully opened owner, not a
-        // button which makes the same broken recorder appear healthy again.
+        // A clock/owner invariant failure needs a new owner, not a retry button.
         if self.status.phase == ConnectionPhase::Blocked {
             return output;
         }
@@ -280,12 +270,9 @@ impl<R: Recorder> Connection<R> {
             Event::Connected(_) => {
                 if self.status.phase != ConnectionPhase::Connecting {
                     self.fail(Fault::UnexpectedCompletion, clock, &mut output);
-                } else if self.record(CaptureKind::Connected, clock, &[], &mut output) {
-                    match Protocol::connect(
-                        self.vendor_blobs.for_connection(),
-                        self.setup.mode,
-                        clock.monotonic_ms,
-                    ) {
+                } else {
+                    self.recorder.record(CaptureKind::Connected, clock, &[]);
+                    match Protocol::connect(clock.monotonic_ms) {
                         Ok((protocol, batch)) => {
                             self.protocol = Some(protocol);
                             self.protocol_output(batch, clock, &mut output);
@@ -298,9 +285,7 @@ impl<R: Recorder> Connection<R> {
                 // The IO adapter must bound individual reads. Split large reads
                 // here too so framing errors never bypass raw recording.
                 for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
-                    if !self.record(CaptureKind::Received, clock, chunk, &mut output) {
-                        return output;
-                    }
+                    self.recorder.record(CaptureKind::Received, clock, chunk);
                 }
                 self.status.last_receive_monotonic_ms = Some(clock.monotonic_ms);
                 if let Some(protocol) = &mut self.protocol {
@@ -319,12 +304,12 @@ impl<R: Recorder> Connection<R> {
                     .is_some_and(|write| write.id == write_id)
                 {
                     self.fail(Fault::UnexpectedCompletion, clock, &mut output);
-                } else if self.record(
-                    CaptureKind::WriteCompleted,
-                    clock,
-                    &write_id.0.to_le_bytes(),
-                    &mut output,
-                ) {
+                } else {
+                    self.recorder.record(
+                        CaptureKind::WriteCompleted,
+                        clock,
+                        &write_id.0.to_le_bytes(),
+                    );
                     self.pending_write = None;
                     self.dispatch_write(clock, &mut output);
                 }
@@ -333,6 +318,7 @@ impl<R: Recorder> Connection<R> {
             Event::Tick => self.tick(clock, &mut output),
         }
         if self.active.is_some()
+            && self.recorder.failure().is_none()
             && (clock.monotonic_ms.saturating_sub(self.last_checkpoint_ms) >= CHECKPOINT_MS
                 || self
                     .recorder
@@ -341,7 +327,7 @@ impl<R: Recorder> Connection<R> {
                     .saturating_sub(self.checkpoint_bytes)
                     >= CHECKPOINT_BYTES)
         {
-            self.checkpoint(clock, &mut output);
+            self.checkpoint(clock);
         }
         output
     }
@@ -384,16 +370,10 @@ impl<R: Recorder> Connection<R> {
         };
         let id = ConnectionId(id);
         let setup = serde_json::to_vec(&self.setup).expect("setup metadata is JSON scalar data");
-        if !self.record(
-            CaptureKind::ConnectionRequested,
-            clock,
-            &id.0.to_le_bytes(),
-            output,
-        ) || !self.record(CaptureKind::Setup, clock, &setup, output)
-            || !self.checkpoint(clock, output)
-        {
-            return;
-        }
+        self.recorder
+            .record(CaptureKind::ConnectionRequested, clock, &id.0.to_le_bytes());
+        self.recorder.record(CaptureKind::Setup, clock, &setup);
+        self.checkpoint(clock);
         self.active = Some(id);
         self.status.reception = Reception::default();
         self.connect_since_ms = clock.monotonic_ms;
@@ -459,9 +439,8 @@ impl<R: Recorder> Connection<R> {
         let write_id = WriteId(self.next_write_id);
         let mut intent = write_id.0.to_le_bytes().to_vec();
         intent.extend_from_slice(&bytes);
-        if !self.record(CaptureKind::WriteRequested, clock, &intent, output) {
-            return;
-        }
+        self.recorder
+            .record(CaptureKind::WriteRequested, clock, &intent);
         self.pending_write = Some(PendingWrite {
             id: write_id,
             since_ms: clock.monotonic_ms,
@@ -473,28 +452,10 @@ impl<R: Recorder> Connection<R> {
         });
     }
 
-    fn record(
-        &mut self,
-        kind: CaptureKind,
-        clock: CaptureClock,
-        bytes: &[u8],
-        output: &mut Output,
-    ) -> bool {
-        if let Err(error) = self.recorder.record(kind, clock, bytes) {
-            self.block(capture_fault(&error), output);
-            return false;
-        }
-        true
-    }
-
-    fn checkpoint(&mut self, clock: CaptureClock, output: &mut Output) -> bool {
-        if let Err(error) = self.recorder.checkpoint() {
-            self.block(capture_fault(&error), output);
-            return false;
-        }
+    fn checkpoint(&mut self, clock: CaptureClock) {
+        self.recorder.checkpoint();
         self.last_checkpoint_ms = clock.monotonic_ms;
         self.checkpoint_bytes = self.recorder.progress().written_bytes;
-        true
     }
 
     fn clock(&mut self, clock: CaptureClock, output: &mut Output) -> bool {
@@ -519,22 +480,19 @@ impl<R: Recorder> Connection<R> {
 
     fn disconnect(&mut self, clock: CaptureClock, output: &mut Output) {
         if self.active.is_some() {
-            self.record(CaptureKind::Disconnected, clock, &[], output);
-            self.checkpoint(clock, output);
+            self.recorder.record(CaptureKind::Disconnected, clock, &[]);
+            self.checkpoint(clock);
         }
         self.clear_connection(output);
     }
 
     fn fail(&mut self, fault: Fault, clock: CaptureClock, output: &mut Output) {
         self.status.last_fault = Some(fault);
-        if !self.record(
+        self.recorder.record(
             CaptureKind::Diagnostic,
             clock,
             fault.description().as_bytes(),
-            output,
-        ) {
-            return;
-        }
+        );
         self.disconnect(clock, output);
         if self.status.phase != ConnectionPhase::Blocked {
             self.status.phase = ConnectionPhase::WaitingToRetry {
@@ -554,20 +512,12 @@ impl<R: Recorder> Connection<R> {
         self.status.phase = ConnectionPhase::Blocked;
         // Best effort preserves a complete prefix, without claiming the failed
         // recorder is healthy. No automatic deletion/retry can hide this fault.
-        let _ = self.recorder.checkpoint();
+        self.recorder.checkpoint();
         self.clear_connection(output);
         output
             .effects
             .retain(|effect| matches!(effect, Effect::Close { .. }));
         output.messages.clear();
-    }
-}
-
-fn capture_fault(error: &std::io::Error) -> Fault {
-    if error.kind() == std::io::ErrorKind::StorageFull {
-        Fault::CaptureFull
-    } else {
-        Fault::Capture
     }
 }
 
@@ -623,13 +573,7 @@ mod tests {
     }
     fn connection() -> (Connection<Memory>, Memory) {
         let memory = Memory::default();
-        let connection = Connection::new(
-            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
-            SetupMode::Normal,
-            None,
-            memory.clone(),
-            clock(0),
-        );
+        let connection = Connection::new(None, Ok(memory.clone()), clock(0));
         (connection, memory)
     }
     fn open(connection: &mut Connection<Memory>, now: u64) -> ConnectionId {
@@ -702,7 +646,7 @@ mod tests {
                             } = record
                             {
                                 let mut digest = Md5::new();
-                                digest.update([7; 48]);
+                                digest.update(super::super::compatibility::CHALLENGE_SEED);
                                 digest.update(&data[20..]);
                                 self.handshake_response = digest.finalize().to_vec();
                             }
@@ -850,15 +794,9 @@ mod tests {
     }
 
     #[test]
-    fn retries_keep_omission_mode_and_durable_metadata_before_every_open() {
+    fn retries_record_current_setup_metadata_before_every_open() {
         let memory = Memory::default();
-        let mut connection = Connection::new(
-            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
-            SetupMode::OmitSetupPayload,
-            None,
-            memory.clone(),
-            clock(0),
-        );
+        let mut connection = Connection::new(None, Ok(memory.clone()), clock(0));
         let mut id = open(&mut connection, 0);
         let mut now = 0;
         for delay in [5000, 10_000, 20_000] {
@@ -870,14 +808,13 @@ mod tests {
             };
             assert_ne!(next, id);
             id = next;
-            assert_eq!(connection.status().setup_mode, SetupMode::OmitSetupPayload);
             let store = memory.0.borrow();
             assert_eq!(store.durable, store.records.len() as u64);
             let (kind, bytes) = store.records.last().unwrap();
             assert_eq!(*kind, CaptureKind::Setup);
             assert_eq!(
-                serde_json::from_slice::<SetupMetadata>(bytes).unwrap().mode,
-                SetupMode::OmitSetupPayload
+                serde_json::from_slice::<SetupMetadata>(bytes).unwrap(),
+                SetupMetadata::current(None)
             );
         }
     }
@@ -964,51 +901,94 @@ mod tests {
     }
 
     #[test]
-    fn capture_failure_latches_blocks_outputs_and_requires_new_owner() {
+    fn capture_failure_cannot_stop_reception_or_resume_recording_with_a_gap() {
         for sync_failure in [false, true] {
             let (mut connection, memory) = connection();
-            let id = open(&mut connection, 0);
-            let (_, write_id, _) = write(connection.update(Event::Connected(id), clock(1)));
+            let mut peer = Peer::ready(&mut connection);
+            memory.0.borrow_mut().fail_sync = sync_failure;
+            memory.0.borrow_mut().fail_append = !sync_failure;
+            peer.now = 1000;
             if sync_failure {
-                memory.0.borrow_mut().fail_sync = true;
-            } else {
-                memory.0.borrow_mut().fail_append = true;
+                assert!(connection
+                    .update(Event::Tick, clock(peer.now))
+                    .effects
+                    .is_empty());
             }
-            let event = if sync_failure {
-                Event::Tick
-            } else {
-                Event::Written(id, write_id)
-            };
-            let output = connection.update(event, clock(1000));
-            assert!(
-                matches!(output.effects.as_slice(), [Effect::Close { id: closed }] if *closed == id)
+            let messages =
+                peer.receive(&mut connection, 2, message(0x2200, &1234f32.to_le_bytes()));
+            assert!(matches!(
+                messages[0].product,
+                Ok(Product::PressureUnverified { raw: Some(1234.0) })
+            ));
+            assert_eq!(
+                connection.status().phase,
+                ConnectionPhase::Protocol(ProtocolPhase::Receiving)
             );
-            assert_eq!(connection.status().phase, ConnectionPhase::Blocked);
-            assert_eq!(connection.status().last_fault, Some(Fault::Capture));
+            assert_eq!(connection.status().last_fault, None);
+            assert!(connection.status().capture_failure.is_some());
+            let records = memory.0.borrow().records.len();
             memory.0.borrow_mut().fail_sync = false;
             memory.0.borrow_mut().fail_append = false;
-            assert!(connection
-                .start("another-device".into(), clock(2000))
-                .effects
-                .is_empty());
-            assert!(connection
-                .update(Event::Tick, clock(100_000))
-                .effects
-                .is_empty());
+            let messages =
+                peer.receive(&mut connection, 2, message(0x2200, &1250f32.to_le_bytes()));
+            assert!(matches!(
+                messages[0].product,
+                Ok(Product::PressureUnverified { raw: Some(1250.0) })
+            ));
+            assert_eq!(
+                memory.0.borrow().records.len(),
+                records,
+                "a failed recording cannot silently resume with missing events"
+            );
+            assert!(
+                connection.next_wake_ms().unwrap() > peer.now,
+                "failed checkpoint must not create a timer spin"
+            );
         }
     }
 
     #[test]
-    fn capture_must_open_and_sync_before_socket_is_requested() {
+    fn unavailable_capture_does_not_block_initial_connection_or_reconnect() {
+        let mut connection = Connection::<Memory>::new(
+            None,
+            Err(io::Error::other("injected open failure")),
+            clock(0),
+        );
+        let mut peer = Peer::ready(&mut connection);
+        assert_eq!(
+            peer.receive(&mut connection, 2, message(0x2200, &1234f32.to_le_bytes()))
+                .len(),
+            1
+        );
+        connection.update(Event::Failed(peer.id, IoFailure::Read), clock(100));
+        let output = connection.update(Event::Tick, clock(5100));
+        assert!(matches!(
+            output.effects.as_slice(),
+            [Effect::Connect { .. }]
+        ));
+        assert!(connection.status().capture_failure.is_some());
+        assert_eq!(connection.status().captured, CaptureProgress::default());
+        assert!(matches!(
+            connection.stop(clock(5101)).effects.as_slice(),
+            [Effect::Close { .. }]
+        ));
+        assert_eq!(connection.status().phase, ConnectionPhase::Stopped);
+    }
+
+    #[test]
+    fn initial_capture_write_or_sync_failure_does_not_block_handshake() {
         for sync_failure in [true, false] {
             let (mut connection, memory) = connection();
             memory.0.borrow_mut().fail_sync = sync_failure;
             memory.0.borrow_mut().fail_append = !sync_failure;
-            assert!(connection
-                .start("device".into(), clock(1))
-                .effects
-                .is_empty());
-            assert_eq!(connection.status().last_fault, Some(Fault::Capture));
+            let mut peer = Peer::ready(&mut connection);
+            assert_eq!(
+                peer.receive(&mut connection, 2, message(0x2200, &1234f32.to_le_bytes()))
+                    .len(),
+                1
+            );
+            assert_eq!(connection.status().last_fault, None);
+            assert!(connection.status().capture_failure.is_some());
         }
     }
 

@@ -5,7 +5,6 @@
 //! The separate, bounded mailbox retains an in-flight batch until UI publication
 //! succeeds, including resource paging. Raw evidence is independent of that path.
 
-use super::setup::SetupMode;
 use super::weather_cache::WeatherCache;
 use super::{
     capture::CaptureClock,
@@ -13,7 +12,7 @@ use super::{
     connection::{
         Connection, ConnectionId, ConnectionPhase, Effect, Event, IoFailure, Output, WriteId,
     },
-    Product, ProtocolPhase, VendorProtocolBlobs, Weather, WeatherKind,
+    Product, ProtocolPhase, Weather, WeatherKind,
 };
 use crate::weather_sources::{StationId, StationReport, StationReportKind};
 use app_ui_contracts::receiver::*;
@@ -22,7 +21,6 @@ use chrono::{DateTime, Utc};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
@@ -173,16 +171,12 @@ impl InventoryState {
 pub struct Runtime {
     root: PathBuf,
     build: Option<app_ui_contracts::session::ClientBuildInfo>,
-    setup_mode: SetupMode,
     now_ms: u64,
     connection: Option<Connection<CaptureArchive>>,
     inventory: InventoryState,
     inventory_generation: u64,
     error: Option<String>,
     host_failed: bool,
-    vendor_blobs_ready: bool,
-    import_generation: u64,
-    pending_import: Option<(String, &'static str)>,
     normalized: u64,
     rejected: u64,
     weather_cache: Option<WeatherCache>,
@@ -214,16 +208,12 @@ impl Runtime {
         Self {
             root,
             build: None,
-            setup_mode: SetupMode::Normal,
             now_ms: 0,
             connection: None,
             inventory: InventoryState::NotChecked,
             inventory_generation: 0,
             error: None,
             host_failed: false,
-            vendor_blobs_ready: false,
-            import_generation: 0,
-            pending_import: None,
             normalized: 0,
             rejected: 0,
             weather_cache,
@@ -293,50 +283,6 @@ impl Runtime {
         }
     }
 
-    fn vendor_blobs(&self) -> Result<VendorProtocolBlobs, String> {
-        self.rename_legacy_blob_files()
-            .map_err(|error| format!("Cannot update vendor blob filenames: {error}"))?;
-        let read = |name: &str| -> Result<Vec<u8>, String> {
-            let file = fs::File::open(self.root.join(name))
-                .map_err(|_| "Vendor protocol blobs not installed")?;
-            let mut bytes = Vec::new();
-            file.take(4097)
-                .read_to_end(&mut bytes)
-                .map_err(|_| "Cannot read vendor protocol blobs")?;
-            Ok(bytes)
-        };
-        VendorProtocolBlobs::new(
-            &read("vendor-challenge-seed.bin")?,
-            &read("vendor-setup-payload.bin")?,
-        )
-        .map_err(|e| e.to_string())
-    }
-
-    /// One-time storage-name migration, not alternative blob sources. Preserve
-    /// existing tablet setup and imported blob contents.
-    fn rename_legacy_blob_files(&self) -> std::io::Result<()> {
-        for (old, new) in [
-            ("auth-token.bin", "vendor-challenge-seed.bin"),
-            ("auth-user.bin", "vendor-setup-payload.bin"),
-        ] {
-            let old = self.root.join(old);
-            let new = self.root.join(new);
-            if !old.try_exists()? {
-                continue;
-            }
-            // The receiver worker is the sole writer. Rename is atomic and a
-            // restart between the two files resumes with the remaining old name.
-            if new.try_exists()? {
-                return Err(std::io::Error::other(
-                    "conflicting vendor blob files; originals retained",
-                ));
-            }
-            fs::rename(old, new)?;
-            fs::File::open(&self.root)?.sync_all()?;
-        }
-        Ok(())
-    }
-
     pub fn update(
         &mut self,
         event: ReceiverHostEvent,
@@ -365,26 +311,7 @@ impl Runtime {
                 }
                 self.connection = None;
                 self.host_failed = true;
-                self.pending_import = None;
                 self.error = Some("Receiver interface failed; recording stopped. Restart the application before reconnecting.".into());
-            }
-            ReceiverHostEvent::FileRead {
-                request_id,
-                succeeded,
-            } => {
-                if self
-                    .pending_import
-                    .as_ref()
-                    .is_some_and(|(id, _)| id == &request_id)
-                {
-                    let (_, name) = self.pending_import.take().unwrap();
-                    if succeeded && !self.active() {
-                        self.error = self.install_vendor_blobs_file(name, bytes).err();
-                        self.vendor_blobs_ready = self.vendor_blobs().is_ok();
-                    } else if !succeeded {
-                        self.error = Some("Receiver vendor blob file was not read; select a local file and try again".into());
-                    }
-                }
             }
             ReceiverHostEvent::HostUnavailable => {
                 if let Some(connection) = &mut self.connection {
@@ -419,7 +346,6 @@ impl Runtime {
                             )
                         },
                     };
-                    self.vendor_blobs_ready = self.vendor_blobs().is_ok();
                 }
             }
             ReceiverHostEvent::Action { action_id } => {
@@ -428,57 +354,19 @@ impl Runtime {
                     effects.push(ReceiverHostEffect::RequestPermission);
                 } else if action_id == "receiver:refresh" {
                     self.refresh_inventory(clock, &mut effects);
-                } else if matches!(
-                    action_id.as_str(),
-                    "receiver:import-seed" | "receiver:import-payload"
-                ) && !self.active()
-                {
-                    self.import_generation = self
-                        .import_generation
-                        .checked_add(1)
-                        .expect("receiver import generation exhausted");
-                    let request_id = format!("receiver-import:{}", self.import_generation);
-                    let name = if action_id == "receiver:import-seed" {
-                        "vendor-challenge-seed.bin"
-                    } else {
-                        "vendor-setup-payload.bin"
-                    };
-                    self.pending_import = Some((request_id.clone(), name));
-                    effects.push(ReceiverHostEffect::ReadPrivateFile {
-                        request_id,
-                        max_bytes: 4096,
-                    });
-                } else if action_id == "receiver:stop" || action_id == "receiver:normal-stop" {
+                } else if action_id == "receiver:stop" {
                     if let Some(connection) = &mut self.connection {
                         output = connection.stop(clock);
                     }
                     // Drop releases the archive lock; reconnect opens a fresh recorder.
                     self.connection = None;
-                    if action_id == "receiver:normal-stop" {
-                        self.setup_mode = SetupMode::Normal;
-                    }
-                } else if matches!(
-                    action_id.as_str(),
-                    "receiver:mode-normal" | "receiver:mode-small"
-                ) {
-                    if self.active() {
-                        self.error =
-                            Some("Disconnect before changing the receiver setup mode".into());
-                    } else {
-                        self.connection = None;
-                        self.setup_mode = if action_id == "receiver:mode-small" {
-                            SetupMode::OmitSetupPayload
-                        } else {
-                            SetupMode::Normal
-                        };
-                    }
                 } else if action_id == "receiver:export" && !self.active() {
                     self.connection = None;
                     match self.export_capture() {
                         Ok(path) => effects.push(ReceiverHostEffect::ShareFile {
                             path: path.to_string_lossy().into_owned(),
                             mime_type: "application/zip".into(),
-                            title: "Share private receiver capture".into(),
+                            title: "Share receiver capture".into(),
                         }),
                         Err(error) => self.error = Some(error),
                     }
@@ -493,28 +381,16 @@ impl Runtime {
                     if let Some(device) = device.filter(|_| !self.active()) {
                         // Blocked owners must release the file lock before opening a new archive.
                         self.connection = None;
-                        match self.vendor_blobs().and_then(|vendor_blobs| {
+                        let mut connection = Connection::new(
+                            self.build.clone(),
                             CaptureArchive::open(
                                 &self.root.join("captures"),
                                 CapturePolicy::default(),
-                            )
-                            .map(|archive| {
-                                Connection::new(
-                                    vendor_blobs,
-                                    self.setup_mode,
-                                    self.build.clone(),
-                                    archive,
-                                    clock,
-                                )
-                            })
-                            .map_err(|e| format!("Cannot open private receiver capture: {e}"))
-                        }) {
-                            Ok(mut connection) => {
-                                output = connection.start(device, clock);
-                                self.connection = Some(connection);
-                            }
-                            Err(error) => self.error = Some(error),
-                        }
+                            ),
+                            clock,
+                        );
+                        output = connection.start(device, clock);
+                        self.connection = Some(connection);
                     } else {
                         self.error = Some(
                             "Receiver selection changed; refresh paired devices and try again"
@@ -677,47 +553,6 @@ impl Runtime {
         })
     }
 
-    fn install_vendor_blobs_file(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        self.rename_legacy_blob_files()
-            .map_err(|error| format!("Cannot update vendor blob filenames: {error}"))?;
-        if (name == "vendor-challenge-seed.bin" && bytes.len() != 48)
-            || (name == "vendor-setup-payload.bin"
-                && (!bytes.starts_with(b"GRM_SALT") || bytes.len() > 4096))
-        {
-            return Err("Not a valid receiver vendor blob file".into());
-        }
-        let write = || -> std::io::Result<()> {
-            use std::io::Write;
-            let mut directory = fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                directory.mode(0o700);
-            }
-            match directory.create(&self.root) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e),
-            }
-            let temporary = self.root.join(format!("{name}.pending"));
-            let mut options = fs::OpenOptions::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&temporary)?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            fs::rename(temporary, self.root.join(name))?;
-            fs::File::open(&self.root)?.sync_all()
-        };
-        write().map_err(|_| "Cannot save vendor protocol blobs".into())
-    }
     fn device_action(&self, index: usize) -> String {
         format!("receiver:device:{}:{index}", self.inventory_generation)
     }
@@ -776,7 +611,6 @@ impl Runtime {
     fn panel(&self) -> UiReceiverPanel {
         let status = self.connection.as_ref().map(Connection::status);
         let mut panel = empty_panel();
-        let mode = status.as_ref().map_or(self.setup_mode, |s| s.setup_mode);
         panel.status = if let Some(error) = &self.error {
             error.clone()
         } else {
@@ -784,7 +618,11 @@ impl Runtime {
                 None | Some(ConnectionPhase::Stopped) => "Disconnected".into(),
                 Some(ConnectionPhase::Connecting) => "Connecting".into(),
                 Some(ConnectionPhase::Protocol(ProtocolPhase::Receiving)) => {
-                    "Receiving and recording".into()
+                    if status.as_ref().unwrap().capture_failure.is_some() {
+                        "Receiving; recording stopped".into()
+                    } else {
+                        "Receiving and recording".into()
+                    }
                 }
                 Some(ConnectionPhase::Protocol(_)) => "Setting up receiver protocol".into(),
                 Some(ConnectionPhase::WaitingToRetry { .. }) => {
@@ -801,10 +639,17 @@ impl Runtime {
             panel
                 .detail
                 .push_str(&format!("\n{}", status.reception.description(self.now_ms)));
-        }
-        panel.detail = format!("{}\n{}", mode.label(), panel.detail);
-        if mode == SetupMode::OmitSetupPayload {
-            panel.detail.push_str("\nSetup payload is omitted on this connection and its retries. For a cold-start test, connect before Pilot or a Normal session. Return to Normal explicitly if needed; the app never switches modes automatically during a run.");
+            if let Some(failure) = status.capture_failure {
+                let reason = if failure.storage_full {
+                    "storage full"
+                } else {
+                    "storage unavailable"
+                };
+                panel.detail.push_str(&format!(
+                    "\nRecording stopped ({reason}): {}. Receiver reception continues. Earlier capture files are retained.",
+                    failure.detail,
+                ));
+            }
         }
         if let Some(error) = &self.weather_error {
             panel.detail.push_str(&format!(" {error}"));
@@ -826,34 +671,14 @@ impl Runtime {
             return panel;
         }
         if self.active() {
-            panel
-                .actions
-                .push(action("receiver:stop", "Disconnect and stop recording"));
-            if mode == SetupMode::OmitSetupPayload {
-                panel.actions.push(action(
-                    "receiver:normal-stop",
-                    "Disconnect and return to Normal",
-                ));
-            }
+            panel.actions.push(action("receiver:stop", "Disconnect"));
         } else {
             panel
                 .detail
                 .push_str(&format!("\n\n{}", self.inventory.description()));
             panel
                 .actions
-                .push(action("receiver:export", "Export private capture"));
-            if !self.vendor_blobs_ready {
-                panel.detail.push_str(
-                    " Import the vendor challenge seed and setup payload before connecting.",
-                );
-            }
-            panel.actions.push(action(
-                "receiver:import-seed",
-                "Import challenge seed (48 bytes)",
-            ));
-            panel
-                .actions
-                .push(action("receiver:import-payload", "Import setup payload"));
+                .push(action("receiver:export", "Export receiver capture"));
             if matches!(
                 self.inventory,
                 InventoryState::Checked {
@@ -872,15 +697,6 @@ impl Runtime {
                 refresh.disabled_reason = Some("Waiting for Android's paired-device list".into());
             }
             panel.actions.push(refresh);
-            for (id, choice) in [
-                ("receiver:mode-normal", SetupMode::Normal),
-                ("receiver:mode-small", SetupMode::OmitSetupPayload),
-            ] {
-                let mut button = action(id, choice.label());
-                button.enabled = mode != choice;
-                button.disabled_reason = (!button.enabled).then(|| "Already selected".into());
-                panel.actions.push(button);
-            }
             panel
                 .actions
                 .extend(
@@ -889,14 +705,10 @@ impl Runtime {
                         .iter()
                         .enumerate()
                         .map(|(index, device)| {
-                            let mut button = action(
+                            action(
                                 &self.device_action(index),
                                 &format!("Connect {} ({})", device.name, device.address),
-                            );
-                            button.enabled = self.vendor_blobs_ready;
-                            button.disabled_reason = (!self.vendor_blobs_ready)
-                                .then(|| "Import both vendor protocol blobs first".into());
-                            button
+                            )
                         }),
                 );
         }
@@ -906,7 +718,7 @@ impl Runtime {
 
 fn empty_panel() -> UiReceiverPanel {
     UiReceiverPanel { title:"ADS-B receiver (experimental)".into(),status:"Disconnected".into(),
-        detail:"Pair the GTX 345 in Android Bluetooth settings first. Connecting automatically records a private capture (256 MiB limit). Select Receiver in the ownship menu for GPS; BARO/NEXRAD grid trays choose pressure and radar sources. Radar placement is experimental; AHRS is recorded but not displayed.".into(),actions:Vec::new() }
+        detail:"Pair the GTX 345 in Android Bluetooth settings first. Connecting automatically records a receiver capture (256 MiB limit). Select Receiver in the ownship menu for GPS; BARO/NEXRAD grid trays choose pressure and radar sources. Radar placement is experimental; AHRS is recorded but not displayed.".into(),actions:Vec::new() }
 }
 
 // Single process owner survives activity rotation and UI session replacement.
@@ -994,6 +806,7 @@ mod experiment_tests;
 mod tests {
     use super::super::test_support::Temp;
     use super::*;
+    use std::io::Read;
 
     fn clock(ms: u64) -> CaptureClock {
         CaptureClock {
@@ -1035,12 +848,6 @@ mod tests {
     fn root() -> Temp {
         let root = Temp::new();
         drop(WeatherCache::open(root.path()).unwrap());
-        fs::write(root.path().join("vendor-challenge-seed.bin"), [7; 48]).unwrap();
-        fs::write(
-            root.path().join("vendor-setup-payload.bin"),
-            b"GRM_SALT synthetic test only",
-        )
-        .unwrap();
         root
     }
     fn start(runtime: &mut Runtime, now: u64) -> u64 {
@@ -1065,6 +872,32 @@ mod tests {
             DateTime::from_timestamp_millis(clock(0).wall_epoch_ms).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn fresh_install_can_connect_without_imports_or_experiment_controls() {
+        let root = Temp::new();
+        let mut runtime = Runtime::new(root.path().into());
+        let panel = refresh(&mut runtime, inventory(), 0).panel;
+        assert!(panel
+            .actions
+            .iter()
+            .all(|action| !action.action_id.starts_with("receiver:import-")
+                && !action.action_id.starts_with("receiver:mode-")));
+        let connect = panel
+            .actions
+            .iter()
+            .find(|action| action.action_id.starts_with("receiver:device:"))
+            .unwrap();
+        assert!(
+            connect.enabled,
+            "fresh installs need no imported protocol files"
+        );
+        let output = runtime.update(action(&connect.action_id), &[], clock(1));
+        assert!(matches!(
+            output.effects.as_slice(),
+            [ReceiverHostEffect::Connect { .. }]
+        ));
     }
 
     #[test]
@@ -1242,143 +1075,6 @@ mod tests {
             clock(6_003),
         );
         assert_eq!(duplicate.panel, empty.panel);
-    }
-
-    #[test]
-    fn installed_vendor_blobs_survive_filename_update_and_restart() {
-        let root = Temp::new();
-        drop(WeatherCache::open(root.path()).unwrap());
-        fs::write(root.path().join("auth-token.bin"), [7; 48]).unwrap();
-        fs::write(root.path().join("auth-user.bin"), b"GRM_SALTsynthetic").unwrap();
-        let runtime = Runtime::new(root.path().into());
-        runtime.vendor_blobs().unwrap();
-        assert_eq!(
-            fs::read(root.path().join("vendor-challenge-seed.bin")).unwrap(),
-            [7; 48]
-        );
-        assert_eq!(
-            fs::read(root.path().join("vendor-setup-payload.bin")).unwrap(),
-            b"GRM_SALTsynthetic"
-        );
-        assert!(!root.path().join("auth-token.bin").exists());
-        assert!(!root.path().join("auth-user.bin").exists());
-        drop(runtime);
-        Runtime::new(root.path().into()).vendor_blobs().unwrap();
-    }
-
-    #[test]
-    fn interrupted_vendor_blob_filename_update_resumes_without_replacing_data() {
-        let root = Temp::new();
-        drop(WeatherCache::open(root.path()).unwrap());
-        fs::write(root.path().join("vendor-challenge-seed.bin"), [7; 48]).unwrap();
-        fs::write(root.path().join("auth-user.bin"), b"GRM_SALTsynthetic").unwrap();
-        let runtime = Runtime::new(root.path().into());
-        runtime.vendor_blobs().unwrap();
-        assert!(!root.path().join("auth-token.bin").exists());
-        assert!(!root.path().join("auth-user.bin").exists());
-    }
-
-    #[test]
-    fn conflicting_vendor_blob_files_are_reported_without_overwriting_either() {
-        let root = Temp::new();
-        drop(WeatherCache::open(root.path()).unwrap());
-        fs::write(root.path().join("auth-token.bin"), [7; 48]).unwrap();
-        fs::write(root.path().join("vendor-challenge-seed.bin"), [8; 48]).unwrap();
-        let runtime = Runtime::new(root.path().into());
-        assert!(runtime
-            .vendor_blobs()
-            .err()
-            .unwrap()
-            .contains("conflicting vendor blob files"));
-        assert_eq!(
-            fs::read(root.path().join("auth-token.bin")).unwrap(),
-            [7; 48]
-        );
-        assert_eq!(
-            fs::read(root.path().join("vendor-challenge-seed.bin")).unwrap(),
-            [8; 48]
-        );
-    }
-
-    #[test]
-    fn vendor_blob_import_is_bounded_validated_and_old_picker_results_are_ignored() {
-        let root = Temp::new();
-        let mut runtime = Runtime::new(root.path().into());
-        let requested = runtime.update(action("receiver:import-seed"), &[], clock(0));
-        let ReceiverHostEffect::ReadPrivateFile {
-            request_id: old, ..
-        } = &requested.effects[0]
-        else {
-            panic!()
-        };
-        let requested = runtime.update(action("receiver:import-seed"), &[], clock(1));
-        let ReceiverHostEffect::ReadPrivateFile { request_id, .. } = &requested.effects[0] else {
-            panic!()
-        };
-        runtime.update(
-            ReceiverHostEvent::FileRead {
-                request_id: old.clone(),
-                succeeded: true,
-            },
-            &[7; 48],
-            clock(2),
-        );
-        assert!(!root.path().join("vendor-challenge-seed.bin").exists());
-        runtime.update(
-            ReceiverHostEvent::FileRead {
-                request_id: request_id.clone(),
-                succeeded: true,
-            },
-            &[7; 48],
-            clock(3),
-        );
-        assert_eq!(
-            fs::read(root.path().join("vendor-challenge-seed.bin")).unwrap(),
-            vec![7; 48]
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(root.path().join("vendor-challenge-seed.bin"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-        let requested = runtime.update(action("receiver:import-payload"), &[], clock(4));
-        let ReceiverHostEffect::ReadPrivateFile { request_id, .. } = &requested.effects[0] else {
-            panic!()
-        };
-        runtime.update(
-            ReceiverHostEvent::FileRead {
-                request_id: request_id.clone(),
-                succeeded: true,
-            },
-            &[0; 4097],
-            clock(5),
-        );
-        assert!(!root.path().join("vendor-setup-payload.bin").exists());
-        assert!(!runtime.vendor_blobs_ready);
-        let requested = runtime.update(action("receiver:import-payload"), &[], clock(6));
-        let ReceiverHostEffect::ReadPrivateFile { request_id, .. } = &requested.effects[0] else {
-            panic!()
-        };
-        let result = runtime.update(
-            ReceiverHostEvent::FileRead {
-                request_id: request_id.clone(),
-                succeeded: true,
-            },
-            b"GRM_SALT synthetic",
-            clock(7),
-        );
-        assert!(runtime.vendor_blobs_ready);
-        assert!(
-            !result.keep_alive,
-            "import never initiates an unsolicited connection"
-        );
     }
 
     #[test]

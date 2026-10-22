@@ -423,13 +423,11 @@ mod tests {
     }
 
     #[test]
-    fn real_archive_quota_stops_connection_without_claiming_transmission_or_retrying() {
-        use super::super::connection::{Connection, ConnectionPhase, Effect, Event, Fault};
-        use super::super::VendorProtocolBlobs;
+    fn real_archive_quota_seals_capture_without_stopping_connection() {
+        use super::super::connection::{Connection, ConnectionPhase, Effect, Event};
+        use super::super::setup::SetupMetadata;
         let temp = Temp::new();
-        let blobs = VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap();
-        let mode = super::super::setup::SetupMode::Normal;
-        let metadata = serde_json::to_vec(&blobs.metadata(mode, None)).unwrap();
+        let metadata = serde_json::to_vec(&SetupMetadata::current(None)).unwrap();
         let limit = 256 + CaptureWriter::<FileSink>::encoded_record_bytes(metadata.len());
         let policy = CapturePolicy {
             segment_bytes: limit,
@@ -437,7 +435,7 @@ mod tests {
             max_segments: 5,
         };
         let archive = CaptureArchive::open(&temp.0, policy).unwrap();
-        let mut connection = Connection::new(blobs, mode, None, archive, clock(0));
+        let mut connection = Connection::new(None, Ok(archive), clock(0));
         let output = connection.start("paired-device".into(), clock(0));
         let Effect::Connect { id, .. } = output.effects[0] else {
             panic!()
@@ -447,13 +445,17 @@ mod tests {
             panic!()
         };
         let output = connection.update(Event::Written(id, write_id), clock(2));
-        assert!(matches!(output.effects.as_slice(), [Effect::Close { .. }]));
-        assert_eq!(connection.status().phase, ConnectionPhase::Blocked);
-        assert_eq!(connection.status().last_fault, Some(Fault::CaptureFull));
-        assert!(connection
-            .update(Event::Tick, clock(100_000))
-            .effects
-            .is_empty());
+        assert!(output.effects.is_empty());
+        assert!(matches!(
+            connection.status().phase,
+            ConnectionPhase::Protocol(_)
+        ));
+        assert_eq!(connection.status().last_fault, None);
+        assert!(connection.status().capture_failure.unwrap().storage_full);
+        assert!(matches!(
+            connection.stop(clock(3)).effects.as_slice(),
+            [Effect::Close { .. }]
+        ));
         assert_eq!(connection.status().captured.durable_records, 4);
         drop(connection);
         let path = fs::read_dir(&temp.0)

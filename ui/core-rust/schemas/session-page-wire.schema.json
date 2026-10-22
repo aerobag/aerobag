@@ -859,29 +859,6 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "read_private_file",
-              "type": "string"
-            },
-            "max_bytes": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "request_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "request_id",
-            "max_bytes"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
               "const": "request_permission",
               "type": "string"
             }
@@ -1000,27 +977,6 @@
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "file_read",
-              "type": "string"
-            },
-            "request_id": {
-              "type": "string"
-            },
-            "succeeded": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "kind",
-            "request_id",
-            "succeeded"
           ],
           "type": "object"
         },

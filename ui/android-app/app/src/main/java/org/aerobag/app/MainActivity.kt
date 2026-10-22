@@ -2099,13 +2099,6 @@ class MainActivity : ComponentActivity() {
             AndroidReceiverRuntime.get(this).refreshInventory()
         }
 
-    private val receiverFileLauncher =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            AndroidReceiverRuntime.get(this).fileSelected(uri)
-        }
-
-    fun requestReceiverFile() { receiverFileLauncher.launch(arrayOf("application/octet-stream", "*/*")) }
-
     fun shareReceiverFile(effect: org.aerobag.app.generated.ReceiverHostEffect.ShareFile) {
         val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.receiver-export", java.io.File(effect.path))
         val share = Intent(Intent.ACTION_SEND).setType(effect.mimeType).putExtra(Intent.EXTRA_STREAM, uri)
@@ -3010,9 +3003,6 @@ internal fun AerobagApp(
     val receiverRuntime = remember(context) { AndroidReceiverRuntime.get(context) }
     LaunchedEffect(receiverRuntime, context) {
         receiverRuntime.permissionRequests.collect { (context as? MainActivity)?.requestReceiverPermission() }
-    }
-    LaunchedEffect(receiverRuntime, context, "receiver-file") {
-        receiverRuntime.fileRequests.collect { (context as? MainActivity)?.requestReceiverFile() }
     }
     LaunchedEffect(receiverRuntime, context, "receiver-share") {
         receiverRuntime.shareRequests.collect { (context as? MainActivity)?.shareReceiverFile(it) }

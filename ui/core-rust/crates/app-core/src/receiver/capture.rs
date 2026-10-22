@@ -56,6 +56,82 @@ pub trait Recorder {
     fn progress(&self) -> CaptureProgress;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureFailure {
+    pub storage_full: bool,
+    pub detail: String,
+}
+
+impl From<io::Error> for CaptureFailure {
+    fn from(error: io::Error) -> Self {
+        Self {
+            storage_full: error.kind() == io::ErrorKind::StorageFull,
+            detail: error.to_string(),
+        }
+    }
+}
+
+/// Recording is diagnostic, not a prerequisite for receiving flight data.
+/// Failure permanently seals this recording; never append across a missing event.
+pub enum DiagnosticCapture<R> {
+    Recording(R),
+    Stopped {
+        progress: CaptureProgress,
+        failure: CaptureFailure,
+    },
+}
+
+impl<R: Recorder> DiagnosticCapture<R> {
+    pub fn new(recorder: io::Result<R>) -> Self {
+        match recorder {
+            Ok(recorder) => Self::Recording(recorder),
+            Err(error) => Self::Stopped {
+                progress: CaptureProgress::default(),
+                failure: error.into(),
+            },
+        }
+    }
+
+    pub fn progress(&self) -> CaptureProgress {
+        match self {
+            Self::Recording(recorder) => recorder.progress(),
+            Self::Stopped { progress, .. } => *progress,
+        }
+    }
+
+    pub fn failure(&self) -> Option<&CaptureFailure> {
+        match self {
+            Self::Recording(_) => None,
+            Self::Stopped { failure, .. } => Some(failure),
+        }
+    }
+
+    pub fn record(&mut self, kind: CaptureKind, clock: CaptureClock, bytes: &[u8]) {
+        if let Self::Recording(recorder) = self {
+            if let Err(error) = recorder.record(kind, clock, bytes) {
+                // Try to preserve the complete prefix, even after quota or
+                // append failure. This cannot make the recording healthy again.
+                let _ = recorder.checkpoint();
+                *self = Self::Stopped {
+                    progress: recorder.progress(),
+                    failure: error.into(),
+                };
+            }
+        }
+    }
+
+    pub fn checkpoint(&mut self) {
+        if let Self::Recording(recorder) = self {
+            if let Err(error) = recorder.checkpoint() {
+                *self = Self::Stopped {
+                    progress: recorder.progress(),
+                    failure: error.into(),
+                };
+            }
+        }
+    }
+}
+
 /// The platform supplies storage only. sync_data must make prior writes durable.
 pub trait CaptureSink: Write {
     fn sync_data(&mut self) -> io::Result<()>;

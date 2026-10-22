@@ -96,7 +96,7 @@ impl Transmissions {
                     if let Some(setup) = &attempt.setup {
                         if setup.mode == SetupMode::OmitSetupPayload {
                             return Err(invalid(
-                                "experimental connection transmitted the setup payload",
+                                "connection declared no setup payload but transmitted one",
                             ));
                         }
                         if BlobFingerprint::of(&data) != setup.setup_payload {
@@ -417,9 +417,8 @@ mod tests {
     }
 
     #[test]
-    fn replay_checks_completed_wire_bytes_not_just_the_experiment_label() {
-        use crate::receiver::VendorProtocolBlobs;
-        let seed = VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap();
+    fn historical_capture_replay_checks_completed_wire_bytes_against_setup_metadata() {
+        use crate::receiver::setup::BlobFingerprint;
         let mut data = vec![1, (8 + b"GRM_SALTsynthetic".len()) as u8, 0, 12];
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(b"GRM_SALTsynthetic");
@@ -433,7 +432,13 @@ mod tests {
         .unwrap();
         let intent = [&1u64.to_le_bytes()[..], &raw].concat();
         for mode in [SetupMode::Normal, SetupMode::OmitSetupPayload] {
-            let metadata = serde_json::to_vec(&seed.metadata(mode, None)).unwrap();
+            let metadata = serde_json::to_vec(&SetupMetadata {
+                mode,
+                build: None,
+                challenge_seed: BlobFingerprint::of(&[7; 48]),
+                setup_payload: BlobFingerprint::of(b"GRM_SALTsynthetic"),
+            })
+            .unwrap();
             let id = 1u64.to_le_bytes();
             let mut records = vec![
                 (CaptureKind::ConnectionRequested, 0, &id[..]),
@@ -453,7 +458,7 @@ mod tests {
                 assert!(result
                     .unwrap_err()
                     .to_string()
-                    .contains("experimental connection transmitted"));
+                    .contains("connection declared no setup payload"));
             }
         }
     }

@@ -83,8 +83,14 @@ impl Peer {
                             ..
                         } = record
                         {
-                            self.response =
-                                Md5::digest([&[7u8; 48][..], &data[20..]].concat()).to_vec();
+                            self.response = Md5::digest(
+                                [
+                                    &crate::receiver::compatibility::CHALLENGE_SEED[..],
+                                    &data[20..],
+                                ]
+                                .concat(),
+                            )
+                            .to_vec();
                         }
                     }
                 }
@@ -193,22 +199,42 @@ impl Peer {
             .concat(),
         );
         peer.rx(runtime, 2, message(0x1000, &[0x47, 6]));
-        assert_eq!(runtime.panel().status, "Receiving and recording");
+        assert_eq!(
+            runtime.connection.as_ref().unwrap().status().phase,
+            ConnectionPhase::Protocol(ProtocolPhase::Receiving),
+        );
         peer
     }
 }
 
 #[test]
-fn both_modes_capture_nonempty_products_deliver_and_preserve_cache_with_wire_proof() {
-    for mode in [SetupMode::Normal, SetupMode::OmitSetupPayload] {
+fn bundled_handshake_captures_delivers_and_preserves_products_with_wire_proof() {
+    exercise_reception(false);
+}
+
+#[test]
+fn capture_open_failure_still_delivers_traffic_weather_and_radar_with_visible_diagnostic() {
+    exercise_reception(true);
+}
+
+fn exercise_reception(capture_unavailable: bool) {
+    for legacy_files in [false, true] {
         let root = Temp::new();
         drop(WeatherCache::open(root.path()).unwrap());
-        fs::write(root.path().join("vendor-challenge-seed.bin"), [7; 48]).unwrap();
-        fs::write(
-            root.path().join("vendor-setup-payload.bin"),
-            b"GRM_SALT synthetic",
-        )
-        .unwrap();
+        if legacy_files {
+            // Former imports cannot override the bundled protocol, even when invalid.
+            for name in [
+                "vendor-challenge-seed.bin",
+                "vendor-setup-payload.bin",
+                "auth-token.bin",
+                "auth-user.bin",
+            ] {
+                fs::write(root.path().join(name), b"not protocol data").unwrap();
+            }
+        }
+        if capture_unavailable {
+            fs::write(root.path().join("captures"), b"not a directory").unwrap();
+        }
         let mut runtime = Runtime::new(root.path().into());
         assert!(
             runtime.weather_error.is_none(),
@@ -217,23 +243,22 @@ fn both_modes_capture_nonempty_products_deliver_and_preserve_cache_with_wire_pro
         );
         runtime.build = Some(app_ui_contracts::session::ClientBuildInfo {
             platform: "test".into(),
-            version: "experiment".into(),
+            version: "test-build".into(),
             built_at_utc: None,
             commit: None,
             dirty: false,
         });
         runtime.attach(1).unwrap();
-        if mode == SetupMode::OmitSetupPayload {
-            action(&mut runtime, "receiver:mode-small", 0);
-        }
         let mut peer = Peer::start(&mut runtime, 1);
-        let denied = action(&mut runtime, "receiver:mode-normal", peer.now);
-        assert!(denied.panel.status.contains("Disconnect before changing"));
-        assert_eq!(
-            runtime.connection.as_ref().unwrap().status().setup_mode,
-            mode
-        );
-        runtime.error = None;
+        if capture_unavailable {
+            assert_eq!(runtime.panel().status, "Receiving; recording stopped");
+            assert!(runtime
+                .panel()
+                .detail
+                .contains("Recording stopped (storage unavailable)"));
+        } else {
+            assert_eq!(runtime.panel().status, "Receiving and recording");
+        }
         peer.rx(&mut runtime, 2, message(0x2100, &[0; 16]));
         peer.rx(&mut runtime, 2, message(0x2200, &1234f32.to_le_bytes()));
         let mut traffic = vec![0u8; 268];
@@ -293,55 +318,66 @@ fn both_modes_capture_nonempty_products_deliver_and_preserve_cache_with_wire_pro
             .radar()
             .frames
             .is_empty());
-        // UI-session replacement (rotation/reload) cannot change connection mode.
+        // UI-session replacement (rotation/reload) preserves reception and delivery.
         runtime.attach(2).unwrap();
         let delivery = runtime.mailbox.lock().unwrap().begin_for(2).unwrap();
         assert_eq!(delivery.reports.len(), 1);
         assert_eq!(delivery.live.aircraft.len(), 1);
         assert_eq!(
-            runtime.connection.as_ref().unwrap().status().setup_mode,
-            mode
+            runtime.connection.as_ref().unwrap().status().phase,
+            ConnectionPhase::Protocol(ProtocolPhase::Receiving)
         );
         let reception = runtime.connection.as_ref().unwrap().status().reception;
-        action(&mut runtime, "receiver:normal-stop", peer.now);
-        assert_eq!(runtime.setup_mode, SetupMode::Normal);
-        let path = runtime.export_capture().unwrap();
-        let summary = crate::receiver::capture_replay::replay_export(
-            fs::File::open(path).unwrap(),
-            |_, _| {},
-        )
-        .unwrap();
-        assert_eq!(summary.attempts.len(), 1);
-        let attempt = &summary.attempts[0];
-        assert_eq!(attempt.setup.as_ref().unwrap().mode, mode);
-        assert_eq!(
-            attempt
-                .setup
-                .as_ref()
-                .unwrap()
-                .build
-                .as_ref()
-                .unwrap()
-                .version,
-            "experiment"
-        );
-        assert_eq!(
-            attempt.setup_payload_messages,
-            u64::from(mode == SetupMode::Normal)
-        );
-        assert_eq!(attempt.incomplete_writes, 0);
-        assert_eq!(attempt.reception, reception);
-        // Switching/restarting does not clear blobs or received weather.
-        action(&mut runtime, "receiver:mode-small", peer.now);
+        if capture_unavailable {
+            assert!(runtime.panel().detail.contains("Recording stopped"));
+            assert_eq!(
+                runtime
+                    .connection
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .captured
+                    .written_records,
+                0
+            );
+        }
+        action(&mut runtime, "receiver:stop", peer.now);
+        if !capture_unavailable {
+            let path = runtime.export_capture().unwrap();
+            let summary = crate::receiver::capture_replay::replay_export(
+                fs::File::open(path).unwrap(),
+                |_, _| {},
+            )
+            .unwrap();
+            assert_eq!(summary.attempts.len(), 1);
+            let attempt = &summary.attempts[0];
+            assert_eq!(
+                attempt.setup.as_ref().unwrap(),
+                &crate::receiver::setup::SetupMetadata::current(runtime.build.clone())
+            );
+            assert_eq!(
+                attempt
+                    .setup
+                    .as_ref()
+                    .unwrap()
+                    .build
+                    .as_ref()
+                    .unwrap()
+                    .version,
+                "test-build"
+            );
+            assert_eq!(attempt.setup_payload_messages, 0);
+            assert_eq!(attempt.incomplete_writes, 0);
+            assert_eq!(attempt.reception, reception);
+        }
+        // Restart needs no imported files and preserves received weather.
         drop(runtime);
         let mut runtime = Runtime::new(root.path().into());
-        assert_eq!(runtime.setup_mode, SetupMode::Normal);
-        runtime.vendor_blobs().unwrap();
         assert_eq!(runtime.weather_cache.as_ref().unwrap().reports().count(), 1);
         let _peer = Peer::start(&mut runtime, peer.now + 1);
         assert!(
             runtime.panel().detail.contains("Weather: no responses yet"),
-            "cached weather must not be experimental reception evidence"
+            "cached weather must not be reported as newly received"
         );
     }
 }

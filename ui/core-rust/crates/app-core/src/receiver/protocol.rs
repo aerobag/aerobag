@@ -7,6 +7,8 @@ use std::collections::{BTreeSet, VecDeque};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 
+use super::compatibility::CHALLENGE_SEED;
+
 use super::{
     decode_product, ApplicationRecord, ApplicationStream, DecodeError, Frame, Framer, Product,
     Result, WeatherKind,
@@ -17,48 +19,6 @@ const RETRANSMIT_MS: u64 = 1_000;
 const MAX_RETRIES: usize = 3;
 const MAX_PENDING: usize = 32;
 const NEGOTIATION: &[u8] = &[0x40, 0x0a, 1, 0, 4, 0xf4, 1, 0x96, 0, 0xb8, 0xab, 3, 0];
-
-/// Shared vendor protocol data. See
-/// docs/receiver-vendor-blobs.md for provenance and the payload experiment.
-/// Kept out of UI snapshots to avoid copying binary setup data into presentation.
-pub struct VendorProtocolBlobs {
-    challenge_seed: [u8; 48],
-    setup_payload: Vec<u8>,
-}
-
-impl VendorProtocolBlobs {
-    pub(super) fn metadata(
-        &self,
-        mode: super::setup::SetupMode,
-        build: Option<app_ui_contracts::session::ClientBuildInfo>,
-    ) -> super::setup::SetupMetadata {
-        super::setup::SetupMetadata {
-            mode,
-            build,
-            challenge_seed: super::setup::BlobFingerprint::of(&self.challenge_seed),
-            setup_payload: super::setup::BlobFingerprint::of(&self.setup_payload),
-        }
-    }
-    pub(super) fn for_connection(&self) -> Self {
-        Self {
-            challenge_seed: self.challenge_seed,
-            setup_payload: self.setup_payload.clone(),
-        }
-    }
-
-    pub fn new(challenge_seed: &[u8], setup_payload: &[u8]) -> Result<Self> {
-        if challenge_seed.len() != 48
-            || !setup_payload.starts_with(b"GRM_SALT")
-            || setup_payload.len() > 4096
-        {
-            return Err(DecodeError("invalid vendor protocol blobs"));
-        }
-        Ok(Self {
-            challenge_seed: challenge_seed.try_into().unwrap(),
-            setup_payload: setup_payload.to_vec(),
-        })
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,8 +72,6 @@ struct Pending {
 /// Protocol on reconnect; no assembly, sequence, or nonce survives a connection.
 pub struct Protocol {
     phase: ProtocolPhase,
-    setup_mode: super::setup::SetupMode,
-    vendor_blobs: VendorProtocolBlobs,
     nonce: [u8; 16],
     expected_response: Option<[u8; 16]>,
     framer: Framer,
@@ -128,27 +86,16 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    pub fn connect(
-        vendor_blobs: VendorProtocolBlobs,
-        setup_mode: super::setup::SetupMode,
-        now_ms: u64,
-    ) -> Result<(Self, ProtocolOutput)> {
+    pub fn connect(now_ms: u64) -> Result<(Self, ProtocolOutput)> {
         let mut nonce = [0u8; 16];
         getrandom::getrandom(&mut nonce)
             .map_err(|_| DecodeError("receiver nonce generation failed"))?;
-        Self::with_nonce(vendor_blobs, setup_mode, now_ms, nonce)
+        Self::with_nonce(now_ms, nonce)
     }
 
-    fn with_nonce(
-        vendor_blobs: VendorProtocolBlobs,
-        setup_mode: super::setup::SetupMode,
-        now_ms: u64,
-        nonce: [u8; 16],
-    ) -> Result<(Self, ProtocolOutput)> {
+    fn with_nonce(now_ms: u64, nonce: [u8; 16]) -> Result<(Self, ProtocolOutput)> {
         let mut state = Self {
             phase: ProtocolPhase::Negotiating,
-            setup_mode,
-            vendor_blobs,
             nonce,
             expected_response: None,
             framer: Framer::default(),
@@ -280,7 +227,7 @@ impl Protocol {
                             return Err(DecodeError("handshake challenge length"));
                         }
                         let mut digest = Md5::new();
-                        digest.update(self.vendor_blobs.challenge_seed);
+                        digest.update(CHALLENGE_SEED);
                         digest.update(&data);
                         let response = [
                             1u32.to_le_bytes().as_slice(),
@@ -289,7 +236,7 @@ impl Protocol {
                         ]
                         .concat();
                         let mut digest = Md5::new();
-                        digest.update(self.vendor_blobs.challenge_seed);
+                        digest.update(CHALLENGE_SEED);
                         digest.update(self.nonce);
                         self.expected_response = Some(digest.finalize().into());
                         self.send(2, message(3, &response), now_ms, &mut output)?;
@@ -327,10 +274,7 @@ impl Protocol {
                         if !self.advertised.contains(&0x1000) {
                             return Err(DecodeError("receiver has no product identity message"));
                         }
-                        let mut setup = [control(&requests), supported_ids()].concat();
-                        if self.setup_mode == super::setup::SetupMode::Normal {
-                            setup.extend(message(1, &self.vendor_blobs.setup_payload));
-                        }
+                        let setup = [control(&requests), supported_ids()].concat();
                         self.send(2, setup, now_ms, &mut output)?;
                         self.transition(ProtocolPhase::Product, now_ms);
                     }
@@ -513,17 +457,7 @@ mod tests {
     use super::*;
 
     fn client() -> Protocol {
-        client_mode(super::super::setup::SetupMode::Normal)
-    }
-    fn client_mode(mode: super::super::setup::SetupMode) -> Protocol {
-        Protocol::with_nonce(
-            VendorProtocolBlobs::new(&[7; 48], b"GRM_SALTsynthetic").unwrap(),
-            mode,
-            0,
-            [9; 16],
-        )
-        .unwrap()
-        .0
+        Protocol::with_nonce(0, [9; 16]).unwrap().0
     }
     fn rx(client: &mut Protocol, kind: u8, seq: u8, payload: Vec<u8>) -> Result<ProtocolOutput> {
         client.receive(
@@ -562,7 +496,11 @@ mod tests {
             output.extend(rx(client, kind, seq, payload).unwrap().transmissions);
         }
         assert_eq!(client.phase(), ProtocolPhase::VerifyResponse);
-        let response = client.expected_response.unwrap();
+        // Independently calculated known answer for the bundled constant and nonce [9; 16].
+        let response = [
+            0x2b, 0x34, 0xfe, 0x38, 0xd8, 0x5e, 0xb3, 0xeb, 0x2b, 0x32, 0x7b, 0x66, 0x6c, 0x24,
+            0x4c, 0x6d,
+        ];
         let ids = [0u32, 0x1000, 0x2100, 0x2200, 0x20000010, 0x20000000];
         output.extend(
             rx(
@@ -594,41 +532,37 @@ mod tests {
     }
 
     #[test]
-    fn omission_changes_only_payload_message_not_handshake_subscriptions_or_fetches() {
-        use super::super::setup::SetupMode;
-        let mut normal = client_mode(SetupMode::Normal);
-        let mut small = client_mode(SetupMode::OmitSetupPayload);
-        let normal_records = handshake(&mut normal);
-        let small_records = handshake(&mut small);
-        let without_payload = normal_records
+    fn bundled_constant_produces_known_wire_response_without_setup_payload() {
+        let mut client = client();
+        let records = handshake(&mut client);
+        assert!(!records
             .iter()
-            .filter(|record| !matches!(record, ApplicationRecord::Message { message_id: 1, .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert_eq!(normal_records.len(), without_payload.len() + 1);
-        assert_eq!(without_payload, small_records);
-        // Both modes subscribe identically, and respond identically to new-weather notifications.
-        for (sequence, payload) in [
-            (5, message(0x1000, &[0x47, 6])),
-            (
-                6,
-                control(&[[vec![2], 0x20000010u32.to_le_bytes().to_vec()].concat()]),
-            ),
-            (7, message(0x20000010, &[])),
-        ] {
-            assert_eq!(
-                rx(&mut normal, 2, sequence, payload.clone())
-                    .unwrap()
-                    .transmissions,
-                rx(&mut small, 2, sequence, payload).unwrap().transmissions
-            );
-        }
-        assert_eq!(small.phase(), ProtocolPhase::Receiving);
+            .any(|record| matches!(record, ApplicationRecord::Message { message_id: 1, .. })));
+        let response = records
+            .iter()
+            .find_map(|record| match record {
+                ApplicationRecord::Message {
+                    message_id: 3,
+                    data,
+                    ..
+                } => Some(data),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(&response[..4], &1u32.to_le_bytes());
+        assert_eq!(
+            &response[4..20],
+            &[
+                0xec, 0xff, 0xbf, 0xe1, 0x14, 0x1e, 0xe4, 0xe4, 0xf6, 0xd4, 0x0d, 0x18, 0xb9, 0xda,
+                0x36, 0x90
+            ]
+        );
+        assert_eq!(&response[20..], &[9; 16]);
     }
 
     #[test]
     fn peer_waiting_for_omitted_payload_hits_the_same_setup_deadline() {
-        let mut client = client_mode(super::super::setup::SetupMode::OmitSetupPayload);
+        let mut client = client();
         handshake(&mut client);
         rx(&mut client, 2, 5, Vec::new()).unwrap();
         assert_eq!(
@@ -665,6 +599,38 @@ mod tests {
             !requested.contains(&0x2001),
             "unsupported GPS subscriptions broke the prototype"
         );
+    }
+
+    #[test]
+    fn weather_notifications_request_only_advertised_weather_products() {
+        let mut client = complete_handshake();
+        rx(&mut client, 2, 5, message(0x1000, &[0x47, 6])).unwrap();
+        let notices = [0x20000010u32, 0x20000010, 0x20000020, 0x2100]
+            .into_iter()
+            .map(|id| [vec![2], id.to_le_bytes().to_vec()].concat())
+            .collect::<Vec<_>>();
+        let output = rx(&mut client, 2, 6, control(&notices)).unwrap();
+        let mut stream = ApplicationStream::default();
+        let mut commands = Vec::new();
+        for frame in Framer::default()
+            .feed(&output.transmissions.concat())
+            .unwrap()
+        {
+            for record in stream.feed(&frame.payload).unwrap() {
+                if let ApplicationRecord::Control {
+                    commands: requested,
+                    ..
+                } = record
+                {
+                    commands.extend(requested);
+                }
+            }
+        }
+        assert_eq!(
+            commands,
+            [vec![1], 0x20000010u32.to_le_bytes().to_vec()].concat()
+        );
+        assert_eq!(client.phase(), ProtocolPhase::Receiving);
     }
 
     #[test]

@@ -377,9 +377,7 @@ jobs:
       - name: Verify immutable apps
         run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
       - name: Install Android failure screenshot analyzer
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes python3-pil
+        uses: ./.github/actions/setup-e2e-python
       - name: Download qualified Android baseline
         uses: actions/download-artifact@v5
         with:
@@ -503,9 +501,7 @@ jobs:
         run: npm ci --prefix ui/web-app
       - name: Install plate screenshot analyzer
         if: ${{ matrix.test == 'android.plate-first-render-smoke' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes python3-pil
+        uses: ./.github/actions/setup-e2e-python
       - name: Install Rust Android target
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal

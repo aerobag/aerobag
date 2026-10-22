@@ -35,6 +35,20 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+The October 22 scheduled run `39796640094` on `e30884bd` failed before Android
+shard 0 could start: the screenshot-analyzer prerequisite ran a system-wide
+`apt-get update`, and the runner's unrelated Microsoft Ubuntu repository returned
+HTTP 403. All other journey lanes passed. This was dependency setup, not the
+October 21 radar contention failure; GitHub was still testing the old commit.
+
+Both E2E screenshot consumers now use the same local composite action, selecting
+Python 3.12 and installing a pinned Pillow wheel through pip. Its cache is keyed
+by the requirements file, and setup verifies PNG decoding with the same Python
+interpreter the harness uses. Workflow regressions reject APT in these jobs and
+require shared setup before the consumers; both rejected the original workflow.
+Dependency failures remain fatal. No journey is retried, skipped or given a
+longer deadline. Other CI jobs that genuinely need OS packages still use APT.
+
 The October 21 scheduled run `39617536579` on `e30884bd` failed the Android
 NEXRAD resume transition. This was application contention, not a lost click:
 ANIMATE became selected, but the first older frame became ready about 6.1 s

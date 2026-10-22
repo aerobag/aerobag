@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Set up E2E screenshot analysis
+description: Install the pinned image decoder without depending on system APT repositories.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        cache: pip
+        cache-dependency-path: tools/e2e/screenshot-requirements.txt
+    - name: Install and verify screenshot dependencies
+      shell: bash
+      run: |
+        python3 -m pip install --only-binary=:all: --requirement tools/e2e/screenshot-requirements.txt
+        python3 -c 'from PIL import Image; from io import BytesIO; b = BytesIO(); Image.new("RGB", (2, 2), (1, 2, 3)).save(b, format="PNG"); b.seek(0); image = Image.open(b).convert("RGB"); assert image.getextrema() == ((1, 1), (2, 2), (3, 3)); assert list(image.getdata()) == [(1, 2, 3)] * 4'

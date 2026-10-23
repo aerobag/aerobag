@@ -27,7 +27,7 @@ permissions:
 jobs:
   startup:
     name: Chrome startup / ${{ matrix.browser }} / ${{ matrix.transport }} / replica ${{ matrix.replica }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     strategy:
       fail-fast: false

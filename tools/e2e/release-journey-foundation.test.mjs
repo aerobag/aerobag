@@ -2533,7 +2533,7 @@ test("Android journey suites bound blocked driver processes", () => {
   );
   assert.match(
     workflow,
-    /release-journey-android:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 45/,
+    /release-journey-android:[\s\S]*?runs-on: ubuntu-24\.04\n\s+timeout-minutes: 45/,
   );
   assert.match(workflow, /shard: \[0, 1, 2, 3\]/);
   assert.match(workflow, /android-suite-shard all "\$\{\{ matrix\.shard \}\}" 4/);
@@ -2543,7 +2543,7 @@ test("Android journey suites bound blocked driver processes", () => {
   assert.doesNotMatch(androidJob, /matrix\.priority|priority:/);
   assert.match(
     workflow,
-    /android-native:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 30/,
+    /android-native:[\s\S]*?runs-on: ubuntu-24\.04\n\s+timeout-minutes: 30/,
   );
 });
 

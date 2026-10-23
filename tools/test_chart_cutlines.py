@@ -281,7 +281,14 @@ class CutlineProjectionTest(unittest.TestCase):
         prepared = self.root / "derived.geojson"
         cutlines.prepare(self.path, self.source, prepared)
         self.assertGreater(cutlines.coverage(prepared)["lon_max"], 180)
-        self.assertEqual(cutlines.pixel_geometry(prepared, self.source).GetEnvelope(), (0, 1000, 0, 100))
+        # GDAL builds using fused multiply/add retain tiny rounding residuals
+        # when converting large Mercator coordinates back to pixels. Require
+        # absolute subpixel agreement, not bit-identical arithmetic (or a
+        # relative tolerance that grows with the chart's dimensions).
+        np.testing.assert_allclose(
+            cutlines.pixel_geometry(prepared, self.source).GetEnvelope(),
+            (0, 1000, 0, 100), rtol=0, atol=1e-8,
+        )
 
 
 if __name__ == "__main__":

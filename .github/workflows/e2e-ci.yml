@@ -43,7 +43,7 @@ env:
 jobs:
   build-release-apps:
     name: Build release E2E apps
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
       ANDROID_TARGET_ABIS: x86_64
@@ -118,7 +118,7 @@ jobs:
 
   release-journey-fixture:
     name: Pin release-journey fixture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       priorities: ${{ steps.priorities.outputs.value }}
     steps:
@@ -159,7 +159,7 @@ jobs:
     needs:
       - build-release-apps
       - release-journey-fixture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -231,7 +231,7 @@ jobs:
     needs:
       - build-release-apps
       - release-journey-fixture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
@@ -334,7 +334,7 @@ jobs:
       - build-release-apps
       - release-journey-fixture
       - release-journey-android-baseline
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -445,7 +445,7 @@ jobs:
   android-native:
     name: ${{ matrix.test }}
     needs: build-release-apps
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -571,7 +571,7 @@ jobs:
 
   android-chrome-live-feed:
     name: android.chrome.live-feed-network-recovery
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
@@ -641,7 +641,7 @@ jobs:
 
   web-nav-db-rollover:
     name: web.nav-db-rollover
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
     steps:
@@ -695,7 +695,7 @@ jobs:
       - android-native
       - android-chrome-live-feed
       - web-nav-db-rollover
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every E2E lane
         env:

@@ -27,7 +27,7 @@ env:
 jobs:
   metar:
     name: METAR fixture tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-metar

@@ -731,6 +731,28 @@ measurement or intentionally removing coverage.
 
 ## Hermetic Inputs
 
+All hosted workflows pin `runs-on: ubuntu-24.04`, including release journeys,
+fixture tests and diagnostics. Do not use `ubuntu-latest`: release
+`2026-10-23.1` ran Python CI on Ubuntu 26.04 after the preceding successful run
+used 24.04, exposing two old test assumptions. The dateline geometry test required
+bit-identical floating-point results, and the Cargo GC test assumed tiny files
+and their directories always exceeded 16 KiB of allocated space.
+
+Geometry now checks an absolute 1e-8-pixel tolerance with no relative tolerance;
+the independent longitude-branch assertion remains. GC fixtures allocate real
+dependency data, measure usage with production's `du` accounting, and exercise
+limits one byte below, exactly at, and one byte above that usage while checking
+that runnable binaries survive unchanged. These fixes do not depend on the OS
+pin: cleanup also passes on tmpfs, and the geometry assertion accepts the hosted
+fused-arithmetic residuals while rejecting an actual subpixel displacement.
+
+`runner-image-workflow.test.mjs` checks every execution job's OS pin in cheap
+preflight and ordinary CI. An OS upgrade must update the workflows and that
+policy deliberately, review dependency changes, and pass ordinary CI, fixture
+CI and complete release journeys before accepting the new baseline. This pins
+the OS release, not an immutable VM snapshot: security/runner-image updates
+continue, so tests must still tolerate valid numeric and filesystem differences.
+
 Every `android-actions/setup-android` step must specify `packages` explicitly,
 including `platform-tools` but never the obsolete `tools` package. The pinned
 action already installs modern command-line tools, yet defaults to requesting

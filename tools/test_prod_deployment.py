@@ -351,22 +351,41 @@ class ProductPublicationTests(unittest.TestCase):
             deploy_prod.validate_build_cache_config(config)
 
     def test_cargo_target_prune_preserves_profile_binaries(self) -> None:
+        self.check_cargo_target_prune(limit_delta=-1)
+
+    def test_cargo_target_at_limit_is_not_pruned(self) -> None:
+        self.check_cargo_target_prune(limit_delta=0)
+
+    def test_cargo_target_below_limit_is_not_pruned(self) -> None:
+        self.check_cargo_target_prune(limit_delta=1)
+
+    def check_cargo_target_prune(self, *, limit_delta: int) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             data_root = Path(temp_dir) / "data"
             target = data_root / "build-cache/cargo-target"
             deps = target / "release/deps"
             deps.mkdir(parents=True)
             dependency = deps / "libold-hash.rlib"
-            dependency.write_bytes(b"dependency")
+            # Allocate real, non-sparse, incompressible data so deleting this
+            # fixture releases space independently of directory/block overhead.
+            dependency_bytes = os.urandom(64 * 1024)
+            dependency.write_bytes(dependency_bytes)
             binary = target / "release/preprocessor-cli"
             binary.write_bytes(b"binary")
+            before = int(subprocess.check_output(
+                ["du", "-sx", "--block-size=1", "--", str(target)], text=True,
+            ).split()[0])
+            self.assertGreater(dependency.stat().st_blocks, 0)
+            # Match the production script's allocated-byte accounting; tiny
+            # files/directories need not occupy the same space on every FS.
+            limit = before + limit_delta
             env_path = Path(temp_dir) / "env"
             env_path.write_text(
                 "".join(
                     (
                         f"DATA_ROOT={deploy_prod.shell_quote(str(data_root))}\n",
                         f"CARGO_TARGET_DIR={deploy_prod.shell_quote(str(target))}\n",
-                        "AEROBAG_CARGO_TARGET_MAX_BYTES=16384\n",
+                        f"AEROBAG_CARGO_TARGET_MAX_BYTES={limit}\n",
                     )
                 ),
                 encoding="utf-8",
@@ -378,8 +397,11 @@ class ProductPublicationTests(unittest.TestCase):
 
             subprocess.run(["bash"], input=script, text=True, check=True)
 
-            self.assertFalse(dependency.exists())
-            self.assertTrue(binary.is_file())
+            if limit_delta < 0:
+                self.assertFalse(dependency.exists())
+            else:
+                self.assertEqual(dependency.read_bytes(), dependency_bytes)
+            self.assertEqual(binary.read_bytes(), b"binary")
 
     def test_staging_qualification_browser_is_an_installed_dependency(self) -> None:
         packages = (deploy_prod.REPO_ROOT / deploy_prod.REPO_PACKAGE_MANIFEST).read_text(

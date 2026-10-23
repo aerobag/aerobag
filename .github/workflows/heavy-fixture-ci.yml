@@ -43,7 +43,7 @@ env:
 jobs:
   nms-notams:
     name: NMS NOTAM full replay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nms-notams
@@ -100,7 +100,7 @@ jobs:
 
   nexrad:
     name: NEXRAD full replay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nexrad

@@ -7,6 +7,8 @@ version.workspace = true
 [features]
 # Hermetic mixed-version journeys only. Never enable in distributed clients.
 cloud-format-test = []
+# Interactive receiver UI lab. Excluded from production builds.
+receiver-simulator = []
 
 [dependencies]
 app-ui-contracts = { path = "../app-ui-contracts" }

@@ -10,6 +10,26 @@ pub struct UiReceiverAction {
     pub label: String,
     pub enabled: bool,
     pub disabled_reason: Option<String>,
+    pub symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiReceiverChooser {
+    pub devices: Vec<UiReceiverAction>,
+    pub empty_text: Option<String>,
+    pub show_all: UiReceiverAction,
+    pub show_all_checked: bool,
+    pub refresh: UiReceiverAction,
+    pub pair: UiReceiverAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UiReceiverDiagnostics {
+    pub title: String,
+    pub detail: String,
+    pub actions: Vec<UiReceiverAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +40,8 @@ pub struct UiReceiverPanel {
     pub detail: String,
     pub actions: Vec<UiReceiverAction>,
     pub activity: Option<UiReceiverActivity>,
+    pub chooser: Option<UiReceiverChooser>,
+    pub diagnostics: Option<UiReceiverDiagnostics>,
 }
 
 /// Core lays out the graph in a 60000 x 1000 coordinate system. Hosts only paint.
@@ -53,7 +75,6 @@ pub struct UiReceiverActivityStrip {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UiReceiverActivity {
     pub title: String,
-    pub detail: String,
     pub axis_start: String,
     pub axis_end: String,
     pub strips: Vec<UiReceiverActivityStrip>,

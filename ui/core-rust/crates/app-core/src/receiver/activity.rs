@@ -183,7 +183,6 @@ impl Activity {
             .collect();
         Some(UiReceiverActivity {
             title: "Reception activity".into(),
-            detail: "Decoded messages, not product freshness. Current minute is partial. Shaded minutes include a disconnection; pale minutes have no recorded history.".into(),
             axis_start: "60 minutes ago".into(),
             axis_end: "Now".into(),
             strips,

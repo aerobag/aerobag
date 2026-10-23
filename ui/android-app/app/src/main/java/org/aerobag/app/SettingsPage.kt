@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -51,9 +53,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.scale
 import kotlin.math.floor
 import kotlin.math.roundToInt
 import org.aerobag.app.domain.NavElementUiView
@@ -170,23 +174,61 @@ internal fun SettingsPage(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SettingsReceiverPanel(state: org.aerobag.app.generated.UiReceiverPanel, onAction: (String) -> Unit) {
     val context = LocalContext.current
     val colors = LocalAerobagUiTheme.current.controls
     Column(modifier = Modifier.fillMaxWidth().background(colors.textInputBg).padding(ThumbGap),
         verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
-        Text(state.title, color = colors.panelFg, fontWeight = FontWeight.Bold)
-        Text(state.status, color = colors.panelFg)
-        state.activity?.let { ReceiverActivityView(it) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ThumbGap), verticalAlignment = Alignment.CenterVertically) {
+            Text(state.title, Modifier.weight(1f), color = colors.panelFg, fontWeight = FontWeight.Bold)
+            Text(state.status, color = colors.panelMuted, textAlign = TextAlign.End)
+        }
         Text(state.detail, color = colors.panelFg)
-        state.actions.forEach { action ->
-            CompactSquareButton(label = action.label, wide = true,
-                modifier = Modifier.fillMaxWidth().height(ThumbSize)
-                    .e2eIndexedControl(semanticTag = "parity:receiver:${action.actionId}", enabled = action.enabled),
-                onClick = { if (action.enabled) onAction(action.actionId) else showDisabledActionToast(context, action.disabledReason) })
+        state.chooser?.let { chooser ->
+            Column(Modifier.fillMaxWidth().border(1.dp, colors.panelMuted, RoundedCornerShape(ThumbRadius))
+                .padding(ThumbGap), verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                chooser.emptyText?.let { Text(it, color = colors.panelMuted) }
+                chooser.devices.forEach { ReceiverActionButton(it, onAction, Modifier.fillMaxWidth()) }
+            }
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ThumbGap), verticalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                Row(Modifier.height(ThumbSize).toggleable(value = chooser.showAllChecked, role = Role.Checkbox,
+                    onValueChange = { if (chooser.showAll.enabled) onAction(chooser.showAll.actionId) else showDisabledActionToast(context, chooser.showAll.disabledReason) })
+                    .e2eIndexedControl(semanticTag = "parity:receiver:${chooser.showAll.actionId}", enabled = chooser.showAll.enabled, checked = chooser.showAllChecked),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = chooser.showAllChecked, onCheckedChange = null)
+                    Text(chooser.showAll.label, color = colors.panelFg)
+                }
+                ReceiverActionButton(chooser.refresh, onAction, Modifier.width(ThumbSize))
+                ReceiverActionButton(chooser.pair, onAction, Modifier.width(ThumbSize * 3f))
+            }
+        }
+        state.activity?.let { ReceiverActivityView(it) }
+        state.actions.forEach { ReceiverActionButton(it, onAction, Modifier.fillMaxWidth()) }
+        state.diagnostics?.let { diagnostics ->
+            var expanded by remember { mutableStateOf(false) }
+            Text((if (expanded) "\u25be " else "\u25b8 ") + diagnostics.title, color = colors.panelMuted,
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                    .e2eIndexedControl(semanticTag = "parity:receiver:diagnostics", enabled = true, selected = expanded))
+            if (expanded) {
+                if (diagnostics.detail.isNotEmpty()) Text(diagnostics.detail, color = colors.panelMuted)
+                diagnostics.actions.forEach { ReceiverActionButton(it, onAction, Modifier.fillMaxWidth()) }
+            }
         }
     }
+}
+
+@Composable
+private fun ReceiverActionButton(action: org.aerobag.app.generated.UiReceiverAction, onAction: (String) -> Unit, modifier: Modifier) {
+    val context = LocalContext.current
+    CompactSquareButton(label = action.symbol ?: action.label, wide = action.symbol == null,
+        modifier = modifier.height(ThumbSize).semantics { contentDescription = action.label },
+        enabled = action.enabled,
+        testTag = "parity:receiver:${action.actionId}",
+        textModifier = if (action.symbol != null) Modifier.scale(1.8f) else Modifier,
+        onDisabledClick = { showDisabledActionToast(context, action.disabledReason) },
+        onClick = { onAction(action.actionId) })
 }
 
 @Composable

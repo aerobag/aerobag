@@ -179,6 +179,12 @@ val androidSigningKeyPassword = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_PAS
 val androidBuildRustRelease = readBooleanBuildConfig("ANDROID_BUILD_RUST_RELEASE", false)
 val androidBuildNativeLibraries = readBooleanBuildConfig("ANDROID_BUILD_NATIVE_LIBRARIES", true)
 val androidE2eEnabled = readBooleanBuildConfig("AEROBAG_E2E_ENABLED", false)
+val receiverSimulatorEnabled = readBooleanBuildConfig("ANDROID_RECEIVER_SIMULATOR", false)
+gradle.taskGraph.whenReady {
+    if (receiverSimulatorEnabled && allTasks.any { it.name.contains("Release", ignoreCase = true) }) {
+        throw GradleException("Receiver simulator is only allowed in development debug APKs, never release builds")
+    }
+}
 val androidRustProfileArgs = if (androidBuildRustRelease) listOf("--release") else emptyList()
 val androidRustProfileDir = if (androidBuildRustRelease) "release" else "debug"
 val androidRust16KbPageSizeRustFlags = listOf(
@@ -250,8 +256,12 @@ val copyRustLibraries = if (androidBuildNativeLibraries) {
             environment("CARGO_TARGET_${target.envPrefix}_RUSTFLAGS", rustFlagsForAndroidTarget(target))
             environment("ANDROID_NDK_ROOT", ndkRoot)
             environment("NDK_HOME", ndkRoot)
-            val cloudTestFeatures = if (androidE2eEnabled) listOf("--features", "cloud-format-test") else emptyList()
-            commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs + cloudTestFeatures)
+            val features = buildList {
+                if (androidE2eEnabled) add("cloud-format-test")
+                if (receiverSimulatorEnabled) add("receiver-simulator")
+            }
+            val featureArgs = if (features.isEmpty()) emptyList() else listOf("--features", features.joinToString(","))
+            commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs + featureArgs)
         }
         tasks.register<Copy>("copyRust${target.abi.replace("-", "").replace("_", "")}Library") {
             dependsOn(buildTask)

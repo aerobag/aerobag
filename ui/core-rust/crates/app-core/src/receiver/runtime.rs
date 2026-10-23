@@ -29,6 +29,10 @@ use std::{
 const BATCH_SIZE: usize = 32;
 const INVENTORY_TIMEOUT_MS: u64 = 5_000;
 
+#[cfg(any(test, feature = "receiver-simulator"))]
+#[path = "simulator.rs"]
+mod simulator;
+
 fn is_receiver_candidate(device: &ReceiverDevice) -> bool {
     device
         .service_uuids
@@ -135,13 +139,8 @@ impl Mailbox {
 
 enum InventoryState {
     NotChecked,
-    Refreshing {
-        deadline_ms: u64,
-    },
-    Checked {
-        result: ReceiverInventoryResult,
-        at: String,
-    },
+    Refreshing { deadline_ms: u64 },
+    Checked { result: ReceiverInventoryResult },
     TimedOut,
 }
 
@@ -163,24 +162,28 @@ impl InventoryState {
         }
     }
 
-    fn description(&self) -> String {
+    fn empty_message(&self, show_all: bool) -> &'static str {
         match self {
-            Self::NotChecked => "Paired devices have not been checked yet.".into(),
-            Self::Refreshing { .. } => "Refreshing paired devices...".into(),
-            Self::TimedOut => "Paired-device refresh timed out. Try Refresh paired devices again.".into(),
-            Self::Checked { result, at } => match result {
-                ReceiverInventoryResult::Ready { devices } if devices.is_empty() => format!("Refreshed at {at}: no paired Bluetooth devices. Pair the GTX 345 in Android Bluetooth settings, then refresh."),
-                ReceiverInventoryResult::Ready { devices } => format!("Refreshed at {at}: {} paired Bluetooth device{}. Choose Connect for your receiver. This list does not indicate whether devices are in range.", devices.len(), if devices.len() == 1 { "" } else { "s" }),
-                ReceiverInventoryResult::PermissionRequired => "Bluetooth permission is required. Choose Allow Bluetooth, then allow nearby devices.".into(),
-                ReceiverInventoryResult::BluetoothOff => "Bluetooth is turned off. Turn it on in Android settings, then refresh paired devices.".into(),
-                ReceiverInventoryResult::Unavailable => "Bluetooth is unavailable on this device.".into(),
-                ReceiverInventoryResult::Failed => "Could not read paired Bluetooth devices. Try Refresh paired devices again.".into(),
+            Self::NotChecked => "Paired devices have not been checked yet.",
+            Self::Refreshing { .. } => "Refreshing paired devices...",
+            Self::TimedOut => "Paired-device refresh timed out.",
+            Self::Checked { result } => match result {
+                ReceiverInventoryResult::Ready { .. } if show_all => "No paired Bluetooth devices.",
+                ReceiverInventoryResult::Ready { .. } => "No suggested transponders.",
+                ReceiverInventoryResult::PermissionRequired => "Bluetooth permission is required.",
+                ReceiverInventoryResult::BluetoothOff => "Bluetooth is turned off.",
+                ReceiverInventoryResult::Unavailable => "Bluetooth is unavailable on this device.",
+                ReceiverInventoryResult::Failed => "Could not read paired Bluetooth devices.",
             },
         }
     }
 }
 
 pub struct Runtime {
+    #[cfg(any(test, feature = "receiver-simulator"))]
+    simulator_enabled: bool,
+    #[cfg(any(test, feature = "receiver-simulator"))]
+    simulator: Option<simulator::Peer>,
     root: PathBuf,
     build: Option<app_ui_contracts::session::ClientBuildInfo>,
     now_ms: u64,
@@ -222,6 +225,10 @@ impl Runtime {
             live.restore_radar(cache.radar().clone());
         }
         Self {
+            #[cfg(any(test, feature = "receiver-simulator"))]
+            simulator_enabled: cfg!(all(feature = "receiver-simulator", not(test))),
+            #[cfg(any(test, feature = "receiver-simulator"))]
+            simulator: None,
             root,
             build: None,
             now_ms: 0,
@@ -309,6 +316,19 @@ impl Runtime {
         bytes: &[u8],
         clock: CaptureClock,
     ) -> ReceiverHostOutput {
+        #[cfg(any(test, feature = "receiver-simulator"))]
+        if self.simulator_enabled {
+            return self.update_with_simulator(event, bytes, clock);
+        }
+        self.update_inner(Some(event), bytes, clock)
+    }
+
+    fn update_inner(
+        &mut self,
+        event: Option<ReceiverHostEvent>,
+        bytes: &[u8],
+        clock: CaptureClock,
+    ) -> ReceiverHostOutput {
         self.now_ms = clock.monotonic_ms;
         let mut effects = Vec::new();
         let mut output = Output::default();
@@ -320,150 +340,161 @@ impl Runtime {
             self.inventory = InventoryState::TimedOut;
         }
         let event = if self.host_failed {
-            ReceiverHostEvent::Tick
+            Some(ReceiverHostEvent::Tick)
         } else {
             event
         };
-        match event {
-            ReceiverHostEvent::HostFailed => {
-                if let Some(connection) = &mut self.connection {
-                    output = connection.stop(clock);
-                }
-                self.connection = None;
-                self.host_failed = true;
-                self.error = Some("Receiver interface failed; recording stopped. Restart the application before reconnecting.".into());
-            }
-            ReceiverHostEvent::HostUnavailable => {
-                if let Some(connection) = &mut self.connection {
-                    output = connection.stop(clock);
-                }
-                self.connection = None;
-                self.error = Some("Android stopped receiver background service; reconnect when the app is visible".into());
-            }
-            ReceiverHostEvent::RefreshInventory => self.refresh_inventory(clock, &mut effects),
-            ReceiverHostEvent::Inventory {
-                request_id,
-                mut result,
-            } => {
-                if request_id == self.inventory_generation && self.inventory.deadline().is_some() {
-                    if let ReceiverInventoryResult::Ready { devices } = &mut result {
-                        devices.truncate(128);
-                        devices.retain(|device| {
-                            device.address.len() <= 64 && device.name.len() <= 256
-                        });
-                        for device in devices.iter_mut() {
-                            device.service_uuids.truncate(64);
-                            device.service_uuids.retain(|id| id.len() <= 64);
-                        }
-                        devices.sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
-                        devices.dedup_by(|a, b| a.address == b.address);
-                    }
-                    self.inventory = InventoryState::Checked {
-                        result,
-                        at: {
-                            let seconds = clock.wall_epoch_ms.rem_euclid(86_400_000) / 1000;
-                            format!(
-                                "{:02}:{:02}:{:02}Z",
-                                seconds / 3600,
-                                seconds / 60 % 60,
-                                seconds % 60
-                            )
-                        },
-                    };
-                }
-            }
-            ReceiverHostEvent::Action { action_id } => {
-                self.error = None;
-                if action_id == "receiver:permission" {
-                    effects.push(ReceiverHostEffect::RequestPermission);
-                } else if action_id == "receiver:bluetooth-settings" && !self.active() {
-                    effects.push(ReceiverHostEffect::OpenBluetoothSettings);
-                } else if action_id == "receiver:show-all" && !self.active() {
-                    self.show_all_devices = !self.show_all_devices;
-                } else if action_id == "receiver:refresh" {
-                    self.refresh_inventory(clock, &mut effects);
-                } else if action_id == "receiver:stop" {
+        if let Some(event) = event {
+            match event {
+                ReceiverHostEvent::HostFailed => {
                     if let Some(connection) = &mut self.connection {
                         output = connection.stop(clock);
                     }
-                    // Drop releases the archive lock; reconnect opens a fresh recorder.
                     self.connection = None;
-                } else if action_id == "receiver:export" && !self.active() {
-                    self.connection = None;
-                    match self.export_capture() {
-                        Ok(path) => effects.push(ReceiverHostEffect::ShareFile {
-                            path: path.to_string_lossy().into_owned(),
-                            mime_type: "application/zip".into(),
-                            title: "Share receiver capture".into(),
-                        }),
-                        Err(error) => self.error = Some(error),
+                    self.host_failed = true;
+                    self.error = Some("Receiver interface failed; recording stopped. Restart the application before reconnecting.".into());
+                }
+                ReceiverHostEvent::HostUnavailable => {
+                    if let Some(connection) = &mut self.connection {
+                        output = connection.stop(clock);
                     }
-                } else {
-                    let device = self
-                        .inventory
-                        .devices()
-                        .iter()
-                        .enumerate()
-                        .find(|(index, device)| {
-                            action_id == self.device_action(*index)
-                                && (self.show_all_devices || is_receiver_candidate(device))
-                        })
-                        .map(|(_, device)| device.address.clone());
-                    if let Some(device) = device.filter(|_| !self.active()) {
-                        // Blocked owners must release the file lock before opening a new archive.
-                        self.connection = None;
-                        let mut connection = Connection::new(
-                            self.build.clone(),
-                            CaptureArchive::open(
-                                &self.root.join("captures"),
-                                CapturePolicy::default(),
-                            ),
-                            clock,
-                        );
-                        output = connection.start(device, clock);
-                        self.connection = Some(connection);
-                    } else {
-                        self.error = Some(
-                            "Receiver selection changed; refresh paired devices and try again"
-                                .into(),
-                        );
+                    self.connection = None;
+                    self.error = Some("Android stopped receiver background service; reconnect when the app is visible".into());
+                }
+                ReceiverHostEvent::RefreshInventory => self.refresh_inventory(clock, &mut effects),
+                ReceiverHostEvent::Inventory {
+                    request_id,
+                    mut result,
+                } => {
+                    if request_id == self.inventory_generation
+                        && self.inventory.deadline().is_some()
+                    {
+                        if let ReceiverInventoryResult::Ready { devices } = &mut result {
+                            devices.truncate(128);
+                            devices.retain(|device| {
+                                device.address.len() <= 64 && device.name.len() <= 256
+                            });
+                            for device in devices.iter_mut() {
+                                device.service_uuids.truncate(64);
+                                device.service_uuids.retain(|id| id.len() <= 64);
+                            }
+                            devices
+                                .sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
+                            devices.dedup_by(|a, b| a.address == b.address);
+                        }
+                        self.inventory = InventoryState::Checked { result };
                     }
                 }
-            }
-            event => {
-                if let Some(connection) = &mut self.connection {
-                    let event = match event {
-                        ReceiverHostEvent::Connected { connection_id } => {
-                            Event::Connected(ConnectionId(connection_id))
+                ReceiverHostEvent::Action { action_id } => {
+                    self.error = None;
+                    if action_id == "receiver:permission" {
+                        effects.push(ReceiverHostEffect::RequestPermission);
+                    } else if action_id == "receiver:bluetooth-settings" && !self.active() {
+                        effects.push(ReceiverHostEffect::OpenBluetoothSettings);
+                    } else if action_id == "receiver:show-all" && !self.active() {
+                        self.show_all_devices = !self.show_all_devices;
+                    } else if action_id == "receiver:refresh" {
+                        self.refresh_inventory(clock, &mut effects);
+                    } else if action_id == "receiver:stop" {
+                        if let Some(connection) = &mut self.connection {
+                            output = connection.stop(clock);
                         }
-                        ReceiverHostEvent::Received { connection_id } => {
-                            Event::Received(ConnectionId(connection_id), bytes)
+                        // Drop releases the archive lock; reconnect opens a fresh recorder.
+                        self.connection = None;
+                    } else if action_id == "receiver:export" && !self.active() {
+                        self.connection = None;
+                        match self.export_capture() {
+                            Ok(path) => effects.push(ReceiverHostEffect::ShareFile {
+                                path: path.to_string_lossy().into_owned(),
+                                mime_type: "application/zip".into(),
+                                title: "Share receiver capture".into(),
+                            }),
+                            Err(error) => self.error = Some(error),
                         }
-                        ReceiverHostEvent::Written {
-                            connection_id,
-                            write_id,
-                        } => Event::Written(ConnectionId(connection_id), WriteId(write_id)),
-                        ReceiverHostEvent::Failed {
-                            connection_id,
-                            failure,
-                        } => Event::Failed(
-                            ConnectionId(connection_id),
-                            match failure {
-                                ReceiverIoFailure::Connection => IoFailure::Connection,
-                                ReceiverIoFailure::Read => IoFailure::Read,
-                                ReceiverIoFailure::Write => IoFailure::Write,
-                                ReceiverIoFailure::Permission => IoFailure::Permission,
-                                ReceiverIoFailure::BluetoothDisabled => {
-                                    IoFailure::BluetoothDisabled
-                                }
-                            },
-                        ),
-                        ReceiverHostEvent::Tick => Event::Tick,
-                        _ => unreachable!(),
-                    };
-                    output = connection.update(event, clock);
-                } else if let ReceiverHostEvent::Connected { connection_id } = event {
-                    effects.push(ReceiverHostEffect::Close { connection_id });
+                    } else {
+                        let device = self
+                            .inventory
+                            .devices()
+                            .iter()
+                            .enumerate()
+                            .find(|(index, device)| {
+                                action_id == self.device_action(*index)
+                                    && (self.show_all_devices || is_receiver_candidate(device))
+                            })
+                            .map(|(_, device)| device.address.clone());
+                        #[cfg(any(test, feature = "receiver-simulator"))]
+                        let device = if self.simulator_enabled
+                            && action_id == "receiver:simulate"
+                            && !self.active()
+                        {
+                            self.simulator =
+                                Some(simulator::Peer::new(std::mem::take(&mut self.activity)));
+                            self.activity_view = None;
+                            self.activity_view_second = None;
+                            Some("SIMULATED-GTX345".into())
+                        } else {
+                            device
+                        };
+                        if let Some(device) = device.filter(|_| !self.active()) {
+                            // Blocked owners must release the file lock before opening a new archive.
+                            self.connection = None;
+                            let capture_root = self.root.join("captures");
+                            #[cfg(any(test, feature = "receiver-simulator"))]
+                            let capture_root = if self.simulator.is_some() {
+                                self.root.join("simulator-captures")
+                            } else {
+                                capture_root
+                            };
+                            let mut connection = Connection::new(
+                                self.build.clone(),
+                                CaptureArchive::open(&capture_root, CapturePolicy::default()),
+                                clock,
+                            );
+                            output = connection.start(device, clock);
+                            self.connection = Some(connection);
+                        } else {
+                            self.error = Some(
+                                "Receiver selection changed; refresh paired devices and try again"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+                event => {
+                    if let Some(connection) = &mut self.connection {
+                        let event = match event {
+                            ReceiverHostEvent::Connected { connection_id } => {
+                                Event::Connected(ConnectionId(connection_id))
+                            }
+                            ReceiverHostEvent::Received { connection_id } => {
+                                Event::Received(ConnectionId(connection_id), bytes)
+                            }
+                            ReceiverHostEvent::Written {
+                                connection_id,
+                                write_id,
+                            } => Event::Written(ConnectionId(connection_id), WriteId(write_id)),
+                            ReceiverHostEvent::Failed {
+                                connection_id,
+                                failure,
+                            } => Event::Failed(
+                                ConnectionId(connection_id),
+                                match failure {
+                                    ReceiverIoFailure::Connection => IoFailure::Connection,
+                                    ReceiverIoFailure::Read => IoFailure::Read,
+                                    ReceiverIoFailure::Write => IoFailure::Write,
+                                    ReceiverIoFailure::Permission => IoFailure::Permission,
+                                    ReceiverIoFailure::BluetoothDisabled => {
+                                        IoFailure::BluetoothDisabled
+                                    }
+                                },
+                            ),
+                            ReceiverHostEvent::Tick => Event::Tick,
+                            _ => unreachable!(),
+                        };
+                        output = connection.update(event, clock);
+                    } else if let ReceiverHostEvent::Connected { connection_id } = event {
+                        effects.push(ReceiverHostEffect::Close { connection_id });
+                    }
                 }
             }
         }
@@ -660,77 +691,86 @@ impl Runtime {
     fn panel(&self) -> UiReceiverPanel {
         let status = self.connection.as_ref().map(Connection::status);
         let mut panel = empty_panel();
-        panel.status = if let Some(error) = &self.error {
-            error.clone()
+        panel.status = if self.error.is_some() {
+            "Unavailable".into()
         } else {
             match status.as_ref().map(|status| status.phase) {
-                None | Some(ConnectionPhase::Stopped) => "Disconnected".into(),
+                None | Some(ConnectionPhase::Stopped) => {
+                    if self.inventory.deadline().is_some() {
+                        "Refreshing".into()
+                    } else {
+                        "Disconnected".into()
+                    }
+                }
                 Some(ConnectionPhase::Connecting) => "Connecting".into(),
                 Some(ConnectionPhase::Protocol(ProtocolPhase::Receiving)) => {
                     if status.as_ref().unwrap().capture_failure.is_some() {
                         "Receiving; recording stopped".into()
                     } else {
-                        "Receiving and recording".into()
+                        "Receiving".into()
                     }
                 }
-                Some(ConnectionPhase::Protocol(_)) => "Setting up receiver protocol".into(),
-                Some(ConnectionPhase::WaitingToRetry { .. }) => {
-                    "Connection interrupted; retrying automatically".into()
-                }
-                Some(ConnectionPhase::Blocked) => "Receiver stopped".into(),
+                Some(ConnectionPhase::Protocol(_)) => "Setting up".into(),
+                Some(ConnectionPhase::WaitingToRetry { .. }) => "Retrying".into(),
+                Some(ConnectionPhase::Blocked) => "Stopped".into(),
             }
         };
+        let mut diagnostics = String::new();
         if let Some(status) = status {
-            panel.detail = format!("{} MiB recorded; {} messages decoded; {} malformed. {} weather reports accepted; {} rejected.{}",
+            diagnostics = format!("{} MiB recorded; {} messages decoded; {} malformed. {} weather reports accepted; {} rejected.{}",
                 status.captured.written_bytes / (1024*1024),status.decoded_messages,status.malformed_messages,
                 self.normalized,self.rejected,
                 status.last_fault.map(|fault| format!(" {}",fault.description())).unwrap_or_default());
-            panel
-                .detail
-                .push_str(&format!("\n{}", status.reception.description(self.now_ms)));
+            diagnostics.push_str(&format!("\n{}", status.reception.description(self.now_ms)));
             if let Some(failure) = status.capture_failure {
                 let reason = if failure.storage_full {
                     "storage full"
                 } else {
                     "storage unavailable"
                 };
-                panel.detail.push_str(&format!(
-                    "\nRecording stopped ({reason}): {}. Receiver reception continues. Earlier capture files are retained.",
+                diagnostics.push_str(&format!(
+                    "\nRecording stopped ({reason}): {}.",
                     failure.detail,
                 ));
             }
+        }
+        if self.active() {
+            panel.detail = match self.connection.as_ref().unwrap().status().phase {
+                ConnectionPhase::Connecting => "Connecting to the selected transponder...",
+                ConnectionPhase::Protocol(ProtocolPhase::Receiving) => {
+                    "Receiving traffic and weather."
+                }
+                ConnectionPhase::WaitingToRetry { .. } => {
+                    "Connection interrupted. Reconnecting automatically."
+                }
+                _ => "Establishing communication with the transponder...",
+            }
+            .into();
+        }
+        if let Some(error) = &self.error {
+            panel.detail = error.clone();
         }
         if let Some(error) = &self.weather_error {
             panel.detail.push_str(&format!(" {error}"));
         }
         let live = self.live.snapshot();
         if live.connected {
-            panel.detail.push_str(&format!(
-                " {} traffic records. Receiver GPS: {}. Choose Receiver in the ownship menu to use its GPS. BARO and NEXRAD have their own source selectors.",
-                live.aircraft.len(), if live.ownship.is_some() { "fix available" } else { "no current fix" },
+            diagnostics.push_str(&format!(
+                " {} traffic records. Receiver GPS: {}.",
+                live.aircraft.len(),
+                if live.ownship.is_some() {
+                    "fix available"
+                } else {
+                    "no current fix"
+                },
             ));
         }
-        let action = |id: &str, label: &str| UiReceiverAction {
-            action_id: id.into(),
-            label: label.into(),
-            enabled: true,
-            disabled_reason: None,
-        };
         if self.host_failed {
             return panel;
         }
         if self.active() {
             panel.actions.push(action("receiver:stop", "Disconnect"));
         } else {
-            panel
-                .detail
-                .push_str(&format!("\n\n{}", self.inventory.description()));
-            panel
-                .actions
-                .push(action("receiver:export", "Export receiver capture"));
-            panel
-                .actions
-                .push(action("receiver:bluetooth-settings", "Bluetooth settings"));
             if matches!(
                 self.inventory,
                 InventoryState::Checked {
@@ -743,50 +783,71 @@ impl Runtime {
                     .push(action("receiver:permission", "Allow Bluetooth"));
             }
             let mut refresh = action("receiver:refresh", "Refresh paired devices");
+            refresh.symbol = Some("\u{21bb}".into());
             if self.inventory.deadline().is_some() {
-                refresh.label = "Refreshing paired devices...".into();
                 refresh.enabled = false;
                 refresh.disabled_reason = Some("Waiting for Android's paired-device list".into());
             }
-            panel.actions.push(refresh);
-            let other_count = self
+            let devices: Vec<_> = self
                 .inventory
                 .devices()
                 .iter()
-                .filter(|device| !is_receiver_candidate(device))
-                .count();
-            if other_count > 0 {
-                panel.detail.push_str("\nSuggested receivers use their Bluetooth name or advertised service. If yours is missing, show all paired devices.");
-                panel.actions.push(action(
-                    "receiver:show-all",
-                    if self.show_all_devices {
-                        "Show suggested receivers"
-                    } else {
-                        "Show all paired devices"
-                    },
-                ));
-            }
-            panel.actions.extend(
-                self.inventory
-                    .devices()
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, device)| self.show_all_devices || is_receiver_candidate(device))
-                    .map(|(index, device)| {
-                        action(
-                            &self.device_action(index),
-                            &format!("Connect {} ({})", device.name, device.address),
-                        )
-                    }),
-            );
+                .enumerate()
+                .filter(|(_, device)| self.show_all_devices || is_receiver_candidate(device))
+                .map(|(index, device)| {
+                    action(
+                        &self.device_action(index),
+                        &format!("{}  {}", device.name, device.address),
+                    )
+                })
+                .collect();
+            let empty_text = devices
+                .is_empty()
+                .then(|| self.inventory.empty_message(self.show_all_devices).into());
+            panel.chooser = Some(UiReceiverChooser {
+                devices,
+                empty_text,
+                show_all: action("receiver:show-all", "Show all paired devices"),
+                show_all_checked: self.show_all_devices,
+                refresh,
+                pair: action("receiver:bluetooth-settings", "Pair a new device"),
+            });
         }
+        panel.diagnostics = Some(UiReceiverDiagnostics {
+            title: "Diagnostics".into(),
+            detail: diagnostics,
+            actions: if self.active() {
+                vec![]
+            } else {
+                vec![action("receiver:export", "Export receiver capture")]
+            },
+        });
+        #[cfg(any(test, feature = "receiver-simulator"))]
+        self.simulator_panel(&mut panel);
         panel
     }
 }
 
 fn empty_panel() -> UiReceiverPanel {
-    UiReceiverPanel { title:"ADS-B receiver".into(),status:"Disconnected".into(),
-        detail:"Pair your GTX 345 in Bluetooth settings, then refresh and connect. Traffic and weather are received automatically. Receiver GPS remains an explicit ownship choice. Diagnostic recording is automatic (256 MiB limit); attitude is recorded but not displayed. Compatibility with other receiver firmware is not yet verified.".into(),actions:Vec::new(), activity:None }
+    UiReceiverPanel {
+        title: "ADS-B receiver".into(),
+        status: "Disconnected".into(),
+        detail: "Connect or pair a new Bluetooth transponder.".into(),
+        actions: Vec::new(),
+        activity: None,
+        chooser: None,
+        diagnostics: None,
+    }
+}
+
+fn action(id: &str, label: &str) -> UiReceiverAction {
+    UiReceiverAction {
+        action_id: id.into(),
+        label: label.into(),
+        enabled: true,
+        disabled_reason: None,
+        symbol: None,
+    }
 }
 
 // Single process owner survives activity rotation and UI session replacement.
@@ -921,7 +982,15 @@ mod tests {
     }
     fn start(runtime: &mut Runtime, now: u64) -> u64 {
         let panel = refresh(runtime, inventory(), now).panel;
-        let id = panel.actions.last().unwrap().action_id.clone();
+        let id = panel
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
+            .last()
+            .unwrap()
+            .action_id
+            .clone();
         let output = runtime.update(action(&id), &[], clock(now));
         assert!(output.keep_alive);
         match output.effects[0] {
@@ -967,16 +1036,16 @@ mod tests {
         let panel = refresh(&mut runtime, ReceiverInventoryResult::Ready { devices }, 0).panel;
         let names = |panel: &UiReceiverPanel| {
             panel
-                .actions
+                .chooser
+                .as_ref()
+                .unwrap()
+                .devices
                 .iter()
                 .filter(|a| a.action_id.starts_with("receiver:device:"))
                 .map(|a| a.label.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            names(&panel),
-            ["Connect GTX 345 (2)", "Connect Renamed airplane (1)"]
-        );
+        assert_eq!(names(&panel), ["GTX 345  2", "Renamed airplane  1"]);
         assert!(matches!(
             runtime
                 .update(action("receiver:bluetooth-settings"), &[], clock(1))
@@ -988,10 +1057,14 @@ mod tests {
             .update(action("receiver:show-all"), &[], clock(2))
             .panel;
         assert_eq!(names(&panel).len(), 3);
+        assert!(panel.chooser.as_ref().unwrap().show_all_checked);
         let renamed = panel
-            .actions
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
             .iter()
-            .find(|a| a.label == "Connect Renamed airplane (1)")
+            .find(|a| a.label == "Renamed airplane  1")
             .unwrap();
         let connected = runtime.update(action(&renamed.action_id), &[], clock(3));
         assert!(connected.keep_alive);
@@ -1009,7 +1082,7 @@ mod tests {
         let suggested = runtime.update(action("receiver:show-all"), &[], clock(5));
         assert_eq!(
             names(&suggested.panel),
-            ["Connect GTX 345 (2)", "Connect Renamed airplane (1)"]
+            ["GTX 345  2", "Renamed airplane  1"]
         );
     }
 
@@ -1024,7 +1097,10 @@ mod tests {
             .all(|action| !action.action_id.starts_with("receiver:import-")
                 && !action.action_id.starts_with("receiver:mode-")));
         let connect = panel
-            .actions
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
             .iter()
             .find(|action| action.action_id.starts_with("receiver:device:"))
             .unwrap();
@@ -1044,13 +1120,12 @@ mod tests {
         let root = root();
         let mut runtime = Runtime::new(root.path().into());
         let requested = request_inventory(&mut runtime, 0);
-        assert!(requested.panel.detail.contains("Refreshing paired devices"));
-        let button = requested
-            .panel
-            .actions
-            .iter()
-            .find(|a| a.action_id == "receiver:refresh")
-            .unwrap();
+        assert_eq!(requested.panel.status, "Refreshing");
+        assert_eq!(
+            requested.panel.detail,
+            "Connect or pair a new Bluetooth transponder."
+        );
+        let button = &requested.panel.chooser.as_ref().unwrap().refresh;
         assert!(!button.enabled);
         assert!(button.disabled_reason.is_some());
         assert!(
@@ -1070,33 +1145,35 @@ mod tests {
         );
         assert_eq!(first.panel.status, "Disconnected", "refresh never connects");
         assert!(first.effects.is_empty());
-        assert!(first.panel.detail.contains("1 paired Bluetooth device."));
-        assert!(first
-            .panel
-            .detail
-            .contains("does not indicate whether devices are in range"));
-        assert!(first
-            .panel
-            .actions
-            .iter()
-            .any(|a| a.enabled && a.label.starts_with("Connect Test receiver")));
-        let again = refresh(&mut runtime, inventory(), 2_000);
-        assert_ne!(
-            first.panel.detail, again.panel.detail,
-            "unchanged list still acknowledges the new refresh time"
+        assert!(
+            first.panel.diagnostics.as_ref().unwrap().detail.is_empty(),
+            "device-list success is not diagnostic text"
         );
+        assert!(first.panel.chooser.as_ref().unwrap().refresh.enabled);
+        assert!(first.panel.chooser.as_ref().unwrap().empty_text.is_none());
+        assert!(first
+            .panel
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
+            .iter()
+            .any(|a| a.enabled && a.label.starts_with("Test receiver")));
+        let again = refresh(&mut runtime, inventory(), 2_000);
+        assert_eq!(
+            first.panel.diagnostics, again.panel.diagnostics,
+            "refreshing the device list does not invent receiver diagnostics"
+        );
+        assert_eq!(again.panel.status, "Disconnected");
+        assert!(again.panel.chooser.as_ref().unwrap().refresh.enabled);
         let empty = refresh(
             &mut runtime,
             ReceiverInventoryResult::Ready { devices: vec![] },
             3_000,
         );
-        assert!(empty.panel.detail.contains("no paired Bluetooth devices"));
-        assert!(empty.panel.detail.contains("Android Bluetooth settings"));
-        assert!(!empty
-            .panel
-            .actions
-            .iter()
-            .any(|a| a.label.starts_with("Connect ")));
+        assert!(empty.panel.chooser.as_ref().unwrap().empty_text.is_some());
+        assert!(empty.panel.chooser.as_ref().unwrap().devices.is_empty());
+        assert!(!empty.panel.chooser.as_ref().unwrap().show_all_checked);
     }
 
     #[test]
@@ -1123,19 +1200,25 @@ mod tests {
             let mut runtime = Runtime::new(root.path().into());
             let old = refresh(&mut runtime, inventory(), 0)
                 .panel
-                .actions
+                .chooser
+                .as_ref()
+                .unwrap()
+                .devices
                 .last()
                 .unwrap()
                 .action_id
                 .clone();
             let failed = refresh(&mut runtime, failure.clone(), 10);
-            assert!(failed.panel.detail.contains(message));
-            assert!(!failed.panel.detail.contains("no paired Bluetooth devices"));
-            assert!(!failed
+            assert!(failed
                 .panel
-                .actions
-                .iter()
-                .any(|a| a.label.starts_with("Connect ")));
+                .chooser
+                .as_ref()
+                .unwrap()
+                .empty_text
+                .as_ref()
+                .unwrap()
+                .contains(message));
+            assert!(failed.panel.chooser.as_ref().unwrap().devices.is_empty());
             assert_eq!(
                 failed
                     .panel
@@ -1151,9 +1234,12 @@ mod tests {
             let recovered = refresh(&mut runtime, inventory(), 20);
             assert!(recovered
                 .panel
-                .actions
+                .chooser
+                .as_ref()
+                .unwrap()
+                .devices
                 .iter()
-                .any(|a| a.enabled && a.label.starts_with("Connect ")));
+                .any(|a| a.enabled));
             assert!(!recovered.panel.detail.contains(message));
         }
     }
@@ -1168,12 +1254,16 @@ mod tests {
         };
         assert!(requested.next_wake_monotonic_ms.unwrap() <= INVENTORY_TIMEOUT_MS);
         let timeout = runtime.update(ReceiverHostEvent::Tick, &[], clock(INVENTORY_TIMEOUT_MS));
-        assert!(timeout.panel.detail.contains("refresh timed out"));
         assert!(timeout
             .panel
-            .actions
-            .iter()
-            .any(|a| a.action_id == "receiver:refresh" && a.enabled));
+            .chooser
+            .as_ref()
+            .unwrap()
+            .empty_text
+            .as_ref()
+            .unwrap()
+            .contains("refresh timed out"));
+        assert!(timeout.panel.chooser.as_ref().unwrap().refresh.enabled);
         let late = runtime.update(
             ReceiverHostEvent::Inventory {
                 request_id: old,
@@ -1204,7 +1294,7 @@ mod tests {
             &[],
             clock(6_002),
         );
-        assert!(empty.panel.detail.contains("no paired Bluetooth devices"));
+        assert!(empty.panel.chooser.as_ref().unwrap().devices.is_empty());
         let duplicate = runtime.update(
             ReceiverHostEvent::Inventory {
                 request_id,
@@ -1236,7 +1326,10 @@ mod tests {
         ));
         let selection = refresh(&mut runtime, inventory(), 2)
             .panel
-            .actions
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
             .last()
             .unwrap()
             .action_id
@@ -1244,7 +1337,7 @@ mod tests {
         refresh(&mut runtime, inventory(), 3);
         let stale = runtime.update(action(&selection), &[], clock(4));
         assert!(!stale.keep_alive);
-        assert!(stale.panel.status.contains("selection changed"));
+        assert!(stale.panel.detail.contains("selection changed"));
         assert!(stale.effects.is_empty());
     }
 
@@ -1366,7 +1459,7 @@ mod tests {
         assert!(
             matches!(stopped.effects[0],ReceiverHostEffect::Close {connection_id} if connection_id==id)
         );
-        assert!(stopped.panel.status.contains("Android stopped"));
+        assert!(stopped.panel.detail.contains("Android stopped"));
         assert!(runtime
             .update(ReceiverHostEvent::Tick, &[], clock(100_000))
             .effects
@@ -1636,10 +1729,19 @@ mod tests {
         let root = root();
         let mut runtime = Runtime::new(root.path().into());
         let panel = refresh(&mut runtime, inventory(), 0).panel;
-        let start = panel.actions.last().unwrap().action_id.clone();
+        let start = panel
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
+            .last()
+            .unwrap()
+            .action_id
+            .clone();
         let failed = runtime.update(ReceiverHostEvent::HostFailed, &[], clock(1));
         assert!(failed.panel.actions.is_empty());
-        assert!(failed.panel.status.contains("Restart"));
+        assert!(failed.panel.chooser.is_none());
+        assert!(failed.panel.detail.contains("Restart"));
         let late = runtime.update(action(&start), &[], clock(2));
         assert!(!late.keep_alive);
         assert!(late.effects.is_empty());

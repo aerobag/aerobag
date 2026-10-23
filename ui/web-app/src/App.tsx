@@ -13507,11 +13507,9 @@ export function SettingsPage(props: {
                 return <SettingsAircraftLibrary key={index} state={block.library}
                   onAction={props.onAircraftLibraryAction} onDisabledAction={showSettingsHelp} />;
               case "receiver":
-                return <section key={index} className="settingsPageSection">
-                  <h2>{block.panel.title}</h2><p>{block.panel.status}</p>
-                  {block.panel.activity && <ReceiverActivityView state={block.panel.activity} />}
-                  <p>{block.panel.detail}</p>
-                </section>;
+                return <ReceiverPanelView key={index} state={block.panel} onAction={() => {
+                  throw new Error("Browser receiver replay must not publish native receiver host actions");
+                }} onDisabledAction={showSettingsHelp} />;
               case "section":
                 return <SettingsPageSectionView key={index} section={block.section}
                   onSettingsAction={props.onSettingsAction} onHelp={showSettingsHelp} />;
@@ -13531,6 +13529,33 @@ export function SettingsPage(props: {
 type SettingsBlock = UiSessionSnapshot["settings_page_state"]["blocks"][number];
 type ReceiverActivity = NonNullable<Extract<SettingsBlock, { kind: "receiver" }>["panel"]["activity"]>;
 
+export function ReceiverPanelView({ state, onAction, onDisabledAction }: {
+  state: Extract<SettingsBlock, {kind: "receiver"}>["panel"];
+  onAction: (id: string) => void;
+  onDisabledAction: (reason: string) => void;
+}) {
+  const button = (action: typeof state.actions[number]) => <button key={action.action_id} type="button"
+    className={`trayButton receiverAction${action.enabled ? "" : " isDisabled"}${action.symbol ? " isSymbol" : ""}`}
+    aria-label={action.label} title={action.disabled_reason ?? action.label} aria-disabled={!action.enabled}
+    data-testid={`receiver:${action.action_id}`}
+    onClick={() => action.enabled ? onAction(action.action_id) : onDisabledAction(action.disabled_reason!)}>{action.symbol ?? action.label}</button>;
+  const chooser = state.chooser;
+  return <section className="settingsPageSection receiverPanel">
+    <header className="receiverPanelHeading"><h2>{state.title}</h2><span>{state.status}</span></header>
+    <p>{state.detail}</p>
+    {chooser && <>
+      <div className="receiverDeviceList">{chooser.empty_text && <p>{chooser.empty_text}</p>}{chooser.devices.map(button)}</div>
+      <div className="receiverChooserControls"><label><input type="checkbox" checked={chooser.show_all_checked}
+        aria-disabled={!chooser.show_all.enabled} onChange={() => chooser.show_all.enabled ? onAction(chooser.show_all.action_id) : onDisabledAction(chooser.show_all.disabled_reason!)} />{chooser.show_all.label}</label>
+        {button(chooser.refresh)}{button(chooser.pair)}
+      </div>
+    </>}
+    {state.activity && <ReceiverActivityView state={state.activity} />}
+    {state.actions.map(button)}
+    {state.diagnostics && <details><summary>{state.diagnostics.title}</summary>{state.diagnostics.detail && <p>{state.diagnostics.detail}</p>}{state.diagnostics.actions.map(button)}</details>}
+  </section>;
+}
+
 export function ReceiverActivityView({ state }: { state: ReceiverActivity }) {
   const palette = loadedUiTheme.receiver_activity;
   return <section className="receiverActivity" aria-label={state.title}>
@@ -13545,7 +13570,6 @@ export function ReceiverActivityView({ state }: { state: ReceiverActivity }) {
         <i style={{ background: palette[item.color_key] }} />{item.text}
       </span>)}</div>
     </section>)}
-    <p>{state.detail}</p>
   </section>;
 }
 

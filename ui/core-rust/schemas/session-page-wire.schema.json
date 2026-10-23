@@ -2633,6 +2633,12 @@
         },
         "label": {
           "type": "string"
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2650,9 +2656,6 @@
         "axis_start": {
           "type": "string"
         },
-        "detail": {
-          "type": "string"
-        },
         "strips": {
           "items": {
             "$ref": "#/$defs/UiReceiverActivityStrip"
@@ -2665,7 +2668,6 @@
       },
       "required": [
         "title",
-        "detail",
         "axis_start",
         "axis_end",
         "strips"
@@ -2752,6 +2754,64 @@
       ],
       "type": "object"
     },
+    "UiReceiverChooser": {
+      "properties": {
+        "devices": {
+          "items": {
+            "$ref": "#/$defs/UiReceiverAction"
+          },
+          "type": "array"
+        },
+        "empty_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pair": {
+          "$ref": "#/$defs/UiReceiverAction"
+        },
+        "refresh": {
+          "$ref": "#/$defs/UiReceiverAction"
+        },
+        "show_all": {
+          "$ref": "#/$defs/UiReceiverAction"
+        },
+        "show_all_checked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "devices",
+        "show_all",
+        "show_all_checked",
+        "refresh",
+        "pair"
+      ],
+      "type": "object"
+    },
+    "UiReceiverDiagnostics": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/UiReceiverAction"
+          },
+          "type": "array"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "detail",
+        "actions"
+      ],
+      "type": "object"
+    },
     "UiReceiverPanel": {
       "properties": {
         "actions": {
@@ -2770,8 +2830,28 @@
             }
           ]
         },
+        "chooser": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiReceiverChooser"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "detail": {
           "type": "string"
+        },
+        "diagnostics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiReceiverDiagnostics"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "status": {
           "type": "string"
@@ -3673,6 +3753,8 @@
     "UiSettingsPageBlock",
     "UiReceiverAction",
     "UiReceiverPanel",
+    "UiReceiverChooser",
+    "UiReceiverDiagnostics",
     "UiReceiverActivity",
     "UiReceiverActivityStrip",
     "UiReceiverActivityRect",

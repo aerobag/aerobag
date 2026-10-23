@@ -512,20 +512,37 @@ export type UiReceiverAction = {
   disabled_reason?: string | null;
   enabled: boolean;
   label: string;
+  symbol?: string | null;
 };
 
 export type UiReceiverPanel = {
   actions: UiReceiverAction[];
   activity?: UiReceiverActivity | null;
+  chooser?: UiReceiverChooser | null;
   detail: string;
+  diagnostics?: UiReceiverDiagnostics | null;
   status: string;
+  title: string;
+};
+
+export type UiReceiverChooser = {
+  devices: UiReceiverAction[];
+  empty_text?: string | null;
+  pair: UiReceiverAction;
+  refresh: UiReceiverAction;
+  show_all: UiReceiverAction;
+  show_all_checked: boolean;
+};
+
+export type UiReceiverDiagnostics = {
+  actions: UiReceiverAction[];
+  detail: string;
   title: string;
 };
 
 export type UiReceiverActivity = {
   axis_end: string;
   axis_start: string;
-  detail: string;
   strips: UiReceiverActivityStrip[];
   title: string;
 };

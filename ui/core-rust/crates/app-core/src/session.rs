@@ -4327,6 +4327,8 @@ fn finish_receiver_replay(session: &mut UiSession) -> AppResult<HadOperationOutc
         detail: "Reception activity follows the replay clock. Seeking rebuilds the recorded history; Internet comparison products are excluded.".into(),
         actions: Vec::new(),
         activity: reduction.activity.view(target as u64),
+        chooser: None,
+        diagnostics: None,
     });
     advance_session_wall_clock(session, 0);
     changed_session_update_outcome_with_invalidations(
@@ -23842,6 +23844,8 @@ mod tests {
                 detail: "Synthetic receiver".into(),
                 actions: Vec::new(),
                 activity: None,
+                chooser: None,
+                diagnostics: None,
             },
             reports: vec![report],
         };
@@ -34492,6 +34496,8 @@ mod tests {
                 detail: "".into(),
                 actions: vec![],
                 activity: None,
+                chooser: None,
+                diagnostics: None,
             },
         }
     }

@@ -13,6 +13,9 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -44,10 +47,13 @@ class SettingsPageTest {
 
     @Test fun receiverCoreActionsReceivePhysicalTapsOnNarrowSettingsPage() {
         val actions = mutableListOf<String>()
-        val panel = mutableStateOf(UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Pair the receiver in Android settings",
-            actions = listOf(
-                UiReceiverAction(actionId = "receiver:refresh", label = "Refresh paired devices", enabled = true),
-                UiReceiverAction(actionId = "opaque-device-17", label = "Connect test receiver", enabled = true))))
+        val panel = mutableStateOf(UiReceiverPanel(title = "ADS-B receiver", status = "Disconnected", detail = "Connect or pair a new Bluetooth transponder.",
+            actions = emptyList(), chooser = UiReceiverChooser(
+                devices = listOf(UiReceiverAction(actionId = "opaque-device-17", label = "GTX345  AA:BB", enabled = true)),
+                showAll = UiReceiverAction(actionId = "opaque-filter", label = "Show all paired devices", enabled = true), showAllChecked = false,
+                refresh = UiReceiverAction(actionId = "receiver:refresh", label = "Refresh paired devices", symbol = "\u21bb", enabled = true),
+                pair = UiReceiverAction(actionId = "opaque-pair", label = "Pair a new device", enabled = true)),
+            diagnostics = UiReceiverDiagnostics(title = "Diagnostics", detail = "Hidden counters", actions = emptyList())))
         val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
         compose.setContent {
             CompositionLocalProvider(LocalAerobagUiTheme provides theme,
@@ -62,12 +68,25 @@ class SettingsPageTest {
                 }
             }
         }
-        for (id in listOf("receiver:refresh", "opaque-device-17")) {
+        compose.onNodeWithText("Hidden counters").assertDoesNotExist()
+        compose.onNodeWithTag("parity:receiver:opaque-filter").assertIsOff()
+        for (id in listOf("receiver:refresh", "opaque-device-17", "opaque-filter", "opaque-pair")) {
             compose.onNodeWithTag("parity:receiver:$id").performScrollTo().assertIsDisplayed().performTouchInput { click() }
         }
         compose.runOnIdle {
-            panel.value = panel.value.copy(status = "Receiving and recording",
-                activity = UiReceiverActivity(title = "Reception activity", detail = "Decoded messages", axisStart = "60 minutes ago", axisEnd = "Now",
+            panel.value = panel.value.copy(chooser = panel.value.chooser!!.copy(showAllChecked = true))
+        }
+        compose.onNodeWithTag("parity:receiver:opaque-filter").performScrollTo().assertIsOn()
+        compose.runOnIdle {
+            val chooser = panel.value.chooser!!
+            panel.value = panel.value.copy(chooser = chooser.copy(refresh = chooser.refresh.copy(
+                enabled = false, disabledReason = "Waiting for paired devices")))
+        }
+        compose.onNodeWithTag("parity:receiver:receiver:refresh").performScrollTo().assertIsNotEnabled()
+            .performTouchInput { click() }
+        compose.runOnIdle {
+            panel.value = panel.value.copy(status = "Receiving", chooser = null,
+                activity = UiReceiverActivity(title = "Reception activity", axisStart = "60 minutes ago", axisEnd = "Now",
                     strips = listOf(UiReceiverActivityStrip(title = "Weather", scaleLabel = "0-4 messages/min",
                         rects = listOf(UiReceiverActivityRect(x = 59100, y = 500, width = 800, height = 500, colorKey = "metar")),
                         legend = listOf(UiReceiverActivityLegend(colorKey = "metar", text = "METAR: last received 3s ago"))))),
@@ -83,7 +102,7 @@ class SettingsPageTest {
         }
         compose.onNodeWithText("METAR: not received").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("parity:receiver:receiver:stop").performScrollTo().assertIsDisplayed().performTouchInput { click() }
-        compose.runOnIdle { assertEquals(listOf("receiver:refresh", "opaque-device-17", "receiver:stop"), actions) }
+        compose.runOnIdle { assertEquals(listOf("receiver:refresh", "opaque-device-17", "opaque-filter", "opaque-pair", "receiver:stop"), actions) }
     }
 
     @Test fun sliderDragPublishesNewIdentityAndUnmountRemovesIndexedControls() {

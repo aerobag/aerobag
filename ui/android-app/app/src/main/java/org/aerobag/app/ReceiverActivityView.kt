@@ -54,6 +54,5 @@ internal fun ReceiverActivityView(state: UiReceiverActivity) {
                 }
             }
         }
-        Text(state.detail, color = theme.controls.panelMuted)
     }
 }

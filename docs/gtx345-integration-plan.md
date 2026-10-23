@@ -755,6 +755,30 @@ The playback transport remains visible while using receiver ownship.
 
 ### Receiver And Source Controls
 
+The disconnected Settings panel has a right-aligned status, a boxed device list,
+and three controls: Show all paired devices (initially unchecked), refresh, and
+Pair a new device. Core supplies the chooser, checked state, labels, symbols,
+empty/error feedback and opaque action IDs. Capture counters and export live
+in collapsed Diagnostics, not in the normal setup instructions.
+
+For interactive Android UI work, explicitly set `ANDROID_RECEIVER_SIMULATOR=1`
+when using `ui/android-app/scripts/install_red_tablet_dev.sh` (with the desired
+`ANDROID_SERIAL`). `ANDROID_BUILD_RUST_RELEASE=1` still allows optimized native
+code in that debug APK. This enables the `receiver-simulator` Cargo feature;
+it is off by default, and Gradle rejects any release task with it enabled.
+Normal production builds do not compile the simulator at all.
+
+The extra Simulated GTX345 device runs a wire peer against the real connection
+machine and decoder. Advance simulated peer steps through connection and setup;
+setup timers are held so each step can be inspected. Receiving generates bounded
+activity once per second. Interrupt simulated link exercises the real retry
+policy, then stops at the next Connecting step. Disconnect leaves the lab.
+The title remains explicitly SIMULATION. It generates no valid positions,
+targets, pressure or usable weather reports; empty METAR responses do not count
+as received weather. Its captures go to `simulator-captures`, separate from
+real captures, and stopping restores the pre-simulation reception history.
+Use flight replay, not this UI lab, to inspect actual received weather products.
+
 Core owns the receiver panel, paired-device suggestions, progress, failures and
 actions. Android supplies cached Bluetooth service UUIDs/names and executes the
 OS permission, pairing-settings and socket operations. Suggested devices have

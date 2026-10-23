@@ -263,6 +263,8 @@ fn main() {
                 "UiSettingsPageBlock",
                 "UiReceiverAction",
                 "UiReceiverPanel",
+                "UiReceiverChooser",
+                "UiReceiverDiagnostics",
                 "UiReceiverActivity",
                 "UiReceiverActivityStrip",
                 "UiReceiverActivityRect",

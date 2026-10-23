@@ -150,7 +150,14 @@ impl Peer {
             &[],
             clock(now),
         );
-        let connect = output.panel.actions.last().unwrap();
+        let connect = output
+            .panel
+            .chooser
+            .as_ref()
+            .unwrap()
+            .devices
+            .last()
+            .unwrap();
         assert!(connect.enabled);
         let output = action(runtime, &connect.action_id, now);
         let ReceiverHostEffect::Connect { connection_id, .. } = output.effects[0] else {
@@ -255,10 +262,13 @@ fn exercise_reception(capture_unavailable: bool) {
             assert_eq!(runtime.panel().status, "Receiving; recording stopped");
             assert!(runtime
                 .panel()
+                .diagnostics
+                .as_ref()
+                .unwrap()
                 .detail
                 .contains("Recording stopped (storage unavailable)"));
         } else {
-            assert_eq!(runtime.panel().status, "Receiving and recording");
+            assert_eq!(runtime.panel().status, "Receiving");
         }
         peer.rx(&mut runtime, 2, message(0x2100, &[0; 16]));
         peer.rx(&mut runtime, 2, message(0x2200, &1234f32.to_le_bytes()));
@@ -296,11 +306,10 @@ fn exercise_reception(capture_unavailable: bool) {
             ),
         );
         let panel = runtime.panel();
-        assert!(panel.detail.contains("1 traffic snapshots, 1 with targets"));
-        assert!(panel.detail.contains("METAR: 1 nonempty / 1 empty"));
-        assert!(panel
-            .detail
-            .contains("Regional NEXRAD: 1 nonempty / 0 empty"));
+        let detail = &panel.diagnostics.as_ref().unwrap().detail;
+        assert!(detail.contains("1 traffic snapshots, 1 with targets"));
+        assert!(detail.contains("METAR: 1 nonempty / 1 empty"));
+        assert!(detail.contains("Regional NEXRAD: 1 nonempty / 0 empty"));
         assert_eq!(runtime.normalized, 1);
         assert!(runtime.rejected == 0 && runtime.weather_error.is_none());
         assert_eq!(
@@ -342,7 +351,13 @@ fn exercise_reception(capture_unavailable: bool) {
         );
         let reception = runtime.connection.as_ref().unwrap().status().reception;
         if capture_unavailable {
-            assert!(runtime.panel().detail.contains("Recording stopped"));
+            assert!(runtime
+                .panel()
+                .diagnostics
+                .as_ref()
+                .unwrap()
+                .detail
+                .contains("Recording stopped"));
             assert_eq!(
                 runtime
                     .connection
@@ -393,7 +408,13 @@ fn exercise_reception(capture_unavailable: bool) {
         assert_eq!(runtime.weather_cache.as_ref().unwrap().reports().count(), 1);
         let _peer = Peer::start(&mut runtime, peer.now + 1);
         assert!(
-            runtime.panel().detail.contains("Weather: no responses yet"),
+            runtime
+                .panel()
+                .diagnostics
+                .as_ref()
+                .unwrap()
+                .detail
+                .contains("Weather: no responses yet"),
             "cached weather must not be reported as newly received"
         );
     }

@@ -17,12 +17,12 @@ import {
   androidActionCandidates,
 } from "./semantic-journey-driver.mjs";
 import { createJourneyRuntime } from "./release-journey-runtime.mjs";
-import { selectAndroidSettingsSliderStop, selectTrayOptionMatching } from "./release-journey-implementations.mjs";
+import { seekReceiverReplay, selectAndroidSettingsSliderStop, selectTrayOptionMatching } from "./release-journey-implementations.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds,
   clickAndroidSemanticNode, androidSemanticTargetStateMatches, androidSemanticReadinessStateMatches,
 } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
-import { performTransition, TransientObservationError } from "./transition-contract.mjs";
+import { ObservationTimeoutError, performTransition, TransientObservationError } from "./transition-contract.mjs";
 import { androidObservationBackend, rejectObservationOverrides } from "./android-observation-contract.mjs";
 
 const source = readFileSync(new URL("semantic-journey-driver.mjs", import.meta.url), "utf8");
@@ -202,6 +202,81 @@ test("Settings slider helper passes rendered identity and range input through th
   assert.equal(inputs, 1);
   assert.equal(result[0].id, newTag);
 });
+
+for (const kind of ["replay", "settings"]) {
+  for (const outcome of ["ready", "unfocused", "disabled", "absent", "rejected", "lost", "wrong-value"]) {
+    test(`Android ${kind} progress waits for restored window focus: ${outcome}`, async t => {
+      const { driver, snapshots, onProgress } = device();
+      const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-progress-focus-"));
+      t.after(() => rmSync(artifactDir, { recursive: true, force: true }));
+      const tag = kind === "replay" ? "parity:playback-overview"
+        : "parity:settings-slider:display_dim_timeout:2m";
+      const nextTag = "parity:settings-slider:display_dim_timeout:10s";
+      const node = { "resource-id": tag, enabled: "true", visible: "true", "center-reachable": "false",
+        bounds: "[41,2015][1054,2138]", "semantic-path": "projection-provider:process:1661",
+        "state-description": "kind:horizontal-progress:min:0:max:90:enabled:true:window-focus:false" };
+      snapshots.set(tag, node);
+      let clock = 0, attempts = 0, released = false;
+      function publishPlayback(cursor) {
+        const id = "org.aerobag.app:id/e2e_playback_widget_projection";
+        snapshots.set(id, { "resource-id": id, visible: "true",
+          "state-description": `status:paused:cursor:${cursor}:duration:90:rate:1:gaps:0` });
+      }
+      publishPlayback(18);
+      if (kind === "settings") {
+        snapshots.set(tag, { ...node, "center-reachable": "true",
+          "state-description": node["state-description"].replace("window-focus:false", "window-focus:true") });
+        const reveal = driver.revealElement.bind(driver);
+        driver.revealElement = async (...args) => {
+          const result = await reveal(...args);
+          snapshots.set(tag, node);
+          return result;
+        };
+      }
+      driver.readSessionRevision = async () => 126;
+      driver.waitForObservation = async () => {
+        clock += 50;
+        if (clock < 200 || released) return;
+        released = true;
+        if (outcome === "absent") snapshots.delete(tag);
+        else if (outcome !== "unfocused") snapshots.set(tag, { ...node,
+          enabled: outcome === "disabled" ? "false" : "true", "center-reachable": "true",
+          "semantic-path": "projection-provider:process:1662",
+          "state-description": node["state-description"].replace("window-focus:false", "window-focus:true") });
+      };
+      onProgress((_serial, actualTag, value, bounds, path) => {
+        attempts++;
+        const current = snapshots.get(actualTag);
+        assert.equal(actualTag, tag);
+        assert.equal(current?.["center-reachable"], "true", "unfocused control is visible but not ready for input");
+        assert.equal(path, "projection-provider:process:1662", "use the newly focused rendering, not stale evidence");
+        assert.equal(bounds, node.bounds);
+        assert.equal(value, kind === "replay" ? 2 : 0);
+        if (outcome === "rejected") throw new Error("progress action rejected");
+        if (outcome === "lost") return;
+        if (kind === "replay") publishPlayback(outcome === "wrong-value" ? 7 : 2);
+        else if (outcome !== "wrong-value") {
+          snapshots.delete(tag);
+          snapshots.set(nextTag, { ...current, "resource-id": nextTag });
+        }
+      });
+      const runtime = createJourneyRuntime({ journey: { id: "test.progress-focus", assertions: [] },
+        platform: "android", driver, artifactDir });
+      const transition = runtime.transition;
+      runtime.transition = (description, contract) => transition(description, {
+        ...contract, scheduler: { now: () => clock, setTimeout, clearTimeout },
+      });
+      const operation = kind === "replay" ? seekReceiverReplay(runtime, 2)
+        : selectAndroidSettingsSliderStop(runtime, {
+          rowId: "display_dim_timeout", from: "2m", to: "10s", index: 0, description: "select dim timeout",
+        });
+      if (outcome === "ready") await operation;
+      else if (outcome === "rejected") await assert.rejects(operation, /progress action rejected/);
+      else await assert.rejects(operation, ObservationTimeoutError);
+      assert.equal(attempts, ["unfocused", "disabled", "absent"].includes(outcome) ? 0 : 1);
+    });
+  }
+}
 
 for (const outcome of ["ready", "unfocused", "disabled", "absent", "rejected", "lost"]) {
   test(`Android action near the readiness deadline: ${outcome}`, async t => {

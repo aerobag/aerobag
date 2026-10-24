@@ -464,6 +464,19 @@ busy, and permanently unavailable. They forbid accessibility requests for
 app targets. This catches backend drift without requiring a slow emulator to
 happen to stall. It does not replace focused physical-input journeys.
 
+Slider mutations need actionable readiness, not merely a visible element. In
+the [October 24 run](https://github.com/aerobag/aerobag/actions/runs/40097894708),
+`shared.receiver-replay` dismissed the layers tray and attempted a timeline seek
+while the rendered slider still reported `window-focus:false`. The native
+driver correctly rejected the input. Replay and Settings slider transitions now
+use the existing `readAction` focus/reachability check; `readElement` remains a
+read-only observation that can inspect disabled or unfocused controls. Controlled
+tests run the real transition and Android reader with focus held away, then
+restored with a new rendered revision. They require exactly one action after
+readiness, no input for absent/disabled/unfocused controls, and terminal failure
+for rejected input or an absent/wrong result. No sleep, input retry, or longer
+deadline is part of the fix.
+
 Protocol 32 requires rebuilt driver APKs. Compose publishes a window's rendered
 frame atomically after content drawing, with clipped bounds, state, focus, revision and
 process incarnation. Never-mounted/disposed targets give successful empty

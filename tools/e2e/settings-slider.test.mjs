@@ -24,6 +24,7 @@ function model(t, { rowId = "display_dim_timeout", from = "2m", to = "10s", outc
     async readSessionRevision() { return 1; },
     async revealElement(id) { return this.readElement(id); },
     async readElement(id) { return id === `${prefix}${value}` ? entry() : null; },
+    async readAction(id) { return `parity:${id}` === `${prefix}${value}` ? entry() : null; },
     async readProjection(requested) { assert.equal(requested, prefix); return value === null ? [] : [entry()]; },
     async drag(id, delta, ready) {
       actions.push({ kind: "drag", id, delta, ready });

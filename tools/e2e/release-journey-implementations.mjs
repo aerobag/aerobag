@@ -1849,7 +1849,7 @@ export async function selectAndroidSettingsSliderStop(runtime, { rowId, from, to
     runtime, `${prefix}${from}`, `${rowId} slider`,
   );
   return runtime.transition(description, {
-    ready: () => runtime.driver.readElement(`${prefix}${from}`),
+    ready: () => runtime.driver.readAction(`settings-slider:${rowId}:${from}`),
     act: (readyElement) => runtime.driver.setProgress(
       `settings-slider:${rowId}:${from}`, index, readyElement,
     ),
@@ -3073,7 +3073,7 @@ async function setReplayRate(runtime, rate) {
     await runtime.editText("enter replay rate", "playback-rate-input", String(rate));
   } else {
     return runtime.transition("set Android replay rate", {
-      ready: () => runtime.driver.readElement("playback-rate-input"),
+      ready: () => runtime.driver.readAction("playback-rate-input"),
       act: (readyElement) => runtime.driver.setProgress(
         "playback-rate-input",
         rate,
@@ -3172,7 +3172,7 @@ async function replayTrackUp(runtime) {
     );
   } else {
     await runtime.transition("change Android replay rate", {
-      ready: () => runtime.driver.readElement("playback-rate-input"),
+      ready: () => runtime.driver.readAction("playback-rate-input"),
       act: (readyElement) => runtime.driver.setProgress(
         "playback-rate-input",
         nextRate,
@@ -3195,7 +3195,7 @@ async function replayTrackUp(runtime) {
     ? changedRate.duration * 0.8
     : changedRate.duration * 0.2;
   const sought = await runtime.transition("seek replay timeline", {
-    ready: () => runtime.driver.readElement("playback-overview"),
+    ready: () => runtime.driver.readAction("playback-overview"),
     act: (readyElement) => runtime.platform === "android"
       ? runtime.driver.setProgress("playback-overview", targetCursor, readyElement)
       : runtime.driver.drag("playback-overview", {
@@ -3240,6 +3240,15 @@ async function preparedLiveFeeds(runtime) {
   );
 }
 
+export function seekReceiverReplay(runtime, seconds) {
+  return runtime.transition(`seek receiver replay to ${seconds}s`, {
+    ready: () => runtime.driver.readAction("playback-overview"),
+    act: (ready) => runtime.driver.setProgress("playback-overview", seconds, ready),
+    complete: async () => playbackState(await runtime.driver.readProjection("parity:playback-widget:")),
+    completionSatisfied: (state) => state?.status === "paused" && Math.abs(state.cursor - seconds) < 1,
+  });
+}
+
 async function receiverReplay(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
@@ -3251,12 +3260,7 @@ async function receiverReplay(runtime) {
     const match = /:traffic:(\d+)/.exec(id ?? "");
     return match ? Number(match[1]) : null;
   };
-  const seek = (seconds) => runtime.transition(`seek receiver replay to ${seconds}s`, {
-    ready: () => runtime.driver.readElement("playback-overview"),
-    act: (ready) => runtime.driver.setProgress("playback-overview", seconds, ready),
-    complete: readPlayback,
-    completionSatisfied: (state) => state?.status === "paused" && Math.abs(state.cursor - seconds) < 1,
-  });
+  const seek = (seconds) => seekReceiverReplay(runtime, seconds);
   await seek(18);
   const traffic = await runtime.observe("receiver traffic painted by default", trafficCount, (count) => count > 0);
   runtime.check("receiver.traffic-default", traffic > 0);

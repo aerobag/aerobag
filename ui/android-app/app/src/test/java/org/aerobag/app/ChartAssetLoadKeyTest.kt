@@ -67,13 +67,14 @@ class ChartAssetLoadKeyTest {
     }
 
     @Test
-    fun chartViewportInitializerRerunsWhenViewportIsClearedAfterBitmapLoads() {
+    fun chartRenderingAndInputShareTheResolvedViewport() {
         val source = sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
 
         assertTrue(
-            "Android plate rendering must mirror web: viewport initialization has to rerun when " +
-                "the parent clears chartViewport after a plate asset and surface are already ready.",
-            source.contains("LaunchedEffect(bitmap, surfaceSize, viewport)"),
+            "Drawing, readiness and input must all use the viewport resolved by the tested owner.",
+            source.contains("val viewport = rememberPlateViewport(bitmap, surfaceSize, savedViewport, onViewportChange)") &&
+                source.contains("val viewportState = rememberUpdatedState(viewport)") &&
+                source.contains("val currentViewport = viewport"),
         )
     }
 

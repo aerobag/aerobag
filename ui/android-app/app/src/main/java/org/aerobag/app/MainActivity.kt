@@ -3868,7 +3868,7 @@ internal fun AerobagApp(
                         sessionWorkRunner = uiSessionWorkRunner,
                         navElement = navElement,
                         folderOpen = chartFolderOpen,
-                        viewport = chartViewport,
+                        savedViewport = chartViewport,
                         onViewportChange = { chartViewport = it },
                         onSessionSnapshotChange = { applySessionSnapshot(it) },
                         onSessionCommandFailure = { recoverSessionCommandFailure(it) },

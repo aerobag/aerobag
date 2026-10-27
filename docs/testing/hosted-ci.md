@@ -35,6 +35,33 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+The October 27 main run `40560759052` on `003195d1` passed the previously failing
+slider and status-badge journeys, but failed `android.plate-first-render-smoke`.
+The KPLU RNAV 35 asset loaded from its installed ZIP in 15 ms; nevertheless the
+plate stayed gray for the full 60-second pixel check, with no viewport readiness
+projection. The retained APK passed a local rerun, which is not a causal fix.
+
+A controlled Compose regression reproduces a real initialization race consistent
+with those artifacts: deliver image-driven viewport initialization and physically
+select the already-selected folder tile before the next frame. Selection clears
+the viewport; Compose observes `null -> null`, so the keyed `LaunchedEffect` does
+not run again. The regression was red with the original initializer. The old
+source-string check for `viewport` in the effect's keys could not catch this.
+
+The plate owner now resolves a ready image's default viewport synchronously for
+drawing, readiness and input, and preserves that default in the parent at commit
+time with `SideEffect`. Tests also cover image/surface arrival in either order,
+reset after an intervening frame, and retained pan/zoom across unmount/remount.
+E2E builds log image dimensions, surface dimensions, folder state and viewport
+readiness on lifecycle changes, without logging each pan or enabling production
+logging. The pixel assertion and its deadline are unchanged.
+
+Local verification: all 14 focused Android resource/viewport tests passed, and
+the rebuilt release-mode APK passed the unchanged first-render smoke on a fresh
+Google ATD emulator using the pinned smoke publication. Red-test evidence and
+the retained/fixed runs are under `/tmp/aerobag-plate-20261027`. This is focused
+verification, not a new complete hosted E2E qualification.
+
 The October 22 scheduled run `39796640094` on `e30884bd` failed before Android
 shard 0 could start: the screenshot-analyzer prerequisite ran a system-wide
 `apt-get update`, and the runner's unrelated Microsoft Ubuntu repository returned

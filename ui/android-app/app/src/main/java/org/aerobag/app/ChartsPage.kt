@@ -270,7 +270,6 @@ import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
-import org.aerobag.app.domain.createInitialImageViewport
 import org.aerobag.app.domain.createPinchSnapshot
 import org.aerobag.app.domain.dragImageViewport
 import org.aerobag.app.domain.dragViewport
@@ -379,7 +378,7 @@ internal fun ChartsPage(
     sessionWorkRunner: UiSessionWorkRunner,
     navElement: NavElementUiView?,
     folderOpen: Boolean,
-    viewport: ImageViewportState?,
+    savedViewport: ImageViewportState?,
     onViewportChange: (ImageViewportState?) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
@@ -481,6 +480,15 @@ internal fun ChartsPage(
                 )
             }
     }
+    val viewport = rememberPlateViewport(bitmap, surfaceSize, savedViewport, onViewportChange)
+    if (BuildConfig.AEROBAG_E2E_ENABLED) {
+        LaunchedEffect(bitmapLoadKey, bitmap, surfaceSize, viewport != null, folderOpen) {
+            Log.i("AerobagCharts", "plate_render_state chart=${bitmapLoadKey.chartId} " +
+                "revision=${bitmapLoadKey.dataRevision} bitmap=${bitmap?.width}x${bitmap?.height} " +
+                "surface=${surfaceSize.width}x${surfaceSize.height} " +
+                "viewport_ready=${viewport != null} folder_open=$folderOpen")
+        }
+    }
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
@@ -535,17 +543,6 @@ internal fun ChartsPage(
         }
     }
 
-    LaunchedEffect(bitmap, surfaceSize, viewport) {
-        val currentBitmap = bitmap
-        if (currentBitmap != null && surfaceSize.width > 0 && surfaceSize.height > 0 && viewport == null) {
-            onViewportChange(createInitialImageViewport(
-                imageWidthPx = currentBitmap.width.toFloat(),
-                imageHeightPx = currentBitmap.height.toFloat(),
-                viewportWidthPx = surfaceSize.width.toFloat(),
-                viewportHeightPx = surfaceSize.height.toFloat(),
-            ))
-        }
-    }
     DisposableEffect(activity, selectedChart?.id, surfaceSize, bitmap, viewportState.value, trayOpen, folderOpen) {
         if (activity != null) {
             activity.onHardwareZoomDelta = { delta ->

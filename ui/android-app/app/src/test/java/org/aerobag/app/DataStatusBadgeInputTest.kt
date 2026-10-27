@@ -11,7 +11,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
@@ -39,6 +42,54 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], qualifiers = "w600dp-h800dp")
 class DataStatusBadgeInputTest {
     @get:Rule val compose = createComposeRule()
+
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun physicalBadgeTapAndStatusReplacementDoNotReachMapGestures() {
+        val boxes = mutableStateOf(listOf(box("loading", "Loading", emptyList())))
+        val open = mutableStateOf(false)
+        var mapTaps = 0
+        val mapActivity = mutableListOf<Boolean>()
+        val theme = UiThemeLoader.load(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CompositionLocalProvider(LocalAerobagUiTheme provides theme) {
+                MapSurfaceLayers(
+                    modifier = Modifier.size(400.dp, 600.dp).testTag("test:map")
+                        .mapGestureInput(
+                            enabled = !open.value,
+                            onTap = { mapTaps++ }, onGesture = {}, onTransform = { _, _ -> },
+                            onActiveChange = { mapActivity += it }, onFinished = {},
+                        )
+                        .pointerInteropFilter { false },
+                    mapContent = {},
+                    controls = {
+                        DataStatusBadge(
+                            modifier = Modifier.align(Alignment.TopEnd),
+                            dataStatusState = UiDataStatusState(boxes.value, boxes.value.size.toString(), UiStatusSeverity.Caution),
+                            open = open.value,
+                            onToggle = { open.value = !open.value }, onDismiss = { open.value = false },
+                        )
+                    },
+                )
+            }
+        }
+        tap("parity:data-status-launcher")
+        compose.onNodeWithTag("parity:data-status-panel").assertIsDisplayed()
+        compose.runOnIdle { open.value = false }
+        compose.onNodeWithTag("parity:data-status-launcher").performTouchInput { down(center) }
+        compose.runOnIdle {
+            boxes.value = listOf(box("service:unread", "Service", emptyList()), box("data", "Data", emptyList()))
+        }
+        compose.onNodeWithTag("parity:data-status-launcher").performTouchInput { up() }
+        compose.onNodeWithTag("parity:data-status-panel").assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(0, mapTaps)
+            assertTrue("badge input must not begin a map gesture: $mapActivity", mapActivity.isEmpty())
+            open.value = false
+        }
+        compose.onNodeWithTag("test:map").performTouchInput { click(center) }
+        compose.runOnIdle { assertEquals(1, mapTaps) }
+    }
 
     @Test
     fun physicalInboxTapUsesProductionTagsAndUnmountRemovesPopupOnNavigation() {

@@ -486,6 +486,31 @@ The reader cannot repair an ambiguous identity by choosing the latest writer.
 replacement, unmount/remount, clipped geometry and retained frame snapshots.
 JVM CI enables this publisher so these tests cannot silently skip it.
 
+The October 27 scheduled run on `361f023` had a separate Android failure in
+`shared.service-notifications`: a physical tap at the status badge's published
+center `(720, 341)` opened the map's SPOT inspector. Both enabled and window
+focus were true. A controlled reproduction with the retained APK and slowed OS
+activity transitions produced the same badge-to-SPOT failure: WindowManager
+was sliding the whole activity surface independently of Compose's final screen
+coordinates. Drawing and focus alone do not establish that an OS-transformed
+window is at those coordinates.
+
+Emulator startup now runs `configure_emulator_input.sh`, setting and verifying
+`window_animation_scale` and `transition_animation_scale` to zero before declaring
+readiness. It does not change `animator_duration_scale`, Compose animations,
+production APKs or physical tablets. Failed writes/reads or ignored settings are
+fatal setup errors. Shell-boundary tests exercise those cases and idempotence;
+a Compose physical-touch test covers the real badge inside the map gesture owner,
+including replacement of its warnings while pressed. That component test passed
+before the setup fix, ruling out the simple map/badge routing hypothesis.
+
+With the same APK and one physical tap, the controlled failure became a successful
+panel opening (339 ms response). The unchanged Android notification journey also
+passed (272 ms to open the status panel), as did the 11 focused badge/map input
+tests. No input retry, sleep or extended action deadline was added. Diagnostic
+artifacts are under `/tmp/aerobag-badge-20261027`, including `red` and `green`.
+This is focused verification, not a new full hosted qualification.
+
 Android pre-draw is not Compose's completed-layout boundary: Compose can perform
 internal measurement in `dispatchDraw`. The September 25 `63c995ac` hosted run
 exposed this in three independent lanes: the expanded Debug Diagnostics header

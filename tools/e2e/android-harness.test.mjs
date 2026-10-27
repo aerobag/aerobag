@@ -4,6 +4,8 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   assertNoAerobagAnr,
@@ -169,6 +171,61 @@ test("Android emulator readiness enables real HWUI drawing", () => {
     /getprop debug\.hwui\.drawing_enabled[\s\S]*?!= "1"/,
     "emulator readiness must verify that HWUI accepted the setting",
   );
+});
+
+function configureEmulatorInput({ serial = "emulator-5564", failure = "", twice = false } = {}) {
+  const script = fileURLToPath(new URL("../../ui/android-app/scripts/configure_emulator_input.sh", import.meta.url));
+  return spawnSync("bash", ["-c", `
+    declare -A scales=([window_animation_scale]=1 [transition_animation_scale]=3 [animator_duration_scale]=0.5)
+    adb() {
+      printf 'adb %s\n' "$*" >&2
+      [[ "$1" == -s && "$2" == emulator-5564 && "$3" == shell && "$4" == settings && "$6" == global ]] || return 90
+      if [[ "$5" == put ]]; then
+        [[ "$FAILURE" != write ]] || return 23
+        [[ "$FAILURE" == ignored ]] || scales[$7]="$8"
+      elif [[ "$5" == get ]]; then
+        [[ "$FAILURE" != read ]] || return 24
+        printf '%s\r\n' "\${scales[$7]}"
+      else return 91; fi
+    }
+    source "$1" "$2" || exit $?
+    if [[ "$TWICE" == 1 ]]; then source "$1" "$2" || exit $?; fi
+    printf 'scales=%s,%s,%s\n' "\${scales[window_animation_scale]}" "\${scales[transition_animation_scale]}" "\${scales[animator_duration_scale]}"
+  `, "test-emulator-input", script, serial], {
+    encoding: "utf8", env: { ...process.env, FAILURE: failure, TWICE: twice ? "1" : "0" }, timeout: 5000,
+  });
+}
+
+test("emulator input disables OS window transforms but preserves application animation", () => {
+  const result = configureEmulatorInput({ twice: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /scales=0,0,0.5/);
+  assert.doesNotMatch(result.stderr, /animator_duration_scale/);
+  const calls = result.stderr.trim().split("\n");
+  assert.equal(calls.length, 8, "each idempotent pass sets and reads back both settings");
+  assert.equal(calls.filter((line) => line.includes(" get global ")).length, 4);
+});
+
+for (const failure of ["write", "read", "ignored"]) {
+  test(`emulator input rejects ${failure} settings instead of declaring readiness`, () => {
+    const result = configureEmulatorInput({ failure });
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout, /scales=/);
+    assert.match(result.stderr, failure === "ignored" ? /did not disable/ : /failed/);
+  });
+}
+
+test("emulator input cannot change a physical tablet's preferences", () => {
+  const result = configureEmulatorInput({ serial: "10.65.0.5:46691" });
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stderr, /adb /);
+  assert.match(result.stderr, /emulator serial/);
+});
+
+test("emulator input is configured before the launcher advertises readiness", () => {
+  const launcher = readFileSync(new URL("../../ui/android-app/scripts/start_emulator_stack.sh", import.meta.url), "utf8");
+  assert.match(launcher, /configure_emulator_input\.sh" "\$ANDROID_SERIAL"/);
+  assert.ok(launcher.indexOf('configure_emulator_input.sh" "$ANDROID_SERIAL"') < launcher.indexOf('echo "Android HWUI drawing enabled"'));
 });
 
 test("Android physical taps dispatch once and defer success to semantic completion", () => {

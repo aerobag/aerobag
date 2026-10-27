@@ -251,6 +251,8 @@ while (( SECONDS < emulator_ready_deadline )); do
     done
     echo "Android display configuration ready"
 
+    bash "$ROOT/ui/android-app/scripts/configure_emulator_input.sh" "$ANDROID_SERIAL"
+
     # AOSP ATD images may boot with HWUI drawing disabled. Semantics still work in
     # that state, so UI tests can otherwise interact with an entirely black screen.
     adb -s "$ANDROID_SERIAL" shell setprop debug.hwui.drawing_enabled 1

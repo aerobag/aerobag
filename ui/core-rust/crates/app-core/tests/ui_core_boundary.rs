@@ -1421,18 +1421,28 @@ fn android_paged_executor_preserves_resource_loop_delegation() {
     let android = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
-    // The executor is expression-bodied Kotlin; include the whole declaration,
-    // not just its nested resumeSnapshot lambda or a fixed character window.
-    let executor = android
+    let raw_executor = android
         .split_once("private fun executePagedOperation(")
         .expect("Android session executor")
         .1
         .split("\n    private fun ")
         .next()
         .expect("Android session executor declaration");
+    assert!(raw_executor.contains("= executePagedOperation("));
+    assert!(raw_executor.contains("PagedSessionResultDecoder(json, JsonElement.serializer())"));
+    // Typed and raw results share this expression-bodied executor, including
+    // resource I/O and committed-mutation snapshot resumption.
+    let executor = android
+        .split_once("private fun <T> executePagedOperation(")
+        .expect("Android typed session executor")
+        .1
+        .split("\n    private fun ")
+        .next()
+        .expect("Android typed session executor declaration");
     for required in [
         "resourceIo: SessionResourceIo = sessionResourceIo",
         "navKvStore.runPagedSessionOperation(",
+        "resultDecoder = resultDecoder",
         "operation = operation",
         "resourceIo = resourceIo",
         "resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) }",

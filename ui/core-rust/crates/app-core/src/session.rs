@@ -4290,6 +4290,18 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
 }
 
 fn finish_receiver_replay(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
+    let terrain_before = ownship_terrain_refresh_key(session);
+    let ownship_before = ownship_overlay_context(session);
+    let altitude_before = (
+        session.situation.ownship().render.altitude_msl_ft,
+        session.situation.ownship().render.pressure_altitude_ft,
+    );
+    let receiver_before = session.situation.receiver().clone();
+    let weather_revision_before = session.weather.revision();
+    let previous_epoch = session.coordinator.wall_clock_epoch_ms;
+    let traffic_deadline = receiver_before
+        .traffic()
+        .next_expiry_epoch_ms(previous_epoch);
     let (trace, target) = session
         .situation
         .playback()
@@ -4300,25 +4312,38 @@ fn finish_receiver_replay(session: &mut UiSession) -> AppResult<HadOperationOutc
     let reduction = session.receiver_replay.as_mut().ok_or_else(|| {
         crate::receiver_replay::trace_error("Receiver reduction is not initialized".into())
     })?;
-    if target < reduction.elapsed_ms() {
+    let rewound = target < reduction.elapsed_ms();
+    let reset = rewound || !reduction.initialized;
+    let station_weather_changed = if rewound {
         let mut rebuilt = crate::receiver_replay::Reduction::default();
         rebuilt
             .sensors
             .copy_replay_controls_from(&session.situation);
         let mut weather = WeatherController::default();
         weather.copy_replay_controls_from(&session.weather);
-        rebuilt
+        let changed = rebuilt
             .advance(&trace, &mut weather, target)
             .map_err(crate::receiver_replay::trace_error)?;
         session.weather = weather;
         *reduction = rebuilt;
+        changed
     } else {
         reduction
             .sensors
             .copy_replay_controls_from(&session.situation);
         reduction
             .advance(&trace, &mut session.weather, target)
-            .map_err(crate::receiver_replay::trace_error)?;
+            .map_err(crate::receiver_replay::trace_error)?
+    };
+    reduction.initialized = true;
+    let now = trace.document.start_epoch_ms + target;
+    let radar_due = reduction
+        .next_radar_refresh_epoch_ms
+        .is_some_and(|deadline| now >= deadline);
+    if radar_due {
+        // The next radar query installs its next historical deadline. While it
+        // is queued, one invalidation is sufficient; do not enqueue every tick.
+        reduction.next_radar_refresh_epoch_ms = None;
     }
     session.situation.install_replay_sensors(&reduction.sensors);
     session.settings.set_receiver_panel(app_ui_contracts::receiver::UiReceiverPanel {
@@ -4331,15 +4356,35 @@ fn finish_receiver_replay(session: &mut UiSession) -> AppResult<HadOperationOutc
         diagnostics: None,
     });
     advance_session_wall_clock(session, 0);
-    changed_session_update_outcome_with_invalidations(
-        session,
-        vec![
-            UiInvalidation::MapOverlay,
-            UiInvalidation::NexradOverlay,
-            UiInvalidation::TerrainOverlay,
-            UiInvalidation::SessionSnapshot,
-        ],
-    )
+    let mut invalidations = terrain_overlay_invalidations_for_ownship_change(
+        terrain_before,
+        ownship_terrain_refresh_key(session),
+    );
+    if reset
+        || station_weather_changed
+        || ownship_before != ownship_overlay_context(session)
+        || altitude_before
+            != (
+                session.situation.ownship().render.altitude_msl_ft,
+                session.situation.ownship().render.pressure_altitude_ft,
+            )
+        || !Arc::ptr_eq(
+            &receiver_before.aircraft,
+            &session.situation.receiver().aircraft,
+        )
+        || traffic_deadline.is_some_and(|deadline| now >= deadline)
+    {
+        invalidations.push(UiInvalidation::MapOverlay);
+    }
+    if reset || radar_due || weather_revision_before != session.weather.revision() {
+        invalidations.push(UiInvalidation::NexradOverlay);
+    }
+    if reset {
+        invalidations.push(UiInvalidation::TerrainOverlay);
+    }
+    // This command already projects the changed clock, sensors and weather;
+    // requesting a second full snapshot would duplicate the same work.
+    changed_session_update_outcome_with_invalidations(session, invalidations)
 }
 
 pub fn set_situation_in_session(
@@ -12054,9 +12099,15 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
         }
     };
     query.cache_plan = Some(cache_plan);
-    if session.receiver_replay.is_some() {
+    if let Some(replay) = session.receiver_replay.as_mut() {
         // The replay transport is the only clock driver. Its ticks invalidate
         // radar; historical deadlines must never be scheduled on the host clock.
+        replay.next_radar_refresh_epoch_ms = min_optional_epoch_ms(
+            query.animation.next_update_epoch_ms,
+            session
+                .weather
+                .next_nexrad_selection_deadline(session.coordinator.wall_clock_epoch_ms),
+        );
         query.animation.next_update_epoch_ms = None;
         query.animation.next_update_delay_ms = None;
     }
@@ -27221,6 +27272,180 @@ mod tests {
         );
     }
 
+    fn outcome_invalidations(outcome: HadOperationOutcome) -> Vec<UiInvalidation> {
+        match outcome {
+            HadOperationOutcome::Complete { invalidations, .. }
+            | HadOperationOutcome::NeedSnapshotResources { invalidations, .. } => invalidations,
+            HadOperationOutcome::NeedResources { .. } => panic!("unexpected page fault"),
+        }
+    }
+
+    #[test]
+    fn receiver_replay_clock_only_ticks_do_not_redraw_static_layers() {
+        use crate::receiver_replay::{Document, Event, Input, FORMAT};
+        let start = utc("2026-10-10T12:00:00Z").timestamp_millis();
+        let document = Document {
+            format: FORMAT.into(),
+            schema_version: 1,
+            title: "Invalidation fixture".into(),
+            start_epoch_ms: start,
+            duration_ms: 120_000,
+            events: vec![Event {
+                elapsed_ms: 1000,
+                input: Input::InternetMetars {
+                    payload: MetarProductPayload {
+                        schema_version: 3,
+                        version_label: "weather".into(),
+                        generated_at_utc: None,
+                        observed_at_utc: None,
+                        metar_count: None,
+                        metars_by_station: Default::default(),
+                    },
+                },
+            }],
+        };
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        load_playback_trace_in_session(
+            init.handle,
+            "fixture",
+            &serde_json::to_string(&document).unwrap(),
+        )
+        .unwrap();
+        let host = (start + 86400_000) as f64;
+        play_playback_in_session(init.handle, host).unwrap();
+        for offset in [100.0, 200.0, 900.0] {
+            let outcome = super::tick_playback_in_session(init.handle, host + offset).unwrap();
+            assert!(
+                outcome_invalidations(outcome).is_empty(),
+                "clock-only tick at {offset}"
+            );
+        }
+        let weather = outcome_invalidations(
+            super::tick_playback_in_session(init.handle, host + 1000.0).unwrap(),
+        );
+        assert!(weather.contains(&UiInvalidation::MapOverlay));
+        assert!(!weather.contains(&UiInvalidation::TerrainOverlay));
+        assert!(
+            !weather.contains(&UiInvalidation::SessionSnapshot),
+            "the command already returns the session update"
+        );
+        assert!(outcome_invalidations(
+            super::tick_playback_in_session(init.handle, host + 1100.0).unwrap()
+        )
+        .is_empty());
+        let rewind = outcome_invalidations(
+            super::seek_playback_in_session(init.handle, 0.1, host + 1100.0).unwrap(),
+        );
+        assert!(
+            rewind.contains(&UiInvalidation::MapOverlay),
+            "rewind removes the later weather state"
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn receiver_replay_partial_traffic_expiry_invalidates_without_a_packet_or_array_change() {
+        use crate::receiver_replay::{Document, Event, Input, FORMAT};
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let start = utc("2026-10-10T12:00:00Z").timestamp_millis();
+        // No ownship. Two targets with different ages: the first expires while
+        // LiveInput still retains the same aircraft array for the second.
+        let mut packet = vec![0u8; 120 + 2 * 148];
+        packet[0] = 1;
+        packet[116..120].copy_from_slice(&2u32.to_le_bytes());
+        for index in 0..2 {
+            let target = &mut packet[120 + index * 148..120 + (index + 1) * 148];
+            target[0..4].copy_from_slice(&(index as u32 + 1).to_le_bytes());
+            target[12..16].copy_from_slice(&(1.0 - index as f32).to_le_bytes());
+            target[28..36].copy_from_slice(&47.45f64.to_radians().to_le_bytes());
+            target[36..44].copy_from_slice(&(-122.31f64).to_radians().to_le_bytes());
+            target[144..148].copy_from_slice(&64u32.to_le_bytes());
+        }
+        let document = Document {
+            format: FORMAT.into(),
+            schema_version: 1,
+            title: "Traffic expiry".into(),
+            start_epoch_ms: start,
+            duration_ms: 30_000,
+            events: vec![
+                Event {
+                    elapsed_ms: 0,
+                    input: Input::Connection { connected: true },
+                },
+                Event {
+                    elapsed_ms: 0,
+                    input: Input::Receiver {
+                        message_id: 0x20000000,
+                        bytes_base64: STANDARD.encode(packet),
+                    },
+                },
+            ],
+        };
+        let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+        load_playback_trace_in_session(
+            init.handle,
+            "fixture",
+            &serde_json::to_string(&document).unwrap(),
+        )
+        .unwrap();
+        let before = session_slot(init.handle)
+            .unwrap()
+            .lock_running()
+            .unwrap()
+            .situation
+            .receiver()
+            .clone();
+        assert_eq!(before.aircraft.len(), 2);
+        assert_eq!(
+            before.traffic().next_expiry_epoch_ms(start),
+            Some(start + 14_001)
+        );
+        assert!(outcome_invalidations(
+            super::seek_playback_in_session(init.handle, 13.999, start as f64).unwrap()
+        )
+        .is_empty());
+        assert_eq!(
+            outcome_invalidations(
+                super::seek_playback_in_session(init.handle, 14.001, start as f64).unwrap()
+            ),
+            vec![UiInvalidation::MapOverlay]
+        );
+        let after = session_slot(init.handle)
+            .unwrap()
+            .lock_running()
+            .unwrap()
+            .situation
+            .receiver()
+            .clone();
+        assert!(
+            Arc::ptr_eq(&before.aircraft, &after.aircraft),
+            "partial expiry cannot be detected by array replacement"
+        );
+        assert_eq!(
+            after.traffic().next_expiry_epoch_ms(start + 14_001),
+            Some(start + 15_001)
+        );
+        assert!(outcome_invalidations(
+            super::seek_playback_in_session(init.handle, 14.1, start as f64).unwrap()
+        )
+        .is_empty());
+        assert_eq!(
+            outcome_invalidations(
+                super::seek_playback_in_session(init.handle, 15.001, start as f64).unwrap()
+            ),
+            vec![UiInvalidation::MapOverlay]
+        );
+        assert!(session_slot(init.handle)
+            .unwrap()
+            .lock_running()
+            .unwrap()
+            .situation
+            .receiver()
+            .aircraft
+            .is_empty());
+        destroy_session(init.handle);
+    }
+
     #[test]
     fn receiver_replay_selects_its_only_ownship_source_on_load_and_rewind() {
         use crate::receiver_replay::{Document, Event, Input, FORMAT};
@@ -27238,6 +27463,10 @@ mod tests {
         packet[60..64].copy_from_slice(&2000f32.to_le_bytes());
         packet[64..68].copy_from_slice(&2400f32.to_le_bytes());
         packet[108..112].copy_from_slice(&(1u32 | 8 | 32).to_le_bytes());
+        let mut moved = packet.clone();
+        moved[32..40].copy_from_slice(&47.46f64.to_radians().to_le_bytes());
+        moved[60..64].copy_from_slice(&3000f32.to_le_bytes());
+        moved[64..68].copy_from_slice(&3400f32.to_le_bytes());
         let document = Document {
             format: FORMAT.into(),
             schema_version: 1,
@@ -27256,6 +27485,13 @@ mod tests {
                         bytes_base64: STANDARD.encode(packet),
                     },
                 },
+                Event {
+                    elapsed_ms: 1000,
+                    input: Input::Receiver {
+                        message_id: 0x20000000,
+                        bytes_base64: STANDARD.encode(moved),
+                    },
+                },
             ],
         };
         load_playback_trace_in_session(
@@ -27264,11 +27500,31 @@ mod tests {
             &serde_json::to_string(&document).unwrap(),
         )
         .unwrap();
-        for elapsed in [0.0, 90.0, 0.0] {
-            seek_playback_in_session(init.handle, elapsed, 1_800_000_200_000.0).unwrap();
+        for elapsed in [0.0, 0.1, 1.0, 90.0, 0.0] {
+            let invalidations = outcome_invalidations(
+                super::seek_playback_in_session(init.handle, elapsed, 1_800_000_200_000.0).unwrap(),
+            );
+            if elapsed == 0.1 {
+                assert!(
+                    invalidations.is_empty(),
+                    "stationary sensor state between recorded packets"
+                );
+            }
+            if elapsed == 1.0 || elapsed == 90.0 {
+                assert!(
+                    invalidations.contains(&UiInvalidation::MapOverlay),
+                    "ownship motion or expiry changes vector context"
+                );
+            }
+            if elapsed == 90.0 {
+                assert!(
+                    invalidations.contains(&UiInvalidation::TerrainOverlay),
+                    "ownship expiry removes terrain altitude"
+                );
+            }
             let slot = session_slot(init.handle).unwrap();
             let session = slot.lock_running().unwrap();
-            assert_eq!(session.situation.ownship().render.position.is_some(), elapsed == 0.0,
+            assert_eq!(session.situation.ownship().render.position.is_some(), elapsed != 90.0,
                 "The only recorded GPS drives the plane without a source click; rewind restores it after expiry");
             if elapsed == 0.0 {
                 assert!(
@@ -27310,7 +27566,7 @@ mod tests {
             schema_version: 1,
             title: "Isolation".into(),
             start_epoch_ms: start,
-            duration_ms: 120_000,
+            duration_ms: crate::weather_controller::NEXRAD_MAX_DISPLAY_AGE_MS + 120_000,
             events: [
                 ("first", 0, "2026-10-10T12:00:00Z"),
                 ("second", 60_000, "2026-10-10T12:01:00Z"),
@@ -27361,6 +27617,23 @@ mod tests {
         let paused = query();
         assert_eq!(paused.animation.frame_count, 2);
         assert_eq!(paused.animation.next_update_epoch_ms, None);
+        let quiet = outcome_invalidations(
+            super::seek_playback_in_session(init.handle, 90.1, host as f64).unwrap(),
+        );
+        assert!(
+            !quiet.contains(&UiInvalidation::NexradOverlay),
+            "no new frame or phase at 90.1s"
+        );
+        let boundary = outcome_invalidations(
+            super::seek_playback_in_session(init.handle, 91.5, host as f64).unwrap(),
+        );
+        assert!(
+            boundary.contains(&UiInvalidation::NexradOverlay),
+            "replay clock crosses the blank phase boundary"
+        );
+        assert!(!boundary.contains(&UiInvalidation::MapOverlay));
+        seek_playback_in_session(init.handle, 90.0, host as f64).unwrap();
+        query();
         ingest_resource_in_session(
             init.handle,
             "live_feeds/state/metars/late",
@@ -27405,6 +27678,24 @@ mod tests {
             paused,
             "Rebuild reproduces exactly the paused projection"
         );
+        {
+            let slot = session_slot(init.handle).unwrap();
+            slot.lock_running()
+                .unwrap()
+                .weather
+                .nexrad_editor_action("latest");
+        }
+        query();
+        let expired_at =
+            (60_001 + crate::weather_controller::NEXRAD_MAX_DISPLAY_AGE_MS) as f64 / 1000.0;
+        let expired = outcome_invalidations(
+            super::seek_playback_in_session(init.handle, expired_at, host as f64).unwrap(),
+        );
+        assert!(
+            expired.contains(&UiInvalidation::NexradOverlay),
+            "held radar still expires without new packets"
+        );
+        assert!(query().tiles.is_empty(), "expired imagery must disappear");
         destroy_session(init.handle);
     }
 

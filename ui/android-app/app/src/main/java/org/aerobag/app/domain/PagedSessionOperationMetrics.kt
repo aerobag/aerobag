@@ -4,6 +4,12 @@
 
 package org.aerobag.app.domain
 
+enum class PagedSessionAdapterStage(val logName: String) {
+    OutcomeDecode("outcome_decode_us"),
+    ResultMapping("result_mapping_us"),
+    InvalidationPublish("invalidation_publish_us"),
+}
+
 data class PagedSessionOperationMetricsSnapshot(
     val coreCallCount: Int,
     val coreCallUs: Long,
@@ -15,6 +21,8 @@ data class PagedSessionOperationMetricsSnapshot(
     val resourceFetchUs: Long,
     val resourceIngestUs: Long,
     val resourceRounds: List<PagedResourceRoundMetricsSnapshot>,
+    val outcomeJsonChars: Long,
+    val adapterStagesUs: Map<PagedSessionAdapterStage, Long>,
 )
 
 data class PagedResourceRoundMetricsSnapshot(
@@ -27,7 +35,7 @@ data class PagedResourceRoundMetricsSnapshot(
     val ingestUs: Long,
 )
 
-class PagedSessionOperationMetrics {
+class PagedSessionOperationMetrics(private val nanoTime: () -> Long = System::nanoTime) {
     private var coreCallCount = 0
     private var coreCallUs = 0L
     private var resourceRoundCount = 0
@@ -39,9 +47,24 @@ class PagedSessionOperationMetrics {
     private var resourceIngestUs = 0L
     private val resourceRounds = mutableListOf<MutableResourceRoundMetrics>()
     private var activeResourceRoundIndex: Int? = null
+    private var outcomeJsonChars = 0L
+    private val adapterStagesUs = mutableMapOf<PagedSessionAdapterStage, Long>()
+
+    fun recordOutcomeJson(chars: Int) {
+        outcomeJsonChars += chars
+    }
+
+    fun <T> measureAdapterStage(stage: PagedSessionAdapterStage, operation: () -> T): T {
+        val startedNs = nanoTime()
+        return try {
+            operation()
+        } finally {
+            adapterStagesUs[stage] = (adapterStagesUs[stage] ?: 0L) + elapsedUs(startedNs)
+        }
+    }
 
     fun <T> measureCoreCall(operation: () -> T): T {
-        val startedNs = System.nanoTime()
+        val startedNs = nanoTime()
         return try {
             operation()
         } finally {
@@ -90,7 +113,7 @@ class PagedSessionOperationMetrics {
 
     fun <T> measureResourceLoad(byteCount: (T) -> Int, operation: () -> T): T {
         resourceRequestCount += 1
-        val startedNs = System.nanoTime()
+        val startedNs = nanoTime()
         return try {
             operation().also { value ->
                 resourceLoadCount += 1
@@ -102,7 +125,7 @@ class PagedSessionOperationMetrics {
     }
 
     fun <T> measureResourceIngest(operation: () -> T): T {
-        val startedNs = System.nanoTime()
+        val startedNs = nanoTime()
         return try {
             operation()
         } finally {
@@ -123,10 +146,12 @@ class PagedSessionOperationMetrics {
         resourceFetchUs = resourceFetchUs,
         resourceIngestUs = resourceIngestUs,
         resourceRounds = resourceRounds.map(MutableResourceRoundMetrics::snapshot),
+        outcomeJsonChars = outcomeJsonChars,
+        adapterStagesUs = adapterStagesUs.toMap(),
     )
 
     private fun elapsedUs(startedNs: Long): Long =
-        ((System.nanoTime() - startedNs).coerceAtLeast(0L) + 500L) / 1_000L
+        ((nanoTime() - startedNs).coerceAtLeast(0L) + 500L) / 1_000L
 }
 
 private data class MutableResourceRoundMetrics(

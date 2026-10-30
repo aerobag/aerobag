@@ -53,8 +53,8 @@ sealed class CoreResourceSource {
     data class Unavailable(val message: String) : CoreResourceSource()
 }
 
-data class PagedSessionOperationResult(
-    val result: JsonElement,
+data class PagedSessionOperationResult<T>(
+    val result: T,
     val invalidations: List<UiInvalidation>,
     val resumedSnapshot: Boolean = false,
 )
@@ -319,7 +319,7 @@ class NavKvStore private constructor(
         libraryCacheJson: String,
         sessionHandle: Long,
         plannedGcFilenames: Set<String> = emptySet(),
-    ): PagedSessionOperationResult {
+    ): PagedSessionOperationResult<JsonElement> {
         val nextBackend = openBackend(
             artifacts,
             libraryCacheJson,
@@ -427,10 +427,25 @@ class NavKvStore private constructor(
         resumeSnapshot: (() -> String)? = null,
         metrics: PagedSessionOperationMetrics? = null,
         operation: () -> String,
-    ): PagedSessionOperationResult = backendLock.read {
+    ): PagedSessionOperationResult<JsonElement> = runPagedSessionOperation(
+        resultDecoder = PagedSessionResultDecoder(json, JsonElement.serializer()) { JsonNull },
+        resourceIo = resourceIo,
+        resumeSnapshot = resumeSnapshot,
+        metrics = metrics,
+        operation = operation,
+    )
+
+    internal fun <T> runPagedSessionOperation(
+        resultDecoder: PagedSessionResultDecoder<T>,
+        resourceIo: SessionResourceIo,
+        resumeSnapshot: (() -> String)? = null,
+        metrics: PagedSessionOperationMetrics? = null,
+        operation: () -> String,
+    ): PagedSessionOperationResult<T> = backendLock.read {
         check(!closed) { "nav_kv store is closed" }
         runPagedSessionOperation(
             activeBackend = backend,
+            resultDecoder = resultDecoder,
             resourceIo = resourceIo,
             resumeSnapshot = resumeSnapshot,
             metrics = metrics,
@@ -438,13 +453,14 @@ class NavKvStore private constructor(
         )
     }
 
-    private fun runPagedSessionOperation(
+    private fun <T> runPagedSessionOperation(
         activeBackend: NavKvBackend,
+        resultDecoder: PagedSessionResultDecoder<T>,
         resourceIo: SessionResourceIo,
         resumeSnapshot: (() -> String)?,
         metrics: PagedSessionOperationMetrics?,
         operation: () -> String,
-    ): PagedSessionOperationResult {
+    ): PagedSessionOperationResult<T> {
         var activeOperation = operation
         var resumedSnapshot = false
         val pendingInvalidations = linkedSetOf<UiInvalidation>()
@@ -456,28 +472,26 @@ class NavKvStore private constructor(
         val seenResourceRequests = mutableSetOf<Pair<String, List<String>>>()
         while (true) {
             val outcomeJson = metrics?.measureCoreCall(activeOperation) ?: activeOperation()
-            val outcome = json.parseToJsonElement(outcomeJson).jsonObject
-            return when (val state = outcome.getValue("state").jsonPrimitive.content) {
+            metrics?.recordOutcomeJson(outcomeJson.length)
+            val outcome = metrics?.measureAdapterStage(PagedSessionAdapterStage.OutcomeDecode) {
+                resultDecoder.decode(outcomeJson)
+            } ?: resultDecoder.decode(outcomeJson)
+            return when (val state = outcome.state) {
                 "complete" -> {
                     PagedSessionOperationResult(
-                        result = outcome["result"] ?: JsonNull,
-                        invalidations = (pendingInvalidations + (
-                            decodeUiInvalidations(json, outcome["invalidations"])
-                            )).toList(),
+                        result = resultDecoder.result(outcome),
+                        invalidations = (pendingInvalidations + outcome.invalidations).toList(),
                         resumedSnapshot = resumedSnapshot,
                     )
                 }
                 "need_resources", "need_snapshot_resources" -> {
                     if (state == "need_snapshot_resources") {
-                        pendingInvalidations += decodeUiInvalidations(
-                            json,
-                            outcome["invalidations"],
-                        )
+                        pendingInvalidations += outcome.invalidations
                         activeOperation = resumeSnapshot
                             ?: error("committed session mutation requires a snapshot-resume operation")
                         resumedSnapshot = true
                     }
-                    val resources = parseCoreResourceRequests(outcome)
+                    val resources = outcome.resources.map(::parseCoreResourceRequest)
                     check(resources.isNotEmpty()) {
                         "paged session operation requested no resources"
                     }

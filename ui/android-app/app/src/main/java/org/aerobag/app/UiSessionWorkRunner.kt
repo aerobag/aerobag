@@ -6,6 +6,7 @@
 
 package org.aerobag.app
 
+import android.os.Debug
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
@@ -19,7 +20,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.aerobag.app.domain.CoreResourceRequest
@@ -40,10 +40,8 @@ import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.generated.CloudUiActionId
 import org.aerobag.app.generated.CloudUiFieldValue
 import org.aerobag.app.generated.NexradOverlayQueryResult
-import org.aerobag.app.generated.UiSessionWorkCompletionDecision
 import org.aerobag.app.generated.UiSessionWorkKind
 import org.aerobag.app.generated.UiSessionWorkRequest
-import org.aerobag.app.generated.UiSessionWorkRequestDecision
 import org.aerobag.app.generated.UiSessionWorkResultAction
 
 private const val UiSessionWorkLogTag = "AerobagSessionWork"
@@ -52,16 +50,15 @@ class UiSessionWorkRunner(
     private val uiSession: NativeUiSession,
     private val bridge: NativeBridge = NativeBindings,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val schedulerHandle = bridge.createUiSessionWorkScheduler()
     private val mutationQueue = Channel<SessionMutation>(Channel.UNLIMITED)
-    private val payloads = mutableMapOf<Long, RetainedWork>()
-    private val activeRequestIds = mutableSetOf<Long>()
-    private var nextRequestId = 1L
     @Volatile
     private var closed = false
+    @Volatile
     private var perfMetricsEnabled = false
+    private val workQueue = SessionWorkQueue<WorkResult>(NativeSessionWorkScheduler(bridge), event = { event, request, fields ->
+        logEvent(event, request, *fields.map { (key, value) -> key to value }.toTypedArray())
+    })
 
     init {
         mutationScope.launch {
@@ -103,15 +100,8 @@ class UiSessionWorkRunner(
         if (closed) return
         closed = true
         mutationQueue.close()
-        payloads.values.forEach { retained ->
-            retained.payload.dropped("runner_closed")
-            logFinished(retained, "runner_closed", outcome = "cancelled")
-        }
-        payloads.clear()
-        activeRequestIds.clear()
+        workQueue.close()
         mutationScope.cancel()
-        scope.cancel()
-        bridge.destroyUiSessionWorkScheduler(schedulerHandle)
     }
 
     fun submitFlightPlanRowAction(
@@ -527,211 +517,91 @@ class UiSessionWorkRunner(
             deferred.await()
         } catch (error: CancellationException) {
             if (requestId != null) {
-                scope.launch {
-                    payloads.remove(requestId)?.let { retained ->
-                        retained.payload.dropped("caller_cancelled")
-                        logFinished(retained, "caller_cancelled", outcome = "cancelled")
-                    }
-                }
+                workQueue.cancel(requestId)
             }
             throw error
         }
     }
 
     private fun request(payload: WorkPayload): Long? {
-        if (closed) {
-            payload.dropped("runner_closed")
-            return null
-        }
-        val request = UiSessionWorkRequest(
-            id = nextRequestId++,
+        val metrics = if (perfMetricsEnabled) PagedSessionOperationMetrics() else null
+        var executionThread = "unknown"
+        var executionOnMainThread = false
+        var workerCpuUs = 0L
+        return workQueue.request(SessionWorkTask(
             kind = payload.kind,
-            coalesceKey = payload.coalesceKey,
-            requestedAtMs = SystemClock.elapsedRealtime(),
-        )
-        val retained = RetainedWork(request = request, payload = payload)
-        payloads[request.id] = retained
-        logEvent(
-            "requested",
-            retained,
-            "retained_count" to payloads.size,
-        )
-        val decision = json.decodeFromString<UiSessionWorkRequestDecision>(
-            bridge.uiSessionWorkSchedulerRequestJson(
-                schedulerHandle,
-                json.encodeToString(request),
-            ),
-        )
-        when (decision) {
-            is UiSessionWorkRequestDecision.Start -> start(decision.request)
-            is UiSessionWorkRequestDecision.Queued -> {
-                logEvent(
-                    "queued",
-                    retained,
-                    "replaced_request_id" to (decision.replacedRequestId ?: 0L),
-                    "retained_count" to payloads.size,
-                )
-                decision.replacedRequestId?.let { replacedRequestId ->
-                    payloads.remove(replacedRequestId)?.let { replaced ->
-                        replaced.payload.dropped("replaced_by_newer_pending")
-                        logFinished(
-                            replaced,
-                            action = "replaced_by_newer_pending",
-                            outcome = "cancelled",
-                        )
+            key = payload.coalesceKey,
+            run = {
+                executionThread = Thread.currentThread().name.replace(' ', '_')
+                executionOnMainThread = Looper.myLooper() == Looper.getMainLooper()
+                val cpuStartedNs = if (metrics != null) Debug.threadCpuTimeNanos() else 0L
+                try {
+                    payload.run(uiSession, metrics)
+                } finally {
+                    if (metrics != null) workerCpuUs = (Debug.threadCpuTimeNanos() - cpuStartedNs) / 1_000
+                }
+            },
+            land = { completion ->
+                val landingStarted = SystemClock.elapsedRealtime()
+                val action = when (val resultAction = completion.action) {
+                    is UiSessionWorkResultAction.Land -> {
+                        completion.result.onSuccess(payload::land).onFailure(payload::failed)
+                        if (completion.result.isSuccess) "land" else "failed"
+                    }
+                    is UiSessionWorkResultAction.Drop -> {
+                        payload.dropped(resultAction.reason)
+                        resultAction.reason
                     }
                 }
-            }
-        }
-        return request.id
-    }
-
-    private fun start(request: UiSessionWorkRequest) {
-        if (closed) {
-            return
-        }
-        val retained = payloads[request.id]
-        if (retained == null) {
-            val completion = complete(request.id)
-            completion.next?.let { next ->
-                if (!closed) {
-                    start(next)
+                val finished = SystemClock.elapsedRealtime()
+                val snapshot = metrics?.snapshot()
+                snapshot?.resourceRounds?.forEach { round ->
+                    logEvent("resource_frontier", completion.request,
+                        "round" to round.index,
+                        "width" to round.resourceIds.size,
+                        "source_kinds" to round.sourceKinds.entries.joinToString("+") { (kind, count) -> "$kind:$count" },
+                        "resource_ids" to round.resourceIds.joinToString("+"),
+                        "fetch_wall_us" to round.fetchWallUs,
+                        "fetch_work_us" to round.fetchWorkUs,
+                        "max_concurrency" to round.maxConcurrency,
+                        "ingest_us" to round.ingestUs)
                 }
-            }
-            return
-        }
-        retained.startedAtMs = SystemClock.elapsedRealtime()
-        activeRequestIds += request.id
-        logEvent(
-            "started",
-            retained,
-            "queue_ms" to (retained.startedAtMs - request.requestedAtMs).coerceAtLeast(0L),
-            "active_count" to activeRequestIds.size,
-            "retained_count" to payloads.size,
-        )
-        scope.launch {
-            val operationMetrics = if (perfMetricsEnabled) PagedSessionOperationMetrics() else null
-            val dispatchedAtMs = SystemClock.elapsedRealtime()
-            var workerStartedAtMs = dispatchedAtMs
-            var workerFinishedAtMs = dispatchedAtMs
-            var executionThread = "unknown"
-            var executionOnMainThread = false
-            val outcome = runCatching {
-                withContext(Dispatchers.IO) {
-                    workerStartedAtMs = SystemClock.elapsedRealtime()
-                    executionThread = Thread.currentThread().name.replace(' ', '_')
-                    executionOnMainThread = Looper.myLooper() == Looper.getMainLooper()
-                    try {
-                        retained.payload.run(uiSession, operationMetrics)
-                    } finally {
-                        workerFinishedAtMs = SystemClock.elapsedRealtime()
-                    }
-                }
-            }
-            if (closed) {
-                payloads.remove(request.id)
-                activeRequestIds -= request.id
-                return@launch
-            }
-            val workerReturnedAtMs = SystemClock.elapsedRealtime()
-            val schedulerStartedAtMs = workerReturnedAtMs
-            val completion = complete(request.id)
-            val schedulerMs = SystemClock.elapsedRealtime() - schedulerStartedAtMs
-            payloads.remove(request.id)
-            activeRequestIds -= request.id
-            if (closed) {
-                return@launch
-            }
-            val landingStartedAtMs = SystemClock.elapsedRealtime()
-            val action: String
-            when (completion.resultAction) {
-                is UiSessionWorkResultAction.Land -> {
-                    action = if (outcome.isSuccess) "land" else "failed"
-                    outcome
-                        .onSuccess { retained.payload.land(it) }
-                        .onFailure { retained.payload.failed(it) }
-                }
-                is UiSessionWorkResultAction.Drop -> {
-                    action = completion.resultAction.reason
-                    retained.payload.dropped(completion.resultAction.reason)
-                }
-            }
-            val finishedAtMs = SystemClock.elapsedRealtime()
-            val operationMetricsSnapshot = operationMetrics?.snapshot()
-            operationMetricsSnapshot?.resourceRounds?.forEach { round ->
-                logEvent(
-                    "resource_frontier",
-                    retained,
-                    "round" to round.index,
-                    "width" to round.resourceIds.size,
-                    "source_kinds" to round.sourceKinds.entries.joinToString("+") { (kind, count) ->
-                        "$kind:$count"
-                    },
-                    "resource_ids" to round.resourceIds.joinToString("+"),
-                    "fetch_wall_us" to round.fetchWallUs,
-                    "fetch_work_us" to round.fetchWorkUs,
-                    "max_concurrency" to round.maxConcurrency,
-                    "ingest_us" to round.ingestUs,
-                )
-            }
-            logFinished(
-                retained = retained,
-                action = action,
-                outcome = if (outcome.isSuccess) "success" else "error",
-                extra = arrayOf<Pair<String, Any?>>(
-                    "queue_ms" to (retained.startedAtMs - request.requestedAtMs).coerceAtLeast(0L),
-                    "dispatcher_wait_ms" to (workerStartedAtMs - dispatchedAtMs).coerceAtLeast(0L),
-                    "work_ms" to (workerFinishedAtMs - workerStartedAtMs).coerceAtLeast(0L),
-                    "delivery_ms" to (workerReturnedAtMs - workerFinishedAtMs).coerceAtLeast(0L),
-                    "scheduler_ms" to schedulerMs.coerceAtLeast(0L),
-                    "landing_ms" to (finishedAtMs - landingStartedAtMs).coerceAtLeast(0L),
-                    "total_ms" to (finishedAtMs - request.requestedAtMs).coerceAtLeast(0L),
-                    "execution_thread" to executionThread,
-                    "main_thread" to executionOnMainThread,
-                    "active_count" to activeRequestIds.size,
-                    "retained_count" to payloads.size,
-                ) + (
-                    operationMetricsSnapshot
-                        ?.let(::operationMetricFields)
-                        ?: emptyArray()
-                    ),
-            )
-            completion.next?.let { next ->
-                if (!closed) {
-                    start(next)
-                }
-            }
-        }
-    }
-
-    private fun complete(requestId: Long): UiSessionWorkCompletionDecision {
-        if (closed) {
-            return droppedCompletion("runner_closed")
-        }
-        return json.decodeFromString<UiSessionWorkCompletionDecision>(
-            bridge.uiSessionWorkSchedulerCompleteJson(
-                schedulerHandle,
-                requestId,
-            ),
-        )
+                logFinished(completion.request, action, if (completion.result.isSuccess) "success" else "error",
+                    arrayOf<Pair<String, Any?>>(
+                        "queue_ms" to (completion.startedAtMs - completion.request.requestedAtMs).coerceAtLeast(0L),
+                        "dispatcher_wait_ms" to (completion.workerStartedAtMs - completion.startedAtMs).coerceAtLeast(0L),
+                        "work_ms" to (completion.workerFinishedAtMs - completion.workerStartedAtMs).coerceAtLeast(0L),
+                        "work_cpu_us" to workerCpuUs,
+                        "delivery_ms" to (landingStarted - completion.workerFinishedAtMs).coerceAtLeast(0L),
+                        "scheduler_ms" to completion.schedulerMs,
+                        "landing_ms" to (finished - landingStarted),
+                        "total_ms" to (finished - completion.request.requestedAtMs),
+                        "execution_thread" to executionThread,
+                        "main_thread" to executionOnMainThread,
+                    ) + (snapshot?.let(::operationMetricFields) ?: emptyArray()))
+            },
+            dropped = { request, reason ->
+                payload.dropped(reason)
+                logFinished(request, reason, "cancelled")
+            },
+        ))
     }
 
     private fun logFinished(
-        retained: RetainedWork,
+        request: UiSessionWorkRequest,
         action: String,
         outcome: String,
         extra: Array<Pair<String, Any?>> = emptyArray(),
     ) {
-        logEvent("finished", retained, "action" to action, "outcome" to outcome, *extra)
+        logEvent("finished", request, "action" to action, "outcome" to outcome, *extra)
     }
 
     private fun logEvent(
         event: String,
-        retained: RetainedWork,
+        request: UiSessionWorkRequest,
         vararg fields: Pair<String, Any?>,
     ) {
         if (!perfMetricsEnabled) return
-        val request = retained.request
         val base = listOf(
             "event=$event",
             "request_id=${request.id}",
@@ -743,12 +613,6 @@ class UiSessionWorkRunner(
     }
 }
 
-private data class RetainedWork(
-    val request: UiSessionWorkRequest,
-    val payload: WorkPayload,
-    var startedAtMs: Long = request.requestedAtMs,
-)
-
 private data class SessionMutation(
     val commandName: String,
     val operation: (NativeUiSession) -> UiSessionSnapshot,
@@ -758,9 +622,10 @@ private data class SessionMutation(
 
 private fun operationMetricFields(
     metrics: PagedSessionOperationMetricsSnapshot,
-): Array<Pair<String, Any?>> = arrayOf(
+): Array<Pair<String, Any?>> = arrayOf<Pair<String, Any?>>(
     "core_calls" to metrics.coreCallCount,
     "core_us" to metrics.coreCallUs,
+    "outcome_json_chars" to metrics.outcomeJsonChars,
     "resource_rounds" to metrics.resourceRoundCount,
     "resource_requests" to metrics.resourceRequestCount,
     "resource_loads" to metrics.resourceLoadCount,
@@ -770,13 +635,7 @@ private fun operationMetricFields(
     "resource_fetch_wall_us" to metrics.resourceRounds.sumOf { it.fetchWallUs },
     "resource_max_concurrency" to (metrics.resourceRounds.maxOfOrNull { it.maxConcurrency } ?: 0),
     "resource_ingest_us" to metrics.resourceIngestUs,
-)
-
-private fun droppedCompletion(reason: String): UiSessionWorkCompletionDecision =
-    UiSessionWorkCompletionDecision(
-        resultAction = UiSessionWorkResultAction.Drop(reason),
-        next = null,
-    )
+) + metrics.adapterStagesUs.map { (stage, micros) -> stage.logName to micros }.toTypedArray()
 
 private sealed class WorkPayload(
     val kind: UiSessionWorkKind,

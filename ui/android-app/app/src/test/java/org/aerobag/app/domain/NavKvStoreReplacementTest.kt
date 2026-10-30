@@ -11,6 +11,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -27,6 +30,49 @@ class NavKvStoreReplacementTest {
         fetch = { resource -> error("unexpected non-NAVKV fetch for ${resource.id}") },
         ingest = { resource, _ -> error("unexpected non-NAVKV ingest for ${resource.id}") },
     )
+
+    @Test
+    fun typedPagerRetainsResourceFaultsAndCommittedSnapshotResume() {
+        val directory = Files.createTempDirectory("nav-kv-typed-pager-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", FakeNavKvBridge().nativeBridge)
+        val ingested = mutableListOf<String>()
+        val io = SessionResourceIo(fetch = { byteArrayOf(1) }, ingest = { resource, _ -> ingested += resource.id })
+        var mutationCalls = 0
+        var snapshotCalls = 0
+        fun request(state: String, id: String) = """{"state":"$state","invalidations":["map_overlay"],"resources":[{"id":"$id","source":{"kind":"public_url","url":"/$id"}}]}"""
+        try {
+            val outcome = store.runPagedSessionOperation(
+                resultDecoder = PagedSessionResultDecoder(Json, ListSerializer(String.serializer())),
+                resourceIo = io,
+                resumeSnapshot = {
+                    snapshotCalls++
+                    if (snapshotCalls == 1) request("need_resources", "snapshot")
+                    else """{"state":"complete","result":["done"],"invalidations":["map_overlay","terrain_overlay"]}"""
+                },
+                operation = {
+                    mutationCalls++
+                    request(if (mutationCalls == 1) "need_resources" else "need_snapshot_resources", "mutation-$mutationCalls")
+                },
+            )
+            assertEquals(listOf("done"), outcome.result)
+            assertTrue(outcome.resumedSnapshot)
+            assertEquals(2, mutationCalls)
+            assertEquals(2, snapshotCalls)
+            assertEquals(listOf("mutation-1", "mutation-2", "snapshot"), ingested)
+            assertEquals(listOf(UiInvalidation.MapOverlay, UiInvalidation.TerrainOverlay), outcome.invalidations)
+            assertTrue(runCatching {
+                store.runPagedSessionOperation(
+                    resultDecoder = PagedSessionResultDecoder(Json, ListSerializer(String.serializer())),
+                    resourceIo = io,
+                ) { request("need_resources", "repeat") }
+            }.exceptionOrNull()?.message?.contains("already-satisfied") == true)
+        } finally {
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
 
     @Test
     fun comparisonCanLoadAdditionalForecastPagesAfterMutationSnapshotAndWhenWarm() {
@@ -117,7 +163,7 @@ class NavKvStoreReplacementTest {
         var operationCalls = 0
 
         try {
-            val result = caller.submit<PagedSessionOperationResult> {
+            val result = caller.submit<PagedSessionOperationResult<JsonElement>> {
                 store.runPagedSessionOperation(
                     resourceIo = SessionResourceIo(
                         fetch = { resource ->
@@ -222,7 +268,7 @@ class NavKvStoreReplacementTest {
         var peerOperationCalls = 0
 
         try {
-            val firstOperation = executor.submit<PagedSessionOperationResult> {
+            val firstOperation = executor.submit<PagedSessionOperationResult<JsonElement>> {
                 store.runPagedSessionOperation(resourceIo = navKvOnlyResourceIo) {
                     firstOperationCalls += 1
                     if (firstOperationCalls == 1) {
@@ -237,7 +283,7 @@ class NavKvStoreReplacementTest {
             }
             assertTrue(firstOutcomeComputed.await(2, TimeUnit.SECONDS))
 
-            val peerOperation = executor.submit<PagedSessionOperationResult> {
+            val peerOperation = executor.submit<PagedSessionOperationResult<JsonElement>> {
                 store.runPagedSessionOperation(resourceIo = navKvOnlyResourceIo) {
                     peerOperationCalls += 1
                     if (peerOperationCalls == 1) {
@@ -399,7 +445,7 @@ class NavKvStoreReplacementTest {
         try {
             store.attachToSession(42L)
             assertEquals("old-page", readPageValue(store))
-            val replacement = executor.submit<PagedSessionOperationResult> {
+            val replacement = executor.submit<PagedSessionOperationResult<JsonElement>> {
                 store.replaceInstalledArtifacts(listOf(newArtifact), "", 42L)
             }
             assertTrue(bridge.candidatePageInsertStarted.await(2, TimeUnit.SECONDS))

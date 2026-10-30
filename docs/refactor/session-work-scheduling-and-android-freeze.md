@@ -460,6 +460,159 @@ request cannot later consume resource I/O merely to be dropped. The web runner
 rejects replaced promises with a typed cancellation and completes failed active
 work through core before starting the next retained request.
 
+## Receiver Replay Measurements, 2026-10-30
+
+The sampling-dependent assertion from hosted run `41085733398` on `8cd26da2`
+was fixed separately in `43402773`; see
+[`hosted-ci.md`](../testing/hosted-ci.md). The measurements here investigate
+the underlying Android cost, not another change to the journey's deadline.
+
+In the failed run's 15-second observer window (app PID 6557, device log time
+19:53:51.400 through 19:54:06.100):
+
+- Ten map-overlay jobs occupied 7,902 ms of worker time. JNI/core calls accounted
+  for only 313 ms; no resource paging occurred. Median worker time was 860 ms,
+  p90 1,271 ms, maximum 1,334 ms. These calls also waited 1,441 ms in aggregate
+  for main-thread completion delivery.
+- Eleven radar queries used 41 ms of worker time, including 3.4 ms in core.
+  Their background-queue wait was median 1,220 ms, p90 1,764 ms, maximum
+  2,019 ms. Both radar images were tiny local files, not network transfers.
+- Twelve terrain-tile jobs used 1,658 ms of worker time, including 441 ms in
+  core. Terrain contributes contention, but is not the largest measured task.
+
+Existing `core_us` excludes Kotlin decoding. Added gated fields on the existing
+`AerobagSessionWork` completion log, without adding per-feature log records:
+`outcome_json_chars`, `outcome_decode_us`, `result_decode_us`,
+`result_mapping_us`, `invalidation_publish_us`, and `work_cpu_us`.
+The CPU sample surrounds the synchronous payload on one IO-dispatcher thread.
+Two controlled-clock unit tests cover stage separation/accumulation, immutable
+snapshots and preservation of failed-stage timing and the original exception.
+
+A release-mode x86_64 APK with those measurements passed `shared.receiver-replay`
+on a fresh local Google ATD API 34 emulator using the failed run's retained
+publication, receiver fixture and app-data baseline. Fifty page-cache-hit map
+queries during that journey used 2,937 ms total worker time:
+
+- Rust/JNI: 160 ms.
+- Parse JSON into a generic tree: 536 ms.
+- Decode that tree into typed Kotlin wire objects: 2,137 ms.
+- Map wire objects into UI objects: 77 ms.
+- Publish invalidations: 10 ms.
+- Residual/rounding: 18 ms.
+
+The two decoding stages account for 91% of this sample. Worker CPU time was
+2,531 ms, so this is predominantly CPU/allocation work, not waiting for network
+or the session lock. Result envelopes were approximately 80-155 thousand
+characters, not megabytes. The generic tree is built in
+`NavKvStore.runPagedSessionOperation`; typed decoding and UI conversion happen
+in `NativeUiSession.queryMapOverlay` after the resource loop returns.
+
+A second, already-warmed run resumed the same receiver trace from 18 seconds
+through 43.2 seconds, without map interactions. It completed 240 map queries
+and 240 radar queries in about 25.6 seconds. Every map result envelope was
+154,796 characters and none requested resources. Mean map worker time was
+23.8 ms, comprising 3.6 ms Rust/JNI, 6.0 ms generic JSON parsing, 13.3 ms typed
+decoding, 0.5 ms UI mapping and 0.4 ms other work/rounding. Decoding still accounts
+for 81% after warmup. Median/p90 map worker time was 22/33 ms; worker CPU totaled
+5.28 seconds. Map completion delivery added median/p90 35/45 ms. Radar query
+work was median/p90 1/1 ms but queueing was 62/67 ms.
+
+These are two local traces, not device-population statistics. The local machine
+is substantially faster than the hosted failure, so do not transplant the local
+stage percentages into the old CI log as though CI measured them. The new
+instrumentation makes that breakdown available on future hosted runs. Warmup
+also matters: do not compare the first run's mixed startup sample directly with
+the second run and call it an optimization.
+
+### Implemented Follow-Ups
+
+1. Android map overlays now decode directly into a typed paged envelope in one
+   streaming JSON pass. The existing resource loop is generic over its result
+   decoder; raw callers still use that same loop with `JsonElement`. There is
+   no second pager, tree reserialization, binary format or contract change.
+   A nullable payload on the envelope permits resource faults without a result;
+   completed typed responses still require a valid result. This also avoids a
+   polymorphic discriminator falling back to a DOM when `state` is last.
+2. Core receiver replay now invalidates layers when their inputs change, or
+   when the historical clock crosses their deadlines. Quiet clock ticks do not
+   redraw the map. Ownship motion/altitude, traffic changes/expiry, station
+   weather inputs, radar animation/source/age deadlines and rewind still trigger
+   the relevant layers. Radar queries record their next historical deadline;
+   the replay clock consumes it, not a host-clock timer. Replay commands already
+   return a projected session update, so they no longer request a duplicate
+   full snapshot.
+3. Android's `SessionWorkQueue` serializes calls to the existing core scheduler
+   away from Main. Completion releases the execution slot and posts ordered UI
+   delivery before starting the successor. A busy Main thread can delay landing
+   without holding that slot. Core still owns input priority, per-key coalescing
+   and stale-result policy. Cancellation/retirement claim each result at most
+   once, and queued work cannot enter a retired native session.
+
+### Matched Local Measurements
+
+Each warmed sample used the same retained fixture and app-data baseline on a
+local Google ATD API 34 emulator, release x86_64 APK, replay from 18 seconds
+through approximately 43.2 seconds, with no map interactions or resource faults.
+Counts include the initial seek and draining its playback/pause results. In each
+`warm-logcat.txt`, select successful completion records after the last submitted
+`seekPlayback`: before PID 3620 from 17:12:42.030, decoder-only PID 3534 from
+17:28:15.062, combined PID 4562 from 17:40:47.644 (all 2026-10-30 UTC).
+The log files also contain older runs; do not aggregate the entire file.
+These are individual local samples, not a statistical estimate of CI or tablet
+performance.
+
+- **Before:** 240 map queries and 240 radar queries in 25.6 seconds; map worker
+  CPU totaled 5.28 seconds. Mean map worker time was 23.82 ms, with 19.30 ms in
+  the two decode stages. Radar queue wait was median/p90 62/67 ms.
+- **Decoder only:** 236 map/radar queries; mean map worker time 14.41 ms
+  (median/p90 14/18 ms), including 9.80 ms single-pass decoding and 3.74 ms
+  Rust/JNI. Mean worker CPU fell from 21.99 to 13.39 ms. This isolates an
+  approximately 40% reduction in worker time without suppressing queries.
+- **All three:** 26 map queries and 19 radar queries in the same roughly
+  25.5-second replay window; map
+  worker CPU totaled 0.417 seconds, about 92% less than before. Radar queue wait
+  was median/p90 15/22 ms. There was one terrain plan and no terrain tile jobs.
+  Mean map worker time was 16.54 ms across this much smaller sample; reduced
+  warmup means it should not be interpreted as a decoder regression.
+
+Main-thread delivery is still measurable: map median/p90 46/50 ms and radar
+43/52 ms in the combined sample. This work removes its coupling to the next
+background computation; it does not claim to fix or explain that UI delay.
+`outcome_decode_us` now measures the entire direct typed decode for map queries;
+the obsolete `result_decode_us` stage exists only in the before logs, not the
+new implementation. Instrumentation remains gated by existing perf metrics.
+
+### Regression Coverage
+
+- The streaming-decoder test failed with the old generic-tree path, then passed
+  with direct decoding. Tests cover a last-position `state`, strict unknown and
+  malformed fields, missing results, resource faults, accumulated invalidations,
+  committed-mutation snapshot resumption and the repeated-request guard.
+- Quiet-tick/radar-boundary tests failed against the old every-tick invalidation
+  path. Session tests also cover ownship movement/expiry, held-radar expiry and
+  rewind, alongside the existing incremental-versus-seek equivalence tests.
+  A partial-traffic-expiry case tests the deadline even while the retained
+  aircraft array is unchanged; temporarily removing that deadline check made
+  the test fail with a missing map invalidation, then restoring it passed.
+- Queue tests initially failed while completion still waited on Main. They now
+  cover progress while UI delivery is held, FIFO delivery, newest-pending
+  coalescing, failure, cancellation before/after computation, and retirement
+  before worker dispatch or after computation but before landing.
+- Rebuilt Android release APK: `shared.receiver-replay` and
+  `shared.nexrad-frames` pass. Rebuilt optimized web bundle:
+  `shared.receiver-replay` passes. These are focused runs, not the full release
+  journey suite or a physical-tablet benchmark.
+- Full cheap preflight passes all 13 suites in 91.1 seconds, including the Rust
+  and Android tests above. Logs: `/tmp/aerobag-cheap-preflight-d5oh0mt7/`.
+
+Diagnostic artifacts: `/tmp/aerobag-radar-perf-instrumented/` contains the passing
+journey result, `logcat.txt` and `warm-logcat.txt`. The original failure and exact
+builds/fixtures are under `/tmp/aerobag-e2e-41085733398/`. Follow-up measurements
+are in `/tmp/aerobag-decoder-only/` and `/tmp/aerobag-perf-all/`, each with
+`warm-logcat.txt`. The extra radar and web results are in
+`/tmp/aerobag-perf-all-radar/` and `/tmp/aerobag-replay-web-fixed/`. No resource
+format, scheduling policy or journey deadline changed.
+
 ## Open Questions
 
 - Should selection preempt an in-flight overlay call, or only jump ahead of

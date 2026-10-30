@@ -13,6 +13,48 @@ import org.junit.Test
 
 class PagedSessionOperationMetricsTest {
     @Test
+    fun adapterStagesSeparateCoreDecodeAndMappingCosts() {
+        var ns = 0L
+        val metrics = PagedSessionOperationMetrics { ns }
+        metrics.measureCoreCall { ns += 10_000 }
+        metrics.recordOutcomeJson(120)
+        metrics.measureAdapterStage(PagedSessionAdapterStage.OutcomeDecode) { ns += 20_000 }
+        metrics.recordOutcomeJson(80)
+        metrics.measureAdapterStage(PagedSessionAdapterStage.OutcomeDecode) { ns += 30_000 }
+        assertEquals("mapped", metrics.measureAdapterStage(PagedSessionAdapterStage.ResultMapping) {
+            ns += 40_000
+            "mapped"
+        })
+        val snapshot = metrics.snapshot()
+        metrics.measureAdapterStage(PagedSessionAdapterStage.ResultMapping) { ns += 50_000 }
+        assertEquals(10L, snapshot.coreCallUs)
+        assertEquals(200L, snapshot.outcomeJsonChars)
+        assertEquals(
+            mapOf(
+                PagedSessionAdapterStage.OutcomeDecode to 50L,
+                PagedSessionAdapterStage.ResultMapping to 40L,
+            ),
+            snapshot.adapterStagesUs,
+        )
+        assertEquals(90L, metrics.snapshot().adapterStagesUs[PagedSessionAdapterStage.ResultMapping])
+    }
+
+    @Test
+    fun failedAdapterStageKeepsItsCostAndOriginalError() {
+        var ns = 0L
+        val metrics = PagedSessionOperationMetrics { ns }
+        val error = IllegalArgumentException("bad payload")
+        val failure = runCatching {
+            metrics.measureAdapterStage(PagedSessionAdapterStage.OutcomeDecode) {
+                ns += 25_000
+                throw error
+            }
+        }
+        assertTrue(failure.exceptionOrNull() === error)
+        assertEquals(25L, metrics.snapshot().adapterStagesUs[PagedSessionAdapterStage.OutcomeDecode])
+    }
+
+    @Test
     fun accountsForCoreCallsResourceRoundsLoadsHitsAndIngests() {
         val metrics = PagedSessionOperationMetrics()
 

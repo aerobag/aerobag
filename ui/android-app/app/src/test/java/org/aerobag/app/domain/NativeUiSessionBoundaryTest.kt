@@ -105,7 +105,7 @@ class NativeUiSessionBoundaryTest {
         )
         val pagedOperationBody = balancedBlockAfterMarker(
             sessionBody,
-            "private fun executePagedOperation(",
+            "private fun <T> executePagedOperation(",
         )
         assertTrue(
             "Every paged operation must carry the session's required resource capability.",
@@ -312,15 +312,17 @@ class NativeUiSessionBoundaryTest {
             "Distinct chart assets must not coalesce into one lossy background slot.",
             runnerSource.contains("\"chart_asset:\$assetKind:\$chartId\""),
         )
+        val queueSource = sourceFile("src/main/java/org/aerobag/app/SessionWorkQueue.kt").readText()
         assertTrue(
             "Cancelled page work must discard its pending payload before it can consume I/O.",
-            runnerSource.contains("payloads.remove(requestId)?.let { retained ->") &&
-                runnerSource.contains("retained.payload.dropped(\"caller_cancelled\")"),
+            runnerSource.contains("workQueue.cancel(requestId)") &&
+                queueSource.contains("drop(id, \"caller_cancelled\")") &&
+                queueSource.contains("tasks.remove(id)"),
         )
-        val startBody = balancedBlockAfterMarker(runnerSource, "private fun start(")
+        val startBody = balancedBlockAfterMarker(queueSource, "private fun start(")
         assertTrue(
             "Skipping a cancelled pending payload must continue draining the scheduler queue.",
-            Regex("""if \(retained == null\) \{[\s\S]*?val completion = complete\(request.id\)[\s\S]*?completion.next\?\.let""")
+            Regex("""if \(entry == null\) \{[\s\S]*?scheduler.complete\(request.id\).next\?\.let""")
                 .containsMatchIn(startBody),
         )
         assertTrue(
@@ -486,7 +488,7 @@ class NativeUiSessionBoundaryTest {
         val nativeSession = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
         val navKvStore = sourceFile("src/main/java/org/aerobag/app/domain/NavKvStore.kt").readText()
         val pagedOperationRunner =
-            balancedBlockAfterMarker(navKvStore, "private fun runPagedSessionOperation(")
+            balancedBlockAfterMarker(navKvStore, "private fun <T> runPagedSessionOperation(")
 
         assertTrue(
             "Android JNI bridge must expose core's pending session resource effects, matching web's drain_session_resource_effects.",

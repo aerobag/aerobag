@@ -20,11 +20,13 @@ pub const MAX_JSON_BYTES: usize = 96 * 1024 * 1024;
 
 pub fn validate(text: &str) -> Result<(), String> {
     let trace = Trace::parse(text)?;
-    Reduction::default().advance(
-        &trace,
-        &mut WeatherController::default(),
-        trace.document.duration_ms,
-    )
+    Reduction::default()
+        .advance(
+            &trace,
+            &mut WeatherController::default(),
+            trace.document.duration_ms,
+        )
+        .map(|_| ())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,6 +152,8 @@ pub(crate) struct Reduction {
     pub sensors: crate::situation_controller::SituationController,
     index: usize,
     elapsed_ms: i64,
+    pub initialized: bool,
+    pub next_radar_refresh_epoch_ms: Option<i64>,
 }
 
 impl Default for Reduction {
@@ -160,6 +164,8 @@ impl Default for Reduction {
             sensors: Default::default(),
             index: 0,
             elapsed_ms: 0,
+            initialized: false,
+            next_radar_refresh_epoch_ms: None,
         }
     }
 }
@@ -169,15 +175,17 @@ impl Reduction {
         self.elapsed_ms
     }
 
+    /// Returns whether recorded inputs changed station weather during this advance.
     pub fn advance(
         &mut self,
         trace: &Trace,
         weather: &mut WeatherController,
         target_ms: i64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         if target_ms < self.elapsed_ms {
             return Err("Rewind requires a fresh receiver reduction".into());
         }
+        let mut station_weather_changed = false;
         while self.index < trace.document.events.len() {
             let event = &trace.document.events[self.index];
             if event.elapsed_ms > target_ms {
@@ -217,7 +225,7 @@ impl Reduction {
                                 .map(|report| StationReport::from_receiver(kind, report, now))
                                 .collect::<Result<Vec<_>, _>>()
                                 .map_err(str::to_string)?;
-                            weather
+                            station_weather_changed |= weather
                                 .ingest_receiver_reports(reports)
                                 .map_err(str::to_string)?;
                         }
@@ -225,6 +233,7 @@ impl Reduction {
                     _ => {}
                 },
                 Input::InternetMetars { payload } => {
+                    station_weather_changed = true;
                     weather
                         .runtime_mut()
                         .station_weather
@@ -235,6 +244,7 @@ impl Reduction {
                         .map_err(str::to_string)?;
                 }
                 Input::InternetTafs { payload } => {
+                    station_weather_changed = true;
                     weather
                         .runtime_mut()
                         .station_weather
@@ -309,7 +319,7 @@ impl Reduction {
         }
         self.sensors.set_receiver(live);
         self.sensors.refresh_ownship_at(clock.wall_epoch_ms);
-        Ok(())
+        Ok(station_weather_changed)
     }
 
     fn advance_deadlines(&mut self, trace: &Trace, weather: &mut WeatherController, target: i64) {

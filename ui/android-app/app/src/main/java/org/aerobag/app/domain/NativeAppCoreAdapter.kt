@@ -1136,8 +1136,21 @@ class NativeUiSession internal constructor(
         resourceIo: SessionResourceIo = sessionResourceIo,
         metrics: PagedSessionOperationMetrics? = null,
         operation: () -> String,
-    ): PagedSessionOperationResult =
+    ): PagedSessionOperationResult<JsonElement> = executePagedOperation(
+        resultDecoder = PagedSessionResultDecoder(json, JsonElement.serializer()) { JsonNull },
+        resourceIo = resourceIo,
+        metrics = metrics,
+        operation = operation,
+    )
+
+    private fun <T> executePagedOperation(
+        resultDecoder: PagedSessionResultDecoder<T>,
+        resourceIo: SessionResourceIo = sessionResourceIo,
+        metrics: PagedSessionOperationMetrics? = null,
+        operation: () -> String,
+    ): PagedSessionOperationResult<T> =
         navKvStore.runPagedSessionOperation(
+            resultDecoder = resultDecoder,
             operation = operation,
             resourceIo = resourceIo,
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
@@ -1175,7 +1188,7 @@ class NativeUiSession internal constructor(
 
     private fun publishPagedInvalidations(
         commandName: String,
-        outcome: PagedSessionOperationResult,
+        outcome: PagedSessionOperationResult<*>,
         snapshotAlreadyReturned: Boolean = false,
     ): List<UiInvalidation> {
         val invalidations = outcome.invalidations.distinct()
@@ -2001,6 +2014,7 @@ class NativeUiSession internal constructor(
     ): MapOverlayQueryOutcome {
         val viewportJson = json.encodeToString(viewport.toWire())
         val outcome = executePagedOperation(
+            resultDecoder = PagedSessionResultDecoder(json, WireMapOverlayQueryResult.serializer()),
             operation = {
                 bridge.getMapOverlayInSessionWithPointDisplayScaleJson(
                     handle,
@@ -2013,9 +2027,14 @@ class NativeUiSession internal constructor(
             resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
         )
-        val invalidations = publishPagedInvalidations("queryMapOverlay", outcome)
+        val invalidations = metrics?.measureAdapterStage(PagedSessionAdapterStage.InvalidationPublish) {
+            publishPagedInvalidations("queryMapOverlay", outcome)
+        } ?: publishPagedInvalidations("queryMapOverlay", outcome)
+        val overlay = metrics?.measureAdapterStage(PagedSessionAdapterStage.ResultMapping) {
+            outcome.result.toUi()
+        } ?: outcome.result.toUi()
         return MapOverlayQueryOutcome(
-            overlay = json.decodeFromJsonElement<WireMapOverlayQueryResult>(outcome.result).toUi(),
+            overlay = overlay,
             invalidations = invalidations,
         )
     }

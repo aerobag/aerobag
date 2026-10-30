@@ -35,6 +35,36 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+The October 30 scheduled run `41085733398` on `8cd26da2` failed only Android's
+`shared.receiver-replay` journey. Its 15-second radar observer saw the newest
+frame and blank repeatedly; the older frame landed just after the deadline.
+Radar queries themselves generally took less than a millisecond in core, but
+waited roughly 0.3-2 seconds in the background queue behind vector/terrain work.
+Both receiver images were local 137-byte PNGs; this was not a network wait or
+missing history. Replay deliberately uses its historical transport clock and
+suppresses host-clock radar deadlines. A queued query can skip the one-second
+older-frame interval while the transport continues advancing.
+
+The receiver journey now seeks while paused to the middle of each known phase
+in the synthetic two-frame fixture. Each seek must land the requested cursor
+AND the expected painted frame within the existing six-second action deadline.
+It then plays and verifies that the cursor advances. Coverage is named
+`receiver.radar-replay-clock` and `receiver.playback-advances`, not a realtime
+frame-rate guarantee. `shared.nexrad-frames` still checks realtime animation,
+hold and resume without changes. No application code or deadline changed.
+
+A controlled two-second render schedule reproduced the original 15-second
+timeout before the change. Fourteen web/Android model cases cover delayed
+pixels, lost seeks, failure to pause, held-latest output, absent tiles, wrong
+history and a frozen transport clock. All 775 harness tests passed. The changed
+journey also passed in headless Chrome and a fresh Google ATD emulator using
+the failed run's exact web/APK builds and fixture; Android's two seek-to-painted
+responses were 348 ms and 234 ms. The first local web invocation accidentally
+used an older local bundle and failed loading the receiver trace; the retained
+build run is the applicable result. Artifacts are under
+`/tmp/aerobag-e2e-41085733398`. This fixes the sampling-dependent assertion, not
+the observed Android rendering/queueing cost; it is not a complete E2E rerun.
+
 The October 27 main run `40560759052` on `003195d1` passed the previously failing
 slider and status-badge journeys, but failed `android.plate-first-render-smoke`.
 The KPLU RNAV 35 asset loaded from its installed ZIP in 15 ms; nevertheless the

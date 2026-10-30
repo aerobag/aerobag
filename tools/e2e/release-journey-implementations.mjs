@@ -3240,13 +3240,39 @@ async function preparedLiveFeeds(runtime) {
   );
 }
 
-export function seekReceiverReplay(runtime, seconds) {
+export function seekReceiverReplay(runtime, seconds, radarFrame = null) {
   return runtime.transition(`seek receiver replay to ${seconds}s`, {
     ready: () => runtime.driver.readAction("playback-overview"),
     act: (ready) => runtime.driver.setProgress("playback-overview", seconds, ready),
-    complete: async () => playbackState(await runtime.driver.readProjection("parity:playback-widget:")),
-    completionSatisfied: (state) => state?.status === "paused" && Math.abs(state.cursor - seconds) < 1,
+    complete: async () => {
+      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+      return radarFrame === null ? state : {
+        ...state, radar: nexradState(await runtime.driver.readProjection("parity:nexrad-state:")),
+      };
+    },
+    completionSatisfied: (state) => Boolean(
+      state?.status === "paused" && Math.abs(state.cursor - seconds) < 1 &&
+      (radarFrame === null || (nexradFrameIsPainted(state.radar) &&
+        state.radar.frames === 2 && state.radar.frame === radarFrame))
+    ),
   });
+}
+
+export async function exerciseReceiverRadarReplay(runtime) {
+  // receiver_replay_fixture.py starts on a whole minute and has both frames
+  // after 12s. Hold the middle of the old/new phases so queued rendering cannot
+  // skip the one-second old phase. Live-clock animation has its own journey.
+  const first = (await seekReceiverReplay(runtime, 16.5, 0)).radar;
+  const next = (await seekReceiverReplay(runtime, 18.5, 1)).radar;
+  const readPlayback = async () => playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+  const playing = await runtime.action("play receiver timeline", "playback-play-toggle", {
+    complete: readPlayback,
+    completionSatisfied: (state) => state?.status === "playing",
+  });
+  const advanced = await runtime.observe("receiver replay clock advances", readPlayback,
+    (state) => state?.status === "playing" && state.cursor > playing.cursor + 0.1,
+    E2E_TIMING.replayProgressMs);
+  return { first, next, advanced };
 }
 
 async function receiverReplay(runtime) {
@@ -3277,11 +3303,10 @@ async function receiverReplay(runtime) {
     complete: async () => !await runtime.driver.readElement("nexrad_age-receiver"),
   });
   await setLayerVisible(runtime, "nexrad", true);
-  await runtime.action("play receiver timeline", "playback-play-toggle", {
-    complete: readPlayback, completionSatisfied: (state) => state?.status === "playing",
-  });
-  const frames = await observeNexradFrameAdvance(runtime);
-  runtime.check("receiver.radar-animation", Boolean(frames.next));
+  const frames = await exerciseReceiverRadarReplay(runtime);
+  runtime.check("receiver.radar-replay-clock", frames.first.frame === 0 && frames.next.frame === 1,
+    JSON.stringify({ first: frames.first, next: frames.next }));
+  runtime.check("receiver.playback-advances", Boolean(frames.advanced));
   await selectAirportFromMapSearch(runtime, "KSEA");
   // The inspector's backdrop intentionally blocks grid controls. Dismiss it
   // physically before opening the next editor; late-result exclusion is tested

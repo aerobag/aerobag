@@ -129,7 +129,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
   ], { android_isolated: true, cloud_server: true }),
   journey("shared.prepared-live-feeds", "p1", shared, ["livefeed.metar-taf-pirep-notam"]),
   journey("shared.receiver-replay", "p1", shared, [
-    "receiver.traffic-default", "receiver.radar-animation", "receiver.weather-modal",
+    "receiver.traffic-default", "receiver.radar-replay-clock", "receiver.playback-advances", "receiver.weather-modal",
     "receiver.traffic-off", "receiver.rewind-expiry",
   ]),
   journey("shared.live-feed-provider-cutover", "p0", shared, [

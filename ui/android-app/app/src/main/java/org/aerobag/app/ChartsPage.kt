@@ -1436,7 +1436,7 @@ internal fun MapCenterButton(
                 }
                 symbol.forEach { layer -> drawNavSymbolLayer(layer, scale, uiTheme) }
             }
-            OutlinedButtonLabel(
+            ButtonLabel(
                 text = "CTR",
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1491,7 +1491,7 @@ internal fun MapOrientationButton(
                     }
                 }
             }
-            OutlinedButtonLabel(
+            ButtonLabel(
                 text = if (trackUp) "TRK" else "N",
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -2016,6 +2016,7 @@ internal fun MenuDock(
             selected = open && !situationLauncher,
             backgroundColor = if (situationLauncher) uiTheme.controls.situationStatusBg else null,
             foregroundColor = if (situationLauncher) launcherForegroundColor ?: uiTheme.controls.situationStatusFg else null,
+            outlineLabel = !situationLauncher,
             accentColor = launcherAccentColor,
             wide = style != MenuDockStyle.Compact,
             testTag = launcherTestTag,

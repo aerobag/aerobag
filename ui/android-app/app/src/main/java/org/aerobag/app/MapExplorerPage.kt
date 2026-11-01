@@ -6031,7 +6031,7 @@ internal fun MapSelectionActionButton(
                             .size(ThumbSize * 0.68f),
                     )
                 }
-                OutlinedButtonLabel(
+                ButtonLabel(
                     text = buttonLabel(action.label),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)

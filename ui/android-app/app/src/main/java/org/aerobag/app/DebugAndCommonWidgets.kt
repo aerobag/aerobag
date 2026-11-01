@@ -547,15 +547,16 @@ internal fun LayerToggle(
 }
 
 @Composable
-internal fun OutlinedButtonLabel(
+internal fun ButtonLabel(
     text: String,
     modifier: Modifier = Modifier,
     style: TextStyle,
     color: Color,
     maxLines: Int,
     textAlign: TextAlign = TextAlign.Center,
+    outlined: Boolean = true,
 ) {
-    val offsets = listOf(
+    val offsets = if (!outlined) emptyList() else listOf(
         IntOffset(-2, -2),
         IntOffset(0, -2),
         IntOffset(2, -2),
@@ -581,7 +582,7 @@ internal fun OutlinedButtonLabel(
             color = color,
             minFontSize = 9.sp,
             textAlign = textAlign,
-            outlineColor = Color.Black,
+            outlineColor = if (outlined) Color.Black else null,
             outlineOffsets = offsets,
         )
         return
@@ -623,6 +624,7 @@ internal fun CompactSquareButton(
     @DrawableRes iconResId: Int? = null,
     actionSymbolId: String? = null,
     showLabel: Boolean = true,
+    outlineLabel: Boolean = true,
     wide: Boolean = false,
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
@@ -711,7 +713,7 @@ internal fun CompactSquareButton(
                     )
                 }
                 if (showLabel) {
-                    OutlinedButtonLabel(
+                    ButtonLabel(
                         text = renderedLabel,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -721,6 +723,7 @@ internal fun CompactSquareButton(
                         style = renderedLabelStyle.copy(fontSize = IconButtonLabelFontSize),
                         maxLines = if (renderedLabel.contains('\n')) maxLines else 1,
                         color = resolvedContentColor,
+                        outlined = outlineLabel,
                     )
                 }
             } else {

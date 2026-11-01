@@ -14,6 +14,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.advanceTimeBy
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,6 +27,29 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class LiveFeedCacheTest {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun immediateRetryInterruptsCooldownAndLeavesNoOldTimer() = runTest {
+        val wakeups = Channel<Long>(Channel.CONFLATED)
+        var retries = 0
+        val owner = backgroundScope.launch { runLiveFeedResourceRetries(wakeups) { retries++ } }
+        wakeups.send(300_000)
+        runCurrent()
+        advanceTimeBy(1_000)
+        wakeups.send(0)
+        runCurrent()
+        assertEquals("network recovery must not wait behind the offline cooldown", 1, retries)
+        advanceTimeBy(300_000)
+        runCurrent()
+        assertEquals("the replaced timer must not fire later", 1, retries)
+        wakeups.send(300_000)
+        runCurrent()
+        owner.cancel()
+        advanceTimeBy(300_000)
+        runCurrent()
+        assertEquals("closing the owner cancels pending work", 1, retries)
+    }
+
     @Test
     fun cleanSseCloseUsesCoreReconnectCommand() {
         val decision = runtimeDecision(

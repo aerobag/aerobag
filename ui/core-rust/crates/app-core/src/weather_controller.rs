@@ -412,6 +412,18 @@ impl WeatherController {
         &self.runtime
     }
 
+    pub(crate) fn usable_forecast(
+        &self,
+        now_epoch_ms: i64,
+    ) -> Option<&crate::InstalledForecastAtmosphere> {
+        self.runtime
+            .forecast_atmosphere
+            .as_ref()
+            .filter(|forecast| {
+                crate::forecast_atmosphere::forecast_not_expired(forecast.manifest(), now_epoch_ms)
+            })
+    }
+
     pub fn runtime_mut(&mut self) -> &mut WeatherRuntime {
         self.note_change();
         &mut self.runtime
@@ -468,15 +480,8 @@ impl WeatherController {
 
     pub fn runtime_decision(&mut self, input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
         self.note_change();
-        let now_ms = input.now_ms;
-        let mut decision =
-            crate::live_feed_runtime_decision(&mut self.model.connection.runtime, input);
-        if let Some(delay_ms) = self.model.live_feeds.next_resource_retry_delay_ms(now_ms) {
-            decision
-                .commands
-                .push(crate::LiveFeedRuntimeCommand::RetryResources { delay_ms });
-        }
-        decision
+        Arc::make_mut(&mut self.model.live_feeds)
+            .runtime_decision(&mut self.model.connection.runtime, input)
     }
 
     pub fn record_resource_error(&mut self, epoch_ms: i64, message: String) {

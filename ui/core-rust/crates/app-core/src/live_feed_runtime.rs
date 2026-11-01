@@ -85,6 +85,7 @@ pub enum LiveFeedRuntimeCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct LiveFeedRuntimeState {
     consecutive_errors: u32,
+    network_status: Option<LiveFeedNetworkStatus>,
 }
 
 pub fn live_feed_runtime_decision(
@@ -93,6 +94,20 @@ pub fn live_feed_runtime_decision(
 ) -> LiveFeedRuntimeDecision {
     use LiveFeedConnectionEventKind as ConnectionKind;
     use LiveFeedRuntimeEventKind as RuntimeKind;
+
+    let network_recovered = input.kind == RuntimeKind::Online
+        || (input.kind == RuntimeKind::NetworkStatus
+            && matches!(
+                input.network_status,
+                Some(LiveFeedNetworkStatus::Unmetered | LiveFeedNetworkStatus::Metered)
+            )
+            && !matches!(
+                state.network_status,
+                Some(LiveFeedNetworkStatus::Unmetered | LiveFeedNetworkStatus::Metered)
+            ));
+    if input.network_status.is_some() {
+        state.network_status = input.network_status;
+    }
 
     let connection_kind = match input.kind {
         RuntimeKind::Connecting => Some(ConnectionKind::Connecting),
@@ -125,6 +140,13 @@ pub fn live_feed_runtime_decision(
         RuntimeKind::Start | RuntimeKind::NetworkStatus | RuntimeKind::Connecting => None,
     };
 
+    let mut commands: Vec<_> = reconnect_delay_ms
+        .map(|delay_ms| LiveFeedRuntimeCommand::Reconnect { delay_ms })
+        .into_iter()
+        .collect();
+    if network_recovered {
+        commands.push(LiveFeedRuntimeCommand::RetryResources { delay_ms: 0 });
+    }
     LiveFeedRuntimeDecision {
         event_names: [
             product_contracts::live_feeds::v3::CATALOG_EVENT_NAME,
@@ -136,10 +158,7 @@ pub fn live_feed_runtime_decision(
         .collect(),
         transport_policy: AEROBAG_SSE_TRANSPORT_POLICY,
         connection_event,
-        commands: reconnect_delay_ms
-            .map(|delay_ms| LiveFeedRuntimeCommand::Reconnect { delay_ms })
-            .into_iter()
-            .collect(),
+        commands,
     }
 }
 

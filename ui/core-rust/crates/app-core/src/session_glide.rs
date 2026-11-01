@@ -122,7 +122,9 @@ pub fn query_glide_ring_in_session(handle: u32, epoch_ms: i64) -> AppResult<HadO
     };
     let forecast_selected =
         session.coordinator.altitude_planner_wind_selection == AltitudePlannerWindSelection::Gfs;
-    let forecast = session.weather.runtime().forecast_atmosphere.as_ref();
+    let forecast = session
+        .weather
+        .usable_forecast(session.coordinator.wall_clock_epoch_ms);
     let identity = format!(
         "{}:{forecast_selected}:{}:{}:{}",
         aircraft.selection.definition_hash,
@@ -155,8 +157,7 @@ pub fn query_glide_ring_in_session(handle: u32, epoch_ms: i64) -> AppResult<HadO
         job = Some(GlideRingJob {
             identity: identity.clone(),
             computation,
-            used_no_wind: !forecast_selected
-                || session.weather.runtime().forecast_atmosphere.is_none(),
+            used_no_wind: !forecast_selected || forecast.is_none(),
         });
     }
     let mut job = job.unwrap();
@@ -167,7 +168,9 @@ pub fn query_glide_ring_in_session(handle: u32, epoch_ms: i64) -> AppResult<HadO
         decoded: RefCell::new(HashMap::new()),
         missing: RefCell::new(BTreeMap::new()),
     };
-    let forecast = session.weather.runtime().forecast_atmosphere.as_ref();
+    let forecast = session
+        .weather
+        .usable_forecast(session.coordinator.wall_clock_epoch_ms);
     if let Some(forecast) = forecast {
         forecast.clear_observed_missing_pages();
     }

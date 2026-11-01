@@ -1904,6 +1904,9 @@ pub(crate) fn planner_forecast_temporal_description(
     time_display_mode: crate::TimeDisplayMode,
     local_time_zone: chrono_tz::Tz,
 ) -> Option<String> {
+    if now_epoch_ms > valid_through_epoch_ms {
+        return None;
+    }
     DateTime::<Utc>::from_timestamp_millis(reference_time_epoch_ms)?;
     DateTime::<Utc>::from_timestamp_millis(valid_through_epoch_ms)?;
     let age_ms = now_epoch_ms.saturating_sub(reference_time_epoch_ms).max(0);
@@ -1920,17 +1923,10 @@ pub(crate) fn planner_forecast_temporal_description(
     )
     .with_basis();
     let remaining_ms = valid_through_epoch_ms.saturating_sub(now_epoch_ms);
-    if remaining_ms >= 0 {
-        Some(format!(
-            "Forecast from {age}, extends {} from now to {valid_through}",
-            format_forecast_remaining(remaining_ms as u64),
-        ))
-    } else {
-        Some(format!(
-            "Forecast from {age}, ended {} ago at {valid_through}",
-            format_forecast_remaining(remaining_ms.unsigned_abs()),
-        ))
-    }
+    Some(format!(
+        "Forecast from {age}, extends {} from now to {valid_through}",
+        format_forecast_remaining(remaining_ms as u64),
+    ))
 }
 
 fn format_forecast_remaining(duration_ms: u64) -> String {

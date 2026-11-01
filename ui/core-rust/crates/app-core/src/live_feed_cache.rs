@@ -24,10 +24,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    live_feed_runtime_decision, AppError, AppErrorKind, AppResult, LiveFeedDurableInstalledProduct,
-    LiveFeedRuntimeDecision, LiveFeedRuntimeInput, LiveFeedRuntimeState, LiveFeedsState,
-    NexradAcquisitionDirective, NexradCoverageMode, NexradUpdateCadence, NotamProjectionPreparer,
-    PreparedLiveFeedEnvelope, PreparedLiveFeedPayload, PreparedNotamPayload,
+    AppError, AppErrorKind, AppResult, LiveFeedDurableInstalledProduct, LiveFeedRuntimeDecision,
+    LiveFeedRuntimeInput, LiveFeedRuntimeState, LiveFeedsState, NexradAcquisitionDirective,
+    NexradCoverageMode, NexradUpdateCadence, NotamProjectionPreparer, PreparedLiveFeedEnvelope,
+    PreparedLiveFeedPayload, PreparedNotamPayload,
 };
 
 pub use crate::live_feeds::{
@@ -49,6 +49,7 @@ pub struct LiveFeedCache {
     nexrad_request_clock_epoch_ms: i64,
     last_nexrad_install_epoch_ms: Option<i64>,
     winds_aloft_download_requested: bool,
+    winds_aloft_request_revision: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,6 +63,8 @@ pub struct LiveFeedCacheSseOutcome {
 pub struct LiveFeedCacheAcquisitionDirective {
     pub nexrad: NexradAcquisitionDirective,
     pub winds_aloft_download_requested: bool,
+    /// Changes only for an explicit fetch/retry, not for ordinary policy wakeups.
+    pub winds_aloft_request_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -861,6 +864,20 @@ impl LiveFeedCache {
     pub fn apply_acquisition_directive(&mut self, directive: LiveFeedCacheAcquisitionDirective) {
         self.nexrad_acquisition = directive.nexrad;
         self.winds_aloft_download_requested = directive.winds_aloft_download_requested;
+        if self.winds_aloft_request_revision != directive.winds_aloft_request_revision {
+            self.winds_aloft_request_revision = directive.winds_aloft_request_revision;
+            for request in self.policy_filtered_missing_requests() {
+                let product = match &request.kind {
+                    LiveFeedCacheRequestKind::Version { product, .. }
+                    | LiveFeedCacheRequestKind::State { product, .. }
+                    | LiveFeedCacheRequestKind::Full { product, .. }
+                    | LiveFeedCacheRequestKind::Delta { product, .. } => product,
+                };
+                if product == "winds-aloft" {
+                    self.live_feeds.clear_resource_failure(&request.id);
+                }
+            }
+        }
     }
 
     pub fn record_request_failure(&mut self, request_id: &str, epoch_ms: i64) {
@@ -869,14 +886,7 @@ impl LiveFeedCache {
     }
 
     pub fn runtime_decision(&mut self, input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
-        let now_ms = input.now_ms;
-        let mut decision = live_feed_runtime_decision(&mut self.runtime, input);
-        if let Some(delay_ms) = self.live_feeds.next_resource_retry_delay_ms(now_ms) {
-            decision
-                .commands
-                .push(crate::LiveFeedRuntimeCommand::RetryResources { delay_ms });
-        }
-        decision
+        self.live_feeds.runtime_decision(&mut self.runtime, input)
     }
 
     pub fn install_fetched_payload(
@@ -4186,6 +4196,7 @@ mod tests {
         cache.apply_acquisition_directive(LiveFeedCacheAcquisitionDirective {
             nexrad: NexradAcquisitionDirective::default(),
             winds_aloft_download_requested: true,
+            winds_aloft_request_revision: 1,
         });
         let package_request = cache.missing_requests_at_epoch_ms(3_000);
         assert_eq!(package_request.len(), 1);
@@ -4463,6 +4474,52 @@ mod tests {
             cache.missing_requests_at_epoch_ms(301_000)[0].id,
             "live_feeds/version/metars/v1"
         );
+    }
+
+    #[test]
+    fn network_recovery_releases_failed_downloads_without_disabling_backoff() {
+        for recovered in [
+            crate::LiveFeedNetworkStatus::Unmetered,
+            crate::LiveFeedNetworkStatus::Metered,
+        ] {
+            let mut cache = live_feed_cache();
+            cache
+                .ingest_catalog(&catalog_manifest("metars", "v1", "state-sha"))
+                .unwrap();
+            let request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
+            let event = |status| crate::LiveFeedRuntimeInput {
+                kind: crate::LiveFeedRuntimeEventKind::NetworkStatus,
+                now_ms: 1_001,
+                message: None,
+                source_url: None,
+                status_url: None,
+                network_status: Some(status),
+            };
+            cache.runtime_decision(event(crate::LiveFeedNetworkStatus::NoActiveNetwork));
+            cache.record_request_failure(&request.id, 1_000);
+            assert!(cache.missing_requests_at_epoch_ms(1_001).is_empty());
+            let decision = cache.runtime_decision(event(recovered));
+            assert_eq!(
+                decision.commands,
+                [crate::LiveFeedRuntimeCommand::RetryResources { delay_ms: 0 }]
+            );
+            assert_eq!(cache.missing_requests_at_epoch_ms(1_001), [request.clone()]);
+
+            cache.record_request_failure(&request.id, 1_001);
+            cache.runtime_decision(event(recovered));
+            assert!(
+                cache.missing_requests_at_epoch_ms(1_002).is_empty(),
+                "duplicate connectivity callbacks must not continuously defeat cooldown"
+            );
+            let decision = cache.runtime_decision(crate::LiveFeedRuntimeInput {
+                kind: crate::LiveFeedRuntimeEventKind::Online,
+                ..event(recovered)
+            });
+            assert!(decision
+                .commands
+                .contains(&crate::LiveFeedRuntimeCommand::RetryResources { delay_ms: 0 }));
+            assert_eq!(cache.missing_requests_at_epoch_ms(1_002), [request]);
+        }
     }
 
     #[test]

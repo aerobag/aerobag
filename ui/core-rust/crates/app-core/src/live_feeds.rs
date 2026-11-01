@@ -762,6 +762,27 @@ impl LiveFeedsState {
             .remove(resource_id);
     }
 
+    pub(crate) fn runtime_decision(
+        &mut self,
+        runtime: &mut crate::LiveFeedRuntimeState,
+        input: crate::LiveFeedRuntimeInput,
+    ) -> crate::LiveFeedRuntimeDecision {
+        let now_ms = input.now_ms;
+        let mut decision = crate::live_feed_runtime_decision(runtime, input);
+        if decision
+            .commands
+            .contains(&crate::LiveFeedRuntimeCommand::RetryResources { delay_ms: 0 })
+        {
+            // A new connection makes the old transport failures irrelevant.
+            self.resource_failure_retry_after_epoch_ms.clear();
+        } else if let Some(delay_ms) = self.next_resource_retry_delay_ms(now_ms) {
+            decision
+                .commands
+                .push(crate::LiveFeedRuntimeCommand::RetryResources { delay_ms });
+        }
+        decision
+    }
+
     pub fn next_resource_retry_delay_ms(&self, now_ms: i64) -> Option<i64> {
         self.resource_failure_retry_after_epoch_ms
             .values()

@@ -457,6 +457,7 @@ struct SessionCoordinatorModel {
     wall_clock_epoch_ms: i64,
     altitude_planner_wind_selection: AltitudePlannerWindSelection,
     winds_aloft_acquisition_phase: WindsAloftAcquisitionPhase,
+    winds_aloft_request_revision: u64,
     time_display_mode: crate::TimeDisplayMode,
     data_sources: Option<DataStatusSourcesInput>,
 }
@@ -2305,6 +2306,7 @@ fn create_ui_session_inner(
             wall_clock_epoch_ms,
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             winds_aloft_acquisition_phase: WindsAloftAcquisitionPhase::Idle,
+            winds_aloft_request_revision: 0,
             time_display_mode: crate::TimeDisplayMode::Local,
             data_sources: None,
         },
@@ -4897,30 +4899,26 @@ fn planner_atmosphere_for_session(
     planner_atmosphere_for_selection(
         session.coordinator.altitude_planner_wind_selection,
         &session.weather,
+        session.coordinator.wall_clock_epoch_ms,
     )
 }
 
 fn planner_atmosphere_for_selection(
     selection: AltitudePlannerWindSelection,
     weather: &WeatherController,
+    now_epoch_ms: i64,
 ) -> crate::had_ops::PlannerAtmosphereSelection<'_> {
+    let forecast = weather.usable_forecast(now_epoch_ms);
     match selection {
         AltitudePlannerWindSelection::NoWind => {
             crate::had_ops::PlannerAtmosphereSelection::no_wind(
-                weather
-                    .runtime()
-                    .forecast_atmosphere
-                    .as_ref()
-                    .map(crate::InstalledForecastAtmosphere::manifest),
-            )
-        }
-        AltitudePlannerWindSelection::Gfs => {
-            let forecast = weather.runtime().forecast_atmosphere.as_ref();
-            crate::had_ops::PlannerAtmosphereSelection::gfs(
-                forecast.map(|forecast| forecast as &dyn crate::AtmosphereModel),
                 forecast.map(crate::InstalledForecastAtmosphere::manifest),
             )
         }
+        AltitudePlannerWindSelection::Gfs => crate::had_ops::PlannerAtmosphereSelection::gfs(
+            forecast.map(|forecast| forecast as &dyn crate::AtmosphereModel),
+            forecast.map(crate::InstalledForecastAtmosphere::manifest),
+        ),
     }
 }
 
@@ -5053,6 +5051,16 @@ fn perform_altitude_planner_action_in_session(
                 message: "this platform acquires winds aloft just in time".to_string(),
             });
         }
+        if matches!(
+            session.coordinator.winds_aloft_acquisition_phase,
+            WindsAloftAcquisitionPhase::Downloading | WindsAloftAcquisitionPhase::Installing
+        ) {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "the winds-aloft forecast is already being downloaded or installed"
+                    .to_string(),
+            });
+        }
         let Some(current_version) = session
             .weather
             .live_feeds()
@@ -5077,7 +5085,19 @@ fn perform_altitude_planner_action_in_session(
         }
         session.coordinator.altitude_planner_wind_selection = AltitudePlannerWindSelection::Gfs;
         session.coordinator.winds_aloft_acquisition_phase = WindsAloftAcquisitionPhase::Requested;
+        session.coordinator.winds_aloft_request_revision += 1;
         return changed_session_update_outcome_for_flight_plan(session);
+    }
+    if action_uid == crate::had_ops::SELECT_GFS_WIND_ACTION_UID
+        && session
+            .weather
+            .usable_forecast(session.coordinator.wall_clock_epoch_ms)
+            .is_none()
+    {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "No unexpired forecast is ready to use.".into(),
+        });
     }
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
@@ -10370,6 +10390,20 @@ fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreR
         .weather
         .runtime()
         .forecast_atmosphere_state
+        .as_ref()
+        .is_some_and(|state| {
+            !crate::forecast_atmosphere::forecast_not_expired(
+                &state.manifest,
+                session.coordinator.wall_clock_epoch_ms,
+            )
+        })
+    {
+        return Vec::new();
+    }
+    if session
+        .weather
+        .runtime()
+        .forecast_atmosphere_state
         .is_none()
     {
         if !session.weather.live_feeds().catalog_loaded()
@@ -10434,7 +10468,10 @@ fn forecast_atmosphere_snapshot_resources(session: &mut UiSession) -> Vec<CoreRe
     let Some(state) = session.weather.runtime().forecast_atmosphere_state.as_ref() else {
         return Vec::new();
     };
-    let Some(atmosphere) = session.weather.runtime().forecast_atmosphere.as_ref() else {
+    let Some(atmosphere) = session
+        .weather
+        .usable_forecast(session.coordinator.wall_clock_epoch_ms)
+    else {
         return Vec::new();
     };
     let missing_pages = match atmosphere.missing_pages_for_paths(&paths) {
@@ -12289,6 +12326,7 @@ pub fn live_feed_cache_acquisition_directive_in_session(
             .coordinator
             .winds_aloft_acquisition_phase
             .is_active(),
+        winds_aloft_request_revision: session_guard.coordinator.winds_aloft_request_revision,
     })
 }
 
@@ -14623,6 +14661,7 @@ fn project_session_app_ui_state(
     let atmosphere = planner_atmosphere_for_selection(
         session.coordinator.altitude_planner_wind_selection,
         &session.weather,
+        session.coordinator.wall_clock_epoch_ms,
     );
     let private_aircraft_definitions = session_aircraft_definitions(session)
         .map_err(|error| HadReadError::Fatal(error.message))?;
@@ -14667,6 +14706,7 @@ fn project_session_app_ui_state(
                 planner_atmosphere_for_selection(
                     session.coordinator.altitude_planner_wind_selection,
                     &session.weather,
+                    session.coordinator.wall_clock_epoch_ms,
                 ),
             )?
             .projection
@@ -14805,6 +14845,11 @@ fn enrich_altitude_planner_winds_acquisition(
             local_time_zone,
         )
     });
+    let no_ready_description = if installed_manifest.is_some() && installed_description.is_none() {
+        "None (expired)"
+    } else {
+        "None"
+    };
     let forecast_selected =
         session.coordinator.altitude_planner_wind_selection == AltitudePlannerWindSelection::Gfs;
 
@@ -14817,7 +14862,7 @@ fn enrich_altitude_planner_winds_acquisition(
         };
         active_plan.altitude_planner.forecast = Some(crate::had_ops::planner_wind_model_ui(
             forecast_selected,
-            installed_description.unwrap_or_else(|| "None".to_string()),
+            installed_description.unwrap_or_else(|| no_ready_description.to_string()),
             ready_available,
             latest_description,
             None,
@@ -14869,51 +14914,58 @@ fn enrich_altitude_planner_winds_acquisition(
         if phase == WindsAloftAcquisitionPhase::Installing {
             "Installing downloaded forecast…".to_string()
         } else {
-            "None".to_string()
+            no_ready_description.to_string()
         }
     });
     let available_metadata_loaded = available_description.is_some();
 
-    let latest_description = if current_version.is_some() && current_version == installed_version {
+    let latest_expired = temporal_coverage
+        .as_ref()
+        .is_some_and(|coverage| now_epoch_ms > coverage.valid_through_epoch_ms)
+        || available_manifest.as_ref().is_some_and(|manifest| {
+            !crate::forecast_atmosphere::forecast_not_expired(manifest, now_epoch_ms)
+        });
+    let latest_description = if latest_expired {
+        "No current forecast available".to_string()
+    } else if ready_available && current_version.is_some() && current_version == installed_version {
         "Same as ready".to_string()
     } else if current_version.is_some() && available_description.is_none() {
         "Metadata loading…".to_string()
     } else {
         available_description.unwrap_or_else(|| "None".to_string())
     };
-    let latest_action = (update_available && available_metadata_loaded).then(|| {
-        let pending = phase.is_active();
-        crate::AltitudePlannerForecastActionUiView {
-            label: if phase == WindsAloftAcquisitionPhase::Requested {
-                "FETCH REQUESTED".to_string()
-            } else if phase == WindsAloftAcquisitionPhase::Downloading {
-                "FETCHING MODEL".to_string()
-            } else if phase == WindsAloftAcquisitionPhase::Installing {
-                "INSTALLING MODEL".to_string()
-            } else if let Some(size) = download_size {
-                format!("FETCH MODEL · {size}")
-            } else {
-                "FETCH MODEL".to_string()
-            },
-            enabled: !pending,
-            action_uid: (!pending)
-                .then(|| crate::had_ops::DOWNLOAD_CURRENT_WINDS_ACTION_UID.to_string()),
-            disabled_reason: pending.then(|| match phase {
-                WindsAloftAcquisitionPhase::Requested => {
-                    "The current winds forecast download is queued.".to_string()
-                }
-                WindsAloftAcquisitionPhase::Downloading => {
-                    "The current winds forecast is downloading.".to_string()
-                }
-                WindsAloftAcquisitionPhase::Installing => {
-                    "The downloaded winds forecast is being installed.".to_string()
-                }
-                WindsAloftAcquisitionPhase::Idle => {
-                    "The winds forecast download is not active.".to_string()
-                }
-            }),
-        }
-    });
+    let latest_action =
+        (update_available && available_metadata_loaded && !latest_expired).then(|| {
+            let pending = matches!(
+                phase,
+                WindsAloftAcquisitionPhase::Downloading | WindsAloftAcquisitionPhase::Installing
+            );
+            crate::AltitudePlannerForecastActionUiView {
+                label: if phase == WindsAloftAcquisitionPhase::Requested {
+                    "RETRY FETCH".to_string()
+                } else if phase == WindsAloftAcquisitionPhase::Downloading {
+                    "FETCHING MODEL".to_string()
+                } else if phase == WindsAloftAcquisitionPhase::Installing {
+                    "INSTALLING MODEL".to_string()
+                } else if let Some(size) = download_size {
+                    format!("FETCH MODEL · {size}")
+                } else {
+                    "FETCH MODEL".to_string()
+                },
+                enabled: !pending,
+                action_uid: (!pending)
+                    .then(|| crate::had_ops::DOWNLOAD_CURRENT_WINDS_ACTION_UID.to_string()),
+                disabled_reason: match phase {
+                    WindsAloftAcquisitionPhase::Downloading => {
+                        Some("The current winds forecast is downloading.".to_string())
+                    }
+                    WindsAloftAcquisitionPhase::Installing => {
+                        Some("The downloaded winds forecast is being installed.".to_string())
+                    }
+                    _ => None,
+                },
+            }
+        });
     active_plan.altitude_planner.forecast = Some(crate::had_ops::planner_wind_model_ui(
         forecast_selected,
         ready_description,
@@ -16962,6 +17014,7 @@ mod tests {
                 wall_clock_epoch_ms: 0,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
                 winds_aloft_acquisition_phase: WindsAloftAcquisitionPhase::Idle,
+                winds_aloft_request_revision: 0,
                 time_display_mode: crate::TimeDisplayMode::Local,
                 data_sources: None,
                 service_notifications: crate::service_notifications::ServiceNotifications::default(
@@ -25915,6 +25968,22 @@ mod tests {
             AltitudePlannerWindSelection::NoWind
         );
         assert!(!pages.is_empty());
+        drop(sessions);
+        let mut sessions = lock_sessions();
+        let mut session = session_mut(&mut sessions, init.handle).unwrap();
+        session.coordinator.altitude_planner_wind_selection = AltitudePlannerWindSelection::Gfs;
+        advance_session_wall_clock(
+            &mut session,
+            manifest.valid_times_epoch_ms.last().unwrap() + 1,
+        );
+        assert!(
+            forecast_atmosphere_snapshot_resources(&mut session).is_empty(),
+            "expired forecast pages must not stall the planner even when Forecast is selected"
+        );
+        assert!(session
+            .weather
+            .usable_forecast(session.coordinator.wall_clock_epoch_ms)
+            .is_none());
     }
 
     #[test]
@@ -26045,20 +26114,115 @@ mod tests {
                 cache.record_request_failure(&request.id, now_ms);
             }
         }
-        destroy_session(init.handle);
         assert_eq!(attempts, 1,
             "one offline fetch must settle, not retry on each UI update; {} button transitions, first six: {:?}",
             labels.len(), &labels[..labels.len().min(6)]);
-        assert_eq!(labels, ["FETCHING MODEL", "FETCH REQUESTED"]);
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        let retry = planner_wind_row(
+            snapshot.app_ui_state.active_plan.as_ref().unwrap(),
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        )
+        .action
+        .as_ref()
+        .unwrap();
+        assert!(
+            retry.enabled,
+            "a queued forecast must offer an explicit retry"
+        );
+        assert_eq!(retry.label, "RETRY FETCH");
+        assert!(retry.disabled_reason.is_none());
+        assert_eq!(labels, ["FETCHING MODEL", "RETRY FETCH"]);
+        perform_altitude_planner_action_in_session(init.handle, retry.action_uid.clone().unwrap())
+            .unwrap();
+        let directive = live_feed_cache_acquisition_directive_in_session(init.handle).unwrap();
+        cache.apply_acquisition_directive(directive);
+        let retried = cache.missing_requests_at_epoch_ms(2_000);
+        assert_eq!(
+            retried.len(),
+            1,
+            "manual retry bypasses the old cooldown immediately"
+        );
+        cache.record_request_failure(&retried[0].id, 2_000);
+        cache.apply_acquisition_directive(directive);
+        assert!(
+            cache.missing_requests_at_epoch_ms(2_001).is_empty(),
+            "re-reading the same directive is not another user retry"
+        );
+        destroy_session(init.handle);
         assert_eq!(
             cache
                 .missing_requests_at_epoch_ms(
-                    1_000 + product_contracts::LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS
+                    2_000 + product_contracts::LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS
                 )
                 .len(),
             1,
             "a failed download remains retryable after the core cooldown",
         );
+    }
+
+    #[test]
+    fn expired_winds_are_not_ready_or_selectable_on_either_platform() {
+        for policy in [
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+            LiveFeedAcquisitionPolicy::JitPublicResources,
+        ] {
+            let (manifest, root, pages, state_sha256) =
+                crate::forecast_atmosphere::tests::test_forecast_payload();
+            let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
+            configure_test_live_feed_policy(init.handle, policy);
+            install_live_feed_installed_state_in_session(
+                init.handle,
+                &crate::LiveFeedInstalledState {
+                    product: "winds-aloft".into(),
+                    version: manifest.version_label.clone(),
+                    state_sha256,
+                    collected_at_utc: None,
+                    payload: crate::LiveFeedInstalledPayload::NavKv {
+                        manifest: serde_json::to_vec(&manifest).unwrap(),
+                        root,
+                        pages,
+                    },
+                },
+            )
+            .unwrap();
+            let expires = *manifest.valid_times_epoch_ms.last().unwrap();
+            for (now, ready) in [
+                (expires, true),
+                (expires + 1, false),
+                (expires + 555 * 3_600_000, false),
+            ] {
+                {
+                    let mut sessions = lock_sessions();
+                    let mut session = session_mut(&mut sessions, init.handle).unwrap();
+                    advance_session_wall_clock(&mut session, now);
+                    session.coordinator.altitude_planner_wind_selection =
+                        AltitudePlannerWindSelection::NoWind;
+                }
+                let snapshot = get_session_snapshot(init.handle).unwrap();
+                let row = planner_wind_row(
+                    snapshot.app_ui_state.active_plan.as_ref().unwrap(),
+                    crate::AltitudePlannerForecastRowId::ReadyForecast,
+                );
+                assert_eq!(
+                    row.action.as_ref().unwrap().enabled,
+                    ready,
+                    "forecast readiness at {now} ({policy:?})"
+                );
+                if !ready {
+                    assert!(
+                        !row.description.contains("ago"),
+                        "expired forecasts must not look ready: {}",
+                        row.description
+                    );
+                    assert!(perform_altitude_planner_action_in_session(
+                        init.handle,
+                        crate::had_ops::SELECT_GFS_WIND_ACTION_UID.into()
+                    )
+                    .is_err());
+                }
+            }
+            destroy_session(init.handle);
+        }
     }
 
     #[test]
@@ -26286,6 +26450,23 @@ mod tests {
             .active_plan
             .as_ref()
             .expect("downloading active plan");
+        let downloading_action = planner_wind_row(
+            downloading_plan,
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        )
+        .action
+        .as_ref()
+        .unwrap();
+        assert!(!downloading_action.enabled);
+        assert!(downloading_action.action_uid.is_none());
+        assert!(
+            perform_altitude_planner_action_in_session(
+                init.handle,
+                crate::had_ops::DOWNLOAD_CURRENT_WINDS_ACTION_UID.into(),
+            )
+            .is_err(),
+            "an actual download must not be reset by another click"
+        );
         assert_eq!(
             planner_wind_row(
                 downloading_plan,
@@ -26318,6 +26499,24 @@ mod tests {
             .active_plan
             .as_ref()
             .expect("installing active plan");
+        assert!(
+            !planner_wind_row(
+                installing_plan,
+                crate::AltitudePlannerForecastRowId::LatestForecast,
+            )
+            .action
+            .as_ref()
+            .unwrap()
+            .enabled
+        );
+        assert!(
+            perform_altitude_planner_action_in_session(
+                init.handle,
+                crate::had_ops::DOWNLOAD_CURRENT_WINDS_ACTION_UID.into(),
+            )
+            .is_err(),
+            "an install must not be reset by another click"
+        );
         assert_eq!(
             planner_wind_row(
                 installing_plan,

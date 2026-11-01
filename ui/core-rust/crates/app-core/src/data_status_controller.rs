@@ -1081,6 +1081,19 @@ fn winds_aloft_status_page_row(
         );
     }
     if forecast.loaded {
+        if forecast
+            .valid_through_epoch_ms
+            .is_some_and(|last| input.now_epoch_ms > last)
+        {
+            return status_page_row(
+                "live_feed:winds-aloft",
+                "Winds aloft",
+                "EXPIRED",
+                UiStatusSeverity::Warning,
+                "The stored forecast has expired and is not used. Calculations use no-wind until a current forecast is available.",
+                facts,
+            );
+        }
         if forecast.on_demand && forecast.update_available {
             return status_page_row(
                 "live_feed:winds-aloft",
@@ -1956,6 +1969,26 @@ mod tests {
                 valid_through_epoch_ms: None,
             },
             nexrad_frame_age_summary: "---".to_string(),
+        }
+    }
+
+    #[test]
+    fn expired_forecast_is_not_reported_as_loaded_or_available() {
+        for update_available in [false, true] {
+            let mut input = page_input();
+            input.forecast.loaded = true;
+            input.forecast.on_demand = true;
+            input.forecast.update_available = update_available;
+            input.forecast.valid_through_epoch_ms = Some(input.now_epoch_ms - 1);
+            let page = DataStatusController::default().project_page(input).state;
+            let row = page
+                .rows
+                .iter()
+                .find(|row| row.id == "live_feed:winds-aloft")
+                .unwrap();
+            assert_eq!(row.value, "EXPIRED");
+            assert_eq!(row.severity, UiStatusSeverity::Warning);
+            assert!(row.detail.contains("no-wind"));
         }
     }
 

@@ -20,6 +20,13 @@ const METERS_PER_FOOT: f64 = 0.3048;
 const KNOTS_PER_MPS: f64 = 1.943_844_492_440_6;
 pub(crate) const TIME_OUTSIDE_FORECAST_COVERAGE: &str = "time falls outside forecast coverage";
 
+pub(crate) fn forecast_not_expired(manifest: &AtmosphereManifest, now_epoch_ms: i64) -> bool {
+    manifest
+        .valid_times_epoch_ms
+        .last()
+        .is_some_and(|last| now_epoch_ms <= *last)
+}
+
 pub(crate) struct InstalledForecastAtmosphere {
     manifest: AtmosphereManifest,
     store: NavKvStore,

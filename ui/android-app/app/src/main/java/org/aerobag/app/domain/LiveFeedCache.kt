@@ -26,6 +26,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -517,10 +519,7 @@ class AndroidLiveFeedClient(
             }
         }
         val resourceRetryPump = launch {
-            for (delayMs in resourceRetryWakeups) {
-                delay(delayMs)
-                requestAcquisition()
-            }
+            runLiveFeedResourceRetries(resourceRetryWakeups, ::requestAcquisition)
         }
         try {
             networkChanges.trySend(detectLiveFeedNetworkStatus(context, eventsUrl))
@@ -896,6 +895,16 @@ private data class LiveFeedPumpResult(
 
 internal fun reconnectDelayMs(decision: LiveFeedRuntimeDecision): Long? =
     decision.commands.firstOrNull { it.kind == "reconnect" }?.delayMs
+
+internal suspend fun runLiveFeedResourceRetries(
+    wakeups: kotlinx.coroutines.channels.ReceiveChannel<Long>,
+    retry: () -> Unit,
+) {
+    wakeups.receiveAsFlow().collectLatest { delayMs ->
+        delay(delayMs)
+        retry()
+    }
+}
 
 internal fun retryResourcesDelayMs(decision: LiveFeedRuntimeDecision): Long? =
     decision.commands.firstOrNull { it.kind == "retry_resources" }?.delayMs

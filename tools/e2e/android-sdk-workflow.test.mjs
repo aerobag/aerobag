@@ -111,6 +111,18 @@ test("shared emulator setup prunes only hosted SDK compilers and reports install
   assert.match(launcher, /emulator_disk\.py" --phase before-boot --avd-path "\$avd_path"/);
 });
 
+test("recursive disk diagnostics run only after tests, never in setup or before boot", () => {
+  assert.doesNotMatch(runtimeAction.runs.steps.map((step) => step.run ?? "").join("\n"), /--measure-sizes/);
+  const launcher = readFileSync(new URL("../../ui/android-app/scripts/start_emulator_stack.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(launcher, /--measure-sizes/);
+  for (const jobId of emulatorConsumers) {
+    const scans = e2e.jobs[jobId].steps.filter((step) => step.run?.includes("--measure-sizes"));
+    assert.equal(scans.length, 1, `${jobId} must retain one post-test size diagnostic`);
+    assert.equal(scans[0].if, "${{ always() }}");
+    assert.match(scans[0].run, /--phase after-test/);
+  }
+});
+
 test("Chrome-on-Android consumes the same immutable web build without Rust or build caches", () => {
   const job = e2e.jobs["android-chrome-live-feed"];
   assert.ok(job.needs?.includes("build-release-apps"));

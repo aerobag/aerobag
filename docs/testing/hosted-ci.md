@@ -44,10 +44,13 @@ evidence. This does not add a second full qualification wait before staging.
   and CMake directories on disposable GitHub-hosted Linux runners. Cleanup
   refuses local/self-hosted machines, unexpected SDK roots and symlink targets;
   producer jobs must not use this action.
-- Record allocated workspace/SDK/AVD bytes and filesystem free space around SDK
-  cleanup/install, before boot and after tests, including failed tests. Read the
-  job summary and JSON logs before attributing exhaustion to app growth or the
-  runner provider. Preserve image identity and input/cache sizes in comparisons.
+- Record filesystem free space around SDK cleanup/install, before boot and after
+  tests, including failed tests. These use filesystem statistics, not recursive
+  directory walks. Only post-test diagnostics request allocated workspace/SDK/AVD
+  sizes, with a shared five-second scan budget. Failed measurements are explicit
+  unknowns, not zero bytes or job failures; cleanup/safety errors remain fatal.
+  Read the job summary and JSON logs before attributing exhaustion to app growth
+  or the runner provider. Preserve image identity and input sizes in comparisons.
 - Keep fixture inputs bounded and explicit. Dependency changes belong in shared
   setup and workflow regression tests, not another copy of a job recipe. Disk
   exhaustion is fatal: do not shrink test coverage, extend deadlines or rerun
@@ -65,6 +68,24 @@ on a persistent development server. See GitHub's
 No runner migration is part of this change.
 
 ## Cheap working-tree preflight
+
+The November 4 follow-up run `41895877071` on `665e3617` failed three emulator
+jobs before their tests: the newly added diagnostic `du` scan of the preinstalled
+SDK exceeded 60 seconds and aborted cleanup. Later reports showed about 90 GB
+free, so these were diagnostic failures, not disk exhaustion or application
+failures. Other Android jobs and the web journeys passed.
+
+Setup and pre-boot reports now read only filesystem statistics. Recursive size
+scans run after tests, bounded by one five-second budget for all paths, without
+retries. A timeout skips remaining scans; missing/failed `du`, malformed output,
+filesystem-stat errors and summary-write errors are reported without stopping
+cleanup or turning successful tests red. Failed cleanup and unsafe cleanup
+targets still fail. A controlled timeout reproduced the old cleanup failure
+before the fix; tests cover cheap default reports, shared scan budgeting, unknown
+size reporting, real temporary-directory cleanup despite diagnostic failures,
+fatal cleanup errors and a real CLI invocation without `du`. Workflow guards
+keep recursive scans out of setup and pre-boot paths. No app code, journey
+assertions or journey deadlines changed.
 
 The November 4 scheduled run `41876558549` failed only
 `android.chrome.live-feed-network-recovery`, before Chrome or Aerobag launched:

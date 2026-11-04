@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Set up runtime-only Android E2E
+description: Reclaim unused hosted compiler SDKs, install emulator inputs and report disk use.
+inputs:
+  system-image:
+    description: SDK system-image package to install.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: "platform-tools"
+    - name: Reclaim unused hosted SDK build tools
+      if: ${{ runner.environment == 'github-hosted' && runner.os == 'Linux' }}
+      shell: bash
+      run: >-
+        sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,ANDROID_HOME,ANDROID_SDK_ROOT,GITHUB_STEP_SUMMARY,ImageVersion
+        python3 tools/ci/emulator_disk.py --phase before-sdk-install --clean-unused-sdk
+    - name: Install emulator and selected image
+      shell: bash
+      env:
+        SYSTEM_IMAGE: ${{ inputs.system-image }}
+      run: |
+        yes | sdkmanager --licenses >/dev/null || true
+        python3 tools/ci/install_android_sdk.py "platform-tools" "emulator" "$SYSTEM_IMAGE"
+    - name: Report installed runtime size
+      shell: bash
+      run: python3 tools/ci/emulator_disk.py --phase after-sdk-install
+    - name: Enable KVM
+      shell: bash
+      run: sudo chmod 666 /dev/kvm

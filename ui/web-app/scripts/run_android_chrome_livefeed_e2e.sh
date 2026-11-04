@@ -18,7 +18,7 @@ EXTRA_ARGS=()
 
 usage() {
   cat <<'EOF'
-usage: run_android_chrome_livefeed_e2e.sh [--serial SERIAL] [--web-url URL] [--headless|--with-vnc] [--keep-emulator] [--no-start-emulator] [--json]
+usage: run_android_chrome_livefeed_e2e.sh [--serial SERIAL] [--web-url URL | --web-dist DIR --release-fixture FILE] [--headless|--with-vnc] [--keep-emulator] [--no-start-emulator] [--json]
 
 Boots the repo Android emulator stack, launches Chrome on Android, and runs the
 web live-feed reconnect E2E against a scripted local feed server.
@@ -35,8 +35,8 @@ while [[ "$#" -gt 0 ]]; do
       EXTRA_ARGS+=(--serial "$ANDROID_SERIAL")
       shift
       ;;
-    --web-url)
-      EXTRA_ARGS+=(--web-url "${2:-}")
+    --web-url|--web-dist|--release-fixture)
+      EXTRA_ARGS+=("$1" "${2:-}")
       shift
       ;;
     --web-port)

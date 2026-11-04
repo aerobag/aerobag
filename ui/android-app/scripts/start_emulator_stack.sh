@@ -88,6 +88,9 @@ ensure_avd_hardware_keyboard() {
 
   ANDROID_AVD_HOME="$(dirname "$avd_path")"
   export ANDROID_AVD_HOME
+  if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
+    python3 "$ROOT/tools/ci/emulator_disk.py" --phase before-boot --avd-path "$avd_path"
+  fi
 
   local config_file="${avd_path}/config.ini"
   if [[ ! -f "$config_file" ]]; then

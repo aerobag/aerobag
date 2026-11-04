@@ -275,16 +275,10 @@ jobs:
           python3 tools/ci/materialize_release_journey_fixture.py
           --source "${{ github.workspace }}/.ci/release-journey-source"
           --output "${{ github.workspace }}/.ci/release-journey-materialized"
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Set up Android runtime
+        uses: ./.github/actions/setup-e2e-android
         with:
-          packages: "platform-tools"
-      - name: Install emulator image
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          python3 tools/ci/install_android_sdk.py "platform-tools" "emulator" "$AVD_PACKAGE_PATH"
-      - name: Enable KVM
-        run: sudo chmod 666 /dev/kvm
+          system-image: ${{ env.AVD_PACKAGE_PATH }}
       - name: Start package-only Android baseline publication
         run: ./tools/e2e/release_journey_lab.sh fixture-start-web empty
       - name: Qualify clean install, package sync, and startup
@@ -304,6 +298,9 @@ jobs:
           --test shared.startup-navigation
       - name: Save prepared Android journey baseline
         run: ./tools/e2e/release_journey_lab.sh android-baseline-save "$AEROBAG_ANDROID_BASELINE_ARCHIVE"
+      - name: Report emulator disk use
+        if: ${{ always() }}
+        run: python3 tools/ci/emulator_disk.py --phase after-test
       - name: Stop Android and journey services
         if: ${{ always() }}
         run: |
@@ -395,19 +392,10 @@ jobs:
           python3 tools/ci/materialize_release_journey_fixture.py
           --source "${{ github.workspace }}/.ci/release-journey-source"
           --output "${{ github.workspace }}/.ci/release-journey-materialized"
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Set up Android runtime
+        uses: ./.github/actions/setup-e2e-android
         with:
-          packages: "platform-tools"
-      - name: Install emulator image
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          python3 tools/ci/install_android_sdk.py \
-            "platform-tools" \
-            "emulator" \
-            "$AVD_PACKAGE_PATH"
-      - name: Enable KVM
-        run: sudo chmod 666 /dev/kvm
+          system-image: ${{ env.AVD_PACKAGE_PATH }}
       - name: Start deterministic Android publication
         run: ./tools/e2e/release_journey_lab.sh fixture-start-web empty
       - name: Boot emulator and clean-install immutable apps
@@ -423,6 +411,9 @@ jobs:
         run: python3 tools/ci/install_test_browser.py --destination .ci/test-browser
       - name: Run Android shard ${{ matrix.shard }} journeys
         run: ./tools/e2e/release_journey_lab.sh android-suite-shard all "${{ matrix.shard }}" 4
+      - name: Report emulator disk use
+        if: ${{ always() }}
+        run: python3 tools/ci/emulator_disk.py --phase after-test
       - name: Stop Android and journey services
         if: ${{ always() }}
         run: |
@@ -503,19 +494,10 @@ jobs:
       - name: Install host Rust toolchain for fixture server
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Set up Android runtime
+        uses: ./.github/actions/setup-e2e-android
         with:
-          packages: "platform-tools"
-      - name: Install emulator and image
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          python3 tools/ci/install_android_sdk.py \
-            "platform-tools" \
-            "emulator" \
-            "$AVD_PACKAGE_PATH"
-      - name: Enable KVM
-        run: sudo chmod 666 /dev/kvm
+          system-image: ${{ env.AVD_PACKAGE_PATH }}
       - name: Run ${{ matrix.test }}
         env:
           CI: "1"
@@ -530,6 +512,9 @@ jobs:
           --headless
           --skip-system-image-install
           --test "${{ matrix.test }}"
+      - name: Report emulator disk use
+        if: ${{ always() }}
+        run: python3 tools/ci/emulator_disk.py --phase after-test
       - name: Upload E2E diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -544,62 +529,53 @@ jobs:
 
   android-chrome-live-feed:
     name: android.chrome.live-feed-network-recovery
+    needs:
+      - build-release-apps
+      - release-journey-fixture
     runs-on: ubuntu-24.04
     env:
-      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
+      AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
       VNC_PORT: 5900
     steps:
       - uses: actions/checkout@v5
-      - name: Fetch and verify compact package publication
-        run: |
-          python3 tools/ci/fetch_test_artifacts.py \
-            --fixture android-smoke-publication \
-            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_fixture_contracts.py \
-            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
-            --fixture android-smoke-publication
+      - name: Download immutable apps
+        uses: actions/download-artifact@v5
+        with:
+          name: release-e2e-apps-${{ github.sha }}
+          path: .ci/release-e2e-apps
+      - name: Verify immutable apps
+        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Download release-journey fixture
+        uses: actions/download-artifact@v5
+        with:
+          name: release-journey-fixture-${{ github.sha }}
+          path: .ci/release-journey-source
+      - name: Materialize static publication
+        run: >-
+          python3 tools/ci/materialize_release_journey_fixture.py
+          --source "${{ github.workspace }}/.ci/release-journey-source"
+          --output "${{ github.workspace }}/.ci/release-journey-materialized"
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: ui/web-app/package-lock.json
-      - name: Install Rust and WebAssembly target
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain "$RUST_TOOLCHAIN"
-      - name: Cache WebAssembly build
-        uses: actions/cache@v4
+      - name: Set up Android runtime
+        uses: ./.github/actions/setup-e2e-android
         with:
-          path: |
-            ~/.cargo/bin/wasm-bindgen
-            ~/.cargo/registry
-            ~/.cargo/git
-            .ci/ui-target/shared/rust-target
-          key: android-chrome-web-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json') }}
-      - name: Install matching wasm-bindgen CLI
-        run: ./tools/ci/install_wasm_bindgen.sh
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
-        with:
-          packages: "platform-tools"
-      - name: Install emulator and Google APIs image
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          python3 tools/ci/install_android_sdk.py \
-            "platform-tools" \
-            "emulator" \
-            "system-images;android-34;google_apis;x86_64"
-      - name: Enable KVM
-        run: sudo chmod 666 /dev/kvm
+          system-image: system-images;android-34;google_apis;x86_64
       - name: Run Chrome-on-Android recovery journey
         env:
           CI: "1"
           KEEP_EMULATOR: "0"
           EMULATOR_HEADLESS: "1"
-          AEROBAG_ARTIFACT_READ_PATH: ${{ env.AEROBAG_TEST_ARTIFACTS_ROOT }}/e2e/android-smoke-publication/published
           AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/android.chrome.live-feed-network-recovery
         run: ./ui/web-app/scripts/run_android_chrome_livefeed_e2e.sh --headless --json
+      - name: Report emulator disk use
+        if: ${{ always() }}
+        run: python3 tools/ci/emulator_disk.py --phase after-test
       - name: Upload emulator diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

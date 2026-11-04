@@ -33,7 +33,67 @@ when a newer push canceled its predecessor. Do not call a repeated application
 timeout an infrastructure flake without examining its retained action/rendering
 evidence. This does not add a second full qualification wait before staging.
 
+## Emulator Resource Policy
+
+- Build application artifacts once in `build-release-apps`; native and
+  Chrome-on-Android consumers must verify and use that immutable bundle. Do not
+  compile another web/WASM copy or restore application build caches in a test
+  consumer. A small host fixture compiler is a separate, explicit dependency.
+- Use `.github/actions/setup-e2e-android` for emulator consumers. It installs
+  runtime packages only and removes preinstalled NDK, platform SDK, build-tools
+  and CMake directories on disposable GitHub-hosted Linux runners. Cleanup
+  refuses local/self-hosted machines, unexpected SDK roots and symlink targets;
+  producer jobs must not use this action.
+- Record allocated workspace/SDK/AVD bytes and filesystem free space around SDK
+  cleanup/install, before boot and after tests, including failed tests. Read the
+  job summary and JSON logs before attributing exhaustion to app growth or the
+  runner provider. Preserve image identity and input/cache sizes in comparisons.
+- Keep fixture inputs bounded and explicit. Dependency changes belong in shared
+  setup and workflow regression tests, not another copy of a job recipe. Disk
+  exhaustion is fatal: do not shrink test coverage, extend deadlines or rerun
+  until a roomier runner happens to pass.
+
+GitHub currently documents 14 GB SSD storage for standard public-repository
+Ubuntu runners, but this does not establish a recent reduction in capacity:
+[hosted runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+Use the new footprint measurements to decide whether cleaned-up jobs need more
+capacity. Self-hosted emulator capacity should use isolated, disposable VMs with
+KVM, bounded concurrency and no development/production credentials or network
+access. Keep untrusted public-PR jobs on GitHub-hosted workers; do not run them
+on a persistent development server. See GitHub's
+[self-hosted runner security guidance](https://docs.github.com/en/actions/reference/security/secure-use).
+No runner migration is part of this change.
+
 ## Cheap working-tree preflight
+
+The November 4 scheduled run `41876558549` failed only
+`android.chrome.live-feed-network-recovery`, before Chrome or Aerobag launched:
+the emulator had 4,934.70 MB free but required 7,372.80 MB for userdata. The same
+commit (`0e086479`) passed in run `41768431544`; both restored the identical
+519,799,185-byte compressed Chrome build cache. The passing job used Azure
+centralus image `20261101.360.1`; the failure used AWS us-east-1 image
+`20261018.96.1`. We lacked comparable pre-boot disk accounting, so cannot assign
+the exact baseline difference. This is not evidence of a new application
+regression or a reduced GitHub allocation.
+
+The Chrome job's July-era independent Rust/WASM build had missed the August
+immutable-app migration. It now consumes the same verified web build and
+materialized publication as the shared journeys, serving the scripted live feed
+through the existing static fixture server. All emulator consumers share the
+runtime setup and disk accounting described above. Local source-build mode
+remains available; a missing requested bundle fails instead of falling back to
+compilation. Application code, journey assertions and deadlines are unchanged.
+
+New workflow/input regressions failed before the change. All 352 focused
+workflow/harness tests and four disk safety/accounting tests passed. The real
+Chrome-on-Android journey passed on a fresh Google APIs emulator using the
+failed run's exact immutable bundle and fixture: METAR v1, SSE v2, interrupted
+offline reconnect backoff, then recovered v3, with zero current-manifest requests.
+Existing active-EventSource instrumentation returns null in both the prior
+hosted run and this local run; this does not newly prove a connection-count
+bound. Investigation artifacts are under `/tmp/aerobag-e2e-41876558549`. This is
+focused verification, not a new hosted E2E qualification or a measurement of
+reclaimed disk space on a hosted runner.
 
 The November 2 scheduled run `41511095654` on `7ee9ca27` failed before
 `android.map-follow-ctr-gesture-smoke` started: SDK installation exhausted the
@@ -1089,11 +1149,13 @@ Generation took longer than the 45-second delay on GitHub, so the browser never
 saw the expected initial cycle. The publication generator now resolves a
 relative delay from the current time only after package materialization.
 
-Chrome-on-Android prepares generated web sources and WASM before starting Vite's
-readiness deadline. Cold compilation has its own bounded build budget; the
-server phase runs only `inner:serve:dev`, with no generation or compilation.
-Do not put `inner:dev:fast` back inside the server-readiness wait. Supplying
-`--web-url` uses an existing server and skips local preparation.
+Hosted Chrome-on-Android consumes a verified immutable web bundle; it does not
+compile or start Vite. In local source-build mode, it prepares generated web
+sources and WASM before starting Vite's readiness deadline. Cold compilation has
+its own bounded build budget; the server phase runs only `inner:serve:dev`, with
+no generation or compilation. Do not put `inner:dev:fast` back inside the
+server-readiness wait. Supplying `--web-url` uses an existing server and skips
+local preparation.
 
 Keep this distinction explicit:
 

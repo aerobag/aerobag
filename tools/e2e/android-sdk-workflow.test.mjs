@@ -28,9 +28,12 @@ test("Android SDK package policy rejects implicit and obsolete dependencies", ()
 });
 
 const workflows = new URL("../../.github/workflows/", import.meta.url);
+const runtimeAction = parse(readFileSync(new URL("../../.github/actions/setup-e2e-android/action.yml", import.meta.url), "utf8"));
+const documents = readdirSync(workflows).filter((name) => /\.ya?ml$/.test(name)).sort()
+  .map((name) => [name, parse(readFileSync(new URL(name, workflows), "utf8"))]);
+documents.push(["setup-e2e-android/action.yml", { jobs: { runtime: { steps: runtimeAction.runs.steps } } }]);
 let setupSteps = 0;
-for (const name of readdirSync(workflows).filter((name) => /\.ya?ml$/.test(name)).sort()) {
-  const workflow = parse(readFileSync(new URL(name, workflows), "utf8"));
+for (const [name, workflow] of documents) {
   for (const [jobId, job] of Object.entries(workflow.jobs ?? {})) {
     for (const [index, step] of (job.steps ?? []).entries()) {
       if (step.run?.includes("sdkmanager") || step.run?.includes("install_android_sdk.py")) {
@@ -52,9 +55,10 @@ test("Android SDK workflow audit finds setup steps", () => {
 });
 
 const e2e = parse(readFileSync(new URL("e2e-ci.yml", workflows), "utf8"));
-for (const jobId of ["release-journey-android-baseline", "release-journey-android", "android-native"]) {
+const emulatorConsumers = ["release-journey-android-baseline", "release-journey-android", "android-native", "android-chrome-live-feed"];
+for (const jobId of emulatorConsumers) {
   const job = e2e.jobs[jobId];
-  test(`${jobId}: immutable APK consumers do not install or cache Android build tools`, () => {
+  test(`${jobId}: immutable app consumers do not install or cache Android build tools`, () => {
     const commands = job.steps.map((step) => step.run ?? "").join("\n");
     const sdkPackages = job.steps.map((step) => step.with?.packages ?? "").join("\n");
     assert.doesNotMatch(`${commands}\n${sdkPackages}`, /ndk;|build-tools;|platforms;android-|rustup target add[^\n]*android/,
@@ -70,11 +74,53 @@ for (const jobId of ["release-journey-android-baseline", "release-journey-androi
     assert.ok(job.steps.some((step) => step.uses?.startsWith("actions/download-artifact@")
       && step.with?.name === "release-e2e-apps-${{ github.sha }}"));
     const verifyIndex = job.steps.findIndex((step) => step.run?.includes("python3 tools/ci/verify_release_e2e_apps.py"));
-    const bootIndex = job.steps.findIndex((step) => /run_e2e_ci\.sh|android-boot-install/.test(step.run ?? ""));
+    const bootIndex = job.steps.findIndex((step) => /run_e2e_ci\.sh|android-boot-install|run_android_chrome_livefeed_e2e\.sh/.test(step.run ?? ""));
     assert.ok(verifyIndex >= 0 && bootIndex > verifyIndex,
       "verify immutable app inputs before the emulator is booted");
   });
 }
+
+test("emulator consumers share runtime setup and disk accounting, never the APK builder", () => {
+  for (const jobId of emulatorConsumers) {
+    const steps = e2e.jobs[jobId].steps;
+    const runtimeIndex = steps.findIndex((step) => step.uses === "./.github/actions/setup-e2e-android");
+    assert.ok(runtimeIndex >= 0, `${jobId} must use the shared runtime-only SDK setup`);
+    const image = steps[runtimeIndex].with?.["system-image"];
+    assert.match(image === "${{ env.AVD_PACKAGE_PATH }}" ? e2e.jobs[jobId].env.AVD_PACKAGE_PATH : image ?? "", /system-images;android-34;/);
+    const bootIndex = steps.findIndex((step) => /run_e2e_ci\.sh|android-boot-install|run_android_chrome_livefeed_e2e\.sh/.test(step.run ?? ""));
+    assert.ok(runtimeIndex < bootIndex);
+    assert.ok(steps.some((step) => step.if === "${{ always() }}"
+      && step.run?.includes("tools/ci/emulator_disk.py --phase after-test")));
+  }
+  assert.ok(!e2e.jobs["build-release-apps"].steps.some((step) => step.uses === "./.github/actions/setup-e2e-android"),
+    "the app builder needs the compiler SDKs that runtime-only setup removes");
+});
+
+test("shared emulator setup prunes only hosted SDK compilers and reports installed runtime footprint", () => {
+  const steps = runtimeAction.runs.steps;
+  const cleanupIndex = steps.findIndex((step) => step.run?.includes("--clean-unused-sdk"));
+  const installIndex = steps.findIndex((step) => step.run?.includes("install_android_sdk.py"));
+  assert.ok(cleanupIndex >= 0 && installIndex > cleanupIndex);
+  assert.equal(steps[cleanupIndex].if, "${{ runner.environment == 'github-hosted' && runner.os == 'Linux' }}");
+  assert.match(steps[cleanupIndex].run, /tools\/ci\/emulator_disk\.py --phase before-sdk-install --clean-unused-sdk/);
+  assert.match(steps[installIndex].run, /"platform-tools" "emulator" "\$SYSTEM_IMAGE"/);
+  assert.equal(steps[installIndex].env.SYSTEM_IMAGE, "${{ inputs.system-image }}");
+  assert.ok(steps.findIndex((step) => step.run?.includes("--phase after-sdk-install")) > installIndex);
+  assert.doesNotMatch(steps.map((step) => step.run ?? "").join("\n"), /ndk;|build-tools;|platforms;android-/);
+  const launcher = readFileSync(new URL("../../ui/android-app/scripts/start_emulator_stack.sh", import.meta.url), "utf8");
+  assert.match(launcher, /emulator_disk\.py" --phase before-boot --avd-path "\$avd_path"/);
+});
+
+test("Chrome-on-Android consumes the same immutable web build without Rust or build caches", () => {
+  const job = e2e.jobs["android-chrome-live-feed"];
+  assert.ok(job.needs?.includes("build-release-apps"));
+  assert.ok(job.needs?.includes("release-journey-fixture"));
+  assert.equal(job.env.AEROBAG_RELEASE_JOURNEY_WEB_DIST, "${{ github.workspace }}/.ci/release-e2e-apps/web-dist");
+  assert.equal(job.env.AEROBAG_RELEASE_JOURNEY_FIXTURE, "${{ github.workspace }}/.ci/release-journey-materialized/fixture.json");
+  assert.doesNotMatch(job.steps.map((step) => step.run ?? "").join("\n"), /rustup|cargo|wasm_bindgen|build:wasm/);
+  assert.ok(!job.steps.some((step) => step.uses?.startsWith("actions/cache@")));
+  assert.ok(job.steps.some((step) => step.run?.includes("materialize_release_journey_fixture.py")));
+});
 
 test("native Android smoke lane supplies both immutable APKs and keeps the host fixture compiler", () => {
   const job = e2e.jobs["android-native"];

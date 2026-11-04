@@ -258,7 +258,7 @@ export function fixtureServerConfiguration(args) {
   };
 }
 
-export function createReleaseJourneyFixtureServer(args) {
+export function createReleaseJourneyFixtureServer(args, { liveFeedHandler } = {}) {
   const config = fixtureServerConfiguration(args);
   const cutover = args.liveFeedProfile === "cutover" ? new LiveFeedCutoverFixture(config.current) : null;
   const recentRequests = [];
@@ -305,6 +305,10 @@ export function createReleaseJourneyFixtureServer(args) {
     }
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     const pathname = decodeURIComponent(url.pathname);
+    if (liveFeedHandler && pathname.startsWith(`${LIVE_FEED_PREFIX}/`)) {
+      liveFeedHandler(request, response);
+      return;
+    }
     if (pathname === SERVICE_BULLETIN_PATH && ["GET", "HEAD"].includes(request.method)) {
       const document = serviceBulletins.document(request.headers.host);
       requestDiagnostic.service_bulletin_revision = document.revision;

@@ -1621,9 +1621,10 @@ test("Android Chrome builds web inputs before starting the server-readiness cloc
   }]]);
   const runner = readFileSync(new URL("./run-android-chrome-livefeed-e2e.mjs", import.meta.url), "utf8");
   const run = runner.slice(runner.indexOf("async function run(args)"));
-  assert.match(run, /if \(!args\.webUrl\) \{[^}]*prepareWebApp\(\);/);
-  assert.ok(run.indexOf("prepareWebApp();") < run.indexOf("await listen("));
-  assert.ok(run.indexOf("prepareWebApp();") < run.indexOf("vite = startVite("));
+  assert.match(run, /if \(!args\.webUrl\) \{[^}]*prepareWebApp\(\{ webDist: args\.webDist \}\);/);
+  assert.ok(run.indexOf("prepareWebApp({ webDist: args.webDist });") < run.indexOf("await listen("));
+  assert.ok(run.indexOf("prepareWebApp({ webDist: args.webDist });") < run.indexOf("vite = startVite("));
+  assert.match(run, /if \(!args\.webUrl && !args\.webDist\) \{[\s\S]*?vite = startVite\(/);
   assert.match(runner, /function startVite\([\s\S]*?"inner:serve:dev"/);
   assert.doesNotMatch(runner, /"inner:dev:fast"/);
   const { scripts } = JSON.parse(readFileSync(new URL("../../ui/web-app/package.json", import.meta.url), "utf8"));

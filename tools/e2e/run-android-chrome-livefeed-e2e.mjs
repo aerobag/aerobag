@@ -19,6 +19,7 @@ import {
   wakeAndUnlock,
 } from "./android-harness.mjs";
 import { E2E_TIMING, observeUntil, TerminalObservationError } from "./transition-contract.mjs";
+import { createReleaseJourneyFixtureServer } from "./serve-release-journey-fixture.mjs";
 import {
   LIVE_FEED_SCHEMA_VERSION,
   liveFeedPath,
@@ -47,9 +48,9 @@ function progress(message) {
 
 function usage() {
   console.log(`Usage:
-  node tools/e2e/run-android-chrome-livefeed-e2e.mjs [--serial emulator-5554] [--web-url http://127.0.0.1:18082/] [--json]
+  node tools/e2e/run-android-chrome-livefeed-e2e.mjs [--serial emulator-5554] [--web-url URL | --web-dist DIR --release-fixture FILE] [--json]
 
-Starts a scripted live-feed server, starts Vite unless --web-url is supplied,
+Starts a scripted live-feed server, serves the immutable bundle or local Vite,
 launches Android Chrome through adb/CDP, forces an offline/online transition,
 and verifies that live-feed recovery interrupts a pending reconnect backoff.`);
 }
@@ -58,6 +59,8 @@ function parseArgs(argv) {
   const args = {
     serial: process.env.ANDROID_SERIAL ?? "",
     webUrl: "",
+    webDist: process.env.AEROBAG_RELEASE_JOURNEY_WEB_DIST ?? "",
+    fixture: process.env.AEROBAG_RELEASE_JOURNEY_FIXTURE ?? "",
     webPort: Number(process.env.AEROBAG_E2E_WEB_PORT ?? DEFAULT_WEB_PORT),
     liveFeedPort: Number(process.env.AEROBAG_E2E_LIVE_FEED_PORT ?? DEFAULT_LIVE_FEED_PORT),
     cdpPort: Number(process.env.AEROBAG_E2E_CHROME_CDP_PORT ?? DEFAULT_CDP_PORT),
@@ -69,6 +72,10 @@ function parseArgs(argv) {
       args.serial = argv[++i] ?? "";
     } else if (arg === "--web-url") {
       args.webUrl = argv[++i] ?? "";
+    } else if (arg === "--web-dist") {
+      args.webDist = argv[++i] ?? "";
+    } else if (arg === "--release-fixture") {
+      args.fixture = argv[++i] ?? "";
     } else if (arg === "--web-port") {
       args.webPort = Number(argv[++i]);
     } else if (arg === "--live-feed-port") {
@@ -83,6 +90,8 @@ function parseArgs(argv) {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
+  if (args.webUrl && args.webDist) throw new Error("choose --web-url or --web-dist, not both");
+  if (args.webDist && !args.fixture) throw new Error("--web-dist requires --release-fixture");
   return args;
 }
 
@@ -620,7 +629,13 @@ function defaultWebAppDir() {
   return path.join(REPO_ROOT, "ui/web-app");
 }
 
-export function prepareWebApp({ runCommand = spawnSync, cwd = defaultWebAppDir() } = {}) {
+export function prepareWebApp({ webDist, runCommand = spawnSync, cwd = defaultWebAppDir() } = {}) {
+  if (webDist) {
+    if (!fs.existsSync(path.join(webDist, "index.html"))) {
+      throw new Error(`web dist has no index.html: ${webDist}`);
+    }
+    return;
+  }
   const result = runCommand("npm", ["run", "inner:prepare:dev"], {
     cwd,
     stdio: "inherit",
@@ -632,6 +647,12 @@ export function prepareWebApp({ runCommand = spawnSync, cwd = defaultWebAppDir()
   if (result.status !== 0) {
     throw new Error(`Web build preparation failed: code=${result.status} signal=${result.signal}`);
   }
+}
+
+export function createPrebuiltWebServer({ webDist, fixture }, liveFeed) {
+  return createReleaseJourneyFixtureServer({ fixture, webDist, liveFeedProfile: "empty" }, {
+    liveFeedHandler: (request, response) => liveFeed.handler(request, response),
+  });
 }
 
 function startVite(webPort, liveFeedPort) {
@@ -871,16 +892,18 @@ async function run(args) {
   }
 
   if (!args.webUrl) {
-    progress("preparing generated web sources and WASM before server readiness");
-    prepareWebApp();
+    progress(args.webDist ? "using immutable web bundle" : "preparing generated web sources and WASM before server readiness");
+    prepareWebApp({ webDist: args.webDist });
   }
 
   const liveFeed = new ScriptedLiveFeedServer();
-  const liveFeedHttp = http.createServer((req, res) => liveFeed.handler(req, res));
-  const liveFeedPort = await listen(liveFeedHttp, args.liveFeedPort);
+  const liveFeedHttp = args.webDist
+    ? createPrebuiltWebServer(args, liveFeed)
+    : http.createServer((req, res) => liveFeed.handler(req, res));
+  const liveFeedPort = await listen(liveFeedHttp, args.webDist ? args.webPort : args.liveFeedPort);
   let vite = null;
   let cdp = null;
-  const baseWebUrl = args.webUrl || `http://127.0.0.1:${args.webPort}/`;
+  const baseWebUrl = args.webUrl || `http://127.0.0.1:${args.webDist ? liveFeedPort : args.webPort}/`;
   const webUrl = withCacheBust(baseWebUrl, `${Date.now()}-${process.pid}`);
   const webPort = portFromUrl(baseWebUrl, args.webPort);
   const result = {
@@ -892,7 +915,7 @@ async function run(args) {
   };
 
   try {
-    if (!args.webUrl) {
+    if (!args.webUrl && !args.webDist) {
       progress(`starting Vite on tcp:${webPort}`);
       vite = startVite(webPort, liveFeedPort);
       await waitFor(

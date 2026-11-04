@@ -282,7 +282,7 @@ jobs:
       - name: Install emulator image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          python3 tools/ci/install_android_sdk.py "platform-tools" "emulator" "platforms;android-35" "$AVD_PACKAGE_PATH"
+          python3 tools/ci/install_android_sdk.py "platform-tools" "emulator" "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
       - name: Start package-only Android baseline publication
@@ -405,7 +405,6 @@ jobs:
           python3 tools/ci/install_android_sdk.py \
             "platform-tools" \
             "emulator" \
-            "platforms;android-35" \
             "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
@@ -461,11 +460,6 @@ jobs:
       AEROBAG_ANDROID_SMOKE_FIXTURE: ${{ github.workspace }}/.ci/test-artifacts/e2e/android-smoke-publication/fixture.json
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
       AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
-      ANDROID_TARGET_ABIS: x86_64
-      AEROBAG_ANDROID_KEYSTORE: ${{ github.workspace }}/.ci/android-ci.keystore
-      AEROBAG_ANDROID_KEYSTORE_PASSWORD: android
-      AEROBAG_ANDROID_KEY_ALIAS: androiddebugkey
-      AEROBAG_ANDROID_KEY_PASSWORD: android
       AVD_PACKAGE_PATH: ${{ matrix.test == 'android.plate-first-render-smoke' && 'system-images;android-34;google_atd;x86_64' || 'system-images;android-34;aosp_atd;x86_64' }}
       PACKAGE_SOURCE_PORT: 18093
       VNC_PORT: 5900
@@ -476,6 +470,8 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
+      - name: Verify immutable apps
+        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
       - name: Fetch and verify compact package publication
         run: |
           fixtures=(--fixture android-smoke-publication)
@@ -502,47 +498,24 @@ jobs:
       - name: Install plate screenshot analyzer
         if: ${{ matrix.test == 'android.plate-first-render-smoke' }}
         uses: ./.github/actions/setup-e2e-python
-      - name: Install Rust Android target
+      # The package-only fixture server builds a small host-side validator.
+      # APKs are immutable inputs; this job needs no Android compilation tools.
+      - name: Install host Rust toolchain for fixture server
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup target add x86_64-linux-android --toolchain "$RUST_TOOLCHAIN"
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
         with:
           packages: "platform-tools"
-      - name: Install emulator, image, platform, and NDK
+      - name: Install emulator and image
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           python3 tools/ci/install_android_sdk.py \
             "platform-tools" \
             "emulator" \
-            "platforms;android-35" \
-            "build-tools;34.0.0" \
-            "ndk;26.3.11579264" \
             "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
-      - name: Create CI signing key
-        run: |
-          mkdir -p .ci
-          keytool -genkeypair -keystore "$AEROBAG_ANDROID_KEYSTORE" \
-            -storepass "$AEROBAG_ANDROID_KEYSTORE_PASSWORD" \
-            -alias "$AEROBAG_ANDROID_KEY_ALIAS" \
-            -keypass "$AEROBAG_ANDROID_KEY_PASSWORD" \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Aerobag CI,OU=CI,O=Aerobag,C=US"
-      - name: Cache Android and Rust builds
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .ci/ui-target/android/gradle-user-home/caches
-            .ci/ui-target/android/gradle-user-home/wrapper
-            .ci/ui-target/shared/rust-target
-          key: android-e2e-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/android-app/**/*.gradle*', 'ui/android-app/gradle/wrapper/gradle-wrapper.properties', 'ui/core-rust/Cargo.lock', 'test-artifacts.lock.json') }}
-          restore-keys: |
-            android-e2e-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
       - name: Run ${{ matrix.test }}
         env:
           CI: "1"

@@ -35,6 +35,33 @@ evidence. This does not add a second full qualification wait before staging.
 
 ## Cheap working-tree preflight
 
+The November 2 scheduled run `41511095654` on `7ee9ca27` failed before
+`android.map-follow-ctr-gesture-smoke` started: SDK installation exhausted the
+runner's disk while unpacking NDK `26.3.11579264` (`No space left on device`).
+Other journey jobs passed. The native smoke lane still installed Android build
+tools, generated a signing key and restored app-build caches, despite consuming
+immutable APKs built by `build-release-apps`.
+
+APK-consuming jobs now install only platform-tools, the emulator and their
+system image. Android compilation targets, NDK/build-tools, signing and app-build
+caches belong to the producer job. Native smokes retain the host Rust toolchain
+because their package-only fixture server builds `service-bulletin-contract`.
+They also verify the downloaded app bundle before running it, as the shared
+journey jobs already do. The SDK installer still treats disk exhaustion as a
+fatal error, not a reason to retry; journey behavior and deadlines are unchanged.
+
+Workflow regressions rejected the previous dependency sets in all three APK
+consumer jobs. They require runtime-only SDK dependencies, no signing/build
+configuration or app-build caches, verified immutable APK inputs, and the host
+fixture compiler. All 336 focused workflow/harness tests and 13 installer/bundle
+tests passed. The unchanged map-follow/CTR smoke passed using the failed run's
+verified APKs, pinned compact publication and a fresh AOSP ATD emulator with a
+runtime-only SDK (no NDK, build-tools or platform SDK). The initial local attempt
+was stopped during display initialization on a reused AVD; the fresh AVD
+initialized and ran without intervention. This is focused verification, not a
+complete hosted E2E rerun. Investigation artifacts are retained under
+`/tmp/aerobag-e2e-41511095654`.
+
 The October 30 scheduled run `41085733398` on `8cd26da2` failed only Android's
 `shared.receiver-replay` journey. Its 15-second radar observer saw the newest
 frame and blank repeatedly; the older frame landed just after the deadline.

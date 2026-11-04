@@ -50,3 +50,37 @@ for (const name of readdirSync(workflows).filter((name) => /\.ya?ml$/.test(name)
 test("Android SDK workflow audit finds setup steps", () => {
   assert.ok(setupSteps > 0, "No SDK setup steps audited; update the audit if setup moved");
 });
+
+const e2e = parse(readFileSync(new URL("e2e-ci.yml", workflows), "utf8"));
+for (const jobId of ["release-journey-android-baseline", "release-journey-android", "android-native"]) {
+  const job = e2e.jobs[jobId];
+  test(`${jobId}: immutable APK consumers do not install or cache Android build tools`, () => {
+    const commands = job.steps.map((step) => step.run ?? "").join("\n");
+    const sdkPackages = job.steps.map((step) => step.with?.packages ?? "").join("\n");
+    assert.doesNotMatch(`${commands}\n${sdkPackages}`, /ndk;|build-tools;|platforms;android-|rustup target add[^\n]*android/,
+      "APK consumers need only platform-tools, emulator and their system image; native toolchains belong to the build job");
+    assert.doesNotMatch(commands, /keytool|gradlew|build_release_e2e_apps\.sh/,
+      "APK consumers must not sign or rebuild the immutable apps");
+    assert.ok(!Object.keys(job.env ?? {}).some((name) => /KEYSTORE|KEY_PASSWORD|KEY_ALIAS|ANDROID_TARGET_ABIS/.test(name)),
+      "APK consumers must not retain signing/build configuration");
+    for (const step of job.steps.filter((step) => step.uses?.startsWith("actions/cache@"))) {
+      assert.doesNotMatch(step.with?.path ?? "", /gradle|rust-target/,
+        "APK consumers must not restore large app-build caches");
+    }
+    assert.ok(job.steps.some((step) => step.uses?.startsWith("actions/download-artifact@")
+      && step.with?.name === "release-e2e-apps-${{ github.sha }}"));
+    const verifyIndex = job.steps.findIndex((step) => step.run?.includes("python3 tools/ci/verify_release_e2e_apps.py"));
+    const bootIndex = job.steps.findIndex((step) => /run_e2e_ci\.sh|android-boot-install/.test(step.run ?? ""));
+    assert.ok(verifyIndex >= 0 && bootIndex > verifyIndex,
+      "verify immutable app inputs before the emulator is booted");
+  });
+}
+
+test("native Android smoke lane supplies both immutable APKs and keeps the host fixture compiler", () => {
+  const job = e2e.jobs["android-native"];
+  const run = job.steps.find((step) => step.run?.includes("./ui/android-app/scripts/run_e2e_ci.sh"));
+  assert.equal(run.env.AEROBAG_E2E_APK, "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk");
+  assert.equal(run.env.AEROBAG_E2E_DRIVER_APK, "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk");
+  assert.ok(job.steps.some((step) => step.run?.includes('rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal')),
+    "the package-only server still compiles service-bulletin-contract for the host");
+});

@@ -229,11 +229,11 @@ Better later implementation:
 
 - Fetch a canonical FAA cycle schedule independently.
 
-Monitor computes the due date from this independent source, for example:
-
-- `due_at_utc = effective_date - 20 days`
-- warning if expected product is more than 1 day late
-- critical if expected product is more than 3 days late
+Monitor computes deadlines from this independent source. The implemented policy
+warns at 17 days before effectiveness and becomes critical at 14 days; missing
+current-cycle coverage is immediately critical. See
+[cycle publication health](../../pipeline-health-cycle-publication.md) for the
+calibration, failed-build policy, and deployment distinction.
 
 ### Monitor Daemon
 

@@ -59,8 +59,8 @@ _history_maintenance_dates: dict[Path, date] = {}
 _history_maintenance_lock = threading.Lock()
 
 SECONDS_PER_DAY = 24 * 60 * 60
-CYCLE_PUBLICATION_WARNING_SECONDS = 20 * SECONDS_PER_DAY
-CYCLE_PUBLICATION_CRITICAL_SECONDS = 15 * SECONDS_PER_DAY
+CYCLE_PUBLICATION_WARNING_SECONDS = 17 * SECONDS_PER_DAY
+CYCLE_PUBLICATION_CRITICAL_SECONDS = 14 * SECONDS_PER_DAY
 SEVERITY_RANK = {"ok": 0, "warning": 1, "critical": 2}
 
 # Each rule declares its input promise. This common gate, not individual metric
@@ -1043,14 +1043,13 @@ def evaluate_health(
     alerts: list[dict[str, Any]] = []
 
     add_input_metrics(metrics, facts)
-    add_build_watch_metrics(metrics, facts)
+    add_build_watch_metrics(metrics, facts, now)
     add_aerobag_cloud_metrics(metrics, facts)
     add_chart_quality_metrics(metrics, facts, now)
     add_service_bulletin_metrics(metrics, facts)
     add_archive_metrics(metrics, facts, now)
     channels = facts.get("channels")
     if isinstance(channels, dict):
-        production_facts = None
         for channel_id, channel in channels.items():
             if not isinstance(channel_id, str) or not isinstance(channel, dict):
                 continue
@@ -1087,25 +1086,14 @@ def evaluate_health(
                 metric["channel_role"] = role
                 metric["release_tag"] = tag
             metrics.extend(channel_metrics)
-            if role == "production":
-                production_facts = channel_facts
         add_total_live_feed_client_metric(metrics, facts)
-        if production_facts is not None:
-            calendar_facts = {
-                "inputs": {
-                    **facts.get("inputs", {}),
-                    "product_facts": production_facts["inputs"].get(
-                        "product_facts", []
-                    ),
-                }
-            }
-            add_cycle_calendar_metrics(metrics, calendar_facts, now)
     else:
         # Standalone evaluators, including the ACS workload verifier, expose one
         # unscoped publication in the same metric pipeline.
         add_live_feed_metrics(metrics, facts, now)
         add_product_fact_metrics(metrics, facts, previous_records)
-        add_cycle_calendar_metrics(metrics, facts, now)
+
+    add_cycle_calendar_metrics(metrics, production_cycle_facts(facts), now)
 
     for metric in metrics:
         metric.setdefault("scope", "global")
@@ -1124,7 +1112,7 @@ def evaluate_health(
                 {
                     "severity": severity,
                     "metric_id": metric["id"],
-                    "message": metric["message"],
+                    "message": f"{severity.upper()}: {metric['message']}",
                     "scope": metric.get("scope", "global"),
                     "scope_label": metric.get("scope_label", "Global"),
                 }
@@ -1403,16 +1391,27 @@ def add_channel_release_metrics(
         )
 
 
-def add_build_watch_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+def add_build_watch_metrics(
+    metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime | None = None,
+) -> None:
     build_watch = facts["inputs"]["build_watch"].get("payload")
     if not isinstance(build_watch, dict):
         return
     result = build_watch.get("result")
     result_status = result.get("status") if isinstance(result, dict) else None
+    current_published = False
+    if result_status == "fail":
+        now = now or utc_now()
+        publication = production_cycle_facts(facts)
+        published = published_nav_cycles(publication)
+        current_published = any(
+            cycle in published and effective <= now < effective + timedelta(days=28)
+            for cycle, effective in cycle_calendar_entries(publication)
+        )
     severity = {
         "pass": "ok",
         "in_progress": "ok",
-        "fail": "critical",
+        "fail": "warning" if current_published else "critical",
     }.get(result_status, "warning")
     add_metric(
         metrics,
@@ -1421,7 +1420,8 @@ def add_build_watch_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]
         value=result_status,
         severity=severity,
         message=(
-            "latest cycle build failed"
+            ("latest cycle build failed; current production cycle remains published"
+             if current_published else "latest cycle build failed; no verified current production cycle")
             if result_status == "fail"
             else (
                 f"latest cycle build result is {result_status}"
@@ -2409,18 +2409,38 @@ def latest_distinct_product_counts(
     return None
 
 
-def add_cycle_calendar_metrics(
-    metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime
-) -> None:
-    calendar = facts["inputs"]["faa_cycle_calendar"].get("payload")
+def production_cycle_facts(facts: dict[str, Any]) -> dict[str, Any]:
+    channels = facts.get("channels")
+    if not isinstance(channels, dict):
+        return facts
+    production = next((channel for channel in channels.values()
+                       if isinstance(channel, dict) and channel.get("role") == "production"), {})
+    inputs = production.get("inputs") or {}
+    return {"inputs": {**facts.get("inputs", {}),
+                       "current_artifacts": inputs.get("current_artifacts", {}),
+                       "product_facts": inputs.get("product_facts", [])}}
+
+
+def published_nav_cycles(facts: dict[str, Any]) -> set[str]:
+    inputs = facts.get("inputs", {})
+    if inputs.get("current_artifacts", {}).get("error"):
+        return set()
+    entries = inputs.get("product_facts", [])
+    if any(not isinstance(entry, dict) or entry.get("error") for entry in entries):
+        return set()
+    products = iter_current_product_facts(facts)
+    failed_cycles = {str(product.get("cycle")) for product in products if product.get("error_count")}
+    return {str(product["cycle"]) for product in products
+            if product.get("cycle") and product.get("family") == "nav-db"
+            and str(product["cycle"]) not in failed_cycles}
+
+
+def cycle_calendar_entries(facts: dict[str, Any]) -> list[tuple[str, datetime]]:
+    source = facts.get("inputs", {}).get("faa_cycle_calendar", {})
+    calendar = source.get("payload") if not source.get("error") else None
     cycles = calendar.get("cycles") if isinstance(calendar, dict) else None
     if not isinstance(cycles, list):
-        return
-    published_cycles = {
-        str(product.get("cycle"))
-        for product in iter_current_product_facts(facts)
-        if product.get("cycle")
-    }
+        return []
     parsed_cycles: list[tuple[str, datetime]] = []
     for entry in cycles:
         if not isinstance(entry, dict):
@@ -2431,21 +2451,19 @@ def add_cycle_calendar_metrics(
             continue
         effective_at = utc_midnight(effective)
         parsed_cycles.append((cycle, effective_at))
+    return parsed_cycles
 
-    newest_published_effective = max(
-        (
-            effective_at
-            for cycle, effective_at in parsed_cycles
-            if cycle in published_cycles
-        ),
-        default=None,
-    )
+
+def add_cycle_calendar_metrics(
+    metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime
+) -> None:
+    parsed_cycles = cycle_calendar_entries(facts)
+    published_cycles = published_nav_cycles(facts)
+    current_effective = max((effective for _, effective in parsed_cycles if effective <= now), default=None)
 
     for cycle, effective_at in parsed_cycles:
-        if (
-            newest_published_effective is not None
-            and effective_at < newest_published_effective
-        ):
+        # A future publication cannot cover a missing currently effective cycle.
+        if current_effective is not None and effective_at < current_effective:
             continue
         seconds_until_effective = int((effective_at - now).total_seconds())
         if seconds_until_effective > CYCLE_PUBLICATION_WARNING_SECONDS:
@@ -2480,6 +2498,8 @@ def add_cycle_calendar_metrics(
             warning_threshold=CYCLE_PUBLICATION_WARNING_SECONDS,
             critical_threshold=CYCLE_PUBLICATION_CRITICAL_SECONDS,
             message=(
+                f"FAA cycle {cycle} is not published; current cycle unavailable"
+                if effective_at <= now else
                 f"FAA cycle {cycle} is not published; "
                 f"effective in {human_duration(value)}"
             ),

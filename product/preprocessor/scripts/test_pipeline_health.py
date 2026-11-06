@@ -1477,14 +1477,14 @@ class PipelineHealthTests(unittest.TestCase):
                 "product_facts": [],
             }
         }
-        now = datetime(2026, 6, 20, 0, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 22, 0, 0, 0, tzinfo=timezone.utc)
 
         evaluation = evaluate_health(facts, [], now)
 
         countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
-        self.assertEqual(countdown["value"], 19 * 24 * 60 * 60)
+        self.assertEqual(countdown["value"], 17 * 24 * 60 * 60)
         self.assertEqual(countdown["severity"], "warning")
-        self.assertIn("effective in 19d", countdown["message"])
+        self.assertIn("effective in 17d", countdown["message"])
 
     def test_calendar_hides_unpublished_cycle_before_publication_window(self) -> None:
         facts = calendar_facts([{"cycle": "2607", "effective_date": "2026-07-09"}])
@@ -1498,12 +1498,12 @@ class PipelineHealthTests(unittest.TestCase):
 
     def test_calendar_marks_unpublished_cycle_critical_inside_final_window(self) -> None:
         facts = calendar_facts([{"cycle": "2607", "effective_date": "2026-07-09"}])
-        now = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 25, 0, 0, 0, tzinfo=timezone.utc)
 
         evaluation = evaluate_health(facts, [], now)
 
         countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
-        self.assertEqual(countdown["value"], 15 * 24 * 60 * 60)
+        self.assertEqual(countdown["value"], 14 * 24 * 60 * 60)
         self.assertEqual(countdown["severity"], "critical")
         self.assertEqual(evaluation["top_line_status"], "critical")
 
@@ -1516,6 +1516,7 @@ class PipelineHealthTests(unittest.TestCase):
                         "products": [
                             {
                                 "product_id": "NAV_DB_NAV12_2607_01",
+                                "family": "nav-db",
                                 "cycle": "2607",
                             }
                         ]
@@ -1543,6 +1544,7 @@ class PipelineHealthTests(unittest.TestCase):
                         "products": [
                             {
                                 "product_id": "NAV_DB_NAV12_2607_01",
+                                "family": "nav-db",
                                 "cycle": "2607",
                             }
                         ]
@@ -1908,6 +1910,94 @@ def write_history_records(path: Path, sampled_at_values: list[str]) -> None:
                 )
                 + "\n"
             )
+
+
+class CyclePublicationPolicyTests(unittest.TestCase):
+    def facts(self, published=("2611",)) -> dict:
+        facts = calendar_facts([
+            {"cycle": "2610", "effective_date": "2026-10-01"},
+            {"cycle": "2611", "effective_date": "2026-10-29"},
+            {"cycle": "2612", "effective_date": "2026-11-26"},
+        ], product_facts=[{"payload": {"products": [
+            {"family": "nav-db", "cycle": cycle} for cycle in published
+        ]}}])
+        facts["inputs"]["build_watch"]["payload"] = {"result": {"status": "fail"}}
+        return facts
+
+    def test_countdown_exact_boundaries(self) -> None:
+        effective = datetime(2026, 11, 26, tzinfo=timezone.utc)
+        day = 86400
+        for remaining, expected in [(20 * day, None), (19 * day, None),
+                                    (17 * day + 1, None), (17 * day, "warning"),
+                                    (14 * day + 1, "warning"), (14 * day, "critical"),
+                                    (0, "critical"), (-1, "critical")]:
+            with self.subTest(remaining=remaining):
+                metrics = []
+                pipeline_health.add_cycle_calendar_metrics(
+                    metrics, self.facts(), effective - timedelta(seconds=remaining))
+                countdown = next((m for m in metrics if m["id"] ==
+                                  "cycle_calendar.2612.seconds_until_effective"), None)
+                self.assertEqual(countdown["severity"] if countdown else None, expected)
+                if countdown:
+                    self.assertEqual(countdown["warning_threshold"], 17 * day)
+                    self.assertEqual(countdown["critical_threshold"], 14 * day)
+
+    def test_future_publication_does_not_hide_missing_current_cycle(self) -> None:
+        metrics = []
+        pipeline_health.add_cycle_calendar_metrics(
+            metrics, self.facts(published=("2610", "2612")),
+            datetime(2026, 11, 6, tzinfo=timezone.utc))
+        current = metric({"metrics": metrics}, "cycle_calendar.2611.seconds_until_effective")
+        self.assertEqual(current["severity"], "critical")
+        self.assertIn("current cycle", current["message"])
+        self.assertFalse(any(m["id"] == "cycle_calendar.2610.seconds_until_effective" for m in metrics))
+
+    def test_failed_refresh_warns_only_with_verified_current_publication(self) -> None:
+        now = datetime(2026, 11, 6, tzinfo=timezone.utc)
+        for published, expected in [((), "critical"), (("2610",), "critical"),
+                                    (("2612",), "critical"), (("2611",), "warning")]:
+            with self.subTest(published=published):
+                result = evaluate_health(self.facts(published), [], now)
+                build = metric(result, "cycle_build.latest_result")
+                self.assertEqual(build["severity"], expected)
+                self.assertEqual(build["value"], "fail")
+
+    def test_staging_publication_cannot_cover_missing_production_cycle(self) -> None:
+        facts = self.facts()
+        facts["channels"] = {
+            "production": {"role": "production", "inputs": self.facts(("2610",))["inputs"]},
+            "staging": {"role": "staging", "inputs": self.facts(("2611", "2612"))["inputs"]},
+        }
+        result = evaluate_health(facts, [], datetime(2026, 11, 6, tzinfo=timezone.utc))
+        self.assertEqual(metric(result, "cycle_build.latest_result")["severity"], "critical")
+        self.assertEqual(metric(result, "cycle_calendar.2611.seconds_until_effective")["severity"], "critical")
+        facts["channels"]["production"]["inputs"] = self.facts()["inputs"]
+        result = evaluate_health(facts, [], datetime(2026, 11, 6, tzinfo=timezone.utc))
+        self.assertEqual(metric(result, "cycle_build.latest_result")["severity"], "warning")
+
+    def test_unknown_or_incomplete_publication_is_not_treated_as_usable(self) -> None:
+        for invalid in ("calendar", "product-error", "missing-nav-db", "product-input-error"):
+            with self.subTest(invalid=invalid):
+                facts = self.facts()
+                if invalid == "calendar":
+                    facts["inputs"]["faa_cycle_calendar"]["payload"] = None
+                elif invalid == "product-error":
+                    facts["inputs"]["product_facts"][0]["payload"]["products"][0]["error_count"] = 1
+                elif invalid == "missing-nav-db":
+                    facts["inputs"]["product_facts"][0]["payload"]["products"][0]["family"] = "SEC"
+                else:
+                    facts["inputs"]["product_facts"][0]["error"] = "unreadable"
+                result = evaluate_health(facts, [], datetime(2026, 11, 6, tzinfo=timezone.utc))
+                self.assertEqual(metric(result, "cycle_build.latest_result")["severity"], "critical")
+
+    def test_alert_messages_carry_their_own_severity(self) -> None:
+        facts = self.facts()
+        result = evaluate_health(facts, [], datetime(2026, 11, 12, tzinfo=timezone.utc))
+        alerts = {a["metric_id"]: a for a in result["alerts"]}
+        self.assertTrue(alerts["cycle_build.latest_result"]["message"].startswith("WARNING: "))
+        self.assertTrue(alerts["cycle_calendar.2612.seconds_until_effective"]["message"].startswith("CRITICAL: "))
+        # Keep raw metric text unadorned for tables and disposition evidence.
+        self.assertFalse(metric(result, "cycle_build.latest_result")["message"].startswith("WARNING:"))
 
 
 class WeatherCameraMetricTests(unittest.TestCase):

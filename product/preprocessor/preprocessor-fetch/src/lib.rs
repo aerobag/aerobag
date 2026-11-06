@@ -12,7 +12,7 @@ use std::{
     fs,
     fs::{File, OpenOptions},
     io::Write,
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Output, Stdio},
     sync::{Arc, Mutex},
@@ -746,19 +746,9 @@ fn prefetch_one(
         .map(|value| value.eq_ignore_ascii_case("zip"))
         .unwrap_or(false)
     {
-        let members = list_zip_members(&archive_path)?;
+        let members = extract_zip(&archive_path, dest_dir)?;
         if let Some(recorder) = recorder {
             recorder.record_extract(file_name, &members)?;
-        }
-        let status = Command::new("unzip")
-            .arg("-q")
-            .arg("-o")
-            .arg(file_name)
-            .current_dir(dest_dir)
-            .status()
-            .with_context(|| format!("failed to unzip {}", archive_path.display()))?;
-        if !status.success() {
-            bail!("unzip failed for {}", archive_path.display());
         }
     }
 
@@ -1353,23 +1343,104 @@ fn parse_http_validators(headers_path: &Path) -> anyhow::Result<HttpValidators> 
 }
 
 fn list_zip_members(path: &Path) -> anyhow::Result<Vec<String>> {
-    let output = Command::new("unzip")
-        .arg("-Z1")
-        .arg(path)
-        .output()
+    let archive = zip::ZipArchive::new(File::open(path)?)
         .with_context(|| format!("failed to list zip members for {}", path.display()))?;
-    if !output.status.success() {
-        bail!("unzip -Z1 failed for {}", path.display());
-    }
-    let text = String::from_utf8(output.stdout).context("zip member output was not utf-8")?;
-    let mut members = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+    let mut members = archive
+        .file_names()
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     members.sort();
     Ok(members)
+}
+
+fn zip_member_path(name: &str) -> anyhow::Result<PathBuf> {
+    // Some FAA DOS ZIPs use backslashes; normalize before checking containment.
+    let normalized = name.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if normalized.contains(['\0', ':'])
+        || path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        bail!("unsafe ZIP member path {name:?}");
+    }
+    let path: PathBuf = path
+        .components()
+        .filter(|part| *part != std::path::Component::CurDir)
+        .collect();
+    if path.as_os_str().is_empty() {
+        bail!("empty ZIP member path {name:?}");
+    }
+    Ok(path)
+}
+
+fn extract_zip(path: &Path, destination: &Path) -> anyhow::Result<Vec<String>> {
+    let mut archive = zip::ZipArchive::new(File::open(path)?)
+        .with_context(|| format!("failed to read ZIP {}", path.display()))?;
+    let destination = destination.canonicalize()?;
+    let archive_path = path.canonicalize()?;
+    let mut members = BTreeSet::new();
+    for index in 0..archive.len() {
+        let mut member = archive.by_index(index)?;
+        let relative = zip_member_path(member.name())?;
+        if member.is_symlink() {
+            bail!("unsupported ZIP symlink {:?}", member.name());
+        }
+        if !members.insert(relative.to_string_lossy().into_owned()) {
+            bail!("duplicate normalized ZIP member {:?}", member.name());
+        }
+        let is_dir = member.is_dir() || member.name().ends_with('\\');
+        let parent = if is_dir {
+            relative.as_path()
+        } else {
+            relative.parent().unwrap()
+        };
+        let mut directory = destination.clone();
+        for component in parent.components() {
+            directory.push(component);
+            match fs::symlink_metadata(&directory) {
+                Ok(metadata) if metadata.is_dir() => (),
+                Ok(_) => bail!(
+                    "ZIP destination is not a directory: {}",
+                    directory.display()
+                ),
+                // Sibling archive workers may create this same directory first.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir_all(&directory)?
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if is_dir {
+            // Consume even directory entries so every member's CRC is checked.
+            std::io::copy(&mut member, &mut std::io::sink())?;
+            continue;
+        }
+        let output = destination.join(relative);
+        if output == archive_path || fs::symlink_metadata(&output).is_ok_and(|meta| !meta.is_file())
+        {
+            bail!("unsafe ZIP destination {}", output.display());
+        }
+        // A failed CRC must not install a partial file or overwrite cached hardlinks.
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        std::io::copy(&mut member, temporary.as_file_mut()).with_context(|| {
+            format!(
+                "failed to extract {:?} from {}",
+                member.name(),
+                path.display()
+            )
+        })?;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(
+                member.unix_mode().unwrap_or(0o644) & 0o777,
+            ))?;
+        temporary.persist(&output)?;
+    }
+    Ok(members.into_iter().collect())
 }
 
 fn temporary_download_path(path: &Path) -> PathBuf {
@@ -1459,6 +1530,209 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     mod http_deadline;
+
+    fn write_test_zip(path: &Path, members: &[(&str, &[u8])]) -> anyhow::Result<()> {
+        let mut writer = zip::ZipWriter::new(File::create(path)?);
+        for (name, bytes) in members {
+            writer.start_file(
+                *name,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )?;
+            writer.write_all(bytes)?;
+        }
+        writer.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn prefetch_extracts_windows_zip_paths_and_reuses_the_download() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let archive = root.path().join("DDTPPE.zip");
+        write_test_zip(
+            &archive,
+            &[
+                (r"compare_pdf\chart.PDF", b"plate"),
+                ("index.xml", b"index"),
+            ],
+        )?;
+        // Match the FAA ZIP's DOS creator flag as well as its backslash names.
+        let mut reader = zip::ZipArchive::new(File::open(&archive)?)?;
+        let mut bytes = fs::read(&archive)?;
+        for index in 0..reader.len() {
+            bytes[reader.by_index(index)?.central_header_start() as usize + 5] = 0;
+        }
+        fs::write(&archive, bytes)?;
+        let request = PrefetchRequest::new("https://example.invalid/DDTPPE.zip");
+        let provenance_path = root.path().join("downloads.jsonl");
+        let recorder = PrefetchProvenanceRecorder {
+            label: "test".to_owned(),
+            file: Arc::new(Mutex::new(File::create(&provenance_path)?)),
+        };
+        for _ in 0..2 {
+            prefetch_one(&request, root.path(), None, Some(&recorder))?;
+            assert_eq!(
+                fs::read(root.path().join("compare_pdf/chart.PDF"))?,
+                b"plate"
+            );
+            assert_eq!(fs::read(root.path().join("index.xml"))?, b"index");
+            fs::remove_dir_all(root.path().join("compare_pdf"))?;
+        }
+        assert_eq!(
+            read_extract_records(&provenance_path)?
+                .iter()
+                .next()
+                .unwrap()
+                .members,
+            ["compare_pdf/chart.PDF", "index.xml"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prefetch_rejects_zip_crc_errors() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let archive = root.path().join("bad.zip");
+        write_test_zip(&archive, &[("chart.PDF", b"original plate bytes")])?;
+        let data_start = zip::ZipArchive::new(File::open(&archive)?)?
+            .by_index(0)?
+            .data_start() as usize;
+        let mut bytes = fs::read(&archive)?;
+        bytes[data_start] ^= 1;
+        fs::write(&archive, bytes)?;
+        fs::write(root.path().join("chart.PDF"), b"previous complete plate")?;
+        assert!(prefetch_one(
+            &PrefetchRequest::new("https://example.invalid/bad.zip"),
+            root.path(),
+            None,
+            None
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(root.path().join("chart.PDF"))?,
+            b"previous complete plate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prefetch_rejects_unsafe_zip_paths_without_writing_outside_destination() -> anyhow::Result<()>
+    {
+        for name in [
+            "../outside.txt",
+            r"..\outside.txt",
+            "/outside.txt",
+            r"C:\outside.txt",
+        ] {
+            let root = tempfile::tempdir()?;
+            let destination = root.path().join("destination");
+            fs::create_dir(&destination)?;
+            write_test_zip(&destination.join("bad.zip"), &[(name, b"unsafe")])?;
+            let result = prefetch_one(
+                &PrefetchRequest::new("https://example.invalid/bad.zip"),
+                &destination,
+                None,
+                None,
+            );
+            assert!(result.is_err(), "accepted unsafe member {name:?}");
+            assert!(!root.path().join("outside.txt").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zip_extraction_preserves_cached_hardlinks_and_readable_permissions() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination)?;
+        fs::write(root.path().join("cached"), b"original")?;
+        fs::hard_link(root.path().join("cached"), destination.join("plate.PDF"))?;
+        let archive = root.path().join("test.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&archive)?);
+        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o644);
+        writer.add_directory("compare/", options)?;
+        writer.start_file("compare/nested.PDF", options)?;
+        writer.write_all(b"nested plate")?;
+        writer.start_file("plate.PDF", options)?;
+        writer.write_all(b"updated plate")?;
+        writer.finish()?;
+        assert_eq!(
+            extract_zip(&archive, &destination)?,
+            ["compare", "compare/nested.PDF", "plate.PDF"]
+        );
+        assert_eq!(
+            fs::read(destination.join("compare/nested.PDF"))?,
+            b"nested plate"
+        );
+        assert_eq!(fs::read(destination.join("plate.PDF"))?, b"updated plate");
+        assert_eq!(fs::read(root.path().join("cached"))?, b"original");
+        assert_eq!(
+            fs::metadata(destination.join("plate.PDF"))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn zip_extraction_rejects_archive_and_existing_symlinks() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination)?;
+        fs::create_dir(root.path().join("outside"))?;
+        let archive = root.path().join("test.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&archive)?);
+        writer.add_symlink(
+            "link",
+            "../outside",
+            zip::write::SimpleFileOptions::default(),
+        )?;
+        writer.finish()?;
+        assert!(extract_zip(&archive, &destination).is_err());
+        std::os::unix::fs::symlink(root.path().join("outside"), destination.join("link"))?;
+        write_test_zip(&archive, &[("link/child/file", b"unsafe")])?;
+        assert!(extract_zip(&archive, &destination).is_err());
+        assert!(!root.path().join("outside/child").exists());
+        std::os::unix::fs::symlink(root.path().join("outside/file"), destination.join("file"))?;
+        write_test_zip(&archive, &[("file", b"unsafe")])?;
+        assert!(extract_zip(&archive, &destination).is_err());
+        assert!(!root.path().join("outside/file").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn zip_extraction_rejects_normalized_name_collisions() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let archive = root.path().join("test.zip");
+        write_test_zip(&archive, &[("dir/file", b"one"), (r"dir\file", b"two")])?;
+        assert!(extract_zip(&archive, root.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn zip_extraction_supports_concurrent_archives_sharing_directories() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut requests = Vec::new();
+        for index in 0..8 {
+            write_test_zip(
+                &root.path().join(format!("{index}.zip")),
+                &[(&format!("compare/nested/{index}.PDF"), b"plate")],
+            )?;
+            requests.push(PrefetchRequest::new(&format!(
+                "https://example.invalid/{index}.zip"
+            )));
+        }
+        prefetch_archives_inner(&requests, root.path(), 8, None, None)?;
+        for index in 0..8 {
+            assert_eq!(
+                fs::read(root.path().join(format!("compare/nested/{index}.PDF")))?,
+                b"plate"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn failed_prefetch_waits_for_sibling_workers_before_returning() -> anyhow::Result<()> {

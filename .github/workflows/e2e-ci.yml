@@ -534,6 +534,7 @@ jobs:
       - release-journey-fixture
     runs-on: ubuntu-24.04
     env:
+      AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES: "1"
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
       AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
       AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json

@@ -67,6 +67,49 @@ on a persistent development server. See GitHub's
 [self-hosted runner security guidance](https://docs.github.com/en/actions/reference/security/secure-use).
 No runner migration is part of this change.
 
+### Chrome's Google Services Dependency
+
+Release run `42272544617` (`2026-11-06.1`, commit `85bd4b3d`) failed only
+`android.chrome.live-feed-network-recovery`; ordinary CI and the other journey
+lanes passed. The emulator had about 96 GB free before boot. At 18:52:43 UTC,
+Android killed `com.google.android.gms.persistent` for a boot-time
+`SIM_STATE_CHANGED` broadcast ANR, then killed Chrome because it depended on
+that process's `FontsProvider`. The harness swallowed the closed-CDP error and
+spent the rest of its 90-second initial-METAR deadline polling a dead browser.
+This was neither an Aerobag reconnect failure nor another disk exhaustion.
+
+Hosted and local qualification now explicitly set
+`AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES=1` for their disposable Chrome emulator.
+The harness disables Play Services for user 0 and verifies the exact package is
+disabled before launching Chrome. The Google APIs image supplies Chrome, but
+this local-fixture networking test needs no Google services. The switch refuses
+physical devices; ordinary interactive runs leave services untouched. It leaves
+the disposable AVD disabled until deletion: never enable it for a personal AVD.
+Application code, browser networking, assertions and deadlines are unchanged.
+
+A narrower `AndroidDownloadableFontsMatching` browser flag was investigated and
+rejected: stopping Play Services before launch still blocked Chrome's native UI
+through Google providers. Do not restore that flag as an equivalent isolation.
+The old image's compositor GPU subprocess also crashed in both failing and
+passing runs; it was not the recorded reason Android killed the browser.
+
+Live-feed waits now use the shared observer without swallowing transport or
+evaluation failures. Valid pending states remain retryable observations; errors
+are terminal, and genuine timeouts retain and print the last observed state.
+Controlled regressions failed before the fixes and cover setup ordering,
+physical-device refusal, failed/unverified isolation, browser death while a CDP
+request is pending, page exceptions, normal convergence and timeout diagnostics.
+Workflow guards require the same isolation in hosted and local qualification.
+
+Focused verification used the failed release's verified immutable web bundle
+and fixture, a fresh API 34 Google APIs r14 emulator and its Chrome
+`113.0.5672.136`: METAR v1, SSE v2, offline/backoff interruption, and recovered
+v3 all passed on the first launch. Current-manifest requests remained zero.
+The existing active-EventSource metric was null, so this run does not establish
+a connection-count bound. Evidence is in `/tmp/aerobag-e2e-42272544617`.
+This local result does not change the failed hosted qualification of the old
+tag; qualify a new revision containing the harness fix before promotion.
+
 ## Cheap working-tree preflight
 
 The November 4 follow-up run `41895877071` on `665e3617` failed three emulator

@@ -1062,6 +1062,7 @@ def auxiliary_lanes(run_root: Path, fixtures: Path) -> list[Lane]:
                 "EMULATOR_HEADLESS": "1",
                 "VNC_PORT": "5960",
                 "AVD_NAME": "aerobag34-local-chrome",
+                "AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES": "1",
                 "AVD_INSTANCE_NAME": chrome_avd,
                 "EMULATOR_READ_ONLY": "0",
                 "AEROBAG_TEST_ARTIFACTS_ROOT": str(fixtures),

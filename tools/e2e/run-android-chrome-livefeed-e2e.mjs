@@ -53,6 +53,7 @@ function usage() {
 Starts a scripted live-feed server, serves the immutable bundle or local Vite,
 launches Android Chrome through adb/CDP, forces an offline/online transition,
 and verifies that live-feed recovery interrupts a pending reconnect backoff.`);
+  console.log("AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES=1 disables Play Services on a disposable emulator; never use it on a personal AVD.");
 }
 
 function parseArgs(argv) {
@@ -64,6 +65,7 @@ function parseArgs(argv) {
     webPort: Number(process.env.AEROBAG_E2E_WEB_PORT ?? DEFAULT_WEB_PORT),
     liveFeedPort: Number(process.env.AEROBAG_E2E_LIVE_FEED_PORT ?? DEFAULT_LIVE_FEED_PORT),
     cdpPort: Number(process.env.AEROBAG_E2E_CHROME_CDP_PORT ?? DEFAULT_CDP_PORT),
+    isolateGoogleServices: process.env.AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES === "1",
     json: false,
   };
   for (let i = 2; i < argv.length; i += 1) {
@@ -396,7 +398,7 @@ function httpReady(url) {
   });
 }
 
-class CdpSocket {
+export class CdpSocket {
   constructor(socket) {
     this.socket = socket;
     this.buffer = Buffer.alloc(0);
@@ -588,31 +590,18 @@ async function liveFeedStatus(cdp) {
   return cdpEval(cdp, "window.__aerobagE2e?.liveFeeds?.() ?? null");
 }
 
-async function waitForLiveFeedStatus(
+export async function waitForLiveFeedStatus(
   cdp,
   predicate,
   timeoutMs,
   message,
   intervalMs = E2E_TIMING.resourcePollIntervalMs,
 ) {
-  let lastStatus = null;
-  let lastError = null;
-  try {
-    return (await observeUntil(message, async () => {
-      try {
-        lastStatus = await liveFeedStatus(cdp);
-        return predicate(lastStatus) ? lastStatus : null;
-      } catch (error) {
-        lastError = error;
-        return null;
-      }
-    }, { timeoutMs, intervalMs })).value;
-  } catch (error) {
-    const diagnostic = lastError
-      ? `last error: ${lastError.message}`
-      : `last status: ${JSON.stringify(lastStatus)}`;
-    throw new Error(`${message}: ${diagnostic}`, { cause: error });
-  }
+  return (await observeUntil(message, () => liveFeedStatus(cdp), {
+    timeoutMs,
+    intervalMs,
+    accept: predicate,
+  })).value;
 }
 
 function defaultWebAppDir() {
@@ -799,6 +788,22 @@ export async function establishChromeRuntime({
   throw new Error("Android Chrome launch attempts must be positive");
 }
 
+export function prepareChromeDevice(serial, { isolateGoogleServices = false, runAdb = adb } = {}) {
+  runAdb(serial, ["wait-for-device"]);
+  if (!isolateGoogleServices) return;
+  if (runAdb(serial, ["shell", "getprop", "ro.kernel.qemu"]).trim() !== "1") {
+    throw new Error("Google service isolation requires a disposable emulator, not a physical device");
+  }
+  // Chrome is bundled in this image, but the fixture journey needs no Google
+  // services. Their boot-time ANRs kill Chrome through its font-provider bind.
+  runAdb(serial, ["shell", "pm", "disable-user", "--user", "0", "com.google.android.gms"]);
+  const disabled = runAdb(serial, ["shell", "pm", "list", "packages", "-d", "--user", "0", "com.google.android.gms"]);
+  if (!disabled.split(/\r?\n/).includes("package:com.google.android.gms")) {
+    throw new Error("Google Play Services is still enabled on the isolated Chrome emulator");
+  }
+  progress("isolated disposable emulator from Google Play Services");
+}
+
 async function launchAndroidChrome(serial, url, cdpPort) {
   progress("locating Android Chrome package");
   const packageName = findChromePackage(serial);
@@ -934,7 +939,7 @@ async function run(args) {
     }
 
     progress(`preparing adb device ${args.serial}`);
-    adb(args.serial, ["wait-for-device"]);
+    prepareChromeDevice(args.serial, { isolateGoogleServices: args.isolateGoogleServices });
     adbBestEffort(args.serial, ["reverse", `tcp:${webPort}`, `tcp:${webPort}`]);
     adbBestEffort(args.serial, ["reverse", `tcp:${liveFeedPort}`, `tcp:${liveFeedPort}`]);
 
@@ -1063,6 +1068,7 @@ if (path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
     }
   }).catch((error) => {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    if (error?.diagnostics) console.error(JSON.stringify(error.diagnostics, null, 2));
     process.exit(1);
   });
 }

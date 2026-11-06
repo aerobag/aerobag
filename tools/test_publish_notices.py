@@ -24,6 +24,81 @@ sys.path.insert(0, str(publisher.REPO / "product/preprocessor/scripts"))
 import pipeline_health
 
 
+class AtomicWriteTests(unittest.TestCase):
+    def test_http_validator_advances_when_filesystem_clock_lags_wall_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bulletins.json"
+            path.write_bytes(b"old")
+            old_ns = 1_800_000_000_999_000_000
+            now_ns = 1_800_000_001_001_000_000
+            os.utime(path, ns=(old_ns, old_ns))
+            real_chmod = os.fchmod
+
+            def lagging_filesystem_timestamp(descriptor, mode):
+                real_chmod(descriptor, mode)
+                os.utime(descriptor, ns=(old_ns, old_ns))
+
+            with patch.object(publisher.time, "time", return_value=now_ns / 1_000_000_000), \
+                    patch.object(publisher.time, "time_ns", return_value=now_ns), \
+                    patch.object(publisher.time, "sleep") as sleep, \
+                    patch.object(publisher.os, "fchmod", side_effect=lagging_filesystem_timestamp):
+                publisher.atomic_write(path, b"new", http_validator=True)
+
+            self.assertGreater(path.stat().st_mtime_ns // 1_000_000_000, old_ns // 1_000_000_000)
+            self.assertEqual(path.read_bytes(), b"new")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            sleep.assert_not_called()
+
+    def test_http_validator_stays_monotonic_when_clock_does_not_advance_after_wait(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bulletins.json"
+            path.write_bytes(b"old")
+            now_ns = 1_800_000_000_250_000_000
+            os.utime(path, ns=(now_ns, now_ns))
+            previous_second = now_ns // 1_000_000_000
+            real_chmod = os.fchmod
+
+            def unchanged_filesystem_timestamp(descriptor, mode):
+                real_chmod(descriptor, mode)
+                os.utime(descriptor, ns=(now_ns, now_ns))
+
+            with patch.object(publisher.time, "time", return_value=now_ns / 1_000_000_000), \
+                    patch.object(publisher.time, "time_ns", return_value=now_ns), \
+                    patch.object(publisher.time, "sleep") as sleep, \
+                    patch.object(publisher.os, "fchmod", side_effect=unchanged_filesystem_timestamp):
+                for body in (b"one", b"two", b"end"):
+                    publisher.atomic_write(path, body, http_validator=True)
+                    current_second = path.stat().st_mtime_ns // 1_000_000_000
+                    self.assertGreater(current_second, previous_second)
+                    self.assertEqual(path.read_bytes(), body)
+                    previous_second = current_second
+            self.assertEqual(sleep.call_count, 3)
+
+    def test_timestamp_failure_preserves_previous_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bulletins.json"
+            path.write_bytes(b"old")
+            previous_inode = path.stat().st_ino
+            with patch.object(publisher.time, "sleep"), \
+                    patch.object(publisher.os, "utime", side_effect=OSError("cannot set timestamp")):
+                with self.assertRaisesRegex(OSError, "cannot set timestamp"):
+                    publisher.atomic_write(path, b"new", http_validator=True)
+            self.assertEqual(path.read_bytes(), b"old")
+            self.assertEqual(path.stat().st_ino, previous_inode)
+            self.assertEqual(list(path.parent.glob(".bulletin-*")), [])
+
+    def test_non_http_status_writes_do_not_wait_or_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "publication-status.json"
+            path.write_bytes(b"old")
+            with patch.object(publisher.time, "sleep") as sleep, \
+                    patch.object(publisher.os, "utime") as stamp:
+                publisher.atomic_write(path, b"new")
+            sleep.assert_not_called()
+            stamp.assert_not_called()
+            self.assertEqual(path.read_bytes(), b"new")
+
+
 class BulletinPublicationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -59,8 +59,10 @@ def atomic_write(path: Path, data: bytes, *, http_validator: bool = False) -> No
     path.parent.mkdir(parents=True, exist_ok=True)
     # nginx's static ETag contains second-resolution mtime and length. Ensure
     # equal-length publications cannot share a validator within one second.
+    minimum_mtime_ns = 0
     if http_validator and path.exists():
-        delay = int(path.stat().st_mtime) + 1 - time.time()
+        minimum_mtime_ns = (path.stat().st_mtime_ns // 1_000_000_000 + 1) * 1_000_000_000
+        delay = (minimum_mtime_ns - time.time_ns()) / 1_000_000_000
         if delay > 0:
             time.sleep(delay)
     descriptor, temporary = tempfile.mkstemp(prefix=".bulletin-", dir=path.parent)
@@ -69,6 +71,11 @@ def atomic_write(path: Path, data: bytes, *, http_validator: bool = False) -> No
             stream.write(data)
             stream.flush()
             os.fchmod(stream.fileno(), 0o644)
+            if http_validator:
+                # The filesystem's write timestamp can lag the wall clock, even
+                # after sleeping across a second boundary. Stamp before commit.
+                now_ns = time.time_ns()
+                os.utime(stream.fileno(), ns=(now_ns, max(now_ns, minimum_mtime_ns)))
             os.fsync(stream.fileno())
         os.replace(temporary, path)
         directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)

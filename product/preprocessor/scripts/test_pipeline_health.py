@@ -1924,6 +1924,141 @@ class CyclePublicationPolicyTests(unittest.TestCase):
         facts["inputs"]["build_watch"]["payload"] = {"result": {"status": "fail"}}
         return facts
 
+    def managed_facts(self, role="sunset") -> dict:
+        facts = self.facts(("2611", "2612"))
+        facts["inputs"]["release_channels"] = {"deployment_managed": True, "error": None}
+        facts["channels"] = {}
+        records = {}
+        for channel_id, tag, channel_role in [
+            ("production", "2026-11-06.2", "production"),
+            ("release-old", "2026-10-28.1", role),
+        ]:
+            record = {
+                "commit": "a" * 40, "build_status": "passed",
+                "deployment_status": "passed", "live_feed_status": "running",
+                "product_refresh_status": "passed", "product_refresh_error": None,
+                "product_manifest": f"/published/{tag}/product_artifacts.json",
+                "release_root": f"/releases/{tag}",
+            }
+            records[tag] = record
+            facts["channels"][channel_id] = {
+                "role": channel_role, "tag": tag, "deployment_managed": True,
+                "release_state": record,
+                "inputs": {
+                    "current_artifacts": {"error": None, "payload": []},
+                    "product_facts": facts["inputs"]["product_facts"],
+                    "live_feeds_status": {"error": None, "payload": {
+                        "schema_version": 2, "products": {}, "product_policies": [],
+                    }},
+                },
+            }
+        records["2026-10-28.1"].update(
+            product_refresh_status="failed", product_refresh_error="ZIP extraction failed",
+        )
+        facts["inputs"]["release_state"] = {"error": None, "payload": {"releases": records}}
+        facts["inputs"]["build_watch"]["payload"]["build"] = {"publish_label": "2026-10-28.1"}
+        return facts
+
+    def test_owned_refresh_failure_is_reported_once_in_its_release_scope(self) -> None:
+        for role in ("sunset", "staging"):
+            with self.subTest(role=role):
+                facts = self.managed_facts(role)
+                result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                self.assertFalse(has_metric(result, "cycle_build.latest_result"))
+                self.assertEqual(metric(result, "channel.production.release.product_refresh")["severity"], "ok")
+                failure = metric(result, "channel.release-old.release.product_refresh")
+                self.assertEqual(failure["severity"], "warning")
+                self.assertEqual(failure["scope"], "release-old")
+                self.assertIn("ZIP extraction failed", failure["message"])
+                build_alerts = [a for a in result["alerts"] if "refresh" in a["metric_id"]
+                                or a["metric_id"] == "cycle_build.latest_result"]
+                self.assertEqual([a["metric_id"] for a in build_alerts], [failure["id"]])
+                self.assertEqual(facts["inputs"]["build_watch"]["payload"]["result"]["status"], "fail")
+
+    def test_production_failure_remains_visible_and_current_cycle_gap_is_critical(self) -> None:
+        facts = self.managed_facts()
+        prod = facts["channels"]["production"]
+        prod["release_state"].update(product_refresh_status="failed", product_refresh_error="broken input")
+        prod["inputs"]["product_facts"] = []
+        facts["inputs"]["build_watch"]["payload"]["build"]["publish_label"] = prod["tag"]
+        result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+        self.assertFalse(has_metric(result, "cycle_build.latest_result"))
+        self.assertEqual(metric(result, "channel.production.release.product_refresh")["severity"], "warning")
+        self.assertEqual(metric(result, "cycle_calendar.2611.seconds_until_effective")["severity"], "critical")
+
+    def test_initial_build_and_retry_with_retained_failure_have_channel_coverage(self) -> None:
+        for status in ("initial-build", "running", "ready"):
+            with self.subTest(status=status):
+                facts = self.managed_facts("staging")
+                record = facts["channels"]["release-old"]["release_state"]
+                if status == "initial-build":
+                    record.update(build_status="failed", product_refresh_status=None, product_refresh_error=None)
+                    failure_id = "channel.release-old.release.build_status"
+                else:
+                    record["product_refresh_status"] = status
+                    failure_id = "channel.release-old.release.product_refresh"
+                result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                self.assertFalse(has_metric(result, "cycle_build.latest_result"))
+                self.assertIn(failure_id, [a["metric_id"] for a in result["alerts"]])
+
+    def test_unattributed_or_unreported_failure_still_alarms_globally(self) -> None:
+        for problem in ("label", "state", "healthy", "unmanaged", "source-error", "duplicate", "no-inputs",
+                        "missing-source", "invalid-source", "channels-error", "standalone"):
+            with self.subTest(problem=problem):
+                facts = self.managed_facts()
+                channel = facts["channels"]["release-old"]
+                if problem == "label":
+                    facts["inputs"]["build_watch"]["payload"]["build"]["publish_label"] += "-other"
+                elif problem == "state":
+                    channel["release_state"] = None
+                elif problem == "healthy":
+                    channel["release_state"].update(product_refresh_status="passed", product_refresh_error=None)
+                elif problem == "unmanaged":
+                    channel["deployment_managed"] = False
+                elif problem == "source-error":
+                    facts["inputs"]["release_state"]["error"] = "unreadable"
+                elif problem == "duplicate":
+                    facts["channels"]["duplicate"] = channel
+                elif problem == "no-inputs":
+                    channel.pop("inputs")
+                elif problem == "missing-source":
+                    facts["inputs"].pop("release_state")
+                elif problem == "invalid-source":
+                    facts["inputs"]["release_state"]["payload"] = None
+                elif problem == "channels-error":
+                    facts["inputs"]["release_channels"]["error"] = "unreadable"
+                else:
+                    facts["inputs"]["release_channels"]["deployment_managed"] = False
+                result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                self.assertEqual(metric(result, "cycle_build.latest_result")["severity"], "warning")
+
+    def test_shared_build_watch_failures_remain_global(self) -> None:
+        for status in ("in_progress", "mystery", "unavailable"):
+            with self.subTest(status=status):
+                facts = self.managed_facts()
+                watch = facts["inputs"]["build_watch"]
+                watch["payload"]["result"]["status"] = status
+                watch["payload"]["process"] = {"alive": False}
+                if status == "unavailable":
+                    watch.update(payload=None, error="connection refused")
+                result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                name, severity = {
+                    "in_progress": ("cycle_build.process_alive", "critical"),
+                    "mystery": ("cycle_build.latest_result", "warning"),
+                    "unavailable": ("input.build_watch.available", "critical"),
+                }[status]
+                self.assertEqual(metric(result, name)["severity"], severity)
+
+    def test_retirement_does_not_resurrect_an_owned_failure_as_a_global_alarm(self) -> None:
+        for retired in (False, True):
+            with self.subTest(retired=retired):
+                facts = self.managed_facts()
+                old = facts["channels"].pop("release-old")["release_state"]
+                if retired:
+                    old.update(live_feed_status="stopped", release_root=None, product_manifest=None)
+                result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                self.assertEqual(has_metric(result, "cycle_build.latest_result"), not retired)
+
     def test_countdown_exact_boundaries(self) -> None:
         effective = datetime(2026, 11, 26, tzinfo=timezone.utc)
         day = 86400

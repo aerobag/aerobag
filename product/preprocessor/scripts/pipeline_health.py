@@ -867,13 +867,13 @@ def chart_cycle_phase(facts: dict[str, Any], cycle: Any, now: datetime) -> str:
     return "current"
 
 
-def retired_chart_publications(facts: dict[str, Any]) -> set[str]:
+def retired_release_commits(facts: dict[str, Any]) -> dict[str, str]:
     channels = facts.get("channels", {})
     state = facts.get("inputs", {}).get("release_state", {}).get("payload")
     if not channels or not isinstance(state, dict) or not isinstance(state.get("releases"), dict):
-        return set()
+        return {}
     active = {channel.get("tag") for channel in channels.values()}
-    retired = set()
+    retired = {}
     for tag, record in state["releases"].items():
         # These are the explicit post-GC values from forget_removed_artifacts,
         # not an inference that an unknown/unpublished build must be retired.
@@ -883,8 +883,7 @@ def retired_chart_publications(facts: dict[str, Any]) -> set[str]:
                 and "product_manifest" in record and record["product_manifest"] is None
                 and re.fullmatch(r"[A-Za-z0-9_.-]+", tag)
                 and re.fullmatch(r"[0-9a-f]{40}", str(record.get("commit")))):
-            # Release tags already satisfy safe_ref_name's character policy.
-            retired.add(f"{tag}-{record['commit'][:12]}")
+            retired[tag] = record["commit"]
     return retired
 
 
@@ -899,7 +898,7 @@ def add_chart_quality_metrics(
         add_metric(metrics, metric_id="chart_quality.available", label="Chart visual checks",
                    value=0, unit="reports", severity="warning",
                    message="No chart visual-reference check has completed yet")
-    retired = retired_chart_publications(facts)
+    retired = {f"{tag}-{commit[:12]}" for tag, commit in retired_release_commits(facts).items()}
     for entry in reports:
         family = entry["family"]
         report = entry.get("payload")
@@ -1391,6 +1390,38 @@ def add_channel_release_metrics(
         )
 
 
+def release_owns_build_failure(facts: dict[str, Any], build_watch: dict[str, Any]) -> bool:
+    inputs = facts.get("inputs", {})
+    source = inputs.get("release_channels")
+    state_source = inputs.get("release_state")
+    channels = facts.get("channels")
+    build = build_watch.get("build")
+    tag = build.get("publish_label") if isinstance(build, dict) else None
+    if (not isinstance(source, dict) or source.get("deployment_managed") is not True
+            or source.get("error") is not None or not isinstance(state_source, dict)
+            or state_source.get("error") is not None
+            or not isinstance(state_source.get("payload"), dict)
+            or not isinstance(channels, dict) or not isinstance(tag, str) or not tag):
+        return False
+    matches = [channel for channel in channels.values()
+               if isinstance(channel, dict) and channel.get("tag") == tag]
+    if not matches:
+        return tag in retired_release_commits(facts)
+    if len(matches) != 1:
+        return False
+    channel = matches[0]
+    record = channel.get("release_state")
+    if (channel.get("deployment_managed") is not True or not isinstance(channel.get("inputs"), dict)
+            or not isinstance(record, dict)):
+        return False
+    # Only drop the duplicate when the channel evaluator will report the failure.
+    # A healthy/missing record is not evidence that this build failure is covered.
+    return record.get("build_status") == "failed" or (
+        record.get("product_refresh_status") is not None
+        and (record["product_refresh_status"] == "failed" or bool(record.get("product_refresh_error")))
+    )
+
+
 def add_build_watch_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime | None = None,
 ) -> None:
@@ -1399,6 +1430,8 @@ def add_build_watch_metrics(
         return
     result = build_watch.get("result")
     result_status = result.get("status") if isinstance(result, dict) else None
+    if result_status == "fail" and release_owns_build_failure(facts, build_watch):
+        return
     current_published = False
     if result_status == "fail":
         now = now or utc_now()

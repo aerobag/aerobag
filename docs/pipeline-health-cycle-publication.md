@@ -76,12 +76,34 @@ cycle refreshes. Reconciliation alone does not patch old producers, and old
 sunset releases may continue reporting their own refresh failures.
 
 In particular, the November ZIP failure remains a per-release WARNING on an old
-sunset producer; the global latest-build warning can also reflect its most recent
-attempt. Promotion does not automatically acknowledge these failures. Sunset
+sunset producer. Promotion does not automatically acknowledge these failures. Sunset
 retention defaults to four days (`--sunset-days` can override it). Until retirement,
 the old release keeps serving its last successfully published cycle. The existing
 `accepted-on-sunset` disposition adapter covers chart-quality findings, not generic
 build errors; extending it would require precise failure evidence and a separate
 operator acceptance, not blanket suppression of sunset refresh alarms.
+
+## Release Attribution
+
+The shared build watcher observes the most recent build across all releases, not
+necessarily production. Its `build.publish_label` identifies the coordinator's
+release tag. When that exact tag matches one deployment-managed channel whose
+observed build or refresh already reports the failure, Pipeline Health emits the
+channel's alarm without a duplicate `cycle_build.latest_result` global alarm.
+The raw watcher result remains `fail`; it is not relabeled as passed. A retained
+refresh error remains visible during a retry, until successful activation clears it.
+
+Missing, ambiguous, unmanaged, or healthy release evidence does not suppress a
+failed watcher result. Standalone builds retain their global result checks.
+Unknown statuses, unavailable sources, dead in-progress build processes, and
+production's independent current/next-cycle coverage checks remain monitored.
+
+A completed failure from an explicitly retired release cannot reappear as a
+global alarm. Retirement uses the same controller post-GC evidence as chart
+monitoring (stopped service, removed release/publication paths, valid tag/commit),
+not a guess that any unrecognized build must be obsolete.
+
+This attribution fix is also controller runtime code: integrate it, then run
+`tools/prod_manage.py --reconcile`. No new release or product rebuild is required.
 
 No client format, product format, or producer telemetry contract changed.

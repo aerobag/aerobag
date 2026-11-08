@@ -79,7 +79,7 @@ spent the rest of its 90-second initial-METAR deadline polling a dead browser.
 This was neither an Aerobag reconnect failure nor another disk exhaustion.
 
 Hosted and local qualification now explicitly set
-`AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES=1` for their disposable Chrome emulator.
+`AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR=1` for their disposable Chrome emulator.
 The harness disables Play Services for user 0 and verifies the exact package is
 disabled before launching Chrome. The Google APIs image supplies Chrome, but
 this local-fixture networking test needs no Google services. The switch refuses
@@ -109,6 +109,59 @@ The existing active-EventSource metric was null, so this run does not establish
 a connection-count bound. Evidence is in `/tmp/aerobag-e2e-42272544617`.
 This local result does not change the failed hosted qualification of the old
 tag; qualify a new revision containing the harness fix before promotion.
+
+### Chrome Notification Onboarding and SurfaceControl
+
+The November 8 scheduled run `42497788611` on `b50db10e` failed the same Chrome
+journey after Google Services isolation succeeded. The screenshot showed
+Chrome's notification onboarding, logcat showed repeated compositor GPU
+SIGSEGVs, and `Runtime.evaluate` timed out during the initial METAR wait.
+All 16 other jobs passed, and disk space was about 96 GB. Run `42292921491`
+also exposed this unresolved startup problem; the intervening passing run
+`42387791541` did not establish that the earlier fix had addressed it.
+
+On a disposable API 34 Google APIs r14 emulator with Chrome `113.0.5672.136`,
+the GPU crash loop reproduced on `about:blank`, without Aerobag. Four fresh
+Chrome profiles separated permission from rendering: default settings and
+notification permission alone each produced six GPU crashes in an eight-second
+diagnostic observation; disabling `AndroidSurfaceControl`, with and without the
+permission, each produced zero. Disabling SurfaceControl alone left the prompt.
+The observation window was an experiment, not a new readiness delay. The old
+journey could also pass locally despite six crashes, so a passing rerun alone
+does not establish a healthy browser or prove which fault caused the hosted
+CDP timeout.
+
+`AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR=1` now also grants and verifies
+`POST_NOTIFICATIONS` for the selected Chrome package and disables only
+`AndroidSurfaceControl`. It does not disable GPU rendering. Both hosted and
+local qualification opt in; ordinary device runs leave permissions and rendering
+defaults untouched, and the opt-in still rejects physical devices. Chrome's
+[notification controller](https://chromium.googlesource.com/chromium/src/+/refs/tags/113.0.5672.136/chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/permissions/NotificationPermissionController.java)
+checks the Android permission independently of first-run flags. The
+[SurfaceControl feature](https://chromium.googlesource.com/chromium/src/+/refs/tags/113.0.5672.136/gpu/config/gpu_finch_features.cc)
+controls the failing presentation path. Reevaluate this scoped workaround when
+upgrading the emulator's bundled browser.
+
+Startup now launches a blank page, selects that exact CDP target, and requires
+a visible-page animation-frame response before navigating to Aerobag exactly
+once. Previously the Android intent loaded Aerobag and CDP loaded it again.
+Target activation, permission verification, frame evaluation and navigation
+errors fail immediately. Existing bounded browser-only launch attempts never
+load the application; no new retries, sleeps or extended deadlines mask a
+journey failure.
+
+Five new controlled regression cases failed before the fix and now pass. They
+cover selected-package permission verification, failed grants, scoped flags,
+held frame readiness, and failed readiness/navigation without application
+retries. All 332 focused harness/input/workflow tests passed. Real recovery
+verification uses the retained, verified `85bd4b3d` immutable web bundle and
+fixture: app source under `ui`, `crates` and `product` is identical to failed
+revision `b50db10e`; only the harness is changed. METAR v1, SSE v2, offline
+backoff interruption and recovered v3 passed with zero compositor crashes and
+zero current-manifest requests. Evidence is under
+`/tmp/aerobag-chrome-hardening-nov8`. The existing null EventSource-count metric
+still does not prove a connection-count bound. This is local verification, not
+a new hosted qualification result.
 
 ## Cheap working-tree preflight
 

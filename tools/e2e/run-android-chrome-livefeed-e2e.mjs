@@ -53,7 +53,7 @@ function usage() {
 Starts a scripted live-feed server, serves the immutable bundle or local Vite,
 launches Android Chrome through adb/CDP, forces an offline/online transition,
 and verifies that live-feed recovery interrupts a pending reconnect backoff.`);
-  console.log("AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES=1 disables Play Services on a disposable emulator; never use it on a personal AVD.");
+  console.log("AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR=1 isolates browser dependencies and configures test permissions/rendering; never use it on a personal AVD.");
 }
 
 function parseArgs(argv) {
@@ -65,7 +65,7 @@ function parseArgs(argv) {
     webPort: Number(process.env.AEROBAG_E2E_WEB_PORT ?? DEFAULT_WEB_PORT),
     liveFeedPort: Number(process.env.AEROBAG_E2E_LIVE_FEED_PORT ?? DEFAULT_LIVE_FEED_PORT),
     cdpPort: Number(process.env.AEROBAG_E2E_CHROME_CDP_PORT ?? DEFAULT_CDP_PORT),
-    isolateGoogleServices: process.env.AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES === "1",
+    disposableEmulator: process.env.AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR === "1",
     json: false,
   };
   for (let i = 2; i < argv.length; i += 1) {
@@ -788,11 +788,13 @@ export async function establishChromeRuntime({
   throw new Error("Android Chrome launch attempts must be positive");
 }
 
-export function prepareChromeDevice(serial, { isolateGoogleServices = false, runAdb = adb } = {}) {
+export function prepareChromeDevice(serial, {
+  disposableEmulator = false, packageName = "com.android.chrome", runAdb = adb,
+} = {}) {
   runAdb(serial, ["wait-for-device"]);
-  if (!isolateGoogleServices) return;
+  if (!disposableEmulator) return;
   if (runAdb(serial, ["shell", "getprop", "ro.kernel.qemu"]).trim() !== "1") {
-    throw new Error("Google service isolation requires a disposable emulator, not a physical device");
+    throw new Error("Chrome test setup requires a disposable emulator, not a physical device");
   }
   // Chrome is bundled in this image, but the fixture journey needs no Google
   // services. Their boot-time ANRs kill Chrome through its font-provider bind.
@@ -802,18 +804,35 @@ export function prepareChromeDevice(serial, { isolateGoogleServices = false, run
     throw new Error("Google Play Services is still enabled on the isolated Chrome emulator");
   }
   progress("isolated disposable emulator from Google Play Services");
+  // Chrome's Android 13+ notification rationale is separate from --no-first-run.
+  runAdb(serial, ["shell", "pm", "grant", packageName, "android.permission.POST_NOTIFICATIONS"]);
+  const permissions = runAdb(serial, ["shell", "dumpsys", "package", packageName]);
+  if (!/^\s*android\.permission\.POST_NOTIFICATIONS: granted=true(?:,|\s|$)/m.test(permissions)) {
+    throw new Error(`Chrome notification permission was not granted for ${packageName}`);
+  }
+  progress("verified browser notification permission on disposable emulator");
 }
 
-async function launchAndroidChrome(serial, url, cdpPort) {
+export function chromeCommandLine({ disposableEmulator = false } = {}) {
+  const flags = ["chrome", "--disable-fre", "--no-first-run", "--no-default-browser-check"];
+  // Chrome 113's SurfaceControl compositor crashes on the API 34 software GPU.
+  // Keep ordinary compositing enabled; this is only an emulator presentation path.
+  if (disposableEmulator) flags.push("--disable-features=AndroidSurfaceControl");
+  return flags.join(" ");
+}
+
+async function launchAndroidChrome(serial, url, cdpPort, { disposableEmulator = false } = {}) {
+  adb(serial, ["wait-for-device"]);
   progress("locating Android Chrome package");
   const packageName = findChromePackage(serial);
+  prepareChromeDevice(serial, { disposableEmulator, packageName });
   wakeAndUnlock(serial);
   adbBestEffort(serial, ["shell", "am", "force-stop", packageName]);
   adbBestEffort(serial, ["forward", "--remove", `tcp:${cdpPort}`]);
   adbBestEffort(serial, ["shell", "rm", "-f", "/data/local/tmp/chrome-command-line"]);
   adb(serial, [
     "shell",
-    "printf '%s\\n' 'chrome --disable-fre --no-first-run --no-default-browser-check' > /data/local/tmp/chrome-command-line",
+    `printf '%s\\n' '${chromeCommandLine({ disposableEmulator })}' > /data/local/tmp/chrome-command-line`,
   ]);
   await establishChromeRuntime({
     launchAttempt: async (attempt) => {
@@ -859,26 +878,51 @@ async function launchAndroidChrome(serial, url, cdpPort) {
 async function connectChromePage(cdpPort, url) {
   progress("reading Chrome page targets");
   const tabs = await httpJson(`http://127.0.0.1:${cdpPort}/json`);
-  const tab = tabs.find((entry) => entry.type === "page" && entry.webSocketDebuggerUrl)
-    ?? tabs.find((entry) => entry.webSocketDebuggerUrl);
+  const tab = tabs.find((entry) => entry.type === "page" && entry.url === url && entry.webSocketDebuggerUrl);
   if (!tab) {
     throw new Error(`Chrome did not expose a debuggable page target: ${JSON.stringify(tabs)}`);
   }
-  await httpText(`http://127.0.0.1:${cdpPort}/json/activate/${tab.id}`).catch((error) => {
-    progress(`Chrome target activation failed, continuing: ${error.message}`);
-  });
+  await httpText(`http://127.0.0.1:${cdpPort}/json/activate/${tab.id}`);
   progress("connecting to Chrome page target");
   const cdp = await CdpSocket.connect(tab.webSocketDebuggerUrl);
-  await cdp.send("Page.enable");
-  await cdp.send("Runtime.enable");
-  await cdp.send("Network.enable");
-  await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
-  await cdp.send("Page.bringToFront").catch((error) => {
-    progress(`Page.bringToFront failed, continuing: ${error.message}`);
-  });
-  await cdp.send("Page.navigate", { url });
-  progress(`navigated Chrome to ${url}`);
-  return cdp;
+  try {
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    await cdp.send("Page.bringToFront");
+    return cdp;
+  } catch (error) {
+    cdp.close();
+    throw error;
+  }
+}
+
+export async function openChromeJourneyPage({
+  serial, url, cdpPort, disposableEmulator = false,
+  launch = launchAndroidChrome, connect = connectChromePage,
+}) {
+  await launch(serial, "about:blank", cdpPort, { disposableEmulator });
+  const cdp = await connect(cdpPort, "about:blank");
+  try {
+    const version = await cdp.send("Browser.getVersion");
+    progress(`browser ${version.product}; waiting for blank-page render before loading Aerobag`);
+    const ready = await cdpEval(cdp, `new Promise(resolve => requestAnimationFrame(() => resolve({
+      url: location.href, visibility: document.visibilityState
+    })))`);
+    if (ready?.url !== "about:blank" || ready?.visibility !== "visible") {
+      throw new Error(`Unexpected browser readiness: ${JSON.stringify(ready)}`);
+    }
+    await cdp.send("Network.enable");
+    await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
+    const navigation = await cdp.send("Page.navigate", { url });
+    if (navigation.errorText || navigation.isDownload || !navigation.frameId) {
+      throw new Error(`Chrome navigation failed: ${JSON.stringify(navigation)}`);
+    }
+    progress(`navigated Chrome to ${url}`);
+    return cdp;
+  } catch (error) {
+    cdp.close();
+    throw error;
+  }
 }
 
 async function setChromeOffline(cdp, offline) {
@@ -939,12 +983,13 @@ async function run(args) {
     }
 
     progress(`preparing adb device ${args.serial}`);
-    prepareChromeDevice(args.serial, { isolateGoogleServices: args.isolateGoogleServices });
+    adb(args.serial, ["wait-for-device"]);
     adbBestEffort(args.serial, ["reverse", `tcp:${webPort}`, `tcp:${webPort}`]);
     adbBestEffort(args.serial, ["reverse", `tcp:${liveFeedPort}`, `tcp:${liveFeedPort}`]);
 
-    await launchAndroidChrome(args.serial, webUrl, args.cdpPort);
-    cdp = await connectChromePage(args.cdpPort, webUrl);
+    cdp = await openChromeJourneyPage({
+      serial: args.serial, url: webUrl, cdpPort: args.cdpPort, disposableEmulator: args.disposableEmulator,
+    });
     progress("waiting for web live-feed hook");
     await waitFor(
       async () => Boolean(await cdpEval(cdp, "typeof window.__aerobagE2e?.liveFeeds === 'function'")),

@@ -2602,9 +2602,9 @@ test("Android qualification isolates semantic tests from Google service instabil
   assert.match(native, /matrix\.test == 'android\.plate-first-render-smoke'/);
   assert.match(native, /system-images;android-34;google_atd;x86_64/);
   assert.match(native, /system-images;android-34;aosp_atd;x86_64/);
-  assert.match(chrome, /AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES: "1"/);
+  assert.match(chrome, /AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR: "1"/);
   const localQualification = readFileSync(new URL("../ci/local_candidate_qualification.py", import.meta.url), "utf8");
-  assert.match(localQualification, /"AVD_NAME": "aerobag34-local-chrome",\s*"AEROBAG_E2E_ISOLATE_GOOGLE_SERVICES": "1"/);
+  assert.match(localQualification, /"AVD_NAME": "aerobag34-local-chrome",\s*"AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR": "1"/);
 });
 
 test("Android qualification archives packages without leaking live-feed state between profiles", () => {

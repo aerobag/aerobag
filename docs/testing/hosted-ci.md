@@ -163,6 +163,45 @@ zero current-manifest requests. Evidence is under
 still does not prove a connection-count bound. This is local verification, not
 a new hosted qualification result.
 
+### Late Android Theme Publication
+
+The next push, run `42512483374` on `2c780eb5`, passed ordinary CI, fixtures,
+and the other journey lanes but again failed Chrome recovery. This time neither
+notification onboarding nor compositor crashes were present. At 19:11:04 UTC,
+SystemUI began creating its wallpaper-color overlays; Aerobag navigation began
+at 19:11:08. Overlay publication changed `CONFIG_ASSETS_PATHS` at 19:11:11,
+Chrome's activity was recreated at 19:11:13, and its page CDP socket closed.
+No live-feed request had reached the fixture. A plain `data:` page reproduced
+the same socket closure when a theme overlay was enabled, without Aerobag.
+
+Boot completion and the final display cutout precede this asynchronous theme
+work. Disposable Chrome setup now waits for the pinned API 34 SystemUI producer
+to finish creation/deferred evaluation and for all three fabricated overlays
+(`neutral`, `accent`, `dynamic`) to appear in the registry. Registered-but-disabled
+overlays count: readiness is completed publication, not a particular color choice.
+The registry update still precedes configuration delivery, so setup then uses
+Android's broadcast barrier with both looper and application-thread flushing.
+This drains already-queued notifications before Chrome starts. It is not a
+global broadcast-idle wait, a repeated stable-sample test, or a fixed delay.
+
+The relevant Android 14 owners are
+[ThemeOverlayController](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/packages/SystemUI/src/com/android/systemui/theme/ThemeOverlayController.java),
+[OverlayManagerService](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/services/core/java/com/android/server/om/OverlayManagerService.java),
+and [ActivityManagerService](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/services/core/java/com/android/server/am/ActivityManagerService.java).
+The setup gate shares the existing named startup budget across observation and
+barrier delivery. Missing publication retains the last producer/registry state;
+ADB errors, unsupported barriers and incomplete barrier output fail setup. No
+application launch or journey retry occurs after a failed gate. Physical-device
+runs do not query or require the emulator theme contract.
+
+Two controlled regressions failed before the gate was added: held theme
+publication allowed setup to return, and a failed readiness check was ignored.
+Additional tests cover partial/exact overlay identities, disabled registration,
+pending/deferred producer work, bounded timeout diagnostics, query/barrier errors,
+and integration before the browser launch/retry loop. All 339 focused tests
+pass. Investigation evidence and the exact failed run's verified app bundle and
+materialized fixture are under `/tmp/aerobag-chrome-theme-nov8`.
+
 ## Cheap working-tree preflight
 
 The November 4 follow-up run `41895877071` on `665e3617` failed three emulator

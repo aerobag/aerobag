@@ -1610,6 +1610,13 @@ test("Android Chrome journey uses the shared named timing policy", () => {
   assert.deepEqual(violations, []);
 });
 
+test("Chrome launch gates device initialization before starting the browser or its retry loop", () => {
+  const runner = readFileSync(new URL("./run-android-chrome-livefeed-e2e.mjs", import.meta.url), "utf8");
+  const launch = runner.slice(runner.indexOf("async function launchAndroidChrome("), runner.indexOf("async function connectChromePage("));
+  assert.match(launch, /await prepareChromeLaunch\(serial, \{ disposableEmulator, packageName \}\);/);
+  assert.ok(launch.indexOf("await prepareChromeLaunch(") < launch.indexOf("await establishChromeRuntime("));
+});
+
 test("Android Chrome builds web inputs before starting the server-readiness clock", () => {
   const calls = [];
   prepareWebApp({ cwd: "/explicit/web/workspace", runCommand: (...args) => {

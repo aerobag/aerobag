@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { CdpSocket, chromeCommandLine, openChromeJourneyPage, prepareChromeDevice, waitForLiveFeedStatus } from "./run-android-chrome-livefeed-e2e.mjs";
+import { CdpSocket, chromeCommandLine, openChromeJourneyPage, prepareChromeDevice, prepareChromeLaunch, waitForChromeEmulatorTheme, waitForLiveFeedStatus } from "./run-android-chrome-livefeed-e2e.mjs";
 import { ObservationTimeoutError, TerminalObservationError } from "./transition-contract.mjs";
 
 test("disposable Chrome emulator disables and verifies Google services before launch", () => {
@@ -31,6 +31,104 @@ test("ordinary device runs leave Google services alone", () => {
   const commands = [];
   prepareChromeDevice("tablet", { runAdb: (_serial, args) => commands.push(args) });
   assert.deepEqual(commands, [["wait-for-device"]]);
+});
+
+function disposableSetupAdb(_serial, args) {
+  if (args.includes("getprop")) return "1\n";
+  if (args.includes("list")) return "package:com.google.android.gms\n";
+  if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
+  return "";
+}
+
+test("Chrome launch waits for late emulator theme publication after unlock", async () => {
+  let completeTheme;
+  const theme = new Promise(resolve => { completeTheme = resolve; });
+  const calls = [];
+  let prepared = false;
+  const preparing = prepareChromeLaunch("emulator-test", {
+    disposableEmulator: true, runAdb: disposableSetupAdb,
+    wake: () => calls.push("unlock"),
+    waitForTheme: async () => { calls.push("theme"); await theme; },
+  }).then(() => { prepared = true; });
+  await Promise.resolve();
+  assert.deepEqual(calls, ["unlock", "theme"]);
+  assert.equal(prepared, false, "the browser must not launch while Android can still recreate it");
+  completeTheme();
+  await preparing;
+  assert.equal(prepared, true);
+});
+
+test("failed theme readiness stops setup instead of launching or retrying Chrome", async () => {
+  await assert.rejects(prepareChromeLaunch("emulator-test", {
+    disposableEmulator: true, runAdb: disposableSetupAdb, wake() {},
+    waitForTheme: async () => { throw new Error("theme publication failed"); },
+  }), /theme publication failed/);
+});
+
+test("ordinary devices do not require the disposable emulator theme contract", async () => {
+  await prepareChromeLaunch("tablet", {
+    runAdb() {}, wake() {}, waitForTheme: () => assert.fail("must not inspect personal-device themes"),
+  });
+});
+
+const completeTheme = "mIsMonetEnabled=true\nmNeedsOverlayCreation=false\nmDeferredThemeEvaluation=false\n";
+const publishedOverlays = "android\n[x] com.android.systemui:neutral\n[ ] com.android.systemui:accent\n[x] com.android.systemui:dynamic\n";
+const drainedTheme = "Loopers drained!\nTest barrier passed\nFinished application barriers!\n";
+
+test("theme readiness requires producer completion, exact registered overlays and notification delivery", async () => {
+  const snapshots = [
+    ["", "android\n"],
+    [completeTheme.replace("mNeedsOverlayCreation=false", "mNeedsOverlayCreation=true"), publishedOverlays],
+    [completeTheme.replace("mDeferredThemeEvaluation=false", "mDeferredThemeEvaluation=true"), publishedOverlays],
+    [completeTheme, publishedOverlays.replace(":dynamic", ":dynamic_extra")],
+    [completeTheme, publishedOverlays.replace("[x] com.android.systemui:dynamic", "--- com.android.systemui:dynamic")],
+    [completeTheme, publishedOverlays],
+  ];
+  let snapshot = 0;
+  let barriers = 0;
+  await waitForChromeEmulatorTheme("emulator-test", { intervalMs: 0, timeoutMs: 1000,
+    runAdb(_serial, args, options) {
+      assert.ok(options.timeout > 0 && options.timeout <= 1000);
+      if (args.includes("dumpsys")) return snapshots[snapshot][0];
+      if (args.includes("overlay")) return snapshots[snapshot++][1];
+      assert.deepEqual(args, ["shell", "am", "wait-for-broadcast-barrier",
+        "--flush-broadcast-loopers", "--flush-application-threads"]);
+      assert.equal(snapshot, snapshots.length, "do not flush before publication completes");
+      barriers += 1;
+      return drainedTheme;
+    },
+  });
+  assert.equal(barriers, 1);
+});
+
+test("missing theme publication times out with its state and never flushes or launches", async () => {
+  await assert.rejects(waitForChromeEmulatorTheme("emulator-test", { intervalMs: 0, timeoutMs: 15,
+    runAdb(_serial, args) {
+      assert.equal(args.includes("wait-for-broadcast-barrier"), false);
+      return args.includes("dumpsys") ? completeTheme : "android\n";
+    },
+  }), error => error instanceof ObservationTimeoutError
+    && error.diagnostics.last_value.needs_creation === false
+    && error.diagnostics.last_value.registered.length === 0);
+});
+
+test("theme query and barrier failures remain terminal", async () => {
+  for (const failure of ["query", "barrier", "unsupported-barrier", "unfinished-apps"]) {
+    let barriers = 0;
+    await assert.rejects(waitForChromeEmulatorTheme("emulator-test", { intervalMs: 0, timeoutMs: 1000,
+      runAdb(_serial, args) {
+        if (args.includes("dumpsys")) {
+          if (failure === "query") throw new Error("theme service query failed");
+          return completeTheme;
+        }
+        if (args.includes("overlay")) return publishedOverlays;
+        barriers += 1;
+        if (failure === "barrier") throw new Error("barrier adb timeout");
+        return failure === "unsupported-barrier" ? "Unknown command\n" : "Test barrier passed\n";
+      },
+    }), /query failed|barrier/);
+    assert.equal(barriers, failure === "query" ? 0 : 1);
+  }
 });
 
 test("explicit isolation refuses a physical tablet before changing any packages", () => {

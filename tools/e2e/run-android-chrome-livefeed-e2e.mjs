@@ -821,12 +821,57 @@ export function chromeCommandLine({ disposableEmulator = false } = {}) {
   return flags.join(" ");
 }
 
+export async function prepareChromeLaunch(serial, options = {}) {
+  prepareChromeDevice(serial, options);
+  (options.wake ?? wakeAndUnlock)(serial);
+  if (options.disposableEmulator) {
+    await (options.waitForTheme ?? waitForChromeEmulatorTheme)(serial);
+  }
+}
+
+export async function waitForChromeEmulatorTheme(serial, {
+  runAdb = adb, timeoutMs = E2E_TIMING.startupMs, intervalMs = E2E_TIMING.resourcePollIntervalMs,
+} = {}) {
+  const startedAt = performance.now();
+  const remainingMs = () => Math.max(1, Math.floor(timeoutMs - (performance.now() - startedAt)));
+  progress("waiting for disposable emulator's initial theme publication");
+  const { value: theme } = await observeUntil("Android initial theme publication", () => {
+    const controller = runAdb(serial, ["shell", "dumpsys", "activity", "service",
+      "com.android.systemui/.SystemUIService", "ThemeOverlayController"],
+    { timeout: Math.min(E2E_TIMING.localResourceMs, remainingMs()) });
+    const overlays = runAdb(serial, ["shell", "cmd", "overlay", "list", "--user", "0", "android"],
+      { timeout: Math.min(E2E_TIMING.localResourceMs, remainingMs()) });
+    const fields = Object.fromEntries([...controller.matchAll(/^\s*(m\w+)=(true|false)\s*$/gm)]
+      .map(([, name, value]) => [name, value === "true"]));
+    const registered = [...overlays.matchAll(/^\[([ x])\] com\.android\.systemui:(neutral|accent|dynamic)\s*$/gm)]
+      .map(([, , name]) => name);
+    return {
+      monet: fields.mIsMonetEnabled ?? null,
+      needs_creation: fields.mNeedsOverlayCreation ?? null,
+      deferred: fields.mDeferredThemeEvaluation ?? null,
+      registered,
+    };
+  }, {
+    timeoutMs, intervalMs,
+    accept: state => state.monet === true && state.needs_creation === false && state.deferred === false
+      && ["neutral", "accent", "dynamic"].every(name => state.registered.includes(name)),
+  });
+  // Registry publication precedes queued ASSETS_PATHS notifications, which
+  // recreate Chrome's activity and destroy its page target. Drain those messages
+  // before launch, not all future broadcasts or an arbitrary quiet interval.
+  const barrier = runAdb(serial, ["shell", "am", "wait-for-broadcast-barrier",
+    "--flush-broadcast-loopers", "--flush-application-threads"], { timeout: remainingMs() });
+  if (!/^Test barrier passed\s*$/m.test(barrier) || !/^Finished application barriers!\s*$/m.test(barrier)) {
+    throw new Error(`Android theme configuration barrier did not complete: ${barrier}`);
+  }
+  progress(`initial theme published and configuration notifications drained: ${JSON.stringify(theme)}`);
+}
+
 async function launchAndroidChrome(serial, url, cdpPort, { disposableEmulator = false } = {}) {
   adb(serial, ["wait-for-device"]);
   progress("locating Android Chrome package");
   const packageName = findChromePackage(serial);
-  prepareChromeDevice(serial, { disposableEmulator, packageName });
-  wakeAndUnlock(serial);
+  await prepareChromeLaunch(serial, { disposableEmulator, packageName });
   adbBestEffort(serial, ["shell", "am", "force-stop", packageName]);
   adbBestEffort(serial, ["forward", "--remove", `tcp:${cdpPort}`]);
   adbBestEffort(serial, ["shell", "rm", "-f", "/data/local/tmp/chrome-command-line"]);

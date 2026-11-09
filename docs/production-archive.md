@@ -192,11 +192,18 @@ Pipeline health reads each worker's versioned status under
 `DATA_ROOT/health/archive/`. It checks the independently pinned `product-archive-v2`
 telemetry contract. Missing, malformed, or mismatched promised telemetry is a
 critical coverage alarm. Lack of a completed successful pass warns after **15
-minutes for collection** or **30 minutes for storage**, and becomes critical
-after **60 minutes for either worker**. Storage allows for timer waits, publication
-lock deferrals, and normal Borg archive/verification work. A stale status file
+minutes for collection** or **60 minutes for storage**, and becomes critical
+after **60 minutes for collection** or **120 minutes for storage**. Storage allows
+for timer waits, publication lock deferrals, and normal Borg archive/verification
+work. A stale status file
 continues to age on the monitor's clock, so a dead worker cannot hide an
 interruption by going silent.
+
+Jon approved the storage thresholds on November 9, 2026. The November 8 Pacific
+incident included publication lock deferrals and retry intervals as well as Borg
+execution; the recent observed completion-age peak was 2013 seconds (33m33s). This changes only
+completion-age alert policy, not the clock, telemetry schema, or monitoring's
+separate snapshot-freshness thresholds.
 
 The monitor evaluates timestamps against the clock after collecting inputs, so
 a status written during collection is not mistaken for a future timestamp.
@@ -223,7 +230,7 @@ phase. Running and deferred passes preserve any previous genuine failure until
 a complete successful pass supersedes it. The durable progress reference is the
 last successful pass, or the first tracked attempt if none has succeeded yet;
 deferrals and restarts cannot reset it. Pipeline health computes its age using
-the monitor's clock and uses the worker-specific warning thresholds above.
+the monitor's clock and uses the worker-specific thresholds above.
 Thus frequent failure, running, or deferral reports cannot hide starvation.
 Unchanged publications count as successful checks, so quiet product periods do
 not cause an alarm. An isolated failed pass below the warning threshold remains

@@ -45,8 +45,8 @@ LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 LIVE_FEED_FAILURE_WARNING_SECONDS = 2 * 60
 LIVE_FEED_FAILURE_CRITICAL_SECONDS = 10 * 60
 LIVE_FEED_INITIALIZATION_SECONDS = 2 * 60
-ARCHIVE_PROGRESS_WARNING_SECONDS = {"collect": 15 * 60, "store": 30 * 60}
-ARCHIVE_PROGRESS_CRITICAL_SECONDS = 60 * 60
+ARCHIVE_PROGRESS_WARNING_SECONDS = {"collect": 15 * 60, "store": 60 * 60}
+ARCHIVE_PROGRESS_CRITICAL_SECONDS = {"collect": 60 * 60, "store": 120 * 60}
 # Budgets for attempts, not grace periods for a known failed result.
 DEPLOYMENT_CHECK_BUDGET_SECONDS = 10 * 60
 CHART_CHECK_BUDGET_SECONDS = 15 * 60
@@ -684,14 +684,15 @@ def add_archive_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any], no
                    value=None, severity="ok", message=activity)
         progress_age = int(now.timestamp()) - payload["progress_reference_unix_seconds"]
         warning_seconds = ARCHIVE_PROGRESS_WARNING_SECONDS[worker]
-        severity = ("critical" if progress_age >= ARCHIVE_PROGRESS_CRITICAL_SECONDS else
+        critical_seconds = ARCHIVE_PROGRESS_CRITICAL_SECONDS[worker]
+        severity = ("critical" if progress_age >= critical_seconds else
                     "warning" if progress_age >= warning_seconds else "ok")
         if payload.get("error"):
             activity += f"; {payload['error']}"
         add_metric(metrics, metric_id=prefix + ".progress_age_seconds", label=f"Archive {worker} completion age",
                    value=progress_age, severity=severity, unit="seconds",
                    warning_threshold=warning_seconds,
-                   critical_threshold=ARCHIVE_PROGRESS_CRITICAL_SECONDS,
+                   critical_threshold=critical_seconds,
                    message=f"No completed archive pass for {progress_age}s; {activity}" if severity != "ok" else
                            f"Completion age {progress_age}s; {activity}")
         for field in ("failure_count", "capture_gap_count", "buffer_bytes", "repository_bytes"):

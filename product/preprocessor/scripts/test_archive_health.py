@@ -48,8 +48,10 @@ class ArchiveHealthTests(unittest.TestCase):
             for silent in (False, True):
                 for age, collect_severity, store_severity in (
                     (899, "ok", "ok"), (900, "warning", "ok"),
-                    (1799, "warning", "ok"), (1800, "warning", "warning"),
-                    (3599, "warning", "warning"), (3600, "critical", "critical"),
+                    (1799, "warning", "ok"), (1800, "warning", "ok"),
+                    (1849, "warning", "ok"), (2013, "warning", "ok"),
+                    (3599, "warning", "ok"), (3600, "critical", "warning"),
+                    (7199, "critical", "warning"), (7200, "critical", "critical"),
                 ):
                     with self.subTest(state=state, silent=silent, age=age):
                         reference = self.now - timedelta(seconds=age)
@@ -58,12 +60,13 @@ class ArchiveHealthTests(unittest.TestCase):
                                    "progress_reference_unix_seconds": int(reference.timestamp()),
                                    "attempted_at_utc": reference.isoformat() if silent else self.payload["attempted_at_utc"]}
                         metrics = self.metrics(payload)
-                        for worker, severity, warning in (("collect", collect_severity, 900),
-                                                          ("store", store_severity, 1800)):
+                        for worker, severity, warning, critical in (("collect", collect_severity, 900, 3600),
+                                                                    ("store", store_severity, 3600, 7200)):
                             metric = metrics[f"product_archive.{worker}.progress_age_seconds"]
+                            self.assertEqual(metric["value"], age)
                             self.assertEqual(metric["severity"], severity)
                             self.assertEqual(metric["warning_threshold"], warning)
-                            self.assertEqual(metric["critical_threshold"], 3600)
+                            self.assertEqual(metric["critical_threshold"], critical)
                         recovered = self.metrics({**self.payload, "capture_gap_count": 2})
                         self.assertTrue(all(m["severity"] == "ok" for m in recovered.values()))
 
@@ -129,14 +132,18 @@ class ArchiveHealthTests(unittest.TestCase):
         self.assertIn("deferred", metrics["product_archive.store.activity"]["message"])
         self.assertIn("release-reconciler.lock", metrics["product_archive.store.activity"]["message"])
 
-    def test_fresh_reports_cannot_hide_one_hour_without_completion(self):
+    def test_fresh_reports_cannot_reset_completion_clock(self):
         for state in ("deferred", "running", "failed"):
-            with self.subTest(state=state):
-                payload = {**self.payload, "state": state,
-                           "progress_reference_unix_seconds": int(self.now.timestamp()) - 3600}
-                metrics = self.metrics(payload)
-                self.assertEqual(metrics["product_archive.store.coverage"]["severity"], "ok")
-                self.assertEqual(metrics["product_archive.store.progress_age_seconds"]["severity"], "critical")
+            for age, store_severity in ((3600, "warning"), (7200, "critical")):
+                with self.subTest(state=state, age=age):
+                    payload = {**self.payload, "state": state,
+                               "progress_reference_unix_seconds": int(self.now.timestamp()) - age}
+                    metrics = self.metrics(payload)
+                    for worker, severity in (("collect", "critical"), ("store", store_severity)):
+                        self.assertEqual(metrics[f"product_archive.{worker}.coverage"]["severity"], "ok")
+                        progress = metrics[f"product_archive.{worker}.progress_age_seconds"]
+                        self.assertEqual(progress["value"], age)
+                        self.assertEqual(progress["severity"], severity)
 
     def test_progress_age_advances_while_worker_is_silent(self):
         metrics = self.metrics({**self.payload, "state": "running", "attempted_at_utc": "2026-10-09T11:00:00Z",
@@ -145,14 +152,16 @@ class ArchiveHealthTests(unittest.TestCase):
 
     def test_real_failure_is_not_hidden_by_running_or_deferred_state(self):
         for state in ("running", "deferred", "failed"):
-            metrics = self.metrics({**self.payload, "state": state, "failure_count": 1, "error": "disk full",
-                                    "progress_reference_unix_seconds": int(self.now.timestamp()) - 3600})
-            failure = metrics["product_archive.store.failure_count"]
-            self.assertEqual(failure["severity"], "ok")
-            self.assertEqual(failure["message"], "disk full")
-            progress = metrics["product_archive.store.progress_age_seconds"]
-            self.assertEqual(progress["severity"], "critical")
-            self.assertIn("disk full", progress["message"])
+            for age, severity in ((3600, "warning"), (7200, "critical")):
+                with self.subTest(state=state, age=age):
+                    metrics = self.metrics({**self.payload, "state": state, "failure_count": 1, "error": "disk full",
+                                            "progress_reference_unix_seconds": int(self.now.timestamp()) - age})
+                    failure = metrics["product_archive.store.failure_count"]
+                    self.assertEqual(failure["severity"], "ok")
+                    self.assertEqual(failure["message"], "disk full")
+                    progress = metrics["product_archive.store.progress_age_seconds"]
+                    self.assertEqual(progress["severity"], severity)
+                    self.assertIn("disk full", progress["message"])
 
     def test_old_contract_and_invalid_activity_are_not_accepted(self):
         old_pin = {"id": "product-archive-v1", "sha256": "1955a0d664acd800a4ff312f0948d0d5fe20e88bb4b8376ffe4bbbd5c176c61a"}

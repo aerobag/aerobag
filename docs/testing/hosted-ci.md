@@ -202,6 +202,46 @@ and integration before the browser launch/retry loop. All 339 focused tests
 pass. Investigation evidence and the exact failed run's verified app bundle and
 materialized fixture are under `/tmp/aerobag-chrome-theme-nov8`.
 
+### Chrome Startup Observation Evidence
+
+The November 9 scheduled run `42687670447` on `9f003958` failed only Chrome
+recovery. Theme publication and its configuration barrier completed before
+launch, and the fixture received one event-stream, version, and METAR-state
+request. A `Runtime.evaluate` request then exceeded its three-second command
+deadline during the initial METAR wait. The retained screenshot showed a
+location-permission dialog, not notification onboarding. There was no recorded
+compositor crash or browser activity recreation during this failure.
+
+The exact app bundle and fixture both passed locally, including immediately
+after a fresh emulator boot. A separate minimal page remained responsive with
+the location prompt open; the app also passed with sixfold CPU throttling.
+These experiments do **not** establish the timeout's cause or prove it fixed.
+Evidence is retained in `/tmp/aerobag-ci-42687670447` on the investigating host.
+
+Two harness gaps are addressed without changing command/journey deadlines or
+retrying application actions. Disposable Chrome runs explicitly deny geolocation
+for the fixture origin before navigation: this network journey needs no GPS and
+must not inherit an unattended permission choice. Personal-device runs retain
+their existing permissions. Permission-setup failure is terminal.
+
+Failure capture previously tried to dump `org.aerobag.app`, which is not running
+in the Chrome lane, and queried a native semantic driver that was never started.
+It now targets the selected browser package and skips those native-only reads.
+`failure.json` records the initiating error, observation diagnostics, fixture
+request counts, and the last twenty debugger commands with duration/status.
+Command payloads are not recorded. Native app failure capture is unchanged.
+This evidence is needed to distinguish a slow/blocked browser from an application
+startup stall if the timeout recurs; do not describe another passing run alone
+as a root-cause fix.
+
+Five controlled regression cases failed before these changes and passed after;
+all 365 focused runtime, input, diagnostic, workflow and foundation tests pass.
+The hardened journey passed with the exact failed run's app bundle and fixture
+on a fresh emulator. Deliberately blocking a page evaluation still failed at
+three seconds, retained `failure.json`, and captured a `com.android.chrome`
+stack rather than reporting a missing native app. The full hosted suite has
+not been rerun as part of these local results.
+
 ## Cheap working-tree preflight
 
 The November 4 follow-up run `41895877071` on `665e3617` failed three emulator

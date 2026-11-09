@@ -404,6 +404,7 @@ export class CdpSocket {
     this.buffer = Buffer.alloc(0);
     this.nextId = 1;
     this.pending = new Map();
+    this.commandHistory = [];
     socket.on("data", (chunk) => this.onData(chunk));
     socket.on("error", (error) => this.rejectPending(error));
     socket.on("close", () => this.rejectPending(new Error("CDP socket closed")));
@@ -437,28 +438,47 @@ export class CdpSocket {
 
   send(method, params = {}) {
     const id = this.nextId++;
+    const record = { id, method, startedAt: performance.now(), status: "pending" };
+    this.commandHistory.push(record);
+    if (this.commandHistory.length > 20) this.commandHistory.shift();
+    const finish = (status) => { record.status = status; record.finishedAt = performance.now(); };
     try {
       this.writeFrame(JSON.stringify({ id, method, params }));
     } catch (error) {
+      finish("failed");
       return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
+          finish("timed_out");
           reject(new Error(`CDP timeout: ${method}`));
         }
       }, CDP_COMMAND_TIMEOUT_MS);
       this.pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
+          finish("completed");
           resolve(value);
         },
         reject: (error) => {
           clearTimeout(timer);
+          finish("failed");
           reject(error);
         },
       });
     });
+  }
+
+  diagnostics() {
+    return {
+      command_timeout_ms: CDP_COMMAND_TIMEOUT_MS,
+      pending_ids: [...this.pending.keys()],
+      commands: this.commandHistory.map(record => ({
+        id: record.id, method: record.method, status: record.status,
+        elapsed_ms: Math.round((record.finishedAt ?? performance.now()) - record.startedAt),
+      })),
+    };
   }
 
   writeFrame(text) {
@@ -945,8 +965,9 @@ export async function openChromeJourneyPage({
   serial, url, cdpPort, disposableEmulator = false,
   launch = launchAndroidChrome, connect = connectChromePage,
 }) {
-  await launch(serial, "about:blank", cdpPort, { disposableEmulator });
+  const { packageName } = await launch(serial, "about:blank", cdpPort, { disposableEmulator });
   const cdp = await connect(cdpPort, "about:blank");
+  cdp.androidPackageName = packageName;
   try {
     const version = await cdp.send("Browser.getVersion");
     progress(`browser ${version.product}; waiting for blank-page render before loading Aerobag`);
@@ -958,6 +979,13 @@ export async function openChromeJourneyPage({
     }
     await cdp.send("Network.enable");
     await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
+    // This network journey needs no GPS. Resolve the site's permission before
+    // startup rather than letting an unattended native prompt become test input.
+    if (disposableEmulator) {
+      await cdp.send("Browser.setPermission", {
+        origin: new URL(url).origin, permission: { name: "geolocation" }, setting: "denied",
+      });
+    }
     const navigation = await cdp.send("Page.navigate", { url });
     if (navigation.errorText || navigation.isDownload || !navigation.frameId) {
       throw new Error(`Chrome navigation failed: ${JSON.stringify(navigation)}`);
@@ -1115,11 +1143,20 @@ async function run(args) {
   } catch (error) {
     const artifactDir = process.env.AEROBAG_E2E_ARTIFACT_DIR;
     if (artifactDir) {
-      captureAndroidFailureDiagnostics(
-        args.serial,
-        artifactDir,
-        "android.chrome.live-feed-network-recovery",
-      );
+      try {
+        fs.mkdirSync(artifactDir, { recursive: true });
+        fs.writeFileSync(path.join(artifactDir, "failure.json"), `${JSON.stringify({
+          test: result.test, error: error.stack ?? String(error),
+          cause: error.cause?.stack ?? null, observation: error.diagnostics ?? null,
+          cdp: cdp?.diagnostics() ?? null, live_feed_requests: liveFeed.requestCounts,
+        }, null, 2)}\n`);
+        captureAndroidFailureDiagnostics(
+          args.serial, artifactDir, result.test,
+          { packageName: cdp?.androidPackageName ?? findChromePackage(args.serial) },
+        );
+      } catch (diagnosticError) {
+        progress(`failure diagnostics could not complete: ${diagnosticError.message}`);
+      }
     }
     const counts = JSON.stringify(liveFeed.requestCounts);
     if (error instanceof Error) {

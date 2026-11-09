@@ -263,7 +263,7 @@ function pageSetupHarness() {
   };
   const args = {
     serial: "emulator-test", cdpPort: 9222, url: "http://fixture.test/",
-    async launch(serial, url) { calls.push({ method: "launch", url }); },
+    async launch(serial, url) { calls.push({ method: "launch", url }); return { packageName: "com.android.chrome" }; },
     async connect(port, url) { calls.push({ method: "connect", url }); return cdp; },
   };
   return { calls, args, cdp, requested, releaseFrame };
@@ -305,4 +305,95 @@ test("bad browser readiness or failed navigation closes CDP without retrying the
     assert.equal(h.calls.filter(c => c.method === "launch").length, 1);
     assert.equal(h.calls.at(-1).method, "close");
   }
+});
+
+test("disposable Chrome waits for origin-scoped location denial before app navigation", async () => {
+  const h = pageSetupHarness();
+  h.args.disposableEmulator = true;
+  h.args.url = "http://fixture.test:8085/path?run=123";
+  let acknowledge;
+  let requested;
+  const permission = new Promise(resolve => { acknowledge = resolve; });
+  const request = new Promise(resolve => { requested = resolve; });
+  const send = h.cdp.send;
+  h.cdp.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Browser.setPermission") { requested(); await permission; }
+    return result;
+  };
+  h.releaseFrame({ result: { value: { url: "about:blank", visibility: "visible" } } });
+  const opening = openChromeJourneyPage(h.args);
+  const first = await Promise.race([request.then(() => "permission"), opening.then(() => "navigation")]);
+  assert.equal(first, "permission", "unanswered permission policy must block navigation");
+  assert.equal(h.calls.some(c => c.method === "Page.navigate"), false);
+  assert.deepEqual(h.calls.find(c => c.method === "Browser.setPermission").params, {
+    origin: "http://fixture.test:8085", permission: { name: "geolocation" }, setting: "denied",
+  });
+  acknowledge();
+  assert.equal(await opening, h.cdp);
+  assert.equal(h.cdp.androidPackageName, "com.android.chrome");
+});
+
+test("permission setup errors fail before navigation without retrying", async () => {
+  const h = pageSetupHarness();
+  h.args.disposableEmulator = true;
+  const send = h.cdp.send;
+  h.cdp.send = async (method, params) => {
+    if (method === "Browser.setPermission") throw new Error("permission setup failed");
+    return send(method, params);
+  };
+  h.releaseFrame({ result: { value: { url: "about:blank", visibility: "visible" } } });
+  await assert.rejects(openChromeJourneyPage(h.args), /permission setup failed/);
+  assert.equal(h.calls.some(c => c.method === "Page.navigate"), false);
+  assert.equal(h.calls.at(-1).method, "close");
+});
+
+test("ordinary Chrome runs do not change origin permissions", async () => {
+  const h = pageSetupHarness();
+  h.releaseFrame({ result: { value: { url: "about:blank", visibility: "visible" } } });
+  await openChromeJourneyPage(h.args);
+  assert.equal(h.calls.some(c => c.method === "Browser.setPermission"), false);
+});
+
+test("CDP failure evidence retains bounded command timings and pending requests without payloads", async () => {
+  const socket = new EventEmitter();
+  socket.write = () => {};
+  const cdp = new CdpSocket(socket);
+  function reply(value) {
+    const payload = Buffer.from(JSON.stringify(value));
+    socket.emit("data", Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+  }
+  for (let id = 1; id <= 25; id++) {
+    const response = cdp.send("Runtime.evaluate", { expression: "private content" });
+    reply({ id, result: {} });
+    await response;
+  }
+  const pending = cdp.send("Runtime.evaluate", { expression: "private content" });
+  try {
+    const evidence = cdp.diagnostics();
+    assert.equal(evidence.commands.length, 20);
+    assert.equal(evidence.commands.at(-2).status, "completed");
+    assert.deepEqual(evidence.pending_ids, [26]);
+    assert.equal(evidence.commands.at(-1).status, "pending");
+    assert.ok(evidence.commands.every(c => c.elapsed_ms >= 0 && c.method === "Runtime.evaluate"));
+    assert.doesNotMatch(JSON.stringify(evidence), /private content/);
+  } finally {
+    socket.emit("close");
+    await assert.rejects(pending, /CDP socket closed/);
+  }
+  assert.equal(cdp.diagnostics().commands.at(-1).status, "failed");
+  assert.deepEqual(cdp.diagnostics().pending_ids, []);
+});
+
+test("an unanswered CDP request still times out and retains that failure in diagnostics", async () => {
+  const socket = new EventEmitter();
+  socket.write = () => {};
+  const cdp = new CdpSocket(socket);
+  await assert.rejects(cdp.send("Runtime.evaluate"), /CDP timeout: Runtime.evaluate/);
+  const evidence = cdp.diagnostics();
+  assert.deepEqual(evidence.pending_ids, []);
+  assert.equal(evidence.commands[0].status, "timed_out");
+  assert.equal(evidence.command_timeout_ms, 3000);
+  socket.emit("close");
+  assert.equal(cdp.diagnostics().commands[0].status, "timed_out");
 });

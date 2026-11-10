@@ -49,6 +49,7 @@ import {
   seedAerobagPrivateFiles,
   setAerobagPrivateSentinel,
   setAndroidWallClockAndWait,
+  useAndroidFixtureNetwork,
   scrollUntilTag,
   swipe,
   setAndroidRotation,
@@ -1536,16 +1537,23 @@ async function launchReleaseJourneyAndroidApp(args, fixture, options) {
   }
 }
 
-async function useAndroidFixtureClock(serial, epochMs) {
+async function useAndroidFixtureClock(args, epochMs) {
+  const { serial } = args;
   const previousAutoTime = adb(serial, ["shell", "settings", "get", "global", "auto_time"]).trim();
-  adb(serial, ["shell", "settings", "put", "global", "auto_time", "0"]);
-  await setAndroidWallClockAndWait(serial, epochMs);
-  return () => {
+  adb(serial, ["reverse", `tcp:${args.packageSourceDevicePort}`, `tcp:${args.packageSourcePort}`]);
+  const restoreNetwork = await useAndroidFixtureNetwork(serial, `http://127.0.0.1:${args.packageSourceDevicePort}`);
+  const restore = async () => {
     adbBestEffort(serial, [
       "shell", "settings", "put", "global", "auto_time",
       previousAutoTime === "0" ? "0" : "1",
     ]);
+    await restoreNetwork();
   };
+  try {
+    adb(serial, ["shell", "settings", "put", "global", "auto_time", "0"]);
+    await setAndroidWallClockAndWait(serial, epochMs);
+    return restore;
+  } catch (error) { await restore(); throw error; }
 }
 
 async function runSharedReleaseJourney(args, journey) {
@@ -1554,7 +1562,7 @@ async function runSharedReleaseJourney(args, journey) {
   }
   const fixture = loadReleaseJourneyFixture(args.releaseFixture);
   const restoreClock = await useAndroidFixtureClock(
-    args.serial,
+    args,
     androidJourneyEpochMs(journey.id, fixture.capabilities.reference_epoch_ms),
   );
   try {
@@ -1617,14 +1625,14 @@ async function runSharedReleaseJourney(args, journey) {
       throw error;
     }
   } finally {
-    restoreClock();
+    await restoreClock();
   }
 }
 
 async function runOfflineColdStart(args) {
   if (!args.releaseFixture) throw new Error("android.offline-cold-start requires --release-fixture");
   const fixture = loadReleaseJourneyFixture(args.releaseFixture);
-  const restoreClock = await useAndroidFixtureClock(args.serial, fixture.capabilities.reference_epoch_ms);
+  const restoreClock = await useAndroidFixtureClock(args, fixture.capabilities.reference_epoch_ms);
   const result = args.result ?? createTestResult("android.offline-cold-start");
   try {
     await launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: true });
@@ -1666,10 +1674,10 @@ async function runOfflineColdStart(args) {
     adbBestEffort(args.serial, ["shell", "svc", "data", "disable"]);
     try {
       await driver.reload();
-      await waitFor(
-        () => queryAndroidRuntimeReadyForJourney(args.serial),
+      await waitForAndroidInteractiveRuntime(
+        args.serial,
         E2E_TIMING.startupMs,
-        "offline cold-start runtime",
+        { requirePreservedDisclaimer: true },
       );
       recordCheck(result, "offline.cold-start", true);
 
@@ -1744,7 +1752,7 @@ async function runOfflineColdStart(args) {
     result.finished_at = new Date().toISOString();
     return result;
   } finally {
-    restoreClock();
+    await restoreClock();
   }
 }
 

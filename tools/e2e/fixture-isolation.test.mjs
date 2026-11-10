@@ -22,6 +22,11 @@ function getOnce(url) {
   });
 }
 
+test("Android network validation uses a clock-independent local 204", async t => {
+  const { origin } = await fixtureServer(t);
+  assert.deepEqual(await getOnce(`${origin}/__connectivity`), { status: 204, text: "" });
+});
+
 test("fixture reset rearms one-shot transport faults for the next journey", { timeout: 5_000 }, async (t) => {
   const { origin } = await fixtureServer(t);
   const url = `${origin}/release-journey/payload.txt?aerobag_e2e_abort_once=same-operation`;

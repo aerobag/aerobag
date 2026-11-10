@@ -343,6 +343,12 @@ test("Android runtime startup rejects a semantic tree whose surface is not reach
     state,
     home: readyHome,
   });
+  const retainedPackages = { ...state, page: "OfflinePackages" };
+  assert.deepEqual(androidInteractiveRuntime(retainedPackages, readyHome), {
+    state: retainedPackages,
+    home: readyHome,
+  });
+  assert.equal(androidInteractiveRuntime({ ...retainedPackages, ready: "false" }, readyHome), null);
 });
 
 test("detects only a rendered Android input-method window", () => {

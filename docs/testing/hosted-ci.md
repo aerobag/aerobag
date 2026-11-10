@@ -712,6 +712,43 @@ modifier. `SettingsPageTest` physically drags the production slider and, with
 The cheap harness suite rejects bare Settings test tags so those readers cannot
 silently lose a newly added control.
 
+The November 9 run of `961c25c6` (`42720560106`) exposed a different
+package-maintenance race: the journey called a catalog refresh complete when the
+fixture saw its HTTP request. The old enabled Apply Changes frame was still
+published; its physical tap ended at 19:53:42.559 device time, before
+`LibraryRefreshSucceeded` at 19:53:42.649. No `SyncRequested` followed.
+Refresh completion now requires the newly applied catalog's core-owned
+`library_fetched_at_epoch_ms`, published with the rendered panel, plus idle
+platform operation state and an enabled Apply Changes control. It does not need
+to catch a transient refreshing frame. Failed refreshes retain the old timestamp.
+Apply Changes also stays disabled during platform cleanup, matching its handler.
+`offline-catalog.test.mjs` holds completion behind the stale enabled frame using
+the real transition runner; the old helper fails it. The core test covers
+pending/failed/successful refresh and source identity. `OfflinePackagesReadinessTest`
+uses the production panel, held window drawing, physical taps, and unmount/remount;
+restoring the old enablement makes its cleanup assertion fail. Artifact-request
+probes retain typed request counts instead of turning every mismatch into null.
+
+The local reproduction also exposed an independent fixture-clock dependency:
+Android's default Google HTTPS connectivity probe rejected its certificate at
+the historical fixture date. Sync was correctly submitted but remained queued
+on an unvalidated network. Release-fixture journeys now temporarily point the
+emulator's HTTP/HTTPS-slot/fallback probes at the fixture's local HTTP 204 endpoint.
+This changes only test OS probe URLs, not app TLS or download constraints.
+The harness waits for old networks to disappear and the replacement default
+network to validate, and restores probe settings and radio enablement afterward,
+including setup failure. Physical devices and non-loopback fixture URLs are
+rejected. `android-fixture-network.test.mjs` covers old validation, wrong default
+network, failure diagnostics and restoration; `fixture-isolation.test.mjs` checks
+the actual empty 204 response.
+
+The companion offline cold-start run exposed an older contradictory wait: after
+deliberately persisting the Offline Packages page, it rejected that page as
+startup-not-ready. It now uses the same painted interactive-runtime contract as
+reload, preserving the disclaimer check, before navigating to and verifying the
+offline chart raster and plate image. The retained-page predicate and journey
+wiring are covered by the cheap harness tests.
+
 The October 13 scheduled run of `3db6e3f` failed package-maintenance after the
 same commit passed release qualification: its dim-timeout swipe landed on 30s,
 not 10s. The command took 155ms; the remaining time was spent waiting for the

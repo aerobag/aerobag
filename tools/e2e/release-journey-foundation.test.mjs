@@ -35,7 +35,6 @@ import {
   observeNexradFrameAdvance,
   offlineSyncButtonIsIdle,
   publicationArtifactRequestCount,
-  publicationCatalogRequestCount,
   projectionId,
   rasterPlanHasVisiblePaint,
   rasterPlanIsDisplayReady,
@@ -3237,14 +3236,14 @@ test("Android app restart observes a stable process node without dumping the UI"
   );
 });
 
-test("package refresh completion observes a new catalog request", () => {
-  const requests = [
-    { method: "GET", url: "/__health" },
-    { method: "HEAD", url: "/packages/current_artifacts.json" },
-    { method: "GET", url: "/packages/current_artifacts.json" },
-    { method: "GET", url: "http://fixture.test/packages/" },
-  ];
-  assert.equal(publicationCatalogRequestCount(requests), 2);
+test("package refresh completion observes the rendered catalog and operation lifetime", () => {
+  const source = readFileSync(new URL("./release-journey-implementations.mjs", import.meta.url), "utf8");
+  const refresh = source.slice(source.indexOf("export async function refreshOfflineCatalog"),
+    source.indexOf("export async function selectAndroidSettingsSliderStop"));
+  assert.match(refresh, /fetchedAt !== previous.catalog.fetchedAt/);
+  assert.match(refresh, /operationActive === false/);
+  assert.match(refresh, /readElement\("offline-packages-panel"\)/);
+  assert.doesNotMatch(refresh, /fixtureRequests|publicationCatalogRequestCount/);
 });
 
 test("package sync completion observes artifact requests instead of transient labels", () => {
@@ -3277,7 +3276,7 @@ test("fixture reads tolerate transport resets but fixture mutations remain singl
   );
   const controls = source.slice(
     source.indexOf("async function setFixtureControl"),
-    source.indexOf("export function publicationCatalogRequestCount"),
+    source.indexOf("export function publicationArtifactRequestCount"),
   );
   assert.match(controls, /fixtureHealth[\s\S]*transientNetworkErrors: true/);
   assert.match(controls, /fixtureRequests[\s\S]*transientNetworkErrors: true/);
@@ -3631,6 +3630,19 @@ test("Android offline startup completion uses fixed and exact projections instea
   );
   assert.match(interactiveRuntime, /androidIndexedControlIsActionReady\(home\)/);
   assert.doesNotMatch(interactiveRuntime, /androidSemanticNodeIsActionable/);
+});
+
+test("offline cold restart accepts the retained Offline Packages page as interactive", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const coldStart = source.slice(
+    source.indexOf("async function runOfflineColdStart"),
+    source.indexOf("async function runRawMapInspectorTerrainSmoke"),
+  );
+  const restart = coldStart.slice(coldStart.indexOf("await driver.reload()"));
+  assert.match(restart, /waitForAndroidInteractiveRuntime\(\s*args.serial/);
+  assert.doesNotMatch(restart, /queryAndroidRuntimeReadyForJourney/);
+  assert.match(restart, /offline chart raster/);
+  assert.match(restart, /offline plate image/);
 });
 
 test("Android plate first-open journey uses exact projections for semantic rendezvous", () => {

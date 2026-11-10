@@ -305,6 +305,11 @@ export function createReleaseJourneyFixtureServer(args, { liveFeedHandler } = {}
     }
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     const pathname = decodeURIComponent(url.pathname);
+    if (pathname === "/__connectivity") {
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
     if (liveFeedHandler && pathname.startsWith(`${LIVE_FEED_PREFIX}/`)) {
       liveFeedHandler(request, response);
       return;

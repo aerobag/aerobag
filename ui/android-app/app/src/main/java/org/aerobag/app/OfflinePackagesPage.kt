@@ -558,6 +558,8 @@ internal fun OfflinePackagesPanel(
     onClose: () -> Unit,
     showCloseButton: Boolean = true,
     modifier: Modifier = Modifier,
+    libraryFetchedAtEpochMs: Long? = null,
+    operationInFlight: Boolean = false,
 ) {
     val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
@@ -570,6 +572,7 @@ internal fun OfflinePackagesPanel(
     val syncButtonDisabledReason = when {
         cancelRequested -> "Waiting for cancellation to finish."
         syncInFlight && !syncCancelEnabled -> "Sync cancellation is not available."
+        !syncInFlight && operationInFlight -> "Wait for the current package operation to finish."
         !syncInFlight && !syncEnabled -> syncDisabledReason
         else -> null
     }
@@ -592,7 +595,11 @@ internal fun OfflinePackagesPanel(
     Surface(
         modifier = modifier
             .fillMaxSize()
-            .e2eIndexedElement("parity:offline-packages-panel"),
+            .e2eIndexedElement(
+                "parity:offline-packages-panel",
+                "catalog-fetched-at:${libraryFetchedAtEpochMs ?: "none"}" +
+                    ":catalog-loading:$libraryRefreshInFlight:operation-active:$operationInFlight",
+            ),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -650,7 +657,7 @@ internal fun OfflinePackagesPanel(
                         },
                         modifier = Modifier.offlinePackagesActionButtonSize(),
                         maxLines = 2,
-                        enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled,
+                        enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled && !operationInFlight,
                         testTag = "parity:offline-sync-button",
                         onDisabledClick = syncButtonDisabledReason?.let { reason ->
                             { showDisabledActionToast(context, reason) }

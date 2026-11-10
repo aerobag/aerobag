@@ -933,6 +933,8 @@ internal fun HomePage(
                         }
                     },
                     libraryRefreshInFlight = controllerUiState.libraryLoading,
+                    libraryFetchedAtEpochMs = controllerUiState.libraryFetchedAtEpochMs,
+                    operationInFlight = offlinePackageOperationJob?.isActive == true,
                     packageSourceEditable = controllerUiState.packageSourceEditable,
                     packageSourceEditDisabledReason = controllerUiState.packageSourceEditDisabledReason,
                     refreshEnabled = controllerUiState.refreshEnabled,

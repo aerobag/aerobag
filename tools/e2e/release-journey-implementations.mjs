@@ -689,14 +689,6 @@ async function serviceNotifications(runtime) {
   }
 }
 
-export function publicationCatalogRequestCount(requests) {
-  return requests.filter((request) =>
-    request.method === "GET" &&
-    ["/packages", "/packages/", "/packages/current_artifacts.json"].includes(
-      new URL(request.url, "http://fixture.invalid").pathname,
-    )).length;
-}
-
 export function publicationArtifactRequestCount(requests, artifactFilename) {
   return requests.filter((request) => {
     const pathname = decodeURIComponent(
@@ -1837,10 +1829,36 @@ async function waitForOfflineSyncIdle(
   description,
   timeoutMs = E2E_TIMING.bulkOperationMs,
 ) {
-  return runtime.eventually(description, async () => {
-    const button = await runtime.driver.readElement("offline-sync-button");
-    return offlineSyncButtonIsIdle(button) ? button : null;
-  }, timeoutMs, 500);
+  return runtime.observe(description, () => readOfflineCatalog(runtime), state =>
+    state.catalog.loading === false && state.catalog.operationActive === false &&
+    offlineSyncButtonIsIdle(state.button), timeoutMs);
+}
+
+export async function refreshOfflineCatalog(runtime) {
+  const previous = await readOfflineCatalog(runtime);
+  return runtime.action("refresh offline package catalog", "offline-refresh-button", {
+    complete: () => readOfflineCatalog(runtime),
+    completionSatisfied: state => state.catalog.fetchedAt !== null &&
+      state.catalog.fetchedAt !== previous.catalog.fetchedAt &&
+      state.catalog.loading === false && state.catalog.operationActive === false &&
+      offlineSyncButtonIsIdle(state.button),
+  });
+}
+
+async function readOfflineCatalog(runtime) {
+  const panel = await runtime.driver.readElement("offline-packages-panel");
+  const fields = semanticProjectionFields(panel?.state ?? panel?.disabled_reason);
+  const fetchedAt = /^\d+$/.test(fields["catalog-fetched-at"] ?? "")
+    ? Number(fields["catalog-fetched-at"]) : null;
+  return {
+    catalog: {
+      fetchedAt,
+      loading: fields["catalog-loading"] !== "false",
+      operationActive: fields["operation-active"] !== "false",
+    },
+    button: await runtime.driver.readElement("offline-sync-button"),
+    panel,
+  };
 }
 
 export async function selectAndroidSettingsSliderStop(runtime, { rowId, from, to, index, description }) {
@@ -1882,30 +1900,17 @@ async function androidPackageMaintenance(runtime) {
     artifact_fault: "stall-once",
   });
   try {
-    const catalogRequestsBeforeRefresh = publicationCatalogRequestCount(
-      await fixtureRequests(runtime),
-    );
-    await runtime.action("refresh offline package catalog", "offline-refresh-button", {
-      complete: async () => {
-        const requests = await fixtureRequests(runtime);
-        return publicationCatalogRequestCount(requests) > catalogRequestsBeforeRefresh
-          ? requests
-          : null;
-      },
-    });
-    await waitForOfflineSyncIdle(runtime, "updated package plan ready");
+    await refreshOfflineCatalog(runtime);
     const interruptedRequestsBefore = publicationArtifactRequestCount(
       await fixtureRequests(runtime),
       updated.updated_artifact_filename,
     );
     await runtime.action("start interrupted offline package sync", "offline-sync-button", {
-      complete: async () => {
-        const requests = await fixtureRequests(runtime);
-        return publicationArtifactRequestCount(requests, updated.updated_artifact_filename) >
-            interruptedRequestsBefore
-          ? requests
-          : null;
-      },
+      complete: async () => ({
+        artifact: updated.updated_artifact_filename,
+        requestCount: publicationArtifactRequestCount(await fixtureRequests(runtime), updated.updated_artifact_filename),
+      }),
+      completionSatisfied: state => state.requestCount > interruptedRequestsBefore,
     });
     await runtime.eventually("interrupted package request observed", async () => {
       const health = await fixtureHealth(runtime);
@@ -1924,13 +1929,11 @@ async function androidPackageMaintenance(runtime) {
       updated.updated_artifact_filename,
     );
     await runtime.action("start successful offline package sync", "offline-sync-button", {
-      complete: async () => {
-        const requests = await fixtureRequests(runtime);
-        return publicationArtifactRequestCount(requests, updated.updated_artifact_filename) >
-            successfulRequestsBefore
-          ? requests
-          : null;
-      },
+      complete: async () => ({
+        artifact: updated.updated_artifact_filename,
+        requestCount: publicationArtifactRequestCount(await fixtureRequests(runtime), updated.updated_artifact_filename),
+      }),
+      completionSatisfied: state => state.requestCount > successfulRequestsBefore,
     });
     const installed = await runtime.eventually("updated package installed", () =>
       runtime.driver.readElement(`installed-package:${updated.updated_artifact_filename}`),

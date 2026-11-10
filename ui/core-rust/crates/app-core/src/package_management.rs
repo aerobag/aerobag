@@ -712,6 +712,7 @@ pub const OFFLINE_PACKAGES_MAX_PARALLEL_FETCHES: usize = 4;
 pub struct OfflinePackagesControllerUiState {
     pub planner_ui_state: Option<OfflinePackagesUiState>,
     pub library_loaded: bool,
+    pub library_fetched_at_epoch_ms: Option<i64>,
     pub library_loading: bool,
     pub library_error_message: Option<String>,
     pub library_status_message: Option<String>,
@@ -1369,6 +1370,11 @@ fn project_offline_packages_controller_ui_state(
     OfflinePackagesControllerUiState {
         planner_ui_state,
         library_loaded,
+        library_fetched_at_epoch_ms: state
+            .library_cache
+            .as_ref()
+            .filter(|cache| cache.package_source_base_url == package_source_base_url)
+            .map(|cache| cache.fetched_at_epoch_ms),
         library_loading: state.library_loading,
         library_error_message: state.library_error_message.clone(),
         library_status_message: format_offline_package_library_status_message(
@@ -4196,6 +4202,60 @@ mod tests {
             },
         )]);
         (discovery, bundles)
+    }
+
+    #[test]
+    fn catalog_completion_identifies_applied_library_not_refresh_request() {
+        let source = "https://example.test/packages";
+        let (discovery, bundles) = controller_test_catalog("packaged/");
+        let mut input = OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState {
+                library_cache: Some(OfflinePackagesLibraryCache {
+                    package_source_base_url: source.to_string(),
+                    fetched_at_epoch_ms: 100,
+                    discovery_manifests: vec![discovery.clone()],
+                    bundle_manifests_by_filename: bundles.clone(),
+                }),
+                ..Default::default()
+            }),
+            package_source_base_url: source.to_string(),
+            discovery_filenames: vec![],
+            now_epoch_ms: 1_778_025_600_000,
+            installed: vec![],
+            storage: None,
+            event: OfflinePackagesControllerEvent::RefreshLibraryRequested,
+        };
+        let pending = reduce_offline_packages_controller(&input);
+        assert_eq!(pending.ui_state.library_fetched_at_epoch_ms, Some(100));
+        assert!(pending.ui_state.library_loading);
+        assert!(!pending.ui_state.sync_enabled);
+
+        input.state = Some(pending.state);
+        input.event = OfflinePackagesControllerEvent::LibraryRefreshFailed {
+            message: "offline".into(),
+        };
+        let failed = reduce_offline_packages_controller(&input);
+        assert_eq!(failed.ui_state.library_fetched_at_epoch_ms, Some(100));
+        assert!(!failed.ui_state.library_loading);
+        assert!(!failed.ui_state.sync_enabled);
+
+        input.state = Some(failed.state);
+        input.event = OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+            fetched_at_epoch_ms: 200,
+            discovery_manifests: vec![discovery],
+            bundle_manifests_by_filename: bundles,
+        };
+        let completed = reduce_offline_packages_controller(&input);
+        assert_eq!(completed.ui_state.library_fetched_at_epoch_ms, Some(200));
+        assert!(!completed.ui_state.library_loading);
+        assert!(completed.ui_state.sync_enabled);
+        let other_source = project_offline_packages_controller_ui_state(
+            &completed.state,
+            "https://other.test/packages",
+            None,
+            None,
+        );
+        assert_eq!(other_source.library_fetched_at_epoch_ms, None);
     }
 
     #[test]

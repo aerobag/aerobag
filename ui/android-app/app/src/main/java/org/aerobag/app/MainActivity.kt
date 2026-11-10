@@ -923,6 +923,8 @@ internal data class OfflinePackagesControllerUiStateWire(
     val plannerUiState: OfflinePackagesUiStateWire? = null,
     @SerialName("library_loaded")
     val libraryLoaded: Boolean = false,
+    @SerialName("library_fetched_at_epoch_ms")
+    val libraryFetchedAtEpochMs: Long? = null,
     @SerialName("library_loading")
     val libraryLoading: Boolean = false,
     @SerialName("library_error_message")

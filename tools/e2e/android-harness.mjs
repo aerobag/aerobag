@@ -1163,6 +1163,69 @@ export async function waitFor(fn, timeoutMs, message, intervalMs = 150) {
   });
 }
 
+export function androidFixtureNetworkState(dump) {
+  const active = /^Active default network: (\d+|none)\r?$/m.exec(dump)?.[1];
+  if (!active) throw new Error(`Android connectivity dump has no default-network state: ${dump.slice(0, 500)}`);
+  const defaultNetwork = active === "none" ? null : active;
+  const networks = dump.split("\n").flatMap(line => {
+    const id = /NetworkAgentInfo\{network\{(\d+)\}/.exec(line)?.[1];
+    if (!id) return [];
+    const capabilities = / nc\{\[([^\n]*?)\]\}/.exec(line)?.[1] ?? "";
+    return [{ id, validated: /(?:[ &])VALIDATED(?:[ &]|$)/.test(capabilities) }];
+  });
+  return { defaultNetwork, networks };
+}
+
+export async function useAndroidFixtureNetwork(serial, origin, {
+  adbCommand = adb, observe = observeUntil,
+} = {}) {
+  const url = new URL("/__connectivity", origin);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" ||
+      adbCommand(serial, ["shell", "getprop", "ro.kernel.qemu"]).trim() !== "1") {
+    throw new Error("fixture network validation requires an emulator and loopback HTTP fixture");
+  }
+  const settings = ["captive_portal_http_url", "captive_portal_https_url", "captive_portal_fallback_url"];
+  const readSetting = key => adbCommand(serial, ["shell", "settings", "get", "global", key]).trim();
+  const previous = settings.map(key => [key, readSetting(key)]);
+  const radios = [["wifi", "wifi_on"], ["data", "mobile_data"]]
+    .filter(([, key]) => readSetting(key) === "1").map(([radio]) => radio);
+  if (!radios.length) throw new Error("fixture network requires an enabled emulator radio");
+  const read = () => androidFixtureNetworkState(adbCommand(serial, ["shell", "dumpsys", "connectivity"]));
+  const enable = () => { for (const radio of radios) adbCommand(serial, ["shell", "svc", radio, "enable"]); };
+  const reconnect = async (validate) => {
+    // NetworkMonitor reads its probe URLs on construction. A new default network,
+    // not an old VALIDATED flag, is the readiness evidence for the new settings.
+    for (const radio of radios) adbCommand(serial, ["shell", "svc", radio, "disable"]);
+    try {
+      await observe("old fixture networks disconnected", read, {
+        accept: state => state.defaultNetwork === null && state.networks.length === 0,
+        timeoutMs: E2E_TIMING.localResourceMs,
+      });
+    } finally { enable(); }
+    await observe("fixture default network connected", read, {
+      accept: state => state.networks.some(network => network.id === state.defaultNetwork &&
+        (!validate || network.validated)),
+      timeoutMs: E2E_TIMING.localResourceMs,
+    });
+  };
+  const restore = async () => {
+    for (const [key, value] of previous) {
+      adbCommand(serial, value === "null"
+        ? ["shell", "settings", "delete", "global", key]
+        : ["shell", "settings", "put", "global", key, value]);
+    }
+    await reconnect(false);
+  };
+  try {
+    for (const key of settings) adbCommand(serial, ["shell", "settings", "put", "global", key, url.href]);
+    await reconnect(true);
+    return restore;
+  } catch (error) {
+    try { await restore(); } catch (cleanup) { throw new AggregateError([error, cleanup], "fixture network setup and restoration failed"); }
+    throw error;
+  }
+}
+
 export async function setAndroidWallClockAndWait(
   serial,
   epochMs,

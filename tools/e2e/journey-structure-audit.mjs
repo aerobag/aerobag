@@ -24,6 +24,7 @@ export const AUDITED_JOURNEY_FILES = Object.freeze([
   "tools/e2e/run-android-e2e-suite.mjs",
   "tools/e2e/android-persistence.mjs",
   "tools/e2e/run-android-chrome-livefeed-e2e.mjs",
+  "tools/e2e/chrome-startup-trace.mjs",
   "tools/e2e/semantic-journey-driver.mjs",
   "tools/e2e/web-semantic-transport.mjs",
   "ui/web-app/scripts/nav-db-rollover-e2e.mjs",

@@ -199,6 +199,31 @@ test("page evaluation errors are not retried as missing live feeds", async () =>
   assert.equal(probes, 1);
 });
 
+test("a failed probe preserves preceding live-feed observations without retrying the failure", async () => {
+  const status = { connection: { value: "CONNECTED" }, product_versions: { metars: null } };
+  const failure = new Error("CDP timeout: Runtime.evaluate");
+  let probes = 0;
+  const cdp = { async send() {
+    probes++;
+    if (probes === 1) return { result: { value: null } };
+    if (probes === 2) return { result: { value: status } };
+    throw failure;
+  } };
+  await assert.rejects(
+    waitForLiveFeedStatus(cdp, (value) => value?.product_versions?.metars === "v1", 1000, "METAR v1", 0),
+    (error) => {
+      assert.ok(error instanceof TerminalObservationError);
+      assert.equal(error.cause, failure);
+      assert.deepEqual(error.diagnostics.last_value, status);
+      assert.deepEqual(error.diagnostics.observations.map(sample => sample.value), [null, status]);
+      assert.equal(error.diagnostics.attempts, 3);
+      assert.equal(error.diagnostics.last_error, failure.message);
+      return true;
+    },
+  );
+  assert.equal(probes, 3);
+});
+
 test("a real live-feed timeout preserves the wrong state in diagnostics", async () => {
   const status = { connection: { value: "CONNECTED" }, product_versions: { metars: "v2" } };
   const cdp = { async send() { return { result: { value: status } }; } };
@@ -284,6 +309,24 @@ test("Aerobag loads exactly once, only after the blank browser page renders", as
   h.releaseFrame({ result: { value: { url: "about:blank", visibility: "visible" } } });
   assert.equal(await opening, h.cdp);
   assert.deepEqual(h.calls.filter(c => c.method === "Page.navigate").map(c => c.params.url), [h.args.url]);
+});
+
+test("startup diagnostics attach after blank-page readiness but before the only app navigation", async () => {
+  const h = pageSetupHarness();
+  let releaseDiagnostics;
+  const diagnosticGate = new Promise(resolve => { releaseDiagnostics = resolve; });
+  let attached;
+  const attaching = new Promise(resolve => { attached = resolve; });
+  h.args.beforeNavigate = async () => { attached(); await diagnosticGate; };
+  const opening = openChromeJourneyPage(h.args);
+  await h.requested;
+  h.releaseFrame({ result: { value: { url: "about:blank", visibility: "visible" } } });
+  // If the callback is skipped the old implementation navigates and returns.
+  assert.equal(await Promise.race([attaching.then(() => "attached"), opening.then(() => "navigated")]), "attached");
+  assert.equal(h.calls.filter(c => c.method === "Page.navigate").length, 0);
+  releaseDiagnostics();
+  await opening;
+  assert.equal(h.calls.filter(c => c.method === "Page.navigate").length, 1);
 });
 
 test("bad browser readiness or failed navigation closes CDP without retrying the app", async () => {

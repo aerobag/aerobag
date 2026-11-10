@@ -242,6 +242,59 @@ three seconds, retained `failure.json`, and captured a `com.android.chrome`
 stack rather than reporting a missing native app. The full hosted suite has
 not been rerun as part of these local results.
 
+### Unresolved Chrome Renderer Timeout (November 10)
+
+Run `42730642416` on `418739ba` passed all native Android lanes, desktop web,
+ordinary CI and fixtures. Only `android.chrome.live-feed-network-recovery`
+failed: its fortieth CDP command, a `Runtime.evaluate` status read, exceeded
+3,000 ms during initial METAR readiness. The fixture had served one event stream,
+version and state. Previous probes took 5-145 ms. There was no recorded browser
+death, compositor crash or theme-driven activity recreation at this failure.
+The retained screenshot showed the startup shell, not a location prompt.
+
+**The cause remains unconfirmed.** A passing local recovery run is not a fix.
+The previous hardening removed other demonstrated failure modes; it did not
+resolve this one. The retained `threads.txt` describes Chrome's parent, not its
+page renderer, and terminal observation errors discarded the preceding states.
+
+Local profiling used the exact verified failed app bundle and pinned fixture,
+Chrome 113 on the API 34 Google APIs r14 image, with the emulator/harness pinned
+to four host CPUs. An ordinary run had a 1,177 ms renderer task, with 757 ms of
+CPU-profile samples attributed to `FlightPlanWorkspaceLayout.measure()` at
+mount; the corresponding status read waited 1,120 ms. Threefold CDP CPU
+throttling produced a 1,558 ms task but still passed. A separate timeline showed
+a 912 ms task containing 438 ms of layout (1,149 dirty objects) and 167 ms of
+style calculation. The hidden flight-plan page's synchronous size read forces
+pending document layout; attributing that whole cost to flight-plan arithmetic
+would be misleading. These observations identify a performance lead, not proof
+of the hosted three-second stall. No application layout change is made here.
+
+The Chrome journey now records startup through a separate **browser** CDP
+connection when an artifact directory is configured. It stops at initial METAR
+readiness or the original failure, without rerunning navigation or probes. The
+4 MiB continuous trace buffer includes renderer/worker tasks, layout and V8
+events, but not debugger attachment, CPU sampling or network interception.
+Capture has a 15-second total diagnostic budget and a 16 MiB output limit.
+`chrome-startup-trace.json` and `chrome-startup-trace-status.json` report capture
+success, explicit data loss, or an error; diagnostic errors do not replace the
+journey error. All application/command deadlines and assertions are unchanged.
+Terminal observation errors now retain the same bounded state history as normal
+observation timeouts, preserving their cause and failing without retries.
+
+The missing-history and pre-navigation-capture regressions failed before the
+changes. All 830 harness tests pass. Real emulator verification with the exact
+failed bundle passed METAR v1/v2 and offline/backoff recovery to v3, producing a
+1.72 MB startup trace without data loss. A separate deliberately injected
+four-second renderer evaluation still failed at the unchanged three-second
+command limit; its 0.86 MB trace retained an in-flight renderer `EvaluateScript`
+through the failure, and `failure.json` retained the preceding status and probe count.
+This synthetic fault validates diagnostics, not a reproduction of the app defect.
+
+Local evidence lives under `/tmp/aerobag-ci-42730642416`. The next hosted failure
+must be interpreted using the trace plus observation history before proposing
+another app or emulator workaround. Do not mark this issue resolved merely
+because a subsequent run passes.
+
 ## Cheap working-tree preflight
 
 The November 4 follow-up run `41895877071` on `665e3617` failed three emulator

@@ -19,6 +19,7 @@ import {
   wakeAndUnlock,
 } from "./android-harness.mjs";
 import { E2E_TIMING, observeUntil, TerminalObservationError } from "./transition-contract.mjs";
+import { connectChromeStartupTrace } from "./chrome-startup-trace.mjs";
 import { createReleaseJourneyFixtureServer } from "./serve-release-journey-fixture.mjs";
 import {
   LIVE_FEED_SCHEMA_VERSION,
@@ -964,6 +965,7 @@ async function connectChromePage(cdpPort, url) {
 export async function openChromeJourneyPage({
   serial, url, cdpPort, disposableEmulator = false,
   launch = launchAndroidChrome, connect = connectChromePage,
+  beforeNavigate = async () => {},
 }) {
   const { packageName } = await launch(serial, "about:blank", cdpPort, { disposableEmulator });
   const cdp = await connect(cdpPort, "about:blank");
@@ -986,6 +988,7 @@ export async function openChromeJourneyPage({
         origin: new URL(url).origin, permission: { name: "geolocation" }, setting: "denied",
       });
     }
+    await beforeNavigate();
     const navigation = await cdp.send("Page.navigate", { url });
     if (navigation.errorText || navigation.isDownload || !navigation.frameId) {
       throw new Error(`Chrome navigation failed: ${JSON.stringify(navigation)}`);
@@ -1025,6 +1028,24 @@ async function run(args) {
   const liveFeedPort = await listen(liveFeedHttp, args.webDist ? args.webPort : args.liveFeedPort);
   let vite = null;
   let cdp = null;
+  let startupTrace = null;
+  const artifactDir = process.env.AEROBAG_E2E_ARTIFACT_DIR;
+  let traceStatus = { state: "not_started" };
+  const finishStartupTrace = async () => {
+    if (startupTrace) {
+      const trace = startupTrace;
+      startupTrace = null;
+      try { traceStatus = { state: "captured", ...await trace.stop() }; }
+      catch (error) { traceStatus = { state: "failed", error: error.message }; }
+    }
+    if (artifactDir) {
+      try {
+        fs.mkdirSync(artifactDir, { recursive: true });
+        fs.writeFileSync(path.join(artifactDir, "chrome-startup-trace-status.json"), `${JSON.stringify(traceStatus, null, 2)}\n`);
+      } catch (error) { progress(`startup trace status could not be saved: ${error.message}`); }
+    }
+    if (traceStatus.state === "failed") progress(`startup trace unavailable: ${traceStatus.error}`);
+  };
   const baseWebUrl = args.webUrl || `http://127.0.0.1:${args.webDist ? liveFeedPort : args.webPort}/`;
   const webUrl = withCacheBust(baseWebUrl, `${Date.now()}-${process.pid}`);
   const webPort = portFromUrl(baseWebUrl, args.webPort);
@@ -1062,6 +1083,13 @@ async function run(args) {
 
     cdp = await openChromeJourneyPage({
       serial: args.serial, url: webUrl, cdpPort: args.cdpPort, disposableEmulator: args.disposableEmulator,
+      beforeNavigate: async () => {
+        if (!artifactDir) return;
+        try {
+          startupTrace = await connectChromeStartupTrace(args.cdpPort, path.join(artifactDir, "chrome-startup-trace.json"));
+          traceStatus = { state: "recording" };
+        } catch (error) { traceStatus = { state: "failed", error: error.message }; }
+      },
     });
     progress("waiting for web live-feed hook");
     await waitFor(
@@ -1080,6 +1108,7 @@ async function run(args) {
       E2E_TIMING.resourcePollIntervalMs,
     );
     result.checks.initial_metar_version = "v1";
+    await finishStartupTrace();
 
     progress("publishing METAR v2 over SSE");
     liveFeed.publish("v2");
@@ -1141,14 +1170,14 @@ async function run(args) {
     }
     return result;
   } catch (error) {
-    const artifactDir = process.env.AEROBAG_E2E_ARTIFACT_DIR;
+    await finishStartupTrace();
     if (artifactDir) {
       try {
         fs.mkdirSync(artifactDir, { recursive: true });
         fs.writeFileSync(path.join(artifactDir, "failure.json"), `${JSON.stringify({
           test: result.test, error: error.stack ?? String(error),
           cause: error.cause?.stack ?? null, observation: error.diagnostics ?? null,
-          cdp: cdp?.diagnostics() ?? null, live_feed_requests: liveFeed.requestCounts,
+          cdp: cdp?.diagnostics() ?? null, live_feed_requests: liveFeed.requestCounts, startup_trace: traceStatus,
         }, null, 2)}\n`);
         captureAndroidFailureDiagnostics(
           args.serial, artifactDir, result.test,

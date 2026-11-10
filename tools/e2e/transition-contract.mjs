@@ -92,6 +92,17 @@ export async function observeUntil(
   let lastValue = null;
   let attempts = 0;
   const observations = [];
+  const diagnostics = (error = lastError) => ({
+    description,
+    elapsed_ms: Math.round(scheduler.now() - startedAt),
+    timeout_ms: timeoutMs,
+    attempts,
+    successful_samples: successfulSamples,
+    required_successful_samples: consecutiveSuccesses,
+    last_value: lastValue,
+    observations,
+    last_error: error?.message ?? null,
+  });
   while (scheduler.now() < deadline) {
     try {
       attempts += 1;
@@ -122,9 +133,11 @@ export async function observeUntil(
       }
     } catch (error) {
       if (error instanceof DeadlineExceededError && error.deadline === deadline) break;
-      if (error instanceof TerminalObservationError) throw error;
       if (!(error instanceof TransientObservationError)) {
-        throw new TerminalObservationError(description, error.message, { cause: error });
+        const failure = error instanceof TerminalObservationError
+          ? error : new TerminalObservationError(description, error.message, { cause: error });
+        failure.diagnostics ??= diagnostics(error);
+        throw failure;
       }
       lastError = error;
       successfulSamples = 0;
@@ -152,17 +165,7 @@ export async function observeUntil(
   throw new ObservationTimeoutError(
     description,
     elapsedMs,
-    {
-      description,
-      elapsed_ms: elapsedMs,
-      timeout_ms: timeoutMs,
-      attempts,
-      successful_samples: successfulSamples,
-      required_successful_samples: consecutiveSuccesses,
-      last_value: lastValue,
-      observations,
-      last_error: lastError?.message ?? null,
-    },
+    diagnostics(),
     lastError,
   );
 }

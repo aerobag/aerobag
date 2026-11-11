@@ -24,6 +24,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import reconcile_prod_releases as controller  # noqa: E402
 import release_reconciler as releases  # noqa: E402
+import pipeline_health  # noqa: E402
 from product_archive import locked  # noqa: E402
 
 
@@ -187,7 +188,9 @@ class ForcedPromotionActivationTests(unittest.TestCase):
         )
         self.instance.observed = releases.ObservedState(
             production="old", staging="candidate", generation=1,
-            releases={"candidate": self.record},
+            releases={"candidate": self.record, "old": releases.ObservedRelease(
+                tag="old", tag_object="c" * 40, commit="d" * 40, build_status="passed",
+            )},
         )
         previous = root / "channel-generations/00000001"
         releases.materialize_channel_generation(
@@ -542,8 +545,14 @@ class PublicProductionValidationTests(unittest.TestCase):
                 observed=root / "observed.json",
             )
             instance.artifact_root = root
+            instance.desired = releases.DesiredReleases(
+                production=releases.ReleaseBinding("prod"),
+                staging=releases.ReleaseBinding(record.tag), sunset=(),
+            )
             instance.observed = releases.ObservedState(
-                releases={record.tag: record},
+                releases={record.tag: record, "prod": releases.ObservedRelease(
+                    tag="prod", tag_object="c" * 40, commit="d" * 40,
+                )},
                 staging=record.tag,
             )
             content_types = {
@@ -1183,6 +1192,96 @@ class LiveFeedAllocationTests(unittest.TestCase):
             self.assertFalse(controller.qualification_is_current(record))
 
 
+class ReleaseLifecycleMonitoringTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.instance = controller.Controller.__new__(controller.Controller)
+        self.instance.args = SimpleNamespace(observed=self.root / "observed.json")
+        self.instance.desired = releases.DesiredReleases(
+            production=releases.ReleaseBinding("prod"), staging=None,
+            sunset=(releases.SunsetBinding("old", "2099-01-01T00:00:00Z"),),
+        )
+        self.instance.observed = releases.ObservedState(
+            production="prod", sunset=["old"], generation=1,
+            releases={tag: releases.ObservedRelease(
+                tag=tag, tag_object="a" * 40, commit="b" * 40, build_status="passed",
+                release_root=str(self.root / tag), product_manifest=str(self.root / f"{tag}.json"),
+                qualification_status="passed", live_feed_status="running",
+            ) for tag in ("prod", "old")},
+        )
+        self.old = self.instance.observed.releases["old"]
+        self.old.product_refresh_status = "failed"
+        self.old.product_refresh_error = "ZIP extraction failed"
+
+    def evaluate_saved_state(self, watch_tag="old"):
+        self.instance.save()
+        state = releases.load_observed_state(self.instance.args.observed).to_dict()
+        serving = releases.release_lifecycle.roles(state["production"], state["staging"], state["sunset"])
+        inputs = {key: {"error": None, "payload": {}} for key in (
+            "build_watch", "deploy_health", "current_artifacts", "live_feeds_status", "faa_cycle_calendar",
+        )}
+        inputs.update(product_facts=[], release_state={"error": None, "payload": state},
+                      release_channels={"deployment_managed": True, "error": None,
+                                        "payload": {"generation": state["generation"]}})
+        inputs["build_watch"]["payload"] = {"build": {"publish_label": watch_tag}, "result": {"status": "fail"}}
+        facts = {"inputs": inputs, "channels": {
+            tag: {"role": role.value, "tag": tag, "deployment_managed": True,
+                  "release_state": state["releases"][tag], "inputs": {
+                      "current_artifacts": {"payload": [], "error": None},
+                      "live_feeds_status": {"payload": {"products": {}}, "error": None},
+                      "product_facts": [],
+                  }} for tag, role in serving.items()
+        }}
+        result = pipeline_health.evaluate_health(facts, [], datetime(2026, 11, 11, tzinfo=timezone.utc))
+        self.assertFalse(any(m["id"] == "release_lifecycle.available" for m in result["metrics"]),
+                         "producer and consumer must agree on the saved contract")
+        failures = {m["id"] for m in result["metrics"]
+                    if m["severity"] in {"warning", "critical"}
+                    and (m["id"].endswith(("release.build_status", "release.product_refresh"))
+                         or m["id"] == "cycle_build.latest_result")}
+        return failures
+
+    def test_retirement_is_activation_not_intent_or_file_deletion(self):
+        expected = {"channel.old.release.product_refresh"}
+        self.assertEqual(self.evaluate_saved_state(), expected)
+        self.instance.desired = releases.DesiredReleases(
+            production=releases.ReleaseBinding("prod"), staging=None, sunset=(),
+        )
+        self.assertEqual(self.evaluate_saved_state(), expected, "still serving until activation")
+        self.instance.observed.sunset = []
+        self.instance.observed.generation += 1
+        self.instance.observed.gc_pending = True
+        self.assertEqual(self.evaluate_saved_state(), set())
+        self.assertIsNotNone(self.old.release_root, "rollback artifacts remain retained")
+        self.assertEqual(self.old.product_refresh_status, "failed", "history remains intact")
+        self.instance.desired = releases.DesiredReleases(
+            production=releases.ReleaseBinding("prod"), staging=releases.ReleaseBinding("old"), sunset=(),
+        )
+        self.assertEqual(self.evaluate_saved_state(), {"channel.preparing-old.release.product_refresh"})
+        self.instance.desired = releases.DesiredReleases(
+            production=releases.ReleaseBinding("prod"), staging=None, sunset=(),
+        )
+        controller.retirement.forget_removed_artifacts(self.old)
+        self.assertEqual(self.evaluate_saved_state(), set(), "later GC cannot change operational health")
+
+    def test_failed_candidate_is_reported_before_it_has_artifacts_or_an_endpoint(self):
+        self.old.product_refresh_status = "passed"
+        self.old.product_refresh_error = None
+        self.instance.desired = releases.DesiredReleases(
+            production=releases.ReleaseBinding("prod"), staging=releases.ReleaseBinding("candidate"),
+            sunset=self.instance.desired.sunset,
+        )
+        self.instance.observed.releases["candidate"] = releases.ObservedRelease(
+            tag="candidate", tag_object="a" * 40, commit="c" * 40, build_status="failed",
+        )
+        self.assertEqual(self.evaluate_saved_state("candidate"), {"channel.preparing-candidate.release.build_status"})
+        self.assertEqual(self.evaluate_saved_state("unknown"), {
+            "channel.preparing-candidate.release.build_status", "cycle_build.latest_result",
+        })
+
+
 class ControllerRecoveryTests(unittest.TestCase):
     def controller(
         self,
@@ -1239,6 +1338,7 @@ class ControllerRecoveryTests(unittest.TestCase):
             )
             persisted = releases.load_observed_state(root / "observed.json")
             self.assertEqual(persisted.generation, 2)
+            self.assertEqual(persisted.release_lifecycle["prod"]["phase"], "serving")
 
     def test_pending_gc_is_retried_and_cleared_only_after_success(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1274,6 +1374,9 @@ class ControllerRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             observed = releases.ObservedState(
+                releases={"prod": releases.ObservedRelease(
+                    tag="prod", tag_object="a" * 40, commit="b" * 40,
+                )},
                 legacy_live_feed_draining_until_utc=(
                     datetime.now(timezone.utc) - timedelta(minutes=1)
                 ).isoformat().replace("+00:00", "Z")

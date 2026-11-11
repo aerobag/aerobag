@@ -76,6 +76,7 @@ RUNTIME_SOURCE_PATHS = (
     "crates/product-contracts/contracts/live-feed-compatibility.json",
     "crates/product-contracts/contracts/client-data-contracts.json",
     "product/preprocessor/scripts/pipeline_health.py",
+    "product/preprocessor/scripts/release_lifecycle.py",
     "product/preprocessor/scripts/telemetry_contracts.py",
     "product/preprocessor/scripts/alarm_dispositions.py",
     "product/preprocessor/scripts/watch_build_log.py",
@@ -2185,6 +2186,11 @@ WantedBy=timers.target
     write_remote_file(
         config, "/usr/local/bin/alarm_dispositions.py",
         ALARM_DISPOSITIONS_HELPER.read_text(encoding="utf-8"), dry_run=dry_run,
+    )
+    write_remote_file(
+        config, "/usr/local/bin/release_lifecycle.py",
+        (REPO_ROOT / "product/preprocessor/scripts/release_lifecycle.py").read_text(encoding="utf-8"),
+        dry_run=dry_run,
     )
     write_remote_file(
         config, "/etc/aerobag/alarm-dispositions.json",

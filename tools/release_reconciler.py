@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -28,9 +29,12 @@ from urllib.parse import urlparse
 
 import live_feed_compatibility as compatibility
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "product/preprocessor/scripts"))
+import release_lifecycle
+
 
 DESIRED_SCHEMA_VERSION = 2
-OBSERVED_SCHEMA_VERSION = 2
+OBSERVED_SCHEMA_VERSION = 3
 CHANNEL_GENERATION_SCHEMA_VERSION = 1
 RELEASE_LIVE_FEEDS_STATE_ENV = "AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT"
 RECONCILIATION_PROGRESS_RELATIVE_PATH = "state/release-reconciliation-progress"
@@ -399,6 +403,7 @@ class ObservedState:
     channel_inputs_dirty: bool = False
     legacy_live_feed_draining_until_utc: str | None = None
     gc_pending: bool = False
+    release_lifecycle: dict | None = None
 
     @classmethod
     def empty(cls) -> "ObservedState":
@@ -421,15 +426,25 @@ class ObservedState:
                 "channel_inputs_dirty",
                 "legacy_live_feed_draining_until_utc",
                 "gc_pending",
+                "release_lifecycle",
             },
         )
         version = document.get("schema_version")
-        if type(version) is not int or version not in (1, OBSERVED_SCHEMA_VERSION):
+        if type(version) is not int or version not in (1, 2, OBSERVED_SCHEMA_VERSION):
             raise ReleaseConfigError(
-                f"release observed state requires schema_version 1 or {OBSERVED_SCHEMA_VERSION}"
+                f"release observed state requires schema_version 1, 2 or {OBSERVED_SCHEMA_VERSION}"
             )
         if version == 1 and "live_feed_instances" in document:
             raise ReleaseConfigError("live_feed_instances requires observed schema_version 2")
+        if version < 3 and "release_lifecycle" in document:
+            raise ReleaseConfigError("release_lifecycle requires observed schema_version 3")
+        if version == 3 and "release_lifecycle" not in document:
+            raise ReleaseConfigError("missing release_lifecycle in observed schema_version 3")
+        if document.get("release_lifecycle") is not None:
+            try:
+                release_lifecycle.read(document)
+            except (ValueError, TypeError) as error:
+                raise ReleaseConfigError(str(error)) from error
         releases_value = document.get("releases", {})
         if not isinstance(releases_value, dict):
             raise ReleaseConfigError("release observed state releases must be an object")
@@ -482,6 +497,7 @@ class ObservedState:
                 "legacy_live_feed_draining_until_utc"
             ),
             gc_pending=document.get("gc_pending", False),
+            release_lifecycle=document.get("release_lifecycle"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -503,6 +519,7 @@ class ObservedState:
                 self.legacy_live_feed_draining_until_utc
             ),
             "gc_pending": self.gc_pending,
+            "release_lifecycle": self.release_lifecycle,
         }
 
 

@@ -18,6 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pipeline_health
+import release_lifecycle
 
 
 TEST_LIVE_FEED_HEALTH_POLICIES = {
@@ -227,19 +228,20 @@ class ChartQualityMetricTests(unittest.TestCase):
 
     def test_explicitly_retired_release_does_not_keep_alarming(self):
         retired = {**self.report("critical"), "schema_version": 3,
-                   "publication_id": "2026-09-18.2-" + "a" * 12}
+                   "publication_id": "2026-10-28.1-" + "a" * 12}
         unknown = {**retired, "publication_id": "unpublished-failing-build"}
-        facts = {"channels": {"production": {"tag": "2026-10-11.3"}}, "inputs": {
-            "release_state": {"payload": {"releases": {"2026-09-18.2": {
-                "commit": "a" * 40, "live_feed_status": "stopped",
-                "release_root": None, "product_manifest": None}}}},
-            "chart_quality": [{"family": "SEC", "payload": r} for r in (retired, unknown)]}}
+        facts = CyclePublicationPolicyTests().managed_facts()
+        old = facts["channels"].pop("release-old")
+        state = facts["inputs"]["release_state"]["payload"]
+        state["sunset"] = []
+        state["release_lifecycle"][old["tag"]].update(phase="retired", role=None)
+        facts["inputs"]["chart_quality"] = [{"family": "SEC", "payload": r} for r in (retired, unknown)]
         metrics = []
         pipeline_health.add_chart_quality_metrics(metrics, facts, self.now)
         alarms = [m for m in metrics if m["severity"] == "critical"]
         self.assertEqual(len(alarms), 1)
         self.assertEqual(alarms[0]["details"]["publication_id"], "unpublished-failing-build")
-        facts["channels"]["production"]["tag"] = "2026-09-18.2"
+        facts["channels"]["release-old"] = old
         metrics = []
         pipeline_health.add_chart_quality_metrics(metrics, facts, self.now)
         self.assertEqual(sum(m["severity"] == "critical" for m in metrics), 2,
@@ -1926,7 +1928,10 @@ class CyclePublicationPolicyTests(unittest.TestCase):
 
     def managed_facts(self, role="sunset") -> dict:
         facts = self.facts(("2611", "2612"))
-        facts["inputs"]["release_channels"] = {"deployment_managed": True, "error": None}
+        facts["inputs"]["release_channels"] = {
+            "deployment_managed": True, "error": None,
+            "payload": {"generation": 7},
+        }
         facts["channels"] = {}
         records = {}
         for channel_id, tag, channel_role in [
@@ -1955,7 +1960,14 @@ class CyclePublicationPolicyTests(unittest.TestCase):
         records["2026-10-28.1"].update(
             product_refresh_status="failed", product_refresh_error="ZIP extraction failed",
         )
-        facts["inputs"]["release_state"] = {"error": None, "payload": {"releases": records}}
+        serving = {channel["tag"]: release_lifecycle.Role(channel["role"])
+                   for channel in facts["channels"].values()}
+        state = {"schema_version": 3, "generation": 7, "releases": records,
+                 "production": "2026-11-06.2", "staging": "2026-10-28.1" if role == "staging" else None,
+                 "sunset": ["2026-10-28.1"] if role == "sunset" else []}
+        state["release_lifecycle"] = release_lifecycle.project(
+            {tag: r["commit"] for tag, r in records.items()}, serving, serving)
+        facts["inputs"]["release_state"] = {"error": None, "payload": state}
         facts["inputs"]["build_watch"]["payload"]["build"] = {"publish_label": "2026-10-28.1"}
         return facts
 
@@ -2050,14 +2062,102 @@ class CyclePublicationPolicyTests(unittest.TestCase):
                 self.assertEqual(metric(result, name)["severity"], severity)
 
     def test_retirement_does_not_resurrect_an_owned_failure_as_a_global_alarm(self) -> None:
-        for retired in (False, True):
-            with self.subTest(retired=retired):
+        facts = self.managed_facts()
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        before = evaluate_health(facts, [], now)
+        self.assertEqual(metric(before, "channel.release-old.release.product_refresh")["severity"], "warning")
+        old = facts["channels"].pop("release-old")["release_state"]
+        state = facts["inputs"]["release_state"]["payload"]
+        state["sunset"] = []
+        state["generation"] += 1
+        facts["inputs"]["release_channels"]["payload"]["generation"] += 1
+        state["release_lifecycle"]["2026-10-28.1"].update(phase="retired", role=None)
+        for hours, collected in ((0, False), (48, False), (49, True)):
+            with self.subTest(hours=hours, collected=collected):
+                if collected:
+                    old.update(live_feed_status="stopped", release_root=None, product_manifest=None)
+                result = evaluate_health(facts, [], now + timedelta(hours=hours))
+                self.assertFalse(has_metric(result, "cycle_build.latest_result"))
+                self.assertFalse(has_metric(result, "channel.release-old.release.product_refresh"))
+                self.assertEqual(old["product_refresh_status"], "failed", "history is not rewritten")
+
+    def test_unpublished_staging_failure_has_its_own_scope(self) -> None:
+        facts = self.managed_facts("staging")
+        old = facts["channels"].pop("release-old")["release_state"]
+        old.update(build_status="failed", product_refresh_status=None, product_refresh_error=None,
+                   release_root=None, product_manifest=None)
+        state = facts["inputs"]["release_state"]["payload"]
+        state["staging"] = None
+        state["release_lifecycle"]["2026-10-28.1"]["phase"] = "preparing"
+        result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+        self.assertFalse(has_metric(result, "cycle_build.latest_result"))
+        failure = metric(result, "channel.preparing-2026-10-28.1.release.build_status")
+        self.assertEqual(failure["channel_role"], "staging")
+        self.assertEqual(failure["release_tag"], "2026-10-28.1")
+        self.assertIn(failure["severity"], ("warning", "critical"))
+        self.assertFalse(has_metric(result, "channel.preparing-2026-10-28.1.release.live_feed_status"))
+        self.assertFalse(has_metric(result, "channel.preparing-2026-10-28.1.release.qualification_status"))
+
+    def test_invalid_lifecycle_cannot_suppress_a_failure_even_after_gc(self) -> None:
+        for problem in ("absent", "old-schema", "missing-entry", "unknown-phase", "retired-role",
+                        "commit", "serving", "generation", "generation-type", "duplicate", "sunset-type"):
+            with self.subTest(problem=problem):
                 facts = self.managed_facts()
                 old = facts["channels"].pop("release-old")["release_state"]
-                if retired:
-                    old.update(live_feed_status="stopped", release_root=None, product_manifest=None)
+                old.update(live_feed_status="stopped", release_root=None, product_manifest=None)
+                state = facts["inputs"]["release_state"]["payload"]
+                state["sunset"] = []
+                document = state["release_lifecycle"]
+                entry = document["2026-10-28.1"]
+                entry.update(phase="retired", role=None)
+                if problem == "absent":
+                    del state["release_lifecycle"]
+                elif problem == "old-schema":
+                    state["schema_version"] = 2
+                elif problem == "missing-entry":
+                    del document["2026-10-28.1"]
+                elif problem == "unknown-phase":
+                    entry["phase"] = "obsolete"
+                elif problem == "retired-role":
+                    entry["role"] = "sunset"
+                elif problem == "commit":
+                    entry["commit"] = "b" * 40
+                elif problem == "serving":
+                    state["sunset"] = ["2026-10-28.1"]
+                elif problem == "generation":
+                    state["generation"] += 1
+                elif problem == "generation-type":
+                    state["generation"] = True
+                    facts["inputs"]["release_channels"]["payload"]["generation"] = True
+                elif problem == "duplicate":
+                    state["sunset"] = [state["production"]]
+                elif problem == "sunset-type":
+                    state["sunset"] = None
                 result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
-                self.assertEqual(has_metric(result, "cycle_build.latest_result"), not retired)
+                self.assertEqual(metric(result, "release_lifecycle.available")["severity"], "warning")
+                self.assertEqual(metric(result, "cycle_build.latest_result")["severity"], "warning")
+
+    def test_returning_retired_release_reenables_its_failures(self) -> None:
+        facts = self.managed_facts()
+        old = facts["channels"].pop("release-old")
+        state = facts["inputs"]["release_state"]["payload"]
+        state["sunset"] = []
+        entry = state["release_lifecycle"][old["tag"]]
+        entry.update(phase="retired", role=None)
+        for phase, scope in (("retired", None), ("preparing", f"preparing-{old['tag']}"),
+                             ("serving", "release-old")):
+            with self.subTest(phase=phase):
+                entry.update(phase=phase, role=None if phase == "retired" else "sunset")
+                if phase == "serving":
+                    facts["channels"][scope] = old
+                    state["sunset"] = [old["tag"]]
+                result = evaluate_health(facts, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                self.assertFalse(has_metric(result, "cycle_build.latest_result"))
+                if scope:
+                    self.assertEqual(metric(result, f"channel.{scope}.release.product_refresh")["severity"], "warning")
+                else:
+                    self.assertFalse(any(m["release_tag"] == old["tag"] for m in result["metrics"]
+                                         if "release_tag" in m))
 
     def test_countdown_exact_boundaries(self) -> None:
         effective = datetime(2026, 11, 26, tzinfo=timezone.utc)

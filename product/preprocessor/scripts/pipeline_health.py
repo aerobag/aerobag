@@ -28,6 +28,7 @@ from urllib.request import Request, urlopen
 
 import telemetry_contracts
 import alarm_dispositions
+import release_lifecycle
 
 SCHEMA_VERSION = 2
 HISTORY_SCHEMA_VERSION = 4
@@ -442,8 +443,8 @@ def resolve_live_feed_provider(source: dict[str, Any], observed: Any) -> dict[st
             provider["status"] = record.get("live_feed_status")
         return provider
     if (not isinstance(observed, dict) or type(observed.get("schema_version")) is not int
-            or observed["schema_version"] != 2):
-        provider["error"] = "instance provider requires observed state schema_version 2"
+            or observed["schema_version"] not in (2, 3)):
+        provider["error"] = "instance provider requires observed state schema_version 2 or 3"
         return provider
     instances = observed.get("live_feed_instances")
     instance = instances.get(instance_id) if isinstance(instances, dict) else None
@@ -868,28 +869,52 @@ def chart_cycle_phase(facts: dict[str, Any], cycle: Any, now: datetime) -> str:
     return "current"
 
 
-def retired_release_commits(facts: dict[str, Any]) -> dict[str, str]:
-    channels = facts.get("channels", {})
-    state = facts.get("inputs", {}).get("release_state", {}).get("payload")
-    if not channels or not isinstance(state, dict) or not isinstance(state.get("releases"), dict):
-        return {}
-    active = {channel.get("tag") for channel in channels.values()}
-    retired = {}
-    for tag, record in state["releases"].items():
-        # These are the explicit post-GC values from forget_removed_artifacts,
-        # not an inference that an unknown/unpublished build must be retired.
-        if (tag not in active and isinstance(record, dict)
-                and record.get("live_feed_status") == "stopped"
-                and "release_root" in record and record["release_root"] is None
-                and "product_manifest" in record and record["product_manifest"] is None
-                and re.fullmatch(r"[A-Za-z0-9_.-]+", tag)
-                and re.fullmatch(r"[0-9a-f]{40}", str(record.get("commit")))):
-            retired[tag] = record["commit"]
-    return retired
+def release_lifecycle_evidence(
+    facts: dict[str, Any],
+) -> tuple[dict[str, release_lifecycle.Release], str | None]:
+    inputs = facts.get("inputs", {})
+    source = inputs.get("release_channels")
+    if not isinstance(source, dict) or source.get("deployment_managed") is not True:
+        return {}, None  # Standalone monitoring has no controller-owned lifecycle.
+    try:
+        state_source = inputs.get("release_state")
+        if (source.get("error") is not None or not isinstance(state_source, dict)
+                or state_source.get("error") is not None):
+            raise ValueError("release channel or observed-state source unavailable")
+        state = state_source.get("payload")
+        generation = source.get("payload")
+        if (not isinstance(state, dict) or not isinstance(generation, dict)
+                or type(state.get("generation")) is not int
+                or type(generation.get("generation")) is not int
+                or state["generation"] != generation.get("generation")):
+            raise ValueError("observed lifecycle and active channel generation disagree")
+        lifecycle = release_lifecycle.read(state)
+        channels = facts.get("channels")
+        if not isinstance(channels, dict):
+            raise ValueError("active release channels unavailable")
+        serving = {}
+        for channel in channels.values():
+            if (not isinstance(channel, dict) or channel.get("deployment_managed") is not True
+                    or not isinstance(channel.get("inputs"), dict)):
+                raise ValueError("active release channel is incomplete")
+            tag = channel.get("tag")
+            if not isinstance(tag, str) or tag in serving:
+                raise ValueError("active release channel identity is ambiguous")
+            if tag not in lifecycle or channel.get("release_state") != state["releases"][tag]:
+                raise ValueError("active release channel disagrees with observed release state")
+            serving[tag] = release_lifecycle.Role(channel.get("role"))
+        expected = {tag: entry.role for tag, entry in lifecycle.items()
+                    if entry.phase == release_lifecycle.Phase.SERVING}
+        if serving != expected:
+            raise ValueError("observed lifecycle disagrees with active serving assignments")
+        return lifecycle, None
+    except (ValueError, TypeError) as error:
+        return {}, str(error)
 
 
 def add_chart_quality_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime | None = None,
+    *, lifecycle: dict[str, release_lifecycle.Release] | None = None,
 ) -> None:
     now = now or utc_now()
     reports = facts.get("inputs", {}).get("chart_quality")
@@ -899,7 +924,10 @@ def add_chart_quality_metrics(
         add_metric(metrics, metric_id="chart_quality.available", label="Chart visual checks",
                    value=0, unit="reports", severity="warning",
                    message="No chart visual-reference check has completed yet")
-    retired = {f"{tag}-{commit[:12]}" for tag, commit in retired_release_commits(facts).items()}
+    if lifecycle is None:
+        lifecycle, _ = release_lifecycle_evidence(facts)
+    retired = {f"{tag}-{entry.commit[:12]}" for tag, entry in lifecycle.items()
+               if entry.phase == release_lifecycle.Phase.RETIRED}
     for entry in reports:
         family = entry["family"]
         report = entry.get("payload")
@@ -1042,10 +1070,15 @@ def evaluate_health(
     metrics: list[dict[str, Any]] = []
     alerts: list[dict[str, Any]] = []
 
+    lifecycle, lifecycle_error = release_lifecycle_evidence(facts)
     add_input_metrics(metrics, facts)
-    add_build_watch_metrics(metrics, facts, now)
+    if lifecycle_error:
+        add_metric(metrics, metric_id="release_lifecycle.available", label="release lifecycle",
+                   value=False, severity="warning",
+                   message=f"Cannot attribute release health: {lifecycle_error}")
+    add_build_watch_metrics(metrics, facts, now, lifecycle=lifecycle)
     add_aerobag_cloud_metrics(metrics, facts)
-    add_chart_quality_metrics(metrics, facts, now)
+    add_chart_quality_metrics(metrics, facts, now, lifecycle=lifecycle)
     add_service_bulletin_metrics(metrics, facts)
     add_archive_metrics(metrics, facts, now)
     channels = facts.get("channels")
@@ -1070,22 +1103,17 @@ def evaluate_health(
             )
             if "telemetry" in channel or channel.get("deployment_managed") is True:
                 apply_telemetry_contracts(channel_metrics, channel)
-            role = channel.get("role")
-            tag = channel.get("tag")
-            scope_label = (
-                f"Sunset {tag}"
-                if role == "sunset"
-                else str(role or channel_id).replace("_", " ").title()
-            )
-            for metric in channel_metrics:
-                metric["id"] = f"channel.{channel_id}.{metric['id']}"
-                metric["label"] = f"{scope_label}: {metric['label']}"
-                metric["message"] = f"{scope_label}: {metric['message']}"
-                metric["scope"] = channel_id
-                metric["scope_label"] = scope_label
-                metric["channel_role"] = role
-                metric["release_tag"] = tag
+            scope_release_metrics(channel_metrics, channel_id, channel)
             metrics.extend(channel_metrics)
+        for tag, entry in lifecycle.items():
+            if entry.phase != release_lifecycle.Phase.PREPARING:
+                continue
+            candidate = {"tag": tag, "role": entry.role.value, "phase": entry.phase.value,
+                         "release_state": facts["inputs"]["release_state"]["payload"]["releases"][tag]}
+            candidate_metrics: list[dict[str, Any]] = []
+            add_channel_release_metrics(candidate_metrics, candidate, now)
+            scope_release_metrics(candidate_metrics, f"preparing-{tag}", candidate)
+            metrics.extend(candidate_metrics)
         add_total_live_feed_client_metric(metrics, facts)
     else:
         # Standalone evaluators, including the ACS workload verifier, expose one
@@ -1272,6 +1300,20 @@ def add_channel_input_metrics(
     add_product_facts_availability_metric(metrics, inputs)
 
 
+def scope_release_metrics(metrics: list[dict[str, Any]], scope: str, channel: dict[str, Any]) -> None:
+    role, tag = channel.get("role"), channel.get("tag")
+    label = str(role or scope).replace("_", " ").title()
+    if tag:
+        label += f" {tag}"
+    if channel.get("phase") == "preparing":
+        label += " (preparing)"
+    for metric in metrics:
+        metric["id"] = f"channel.{scope}.{metric['id']}"
+        metric["label"] = f"{label}: {metric['label']}"
+        metric["message"] = f"{label}: {metric['message']}"
+        metric.update(scope=scope, scope_label=label, channel_role=role, release_tag=tag)
+
+
 def add_channel_release_metrics(
     metrics: list[dict[str, Any]], channel: dict[str, Any], now: datetime | None = None,
 ) -> None:
@@ -1289,11 +1331,13 @@ def add_channel_release_metrics(
         return
     role = channel.get("role")
     provider = channel.get("live_feed_provider")
-    for field, label in [
+    preparing = channel.get("phase") == "preparing"
+    fields = [("build_status", "release build")] if preparing else [
         ("build_status", "release build"),
         ("qualification_status", "deployed release checks"),
         ("live_feed_status", "release live-feed daemon"),
-    ]:
+    ]
+    for field, label in fields:
         value = record.get(field)
         provider_metric = field == "live_feed_status" and isinstance(provider, dict)
         if provider_metric:
@@ -1373,7 +1417,7 @@ def add_channel_release_metrics(
                             "budget_seconds": PRODUCT_REFRESH_BUDGET_SECONDS})
 
     # Passing routine HTTP checks must not erase or conceal a forced admission.
-    if "deployment_status" in record and (
+    if not preparing and "deployment_status" in record and (
         record.get("qualification_status") == "bypassed"
         or record.get("qualification_bypassed_at_utc")
     ):
@@ -1391,30 +1435,18 @@ def add_channel_release_metrics(
         )
 
 
-def release_owns_build_failure(facts: dict[str, Any], build_watch: dict[str, Any]) -> bool:
+def release_owns_build_failure(
+    facts: dict[str, Any], build_watch: dict[str, Any],
+    lifecycle: dict[str, release_lifecycle.Release],
+) -> bool:
     inputs = facts.get("inputs", {})
-    source = inputs.get("release_channels")
-    state_source = inputs.get("release_state")
-    channels = facts.get("channels")
     build = build_watch.get("build")
     tag = build.get("publish_label") if isinstance(build, dict) else None
-    if (not isinstance(source, dict) or source.get("deployment_managed") is not True
-            or source.get("error") is not None or not isinstance(state_source, dict)
-            or state_source.get("error") is not None
-            or not isinstance(state_source.get("payload"), dict)
-            or not isinstance(channels, dict) or not isinstance(tag, str) or not tag):
+    if not isinstance(tag, str) or tag not in lifecycle:
         return False
-    matches = [channel for channel in channels.values()
-               if isinstance(channel, dict) and channel.get("tag") == tag]
-    if not matches:
-        return tag in retired_release_commits(facts)
-    if len(matches) != 1:
-        return False
-    channel = matches[0]
-    record = channel.get("release_state")
-    if (channel.get("deployment_managed") is not True or not isinstance(channel.get("inputs"), dict)
-            or not isinstance(record, dict)):
-        return False
+    if lifecycle[tag].phase == release_lifecycle.Phase.RETIRED:
+        return True
+    record = inputs["release_state"]["payload"]["releases"][tag]
     # Only drop the duplicate when the channel evaluator will report the failure.
     # A healthy/missing record is not evidence that this build failure is covered.
     return record.get("build_status") == "failed" or (
@@ -1425,13 +1457,16 @@ def release_owns_build_failure(facts: dict[str, Any], build_watch: dict[str, Any
 
 def add_build_watch_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime | None = None,
+    *, lifecycle: dict[str, release_lifecycle.Release] | None = None,
 ) -> None:
     build_watch = facts["inputs"]["build_watch"].get("payload")
     if not isinstance(build_watch, dict):
         return
     result = build_watch.get("result")
     result_status = result.get("status") if isinstance(result, dict) else None
-    if result_status == "fail" and release_owns_build_failure(facts, build_watch):
+    if lifecycle is None:
+        lifecycle, _ = release_lifecycle_evidence(facts)
+    if result_status == "fail" and release_owns_build_failure(facts, build_watch, lifecycle):
         return
     current_published = False
     if result_status == "fail":
@@ -1464,6 +1499,10 @@ def add_build_watch_metrics(
             )
         ),
     )
+    if result_status == "fail":
+        build = build_watch.get("build")
+        tag = build.get("publish_label") if isinstance(build, dict) else None
+        metrics[-1]["message"] += f"; build release {tag!r} has no verified scoped failure or retirement"
     process = build_watch.get("process")
     progress = build_watch.get("progress")
     alive = process.get("alive") if isinstance(process, dict) else None

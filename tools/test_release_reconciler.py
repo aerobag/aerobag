@@ -637,17 +637,41 @@ class LiveFeedBindingPlannerTests(unittest.TestCase):
         observed = releases.ObservedState.from_dict(document)
         self.assertEqual(observed.live_feed_instances, {})
         self.assertIsNone(observed.releases["prod"].live_feed_requirements)
-        self.assertEqual(observed.to_dict()["schema_version"], 2)
+        self.assertEqual(observed.to_dict()["schema_version"], 3)
+        self.assertIsNone(observed.release_lifecycle)
         self.assertTrue(releases.dedicated_live_feed_ready(observed, "prod"))
 
     def test_v1_observed_state_rejects_v2_instance_metadata(self) -> None:
         _, observed = self.state()
         document = observed.to_dict()
         document["schema_version"] = 1
+        del document["release_lifecycle"]
         with self.assertRaisesRegex(releases.ReleaseConfigError, "schema_version 2"):
             releases.ObservedState.from_dict(document)
         del document["live_feed_instances"]
         with self.assertRaisesRegex(releases.ReleaseConfigError, "schema_version 2"):
+            releases.ObservedState.from_dict(document)
+
+    def test_v2_upgrade_does_not_invent_retirement_evidence(self) -> None:
+        _, observed = self.state()
+        document = observed.to_dict()
+        document["schema_version"] = 2
+        del document["release_lifecycle"]
+        migrated = releases.ObservedState.from_dict(document)
+        self.assertEqual(migrated.to_dict()["schema_version"], 3)
+        self.assertIsNone(migrated.release_lifecycle)
+
+    def test_lifecycle_requires_its_own_schema_and_complete_identities(self) -> None:
+        _, observed = self.state()
+        for version, lifecycle in ((2, {}), (3, {}), (3, "not-an-object")):
+            with self.subTest(version=version, lifecycle=lifecycle):
+                document = observed.to_dict()
+                document.update(schema_version=version, release_lifecycle=lifecycle)
+                with self.assertRaises(releases.ReleaseConfigError):
+                    releases.ObservedState.from_dict(document)
+        document = observed.to_dict()
+        del document["release_lifecycle"]
+        with self.assertRaisesRegex(releases.ReleaseConfigError, "missing release_lifecycle"):
             releases.ObservedState.from_dict(document)
 
     def test_observed_state_rejects_missing_or_wrong_instance_ownership(self) -> None:

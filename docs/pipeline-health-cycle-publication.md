@@ -87,9 +87,20 @@ operator acceptance, not blanket suppression of sunset refresh alarms.
 
 The shared build watcher observes the most recent build across all releases, not
 necessarily production. Its `build.publish_label` identifies the coordinator's
-release tag. When that exact tag matches one deployment-managed channel whose
-observed build or refresh already reports the failure, Pipeline Health emits the
-channel's alarm without a duplicate `cycle_build.latest_result` global alarm.
+release tag. The controller atomically publishes an operational lifecycle for
+every known release in observed-state schema v3:
+
+- `serving`: assigned to the activated production, staging, or sunset channel.
+- `preparing`: requested by release intent, but not yet serving. A failed initial
+  build is reported in its intended role's scope, even without a published URL.
+- `retired`: neither serving nor requested. Historical failures remain recorded
+  but do not generate operational alarms.
+
+Serving assignments take precedence until activation completes; changing desired
+intent alone cannot retire a still-serving release. Reintroducing a retired
+release makes it preparing or serving again, restoring its health checks.
+When the identified release's build or refresh already reports the failure,
+Pipeline Health emits its scoped alarm without a duplicate global alarm.
 The raw watcher result remains `fail`; it is not relabeled as passed. A retained
 refresh error remains visible during a retry, until successful activation clears it.
 
@@ -99,9 +110,16 @@ Unknown statuses, unavailable sources, dead in-progress build processes, and
 production's independent current/next-cycle coverage checks remain monitored.
 
 A completed failure from an explicitly retired release cannot reappear as a
-global alarm. Retirement uses the same controller post-GC evidence as chart
-monitoring (stopped service, removed release/publication paths, valid tag/commit),
-not a guess that any unrecognized build must be obsolete.
+global alarm. Build and chart-quality monitoring share this classification.
+Retained artifacts, daemon draining, backup pins, and GC timing do not determine
+operational retirement. Unknown releases are never inferred to be retired.
+
+The reader verifies the lifecycle's release identities and serving assignments
+against the observed records and active channel generation. Missing, malformed,
+older-schema, or mixed-generation evidence raises a lifecycle warning and cannot
+suppress build/chart alarms. The controller explicitly upgrades v1/v2 observed
+state on its next save; the monitor does not reconstruct lifecycle from legacy
+storage/GC fields.
 
 This attribution fix is also controller runtime code: integrate it, then run
 `tools/prod_manage.py --reconcile`. No new release or product rebuild is required.

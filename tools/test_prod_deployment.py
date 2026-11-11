@@ -756,6 +756,7 @@ class RuntimeUpdateTests(unittest.TestCase):
     def test_alarm_policy_and_engine_are_installed_and_runtime_fingerprinted(self) -> None:
         self.assertIn("deploy/alarm-dispositions.json", deploy_prod.RUNTIME_SOURCE_PATHS)
         self.assertIn("product/preprocessor/scripts/alarm_dispositions.py", deploy_prod.RUNTIME_SOURCE_PATHS)
+        self.assertIn("product/preprocessor/scripts/release_lifecycle.py", deploy_prod.RUNTIME_SOURCE_PATHS)
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         with mock.patch.object(deploy_prod, "write_remote_file") as write:
             deploy_prod.write_remote_config(config, deployed_rev="test", include_build_config=False, dry_run=True)
@@ -764,6 +765,8 @@ class RuntimeUpdateTests(unittest.TestCase):
                          deploy_prod.ALARM_DISPOSITIONS_POLICY.read_text())
         self.assertEqual(files["/usr/local/bin/alarm_dispositions.py"],
                          deploy_prod.ALARM_DISPOSITIONS_HELPER.read_text())
+        self.assertEqual(files["/usr/local/bin/release_lifecycle.py"],
+                         (deploy_prod.REPO_ROOT / "product/preprocessor/scripts/release_lifecycle.py").read_text())
         self.assertIn('Path("/etc/aerobag/alarm-dispositions.json")',
                       files["/usr/local/bin/aerobag-pipeline-health"])
 

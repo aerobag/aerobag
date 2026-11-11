@@ -362,6 +362,13 @@ class Controller:
                 record.deployment_error = None
 
     def save(self) -> None:
+        self.observed.release_lifecycle = releases.release_lifecycle.project(
+            {tag: record.commit for tag, record in self.observed.releases.items()},
+            releases.release_lifecycle.roles(self.observed.production, self.observed.staging, self.observed.sunset),
+            releases.release_lifecycle.roles(self.desired.production.tag,
+                                            self.desired.staging.tag if self.desired.staging else None,
+                                            [binding.tag for binding in self.desired.sunset]),
+        )
         releases.write_observed_state(self.args.observed, self.observed)
 
     def live_feed_runtime(self) -> live_feed_launch.LiveFeedRuntime:

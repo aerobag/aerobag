@@ -73,6 +73,20 @@ those logical records and their descriptor when the contract changes; never
 restore a dependency on two historical FAA cycles. Smoke/release fixtures still
 come from one real available publication.
 
+## CI repair follow-through
+
+When Jon asks to fix CI and the evidence and tests support a routine fix,
+autonomously commit it and push both to `/root/aerobag` and to GitHub. Do not
+stop at "ready to commit" or wait for another push request. Follow the preflight
+and verification rules above, then set a one-hour follow-up to inspect CI for
+the exact pushed commit. Report the result and investigate remaining failures;
+a passing rerun alone does not establish that a flake is fixed.
+
+Pause for Jon's review if the proposed fix introduces an architectural change
+he may want to consider. Report genuine blockers rather than bypassing checks.
+This authorization covers CI repair and follow-up, not staging, promotion or
+production deployment.
+
 ## Before staging a release
 
 - The command is `tools/prod_manage.py --stage`, not `--staging`. Inspect ordinary

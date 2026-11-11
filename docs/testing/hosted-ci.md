@@ -81,7 +81,10 @@ This was neither an Aerobag reconnect failure nor another disk exhaustion.
 Hosted and local qualification now explicitly set
 `AEROBAG_E2E_DISPOSABLE_CHROME_EMULATOR=1` for their disposable Chrome emulator.
 The harness disables Play Services for user 0 and verifies the exact package is
-disabled before launching Chrome. The Google APIs image supplies Chrome, but
+disabled before launching Chrome. It first disables the known unrelated Google
+clients described in the November 11 investigation below; leaving those clients
+running without their dependency causes retry/notification storms.
+The Google APIs image supplies Chrome, but
 this local-fixture networking test needs no Google services. The switch refuses
 physical devices; ordinary interactive runs leave services untouched. It leaves
 the disposable AVD disabled until deletion: never enable it for a personal AVD.
@@ -294,6 +297,58 @@ Local evidence lives under `/tmp/aerobag-ci-42730642416`. The next hosted failur
 must be interpreted using the trace plus observation history before proposing
 another app or emulator workaround. Do not mark this issue resolved merely
 because a subsequent run passes.
+
+### Chrome Startup Contention (November 11)
+
+The push run `42746420443` passed, but scheduled run `42861596245` on the same
+`1b6e9245` revision failed the Chrome journey again. All native Android and
+desktop web lanes passed. Its new Chrome trace captured a renderer task taking
+3,223 ms of wall time but only 124 ms of thread CPU. Layout accounted for
+1,197 ms wall / 42 ms CPU. This was not three seconds of Aerobag JavaScript work.
+The successful hosted run's longest renderer task was 423 ms.
+
+During the failed startup's ten-second window, logcat recorded 97 unavailable
+Play Services errors from YouTube and Messages, plus 37 repeated-notification
+suppression messages. Local fresh boots also identified Gmail, YouTube Music
+and Google Search retrying their disabled service dependency. These are not
+part of the local-fixture browser journey.
+
+A controlled investigation used the failed immutable app bundle and fixture,
+fresh API 34 Google APIs r14 AVDs, Chrome 113, two guest CPUs and four host CPUs.
+Both Chrome and Perfetto scheduler traces were captured. Single-sample results
+(not a statistical estimate of the hosted failure rate):
+
+- Previous isolation, default 1.5 GiB RAM: longest renderer task 2,200 ms wall /
+  67 ms thread CPU. The scheduler attributed 1,441 ms to runnable waits, 485 ms
+  to uninterruptible kernel waits, 158 ms to sleeping and 116 ms to running.
+  Scheduler running time and Chrome's thread clock are different measurements.
+- Disabling YouTube and Messages first: 1,175 ms wall / 60 ms CPU. Other Google
+  clients continued the retry pattern, so this was incomplete isolation.
+- Disabling all five identified clients first: 837 ms wall / 59 ms CPU.
+- Keeping the old isolation but doubling RAM to 3 GiB: 1,197 ms wall / 54 ms CPU.
+  Extra memory alone did not remove the background clients or their retries.
+
+The harness now disables the exact installed packages for YouTube, YouTube
+Music, Messages, Gmail and Google Search before disabling Play Services. Each
+disablement is verified before proceeding; command failures or inexact package
+matches stop setup. Optional absent clients are skipped, not guessed by prefix.
+This remains restricted to explicitly disposable emulators, with physical
+device refusal. Chrome, SystemUI, input, rendering, application code, memory
+allocation and all journey deadlines/assertions are unchanged. No new sleep,
+readiness heuristic or retry was added. Both hosted and local qualification
+already use this same setup owner.
+
+The ordering, absent/exact-package matching and failed-client verification
+regressions failed against the old implementation. The focused runtime suite
+passes all 29 tests. A fresh emulator run using the production harness change
+and the unchanged failed-CI app bundle passed initial METAR v1, SSE v2, offline
+interruption and recovery to v3 on its first launch. Its longest traced startup
+task was 317 ms; the initial React/layout task was 283 ms wall / 54 ms CPU.
+Evidence, including the unchanged failed app bundle and
+kernel traces, lives under `/tmp/aerobag-ci-42861596245`.
+This removes a demonstrated source of emulator contention; it does not prove
+that every hosted renderer timeout is eliminated. Keep the startup trace and
+inspect the next hosted run rather than declaring success from a passing rerun.
 
 ## Cheap working-tree preflight
 

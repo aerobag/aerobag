@@ -7,24 +7,72 @@ import test from "node:test";
 import { CdpSocket, chromeCommandLine, openChromeJourneyPage, prepareChromeDevice, prepareChromeLaunch, waitForChromeEmulatorTheme, waitForLiveFeedStatus } from "./run-android-chrome-livefeed-e2e.mjs";
 import { ObservationTimeoutError, TerminalObservationError } from "./transition-contract.mjs";
 
-test("disposable Chrome emulator disables and verifies Google services before launch", () => {
+const googleServiceClients = [
+  "com.google.android.youtube",
+  "com.google.android.apps.youtube.music",
+  "com.google.android.apps.messaging",
+  "com.google.android.gm",
+  "com.google.android.googlequicksearchbox",
+];
+
+function installedPackages(packages) {
+  return packages.map(name => `package:${name}\n`).join("");
+}
+
+test("disposable Chrome emulator isolates background clients before their Google services dependency", () => {
   const commands = [];
   prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(serial, args) {
     assert.equal(serial, "emulator-test");
     commands.push(args);
     if (args.includes("getprop")) return "1\n";
-    if (args.includes("list")) return "package:com.google.android.gms\n";
+    if (args.includes("list")) return args.includes("-d")
+      ? installedPackages([args.at(-1)])
+      : installedPackages([...googleServiceClients, "com.android.chrome", "com.android.systemui"]);
     if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
     return "";
   } });
   assert.deepEqual(commands, [
     ["wait-for-device"],
     ["shell", "getprop", "ro.kernel.qemu"],
+    ["shell", "pm", "list", "packages", "--user", "0"],
+    ...googleServiceClients.flatMap(name => [
+      ["shell", "pm", "disable-user", "--user", "0", name],
+      ["shell", "pm", "list", "packages", "-d", "--user", "0", name],
+    ]),
     ["shell", "pm", "disable-user", "--user", "0", "com.google.android.gms"],
     ["shell", "pm", "list", "packages", "-d", "--user", "0", "com.google.android.gms"],
     ["shell", "pm", "grant", "com.android.chrome", "android.permission.POST_NOTIFICATIONS"],
     ["shell", "dumpsys", "package", "com.android.chrome"],
   ]);
+});
+
+test("absent optional clients are skipped and substring package matches are not disabled", () => {
+  const disabled = [];
+  prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
+    if (args.includes("getprop")) return "1\n";
+    if (args.includes("list")) return args.includes("-d")
+      ? installedPackages([args.at(-1)])
+      : installedPackages(["com.google.android.youtube.extra", "com.google.android.gm",
+        "com.android.chrome", "com.android.systemui"]);
+    if (args.includes("disable-user")) disabled.push(args.at(-1));
+    if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
+    return "";
+  } });
+  assert.deepEqual(disabled, ["com.google.android.gm", "com.google.android.gms"]);
+});
+
+test("an unverified client disablement stops before disabling its services or launching Chrome", () => {
+  const commands = [];
+  assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
+    commands.push(args);
+    if (args.includes("getprop")) return "1\n";
+    if (args.includes("list")) return args.includes("-d")
+      ? installedPackages(["com.google.android.youtube.extra", "com.google.android.gms"])
+      : installedPackages(["com.google.android.youtube"]);
+    return "";
+  } }), /com\.google\.android\.youtube.*still enabled/);
+  assert.equal(commands.some(args => args.includes("com.google.android.gms")), false);
+  assert.equal(commands.some(args => args.includes("grant")), false);
 });
 
 test("ordinary device runs leave Google services alone", () => {
@@ -143,7 +191,7 @@ test("explicit isolation refuses a physical tablet before changing any packages"
 test("an unverified Google service disablement stops setup", () => {
   assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
     return args.includes("getprop") ? "1\n" : "package:com.google.android.gms.supervision\n";
-  } }), /Google Play Services is still enabled/);
+  } }), /com\.google\.android\.gms is still enabled/);
 });
 
 test("an adb error during isolation is fatal, not a reason to run unisolated", () => {

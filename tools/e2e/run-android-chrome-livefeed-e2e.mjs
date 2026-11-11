@@ -817,14 +817,28 @@ export function prepareChromeDevice(serial, {
   if (runAdb(serial, ["shell", "getprop", "ro.kernel.qemu"]).trim() !== "1") {
     throw new Error("Chrome test setup requires a disposable emulator, not a physical device");
   }
-  // Chrome is bundled in this image, but the fixture journey needs no Google
-  // services. Their boot-time ANRs kill Chrome through its font-provider bind.
-  runAdb(serial, ["shell", "pm", "disable-user", "--user", "0", "com.google.android.gms"]);
-  const disabled = runAdb(serial, ["shell", "pm", "list", "packages", "-d", "--user", "0", "com.google.android.gms"]);
-  if (!disabled.split(/\r?\n/).includes("package:com.google.android.gms")) {
-    throw new Error("Google Play Services is still enabled on the isolated Chrome emulator");
+  // Disabling Play Services alone makes these bundled clients retry their
+  // missing dependency and flood SystemUI with notifications during startup.
+  // Stop the known unrelated clients first, not arbitrary Google/OS packages.
+  const serviceClients = [
+    "com.google.android.youtube",
+    "com.google.android.apps.youtube.music",
+    "com.google.android.apps.messaging",
+    "com.google.android.gm",
+    "com.google.android.googlequicksearchbox",
+  ];
+  const installed = new Set(runAdb(serial, ["shell", "pm", "list", "packages", "--user", "0"]).split(/\r?\n/));
+  const clients = serviceClients.filter(name => installed.has(`package:${name}`));
+  // The fixture needs no Google services; their boot-time ANRs kill Chrome
+  // through its font-provider bind. Verify every disablement before proceeding.
+  for (const name of [...clients, "com.google.android.gms"]) {
+    runAdb(serial, ["shell", "pm", "disable-user", "--user", "0", name]);
+    const disabled = runAdb(serial, ["shell", "pm", "list", "packages", "-d", "--user", "0", name]);
+    if (!disabled.split(/\r?\n/).includes(`package:${name}`)) {
+      throw new Error(`${name} is still enabled on the isolated Chrome emulator`);
+    }
   }
-  progress("isolated disposable emulator from Google Play Services");
+  progress(`isolated disposable emulator from Google Play Services and ${clients.length} background clients`);
   // Chrome's Android 13+ notification rationale is separate from --no-first-run.
   runAdb(serial, ["shell", "pm", "grant", packageName, "android.permission.POST_NOTIFICATIONS"]);
   const permissions = runAdb(serial, ["shell", "dumpsys", "package", packageName]);

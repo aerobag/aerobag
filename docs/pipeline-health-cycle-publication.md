@@ -121,6 +121,19 @@ suppress build/chart alarms. The controller explicitly upgrades v1/v2 observed
 state on its next save; the monitor does not reconstruct lifecycle from legacy
 storage/GC fields.
 
+Runtime installation runs the controller's locked
+`--refresh-observed-state-only` path before restarting readers. This is mandatory
+even when no release build or channel change is needed: installing Python files
+does not upgrade their persisted observations. Reconciliation also checks this
+data contract before declaring the runtime converged. The state-only operation
+does not build, refresh products, activate channels, or run GC.
+
+The health summary includes chart counts, severity, failing-region evidence for
+alarm dispositions, and a link to each detailed report. It does not duplicate
+the full list of successful chart regions inside every metric. Detailed region
+diagnostics remain in the linked report, keeping the monitoring response small
+even when retirement evidence is unavailable and old reports must remain visible.
+
 This attribution fix is also controller runtime code: integrate it, then run
 `tools/prod_manage.py --reconcile`. No new release or product rebuild is required.
 

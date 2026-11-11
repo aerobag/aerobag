@@ -1032,7 +1032,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
         for status in ["pending", "failed"]:
             args = SimpleNamespace(
                 artifact_root=self.root, check_deployments_only=False,
-                plan=False, refresh_products=True, force_production_tag=None,
+                refresh_observed_state_only=False, plan=False, refresh_products=True, force_production_tag=None,
                 service_root=None,
             )
             self.instance.observed.releases["prod"].deployment_status = status
@@ -1280,6 +1280,33 @@ class ReleaseLifecycleMonitoringTests(unittest.TestCase):
         self.assertEqual(self.evaluate_saved_state("unknown"), {
             "channel.preparing-candidate.release.build_status", "cycle_build.latest_result",
         })
+
+    def test_runtime_state_upgrade_persists_legacy_state_without_release_work(self):
+        legacy = self.instance.observed.to_dict()
+        legacy["schema_version"] = 2
+        del legacy["release_lifecycle"]
+        self.instance.args.observed.write_text(json.dumps(legacy))
+        args = SimpleNamespace(
+            artifact_root=self.root, source_root=self.root, observed=self.instance.args.observed,
+            desired=self.root / "desired.json", force_production_tag=None, public_origin="https://aerobag.test",
+            refresh_observed_state_only=True, check_deployments_only=False, plan=False, refresh_products=False,
+        )
+        resolved = {tag: releases.ResolvedTag(tag=tag, tag_object=r.tag_object, commit=r.commit)
+                    for tag, r in self.instance.observed.releases.items()}
+        with (mock.patch.object(controller, "parse_args", return_value=args),
+              mock.patch.object(controller, "_git", return_value="c" * 40),
+              mock.patch.object(releases, "load_desired_releases", return_value=self.instance.desired),
+              mock.patch.object(releases, "resolve_desired_tags", return_value=resolved),
+              mock.patch.object(controller.Controller, "reconcile", side_effect=AssertionError("must not build")),
+              mock.patch.object(controller.Controller, "maintain_retirement", side_effect=AssertionError("must not GC")),
+              mock.patch.object(controller.Controller, "recover_activated_generation", side_effect=AssertionError("must not activate"))):
+            self.assertEqual(controller.main(), 0)
+        state = json.loads(self.instance.args.observed.read_text())
+        self.assertEqual(state["schema_version"], releases.OBSERVED_SCHEMA_VERSION)
+        self.assertEqual(state["generation"], legacy["generation"])
+        self.assertEqual(state["sunset"], legacy["sunset"])
+        self.assertEqual(state["release_lifecycle"]["old"]["phase"], "serving")
+        self.assertEqual(state["releases"]["old"]["product_refresh_error"], "ZIP extraction failed")
 
 
 class ControllerRecoveryTests(unittest.TestCase):

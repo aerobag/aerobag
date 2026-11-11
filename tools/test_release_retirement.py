@@ -396,7 +396,7 @@ class RetirementTests(unittest.TestCase):
         self.instance.observed.releases["prod"].live_feed_status = "running"
         args = SimpleNamespace(
             artifact_root=self.root, check_deployments_only=False,
-            plan=False, refresh_products=True, force_production_tag=None,
+            refresh_observed_state_only=False, plan=False, refresh_products=True, force_production_tag=None,
         )
         maintain = self.instance.maintain_retirement
         with (
@@ -420,7 +420,7 @@ class RetirementTests(unittest.TestCase):
         marker.unlink()
         args = SimpleNamespace(
             artifact_root=self.root, check_deployments_only=False,
-            plan=True, refresh_products=True, force_production_tag=None,
+            refresh_observed_state_only=False, plan=True, refresh_products=True, force_production_tag=None,
         )
         with (
             mock.patch.object(controller, "parse_args", return_value=args),

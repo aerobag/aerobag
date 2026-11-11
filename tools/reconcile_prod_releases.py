@@ -59,6 +59,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="check existing channel endpoints without builds, refresh, activation, or GC",
     )
+    mode.add_argument(
+        "--refresh-observed-state-only", action="store_true",
+        help="upgrade and publish controller observations without builds, refresh, activation, or GC",
+    )
     parser.add_argument("--refresh-products", action="store_true")
     parser.add_argument(
         "--force-production-tag",
@@ -1295,6 +1299,9 @@ def main() -> int:
         controller = Controller(args)
         if args.check_deployments_only:
             controller.check_active_deployments()
+            return 0
+        if args.refresh_observed_state_only:
+            controller.save()
             return 0
         # Failed/stale serving checks must not starve periodic product refresh:
         # the refresh may itself repair the bad publication. Only structural

@@ -191,6 +191,23 @@ class ChartQualityMetricTests(unittest.TestCase):
             self.assertEqual({m["details"]["cycle"]: m["severity"] for m in unresolved},
                              {"2610": "warning", "2611": "ok"})
 
+    def test_health_summary_does_not_embed_all_successful_chart_regions(self):
+        sizes = []
+        for count in (1, 10_000):
+            report = {**self.report("ok"), "source_id": "source-a", "regions": [
+                {"id": f"region-{i}", "chart": "Test SEC", "status": "ok",
+                 "scores": {"overview": {"boundary": .01}}} for i in range(count)
+            ]}
+            metrics = self.metrics(report)
+            row = metrics["chart_quality.SEC.unresolved"]
+            self.assertEqual(row["severity"], "ok")
+            self.assertIn("/reports/", row["details"]["review_url"])
+            self.assertEqual(row["finding"]["regions"], [])
+            self.assertNotIn("regions", row["details"], "region diagnostics belong in the linked report")
+            self.assertEqual(len(report["regions"]), count, "full report must remain intact")
+            sizes.append(len(json.dumps(metrics)))
+        self.assertLess(abs(sizes[1] - sizes[0]), 100)
+
     def test_scoped_retry_cannot_borrow_another_cycles_completed_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -989,7 +989,7 @@ def add_chart_quality_metrics(
                    details={"review_url": review_url, "last_error": report.get("error"),
                             "publication_id": publication_id, "cycle": cycle,
                             "cycle_phase": phase,
-                            "regions": report.get("regions", []), "policy": report.get("policy"),
+                            "policy": report.get("policy"),
                             "source_id": report.get("source_id"), "completed_at": report.get("completed_at"),
                             "publication": decision})
         if (complete and isinstance(report.get("source_id"), str) and report["source_id"]

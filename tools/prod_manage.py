@@ -667,6 +667,12 @@ def remote_runtime_failures(
         dry_run=False,
     )
     failures = []
+    try:
+        releases.release_lifecycle.read(observed.to_dict())
+    except (ValueError, TypeError) as error:
+        failures.append(RuntimeFailure(
+            category="runtime", message=f"controller observations require refresh: {error}",
+        ))
     for line in result.stdout.splitlines():
         if not line:
             continue

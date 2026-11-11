@@ -1451,12 +1451,14 @@ class ReconcileCommandTests(unittest.TestCase):
             "cargo_target_dir": "/data/build-cache/cargo-target",
             "cargo_target_max_bytes": 32 * 1024**3,
         }
+        observed = releases.ObservedState.empty()
+        observed.release_lifecycle = {}
         with (
             mock.patch.object(prod_manage.deployment, "run_ssh", return_value=completed) as run_ssh,
             mock.patch.object(prod_manage.deployment, "runtime_fingerprint", return_value="runtime-sha"),
         ):
             failures = prod_manage.remote_runtime_failures(
-                config, desired, releases.ObservedState.empty()
+                config, desired, observed
             )
 
         self.assertEqual(failures, [])
@@ -1474,6 +1476,17 @@ class ReconcileCommandTests(unittest.TestCase):
             command,
         )
         self.assertIn(prod_manage.deployment.CARGO_TARGET_PRUNE_SCRIPT, command)
+
+    def test_installed_scripts_do_not_imply_controller_state_has_been_upgraded(self):
+        observed = releases.ObservedState.empty()
+        config = {"source_root": "/source", "artifact_root": "/artifacts",
+                  "cargo_target_dir": "/cache", "cargo_target_max_bytes": 1}
+        with (mock.patch.object(prod_manage.deployment, "run_ssh",
+                                return_value=subprocess.CompletedProcess([], 0, "")),
+              mock.patch.object(prod_manage.deployment, "runtime_fingerprint", return_value="installed")):
+            failures = prod_manage.remote_runtime_failures(config, self.desired(), observed)
+        self.assertEqual([failure.category for failure in failures], ["runtime"])
+        self.assertIn("observations require refresh", failures[0].message)
 
     def test_nonconverged_reconcile_deploys_then_verifies_convergence(self) -> None:
         pending = releases.ReconciliationPlan(

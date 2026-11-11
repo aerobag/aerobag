@@ -535,7 +535,7 @@ class ProductPublicationTests(unittest.TestCase):
         ):
             deploy_prod.start_reconciled_runtime(config, dry_run=False)
 
-        self.assertEqual(run_ssh.call_count, 2)
+        self.assertEqual(run_ssh.call_count, 3)
         reconcile.assert_called_once_with(config, progress=None, dry_run=False)
 
     def test_release_reconciliation_relays_changed_progress_only(self) -> None:
@@ -715,6 +715,25 @@ class ProductPublicationTests(unittest.TestCase):
 
 
 class RuntimeUpdateTests(unittest.TestCase):
+    def test_support_restart_upgrades_state_before_starting_new_readers(self):
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        for start in (deploy_prod.start_support_runtime, deploy_prod.start_reconciled_runtime):
+            with (self.subTest(start=start.__name__),
+                  mock.patch.object(deploy_prod, "run_ssh") as ssh,
+                  mock.patch.object(deploy_prod, "run_release_reconciliation")):
+                start(config, dry_run=False)
+            commands = [call.args[1] for call in ssh.call_args_list]
+            self.assertIn("--refresh-observed-state-only", commands[0])
+            self.assertIn("systemctl restart aerobag-pipeline-health.service", commands[1])
+
+    def test_state_upgrade_failure_does_not_start_new_readers(self):
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with (mock.patch.object(deploy_prod, "run_ssh", side_effect=RuntimeError("invalid state")) as ssh,
+              self.assertRaisesRegex(RuntimeError, "invalid state")):
+            deploy_prod.start_support_runtime(config, dry_run=False)
+        self.assertIn("--refresh-observed-state-only", ssh.call_args.args[1])
+        self.assertNotIn("systemctl restart", ssh.call_args.args[1])
+
     def test_reconcile_hands_off_archive_collector_before_release_build(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         calls = []
@@ -751,7 +770,8 @@ class RuntimeUpdateTests(unittest.TestCase):
         self.assertLess(calls.index("install_archive_tools"), calls.index("start_archive_services"))
         self.assertEqual(calls.count("start_archive_services"), 1)
         self.assertEqual(calls[-1], "record_runtime_fingerprint")
-        self.assertEqual(ssh.call_count, 2)
+        self.assertEqual(ssh.call_count, 3)
+        self.assertIn("--refresh-observed-state-only", ssh.call_args_list[0].args[1])
 
     def test_alarm_policy_and_engine_are_installed_and_runtime_fingerprinted(self) -> None:
         self.assertIn("deploy/alarm-dispositions.json", deploy_prod.RUNTIME_SOURCE_PATHS)

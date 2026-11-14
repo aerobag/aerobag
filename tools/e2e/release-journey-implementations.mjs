@@ -2901,14 +2901,18 @@ export async function chooseForecastWindModel(runtime) {
   let downloaded = false;
 
   if (available.latest) {
-    const latestBefore = available.latest.text;
     await runtime.action("request latest wind forecast", latestId, {
-      complete: async () => {
-        const readyForecast = await runtime.driver.readElement(readyId);
-        if (readyForecast && readyForecast.enabled !== false) return readyForecast;
-        const value = await runtime.driver.readElement(latestId);
-        return value && (value.text !== latestBefore || value.enabled === false) ? value : null;
-      },
+      complete: async () => ({
+        ready: await runtime.driver.readElement(readyId),
+        latest: await runtime.driver.readElement(latestId),
+      }),
+      // Calculation can disable every planner control, and catalog metadata can
+      // change the fetch-size label, without a request. Require acquisition
+      // feedback from core (or the installed, selected forecast) instead.
+      completionSatisfied: ({ ready, latest }) => selectedSemantic(ready) ||
+        ["RETRY FETCH", "FETCHING MODEL", "INSTALLING MODEL"].includes(
+          semanticTextSignature(latest?.text).toUpperCase(),
+        ),
     });
     downloaded = true;
     ready = await runtime.eventually("downloaded forecast is ready", async () => {

@@ -352,6 +352,28 @@ inspect the next hosted run rather than declaring success from a passing rerun.
 
 ## Cheap working-tree preflight
 
+The November 14 scheduled run `43612446299` on `dcd2c94a` failed only
+`shared.winds-aloft-navkv` in Android shard 2. Before the fetch click, an unrelated
+altitude calculation disabled `FETCH MODEL · 12.1 MIB`. The journey interpreted
+any disabled button or changed label as request completion, so the transition
+correctly rejected that already-true postcondition without delivering input.
+The screenshot still showed no ready forecast, the no-wind selection and
+`Calculating…`; this was not evidence of a forecast request or download failure.
+
+Fetch completion now requires core's explicit requested/downloading/installing
+feedback (`RETRY FETCH`, `FETCHING MODEL`, `INSTALLING MODEL`) or an installed,
+selected forecast. Download readiness and automatic selection remain separately
+required. Disabled controls and fetch-size metadata changes are retained as raw
+diagnostics, never accepted as acquisition feedback. Action readiness, physical
+input revalidation, request/resource deadlines and application code are unchanged.
+`wind-forecast-selection.test.mjs` runs the real journey runtime and transition
+runner on both platforms, controlling the pre-input calculation/metadata race,
+lost clicks, acquisition phases, missing downloads/selection and read failures.
+Eight regression cases failed with the previous helper; all 24 now pass,
+including terminal rejection if the control is still disabled at input. This
+repairs the false completion assertion, not the planner's background calculation
+or its policy of disabling controls during that calculation.
+
 The November 4 follow-up run `41895877071` on `665e3617` failed three emulator
 jobs before their tests: the newly added diagnostic `du` scan of the preinstalled
 SDK exceeded 60 seconds and aborted cleanup. Later reports showed about 90 GB

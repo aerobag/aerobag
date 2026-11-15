@@ -852,7 +852,12 @@ export function chromeCommandLine({ disposableEmulator = false } = {}) {
   const flags = ["chrome", "--disable-fre", "--no-first-run", "--no-default-browser-check"];
   // Chrome 113's SurfaceControl compositor crashes on the API 34 software GPU.
   // Keep ordinary compositing enabled; this is only an emulator presentation path.
-  if (disposableEmulator) flags.push("--disable-features=AndroidSurfaceControl");
+  if (disposableEmulator) {
+    // Chrome's optimization models add uncontrolled external startup work:
+    // first launch downloads and unpacks them in separate utility processes.
+    // Disable that downloader, without changing page networking or rendering.
+    flags.push("--disable-features=AndroidSurfaceControl,OptimizationGuideModelDownloading");
+  }
   return flags.join(" ");
 }
 

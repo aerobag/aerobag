@@ -83,7 +83,9 @@ Hosted and local qualification now explicitly set
 The harness disables Play Services for user 0 and verifies the exact package is
 disabled before launching Chrome. It first disables the known unrelated Google
 clients described in the November 11 investigation below; leaving those clients
-running without their dependency causes retry/notification storms.
+running without their dependency causes retry/notification storms. The November
+15 follow-up also isolates System Intelligence's model downloads and suppresses
+OS notification banners, verifying SystemUI's applied policy before launch.
 The Google APIs image supplies Chrome, but
 this local-fixture networking test needs no Google services. The switch refuses
 physical devices; ordinary interactive runs leave services untouched. It leaves
@@ -389,6 +391,65 @@ unchanged. The configuration regression fails before the change and all 30
 focused runtime tests pass afterward. Evidence is retained under
 `/tmp/aerobag-ci-43735418590`; inspect subsequent hosted traces before claiming
 the broader contention problem is solved.
+
+### Chrome Notification and System Intelligence Contention (November 15)
+
+The successful follow-up on `63b525f9` still had a 2,284 ms renderer task. Local
+Chrome and Perfetto scheduler traces investigated the remaining wait with the
+same immutable failed-run app and fixture, fresh API 34 Google APIs r14 AVDs,
+Chrome 113, two guest CPUs and four host CPUs. These emulator boots actually
+allocated 2.5 GiB RAM, overriding the configured 1.5 GiB minimum.
+
+One 1,478 ms renderer task spent 785 ms runnable but waiting and 464 ms in
+uninterruptible kernel waits. In that interval SystemUI's render thread and the
+software graphics composer used 1,264 ms CPU combined. Chrome, Settings Services,
+Digital Wellbeing and Dialer still posted high-importance missing-service
+notifications; the visible heads-up banners were a concrete rendering workload.
+
+A controlled on/off/on experiment replayed the same Settings Services
+notification on the same running emulator. Combined SystemUI render-thread and
+graphics-composer CPU in each eight-second observation window was 6,815 ms,
+252 ms and 1,911 ms respectively. Producer logs confirmed banners in both
+enabled windows and none when disabled. These observation windows belong only
+to the diagnostic experiment, not journey readiness. The different enabled
+costs also show why this is evidence of a removable workload, not a uniform
+speedup estimate.
+
+Disposable setup now writes and reads back `heads_up_notifications_enabled=0`
+before disabling services. Before launching Chrome it also observes the latest
+applied-policy event from SystemUI's `NotifInterruptLog`. Android 14's
+[notification interruption owner](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/packages/SystemUI/src/com/android/systemui/statusbar/notification/interruption/NotificationInterruptStateProviderImpl.java)
+handles the setting asynchronously; the settings write alone is insufficient.
+Missing or enabled producer state times out with diagnostics, while command
+errors stop immediately. An older disabled event cannot mask a newer enabled
+event. This diagnostic contract is specific to the pinned emulator image.
+Notifications still post and Chrome retains its notification permission.
+
+With banners suppressed, another fresh trace identified Android System
+Intelligence (`com.google.android.as`) installing a downloaded 38.5 MB caption
+model and fetching text-classifier packs during startup. Its `superpacks-task`
+worker used 545 ms CPU during a 1,585 ms renderer task. Disabling this exact
+optional package stopped its process and model installation; the next fresh
+journey passed with a 291 ms longest task. The package now joins the existing
+verified background-client isolation list. Prefix matches such as
+`com.google.android.as.oss` are deliberately excluded. System Intelligence's
+caption and text models are unrelated to this local-fixture browser journey.
+
+Controlled regressions failed before the changes and all 36 focused runtime
+tests pass afterward. They cover setup/producer ordering, latest-policy state,
+missing state, terminal query errors, exact package matching and device guards.
+The combined production setup passed the complete recovery journey on another
+fresh emulator: initial METAR v1, SSE v2, offline/backoff interruption and
+recovered v3, with zero current-manifest requests. SystemUI acknowledged disabled
+banners before navigation, System Intelligence was verified disabled and its
+model worker was absent. The longest renderer task was 579 ms wall / 53 ms
+thread CPU; most competing CPU belonged to Chrome and its graphics pipeline.
+Application code, browser networking, journey assertions and deadlines remain
+unchanged; this setup applies only to explicitly disposable emulators. Evidence
+and experiment scripts are retained under `/tmp/aerobag-startup-hardening`.
+The measurements demonstrate removal of these two workloads; single startup
+samples do not establish a hosted timeout rate or eliminate every source of
+renderer scheduling delay.
 
 ## Cheap working-tree preflight
 

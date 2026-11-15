@@ -817,18 +817,27 @@ export function prepareChromeDevice(serial, {
   if (runAdb(serial, ["shell", "getprop", "ro.kernel.qemu"]).trim() !== "1") {
     throw new Error("Chrome test setup requires a disposable emulator, not a physical device");
   }
+  // Missing-service notifications also come from Chrome itself. Their heads-up
+  // banners compete for the software GPU; this web journey needs no OS banners.
+  // Keep notification permission and delivery intact, and configure presentation
+  // before disabling services can trigger those notifications.
+  runAdb(serial, ["shell", "settings", "put", "global", "heads_up_notifications_enabled", "0"]);
+  const headsUp = runAdb(serial, ["shell", "settings", "get", "global", "heads_up_notifications_enabled"]);
+  if (headsUp.trim() !== "0") throw new Error("Disposable emulator heads-up banner setting was not disabled");
   // Disabling Play Services alone makes these bundled clients retry their
   // missing dependency and flood SystemUI with notifications during startup.
-  // Stop the known unrelated clients first, not arbitrary Google/OS packages.
-  const serviceClients = [
+  // System Intelligence also downloads and installs unrelated caption/text
+  // models at boot. Stop these observed background producers before Chrome.
+  const backgroundClients = [
     "com.google.android.youtube",
     "com.google.android.apps.youtube.music",
     "com.google.android.apps.messaging",
     "com.google.android.gm",
     "com.google.android.googlequicksearchbox",
+    "com.google.android.as",
   ];
   const installed = new Set(runAdb(serial, ["shell", "pm", "list", "packages", "--user", "0"]).split(/\r?\n/));
-  const clients = serviceClients.filter(name => installed.has(`package:${name}`));
+  const clients = backgroundClients.filter(name => installed.has(`package:${name}`));
   // The fixture needs no Google services; their boot-time ANRs kill Chrome
   // through its font-provider bind. Verify every disablement before proceeding.
   for (const name of [...clients, "com.google.android.gms"]) {
@@ -866,7 +875,28 @@ export async function prepareChromeLaunch(serial, options = {}) {
   (options.wake ?? wakeAndUnlock)(serial);
   if (options.disposableEmulator) {
     await (options.waitForTheme ?? waitForChromeEmulatorTheme)(serial);
+    await (options.waitForNotifications ?? waitForChromeEmulatorNotifications)(serial);
   }
+}
+
+export async function waitForChromeEmulatorNotifications(serial, {
+  runAdb = adb, timeoutMs = E2E_TIMING.localResourceMs, intervalMs = E2E_TIMING.resourcePollIntervalMs,
+} = {}) {
+  const startedAt = performance.now();
+  // Settings writes precede SystemUI's ContentObserver. The pinned API 34
+  // producer logs its applied policy to this buffer, but exposes no dump field.
+  // Require its latest event; an older "false" must not hide a newer "true".
+  const { value } = await observeUntil("Android notification banner policy", () => {
+    const log = runAdb(serial, ["shell", "dumpsys", "activity", "service",
+      "com.android.systemui/.SystemUIService", "NotifInterruptLog"], {
+      timeout: Math.max(1, Math.min(E2E_TIMING.localReadyMs, timeoutMs - (performance.now() - startedAt))),
+    });
+    const events = [...log.matchAll(/^\s*\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} I InterruptionStateProvider: heads up is enabled=(true|false)\s*$/gm)];
+    const last = events.at(-1);
+    return { heads_up_enabled: last ? last[1] === "true" : null,
+      last_policy_event: last?.[0].trim() ?? null };
+  }, { timeoutMs, intervalMs, accept: state => state.heads_up_enabled === false });
+  progress(`SystemUI applied notification banner policy: ${JSON.stringify(value)}`);
 }
 
 export async function waitForChromeEmulatorTheme(serial, {

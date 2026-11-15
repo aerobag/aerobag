@@ -4,15 +4,16 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { CdpSocket, chromeCommandLine, openChromeJourneyPage, prepareChromeDevice, prepareChromeLaunch, waitForChromeEmulatorTheme, waitForLiveFeedStatus } from "./run-android-chrome-livefeed-e2e.mjs";
+import { CdpSocket, chromeCommandLine, openChromeJourneyPage, prepareChromeDevice, prepareChromeLaunch, waitForChromeEmulatorNotifications, waitForChromeEmulatorTheme, waitForLiveFeedStatus } from "./run-android-chrome-livefeed-e2e.mjs";
 import { ObservationTimeoutError, TerminalObservationError } from "./transition-contract.mjs";
 
-const googleServiceClients = [
+const backgroundClients = [
   "com.google.android.youtube",
   "com.google.android.apps.youtube.music",
   "com.google.android.apps.messaging",
   "com.google.android.gm",
   "com.google.android.googlequicksearchbox",
+  "com.google.android.as",
 ];
 
 function installedPackages(packages) {
@@ -25,17 +26,20 @@ test("disposable Chrome emulator isolates background clients before their Google
     assert.equal(serial, "emulator-test");
     commands.push(args);
     if (args.includes("getprop")) return "1\n";
+    if (args.includes("settings") && args.includes("get")) return "0\n";
     if (args.includes("list")) return args.includes("-d")
       ? installedPackages([args.at(-1)])
-      : installedPackages([...googleServiceClients, "com.android.chrome", "com.android.systemui"]);
+      : installedPackages([...backgroundClients, "com.android.chrome", "com.android.systemui"]);
     if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
     return "";
   } });
   assert.deepEqual(commands, [
     ["wait-for-device"],
     ["shell", "getprop", "ro.kernel.qemu"],
+    ["shell", "settings", "put", "global", "heads_up_notifications_enabled", "0"],
+    ["shell", "settings", "get", "global", "heads_up_notifications_enabled"],
     ["shell", "pm", "list", "packages", "--user", "0"],
-    ...googleServiceClients.flatMap(name => [
+    ...backgroundClients.flatMap(name => [
       ["shell", "pm", "disable-user", "--user", "0", name],
       ["shell", "pm", "list", "packages", "-d", "--user", "0", name],
     ]),
@@ -50,9 +54,10 @@ test("absent optional clients are skipped and substring package matches are not 
   const disabled = [];
   prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
     if (args.includes("getprop")) return "1\n";
+    if (args.includes("settings") && args.includes("get")) return "0\n";
     if (args.includes("list")) return args.includes("-d")
       ? installedPackages([args.at(-1)])
-      : installedPackages(["com.google.android.youtube.extra", "com.google.android.gm",
+      : installedPackages(["com.google.android.youtube.extra", "com.google.android.gm", "com.google.android.as.oss",
         "com.android.chrome", "com.android.systemui"]);
     if (args.includes("disable-user")) disabled.push(args.at(-1));
     if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
@@ -66,6 +71,7 @@ test("an unverified client disablement stops before disabling its services or la
   assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
     commands.push(args);
     if (args.includes("getprop")) return "1\n";
+    if (args.includes("settings") && args.includes("get")) return "0\n";
     if (args.includes("list")) return args.includes("-d")
       ? installedPackages(["com.google.android.youtube.extra", "com.google.android.gms"])
       : installedPackages(["com.google.android.youtube"]);
@@ -83,6 +89,7 @@ test("ordinary device runs leave Google services alone", () => {
 
 function disposableSetupAdb(_serial, args) {
   if (args.includes("getprop")) return "1\n";
+  if (args.includes("settings") && args.includes("get")) return "0\n";
   if (args.includes("list")) return "package:com.google.android.gms\n";
   if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
   return "";
@@ -97,6 +104,7 @@ test("Chrome launch waits for late emulator theme publication after unlock", asy
     disposableEmulator: true, runAdb: disposableSetupAdb,
     wake: () => calls.push("unlock"),
     waitForTheme: async () => { calls.push("theme"); await theme; },
+    waitForNotifications: async () => {},
   }).then(() => { prepared = true; });
   await Promise.resolve();
   assert.deepEqual(calls, ["unlock", "theme"]);
@@ -116,7 +124,87 @@ test("failed theme readiness stops setup instead of launching or retrying Chrome
 test("ordinary devices do not require the disposable emulator theme contract", async () => {
   await prepareChromeLaunch("tablet", {
     runAdb() {}, wake() {}, waitForTheme: () => assert.fail("must not inspect personal-device themes"),
+    waitForNotifications: () => assert.fail("must not inspect personal-device notification policy"),
   });
+});
+
+test("Chrome launch waits for SystemUI to apply banner suppression", async () => {
+  let release;
+  const applied = new Promise(resolve => { release = resolve; });
+  let observing = false, prepared = false;
+  const preparing = prepareChromeLaunch("emulator-test", {
+    disposableEmulator: true, runAdb: disposableSetupAdb, wake() {}, waitForTheme: async () => {},
+    waitForNotifications: async () => { observing = true; await applied; },
+  }).then(() => { prepared = true; });
+  await new Promise(setImmediate);
+  assert.equal(observing, true);
+  assert.equal(prepared, false, "a settings write does not acknowledge SystemUI's observer");
+  release();
+  await preparing;
+  assert.equal(prepared, true);
+});
+
+test("failed banner policy application stops Chrome preparation", async () => {
+  await assert.rejects(prepareChromeLaunch("emulator-test", {
+    disposableEmulator: true, runAdb: disposableSetupAdb, wake() {}, waitForTheme: async () => {},
+    waitForNotifications: async () => { throw new Error("SystemUI policy not applied"); },
+  }), /SystemUI policy not applied/);
+});
+
+test("unverified or failed banner settings stop before disabling services or granting permission", () => {
+  for (const mode of ["write-error", "read-error", "enabled", "missing"]) {
+    const commands = [];
+    assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(serial, args) {
+      commands.push(args);
+      if (args.includes("settings")) {
+        if (mode === "write-error" && args.includes("put")) throw new Error("banner settings write failed");
+        if (mode === "read-error" && args.includes("get")) throw new Error("banner settings read failed");
+        return mode === "enabled" ? "1\n" : "null\n";
+      }
+      return disposableSetupAdb(serial, args);
+    } }), /banner|heads.up/i, mode);
+    assert.equal(commands.some(args => args.includes("disable-user") || args.includes("grant")), false);
+  }
+});
+
+const bannerPolicyEvent = enabled => `    11-15 18:57:44.501 I InterruptionStateProvider: heads up is enabled=${enabled}\n`;
+
+test("banner readiness requires the latest event from SystemUI's policy owner", async () => {
+  const snapshots = [
+    "heads up is enabled=false\n",
+    bannerPolicyEvent(false).replace("InterruptionStateProvider", "UnrelatedOwner"),
+    bannerPolicyEvent(false) + bannerPolicyEvent(true),
+    bannerPolicyEvent(true) + bannerPolicyEvent(false),
+  ];
+  let probes = 0;
+  await waitForChromeEmulatorNotifications("emulator-test", { intervalMs: 0, timeoutMs: 1000,
+    runAdb(serial, args, options) {
+      assert.equal(serial, "emulator-test");
+      assert.deepEqual(args, ["shell", "dumpsys", "activity", "service",
+        "com.android.systemui/.SystemUIService", "NotifInterruptLog"]);
+      assert.ok(options.timeout > 0 && options.timeout <= 1000);
+      return snapshots[probes++];
+    },
+  });
+  assert.equal(probes, snapshots.length);
+});
+
+test("missing or enabled banner policy times out with the producer's state", async () => {
+  for (const enabled of [null, true]) {
+    await assert.rejects(waitForChromeEmulatorNotifications("emulator-test", {
+      intervalMs: 0, timeoutMs: 15,
+      runAdb: () => enabled === null ? "Unknown buffer\n" : bannerPolicyEvent(enabled),
+    }), error => error instanceof ObservationTimeoutError
+      && error.diagnostics.last_value.heads_up_enabled === enabled);
+  }
+});
+
+test("a banner policy query error is terminal and never retried", async () => {
+  let probes = 0;
+  await assert.rejects(waitForChromeEmulatorNotifications("emulator-test", {
+    runAdb() { probes++; throw new Error("SystemUI query failed"); },
+  }), /SystemUI query failed/);
+  assert.equal(probes, 1);
 });
 
 const completeTheme = "mIsMonetEnabled=true\nmNeedsOverlayCreation=false\nmDeferredThemeEvaluation=false\n";
@@ -190,6 +278,7 @@ test("explicit isolation refuses a physical tablet before changing any packages"
 
 test("an unverified Google service disablement stops setup", () => {
   assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
+    if (args.includes("settings") && args.includes("get")) return "0\n";
     return args.includes("getprop") ? "1\n" : "package:com.google.android.gms.supervision\n";
   } }), /com\.google\.android\.gms is still enabled/);
 });
@@ -197,6 +286,7 @@ test("an unverified Google service disablement stops setup", () => {
 test("an adb error during isolation is fatal, not a reason to run unisolated", () => {
   const failure = new Error("package manager unavailable");
   assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
+    if (args.includes("settings") && args.includes("get")) return "0\n";
     if (args.includes("disable-user")) throw failure;
     return "1\n";
   } }), (error) => error === failure);
@@ -290,6 +380,7 @@ test("disposable browser setup grants and verifies notification permission for t
   prepareChromeDevice("emulator-test", { disposableEmulator: true, packageName: "com.chrome.beta", runAdb(_serial, args) {
     commands.push(args);
     if (args.includes("getprop")) return "1\n";
+    if (args.includes("settings") && args.includes("get")) return "0\n";
     if (args.includes("list")) return "package:com.google.android.gms\n";
     if (args.includes("dumpsys")) return "android.permission.POST_NOTIFICATIONS: granted=true, flags=[]";
     return "";
@@ -304,6 +395,7 @@ test("failed or unverified notification permission stops browser setup", () => {
   for (const mode of ["grant-error", "still-denied", "wrong-permission"]) {
     assert.throws(() => prepareChromeDevice("emulator-test", { disposableEmulator: true, runAdb(_serial, args) {
       if (args.includes("getprop")) return "1\n";
+      if (args.includes("settings") && args.includes("get")) return "0\n";
       if (args.includes("list")) return "package:com.google.android.gms\n";
       if (args.includes("grant") && mode === "grant-error") throw new Error("permission grant failed");
       if (args.includes("dumpsys")) return mode === "still-denied"

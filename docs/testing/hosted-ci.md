@@ -350,6 +350,46 @@ This removes a demonstrated source of emulator contention; it does not prove
 that every hosted renderer timeout is eliminated. Keep the startup trace and
 inspect the next hosted run rather than declaring success from a passing rerun.
 
+### Chrome Optimization Model Downloads (November 15)
+
+Scheduled run `43735418590` on `ebc9317e` failed only the Chrome recovery lane
+(plus its aggregate gate). Native Android, including winds-aloft, and desktop
+web passed. The initial METAR observation's `Runtime.evaluate` exceeded its
+unchanged three-second command deadline. The retained trace shows a renderer
+task from 16:38:39.990 to 16:38:43.342 UTC: 3,352 ms wall / 145 ms thread CPU.
+This again indicates waiting or contention, not three seconds of script CPU.
+
+Logcat identifies six Chrome background downloads followed by six utility
+processes unpacking `model-info.pb` and `model.tflite` at 16:38:38.8–41.2 UTC,
+overlapping the stalled renderer. Chrome 113's
+[prediction manager](https://chromium.googlesource.com/chromium/src/+/113.0.5672.136/components/optimization_guide/core/prediction_manager.cc)
+creates this downloader only when `OptimizationGuideModelDownloading` is
+enabled; its
+[download manager](https://chromium.googlesource.com/chromium/src/+/113.0.5672.136/components/optimization_guide/core/prediction_model_download_manager.cc)
+launches a utility unzipper for each model. These external downloads are
+unrelated to the local-fixture journey. Digital Wellbeing also showed a missing
+Play Services notification, but this investigation did not establish it as the
+cause and does not add another package to the disable list.
+
+Fresh API 34 Google APIs AVDs with Chrome 113, two guest CPUs, four host CPUs
+and the verified failed app/fixture bundle confirmed the baseline launches
+six model-unpacking processes. Disabling only `OptimizationGuideModelDownloading`
+removed those processes and their model-file operations; the trace metadata
+verified that Chrome consumed the flag. Both real journeys passed METAR v1,
+SSE v2 and offline/backoff recovery to v3. Their longest renderer tasks were
+956 ms / 51 ms CPU before and 629 ms / 57 ms CPU afterward. These single samples
+demonstrate removal of the external work, not reproduction or elimination of
+every three-second timeout. The hosted trace lacks scheduler attribution, so
+the precise share of the stall caused by those processes remains unproven.
+
+The harness applies that one feature override only to disposable emulators,
+in the same switch as the existing SurfaceControl workaround. Page networking,
+application bytes, assertions, deadlines and physical-device behavior are
+unchanged. The configuration regression fails before the change and all 30
+focused runtime tests pass afterward. Evidence is retained under
+`/tmp/aerobag-ci-43735418590`; inspect subsequent hosted traces before claiming
+the broader contention problem is solved.
+
 ## Cheap working-tree preflight
 
 The November 14 scheduled run `43612446299` on `dcd2c94a` failed only

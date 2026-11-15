@@ -320,6 +320,16 @@ test("the emulator compositor workaround does not disable hardware rendering on 
   assert.doesNotMatch(chromeCommandLine({ disposableEmulator: true }), /--disable-gpu(?:\s|$)/);
 });
 
+test("disposable Chrome excludes optimization model downloads from fixture startup", () => {
+  const features = chromeCommandLine({ disposableEmulator: true })
+    .split(" ").filter(flag => flag.startsWith("--disable-features="));
+  assert.equal(features.length, 1, "feature overrides must share one switch");
+  assert.deepEqual(features[0].split("=")[1].split(","), [
+    "AndroidSurfaceControl", "OptimizationGuideModelDownloading",
+  ]);
+  assert.doesNotMatch(chromeCommandLine(), /OptimizationGuideModelDownloading/);
+});
+
 function pageSetupHarness() {
   const calls = [];
   let releaseFrame;

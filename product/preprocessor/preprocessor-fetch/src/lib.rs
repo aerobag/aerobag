@@ -895,6 +895,48 @@ struct CurlDownloadResult {
     stderr: String,
 }
 
+/// Fetch a status-bearing HTTP response without archive validation or retries.
+/// Callers must validate the response format; HTTP 204 is distinct from an
+/// invalid empty HTTP 200 body. Used by bounded, multi-request API collectors.
+pub fn fetch_http_response(request: &PrefetchRequest, destination: &Path) -> anyhow::Result<u16> {
+    let destination = std::path::absolute(destination)?;
+    let directory = destination
+        .parent()
+        .context("HTTP response path has no parent")?;
+    fs::create_dir_all(directory)?;
+    let temporary = temporary_download_path(&destination);
+    let headers = temporary.with_extension("headers");
+    let cookies = temporary.with_extension("cookies");
+    let result = (|| {
+        let response = curl_download_with_status(
+            &request.url,
+            &request.headers,
+            request.force_http1,
+            request.timeouts,
+            directory,
+            &temporary,
+            &headers,
+            &cookies,
+            None,
+        )?;
+        if !response.status.success() || !matches!(response.http_status, 200 | 204) {
+            return Err(CurlFailure {
+                url: request.url.clone(),
+                http_status: Some(response.http_status),
+                status: response.status,
+                stderr: response.stderr,
+            }
+            .into());
+        }
+        fs::rename(&temporary, &destination)?;
+        Ok(response.http_status)
+    })();
+    let _ = fs::remove_file(&temporary);
+    let _ = fs::remove_file(&headers);
+    let _ = fs::remove_file(&cookies);
+    result
+}
+
 #[derive(Debug)]
 struct CurlFailure {
     url: String,
@@ -1799,6 +1841,10 @@ mod tests {
     }
 
     fn serve_inventory() -> (String, thread::JoinHandle<String>) {
+        serve_response(200, r#"{"success":true,"count":0,"payload":[]}"#)
+    }
+
+    fn serve_response(status: u16, body: &'static str) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/sites", listener.local_addr().unwrap());
@@ -1827,14 +1873,47 @@ mod tests {
                     break;
                 }
             }
-            let body = r#"{"success":true,"count":0,"payload":[]}"#;
             write!(stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             ).unwrap();
             request
         });
         (url, server)
+    }
+
+    #[test]
+    fn raw_http_preserves_status_and_replaces_only_successful_responses() -> anyhow::Result<()> {
+        // A relative destination must work even though curl changes directory.
+        let temp = tempfile::tempdir_in(".")?;
+        let destination = temp.path().join("response.xml");
+        for (status, body) in [(200, "<response/>"), (200, ""), (204, ""), (500, "failed")] {
+            fs::write(&destination, "previous")?;
+            let (url, server) = serve_response(status, body);
+            let request = PrefetchRequest::new(url).with_timeouts(NetworkTimeouts {
+                connect: Duration::from_secs(2),
+                total: Duration::from_secs(5),
+            });
+            let result = fetch_http_response(&request, &destination);
+            server.join().unwrap();
+            if status == 500 {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<CurlFailure>().unwrap().http_status,
+                    Some(500)
+                );
+                assert_eq!(fs::read_to_string(&destination)?, "previous");
+            } else {
+                assert_eq!(result?, status);
+                assert_eq!(fs::read_to_string(&destination)?, body);
+            }
+            assert_eq!(
+                fs::read_dir(temp.path())?.count(),
+                1,
+                "partial files leaked"
+            );
+        }
+        Ok(())
     }
 
     #[test]

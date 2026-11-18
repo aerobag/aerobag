@@ -169,6 +169,32 @@ fn uncached_stalled_http_times_out() -> anyhow::Result<()> {
 }
 
 #[test]
+fn raw_http_times_out_without_retry_or_partial_publication() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let endpoint = StalledEndpoint::start()?;
+    let request = PrefetchRequest::new(format!("http://{}/stalled.xml", endpoint.address))
+        .with_timeouts(NetworkTimeouts {
+            connect: Duration::from_secs(1),
+            total: Duration::from_millis(200),
+        });
+    let result = fetch_http_response(&request, &temp.path().join("response.xml"));
+    let report = endpoint.finish()?;
+    assert_eq!(report.stop, Stop::FetchCompleted);
+    assert_eq!(report.connections, 1);
+    assert_eq!(
+        result
+            .unwrap_err()
+            .downcast_ref::<CurlFailure>()
+            .unwrap()
+            .status
+            .code(),
+        Some(28)
+    );
+    assert_eq!(fs::read_dir(temp.path())?.count(), 0);
+    Ok(())
+}
+
+#[test]
 fn uncached_authenticated_stalled_http_times_out() -> anyhow::Result<()> {
     check_stalled_fetch(false, true)
 }

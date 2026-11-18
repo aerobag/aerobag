@@ -27,6 +27,7 @@ pub mod engine;
 pub mod nms_initial_load;
 pub mod notam_store;
 mod notam_subjects;
+mod pirep_source;
 pub mod products;
 pub mod simulation;
 pub mod tfr_detail_backfill;
@@ -1225,6 +1226,33 @@ pub fn taf_content_fingerprint(taf_xml_path: &Path) -> anyhow::Result<String> {
 
 pub fn pirep_content_fingerprint(pirep_xml_path: &Path) -> anyhow::Result<String> {
     let model = pirep_product_model(pirep_xml_path)?;
+    pirep_model_fingerprint(&model, None)
+}
+
+pub(crate) fn pirep_live_content_fingerprint(
+    pirep_xml_path: &Path,
+    collected_at: DateTime<Utc>,
+) -> anyhow::Result<String> {
+    let model = pirep_product_model(pirep_xml_path)?;
+    pirep_model_fingerprint(&model, Some(collected_at))
+}
+
+fn pirep_model_fingerprint(
+    model: &PirepProductModel,
+    fallback: Option<DateTime<Utc>>,
+) -> anyhow::Result<String> {
+    // Nonempty products retain their existing identities. When no source time
+    // exists, the serialized timestamps use the collection time; that time must
+    // participate in the version too, or repeated empty states collide.
+    if let Some(fallback) = fallback.filter(|_| {
+        model
+            .pireps_by_id
+            .values()
+            .all(|record| record.observed_at_utc.trim().is_empty())
+    }) {
+        let bytes = serde_json::to_vec(&(PIREP_PRODUCT_CONTRACT_VERSION, model, fallback))?;
+        return Ok(format!("{:x}", Sha256::digest(bytes)));
+    }
     let bytes = serde_json::to_vec(&(PIREP_PRODUCT_CONTRACT_VERSION, model))
         .context("failed to encode canonical PIREP model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
@@ -2880,6 +2908,25 @@ fn wrap_longitude(longitude: i32) -> i32 {
     }
 }
 
+fn read_aviationweather_event<'a>(
+    reader: &mut Reader<&[u8]>,
+    buffer: &'a mut Vec<u8>,
+) -> anyhow::Result<Event<'a>> {
+    let event = reader.read_event_into(buffer)?;
+    // AWC cache downloads can succeed with HTTP 200 but contain an XML error.
+    // Reject the response before it can replace published reports with zero rows.
+    match &event {
+        Event::Start(start) if start.local_name().as_ref() == b"error" => {
+            let message = reader.read_text(start.name())?;
+            bail!("AWC source error: {}", message.trim());
+        }
+        Event::Empty(start) if start.local_name().as_ref() == b"error" => {
+            bail!("AWC source error: upstream returned an error without a message");
+        }
+        _ => Ok(event),
+    }
+}
+
 fn parse_metar_records(path: &Path) -> anyhow::Result<Vec<ParsedMetarRecord>> {
     let xml =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -2898,7 +2945,7 @@ fn parse_metar_records(path: &Path) -> anyhow::Result<Vec<ParsedMetarRecord>> {
     };
 
     loop {
-        match reader.read_event_into(&mut buffer) {
+        match read_aviationweather_event(&mut reader, &mut buffer) {
             Ok(Event::Start(event)) => match event.name().as_ref() {
                 b"METAR" => {
                     in_metar = true;
@@ -2987,7 +3034,7 @@ fn parse_taf_records(path: &Path) -> anyhow::Result<Vec<ParsedTafRecord>> {
     };
 
     loop {
-        match reader.read_event_into(&mut buffer) {
+        match read_aviationweather_event(&mut reader, &mut buffer) {
             Ok(Event::Start(event)) => match event.name().as_ref() {
                 b"TAF" => {
                     in_taf = true;
@@ -3074,7 +3121,7 @@ fn parse_pirep_records(path: &Path) -> anyhow::Result<Vec<ParsedPirepRecord>> {
     };
 
     loop {
-        match reader.read_event_into(&mut buffer) {
+        match read_aviationweather_event(&mut reader, &mut buffer) {
             Ok(Event::Start(event)) => match event.name().as_ref() {
                 b"AircraftReport" => {
                     in_report = true;
@@ -3544,6 +3591,115 @@ mod tests {
     use std::io::{BufWriter, Write};
     use std::process::Command;
     use tempfile::{NamedTempFile, TempDir};
+
+    #[test]
+    fn awc_error_responses_cannot_become_empty_weather_products() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let xml = temp.path().join("upstream.xml");
+        // AWC's PIREP cache returned the first envelope with HTTP 200 on
+        // 2026-11-18. It is a failed query, not a successful empty dataset.
+        for response in [
+            r#"<?xml version="1.0" encoding="UTF-8"?><response version="4.37"><errors><error>Error processing data</error></errors><warnings/></response>"#,
+            r#"<response><errors><error>Error processing data</error></errors><data num_results="0"/></response>"#,
+            r#"<response><errors><error/></errors><data num_results="0"/></response>"#,
+            r#"<response><data><AircraftReport><raw_text>SEA UA /OV SEA</raw_text></AircraftReport></data><errors><error>Error processing data</error></errors></response>"#,
+        ] {
+            fs::write(&xml, response)?;
+            for (product, result) in [
+                ("metars", metar_content_fingerprint(&xml)),
+                ("tafs", taf_content_fingerprint(&xml)),
+                ("pireps", pirep_content_fingerprint(&xml)),
+            ] {
+                let error = result.expect_err(product);
+                assert!(
+                    format!("{error:#}").contains("AWC source error"),
+                    "{product}: {error:#}"
+                );
+                if response.contains("Error processing data") {
+                    assert!(format!("{error:#}").contains("Error processing data"));
+                }
+            }
+            let result = build_pirep_dataset(&BuildPirepRequest {
+                pirep_xml_path: xml.clone(),
+                output_dir: temp.path().join("output"),
+                version_label: "error-must-not-publish".into(),
+                generated_at_utc: DateTime::parse_from_rfc3339("2026-11-18T17:24:00Z")?
+                    .with_timezone(&Utc),
+            });
+            assert!(result.is_err());
+            assert!(!temp.path().join("output/pireps.json").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn awc_successful_empty_responses_remain_valid() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let xml = temp.path().join("empty.xml");
+        fs::write(
+            &xml,
+            r#"<response><errors/><warnings/><data num_results="0"/></response>"#,
+        )?;
+        assert!(parse_metar_records(&xml)?.is_empty());
+        assert!(parse_taf_records(&xml)?.is_empty());
+        assert!(parse_pirep_records(&xml)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pirep_empty_live_versions_include_their_fallback_timestamp() -> anyhow::Result<()> {
+        use crate::engine::{FileLiveFeedPublisher, FixedClock, LiveFeedPublisher};
+
+        let temp = TempDir::new()?;
+        let xml = temp.path().join("empty.xml");
+        fs::write(&xml, "<response><data num_results=\"0\"/></response>")?;
+        let first = DateTime::parse_from_rfc3339("2026-11-18T17:24:00Z")?.with_timezone(&Utc);
+        let next = first + chrono::Duration::minutes(5);
+        assert_ne!(
+            pirep_live_content_fingerprint(&xml, first)?,
+            pirep_live_content_fingerprint(&xml, next)?
+        );
+        assert_eq!(
+            pirep_live_content_fingerprint(&xml, first)?,
+            pirep_live_content_fingerprint(&xml, first)?
+        );
+        let publisher =
+            FileLiveFeedPublisher::new(temp.path().join("published"), FixedClock::new(next));
+        for timestamp in [first, next] {
+            let version = pirep_live_content_fingerprint(&xml, timestamp)?;
+            let built = build_pirep_dataset(&BuildPirepRequest {
+                pirep_xml_path: xml.clone(),
+                output_dir: temp.path().join("output"),
+                version_label: version.clone(),
+                generated_at_utc: timestamp,
+            })?;
+            let value = serde_json::from_slice(&fs::read(&built.structured_json_path)?)?;
+            let state = crate::products::keyed_record_json_live_feed_state(
+                "pireps",
+                version,
+                built.structured_json_path,
+                value,
+                "pireps_by_id",
+                Some("pirep_count"),
+                0,
+            );
+            assert!(!publisher.publish(state.clone())?.unchanged);
+            assert!(publisher.publish(state)?.unchanged);
+        }
+        fs::write(
+            &xml,
+            r#"<response><data><AircraftReport><observation_time>2026-11-18T17:20:00Z</observation_time><raw_text>SEA UA /IC LGT</raw_text></AircraftReport></data></response>"#,
+        )?;
+        assert_eq!(
+            pirep_live_content_fingerprint(&xml, first)?,
+            pirep_content_fingerprint(&xml)?
+        );
+        assert_eq!(
+            pirep_live_content_fingerprint(&xml, first)?,
+            pirep_live_content_fingerprint(&xml, next)?
+        );
+        Ok(())
+    }
 
     #[test]
     fn record_product_bytes_match_complete_compatibility_inventory() -> anyhow::Result<()> {

@@ -57,3 +57,59 @@ canonical baseline exists, startup rebuilds locally and queues a full product
 without waiting for upstream events. Matching cached publications are verified
 and can become ready on an unchanged update. Missing canonical baselines,
 publication failures and provenance-write failures remain unready.
+
+## PIREP source recovery
+
+PIREPs normally use AWC's worldwide gzip/XML cache. HTTP success alone does
+not establish source success: XML errors, missing data, inconsistent counts,
+or malformed reports fail validation. The shared weather readers also reject
+AWC XML errors for METARs and TAFs.
+
+If the PIREP cache fails, the same worker queries AWC's
+[`/api/data/pirep`](https://aviationweather.gov/data/api/) XML endpoint with the
+whole-world bounding box `-90,-180,90,180`. It collects the preceding 90 complete
+minutes at a fixed cutoff. A response containing 400 or more reports is treated
+as potentially truncated and replaced by two smaller time-window queries.
+One minute of requested overlap covers AWC's age rounding; half-open ownership
+windows remove overlap without deduplicating genuine source records. XML text,
+coordinate precision, report identities, and published wire contracts remain
+unchanged. The current partial minute is collected on the next poll.
+
+The fallback requires every leaf window to succeed. A failed request, invalid
+response, exhausted budget, or still-capped one-minute window fails the update
+and leaves the current publication untouched. HTTP 204 is a valid empty result;
+an empty HTTP 200 body is an error. Valid empty snapshots include their fallback
+timestamp in the version identity, so consecutive empty updates cannot collide
+with an older immutable publication.
+
+Bulk attempts have a 20-second transfer limit and use the fetcher's existing
+three-attempt retry policy. API collection has a 120-second total deadline,
+20-second per-request limit, at most 63 queries, and at least one second between
+request starts. API requests have no internal retry. The normal worker schedule
+retries a failed collection. Offline fixture mode never contacts the API.
+
+The worker scratch directory retains individual API XML files under `input/api`
+and URL, interval, HTTP status, and content hash records under
+`meta/provenance/pireps/api`. `source-selection.json` in the latter's parent
+records the selected source and bulk failure reason for a successful collection.
+These are diagnostic files, not extensions to monitored status contracts.
+
+For a manual live integration check, run from the repository root:
+
+```sh
+cargo run --manifest-path product/preprocessor/Cargo.toml \
+  -p preprocessor-live-feeds --example pirep_source_probe -- /tmp/pirep-source-probe
+```
+
+The destination must not exist. The probe invokes the production builder and
+file publisher locally, verifies an identical replay, and saves `result.json`
+and source evidence. It does not start or modify a service. This uses live AWC
+and belongs outside hermetic CI; deterministic collector and HTTP failure tests
+run in ordinary CI. On 2026-11-18 at 19:18 UTC, the probe recovered 1,734 reports
+from 15 API requests while the bulk cache returned `Error processing data`.
+
+Deploy this code through a new release: pull the tested revision, run
+`python3 tools/prod_manage.py --stage --watch`, and only after qualification
+passes run `python3 tools/prod_manage.py --promote`. Staging gets its own live-feed
+daemon, so it exercises the new collector even though client wire contracts did
+not change. No client schema migration is required.

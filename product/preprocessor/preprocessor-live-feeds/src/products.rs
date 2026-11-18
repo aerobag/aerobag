@@ -30,7 +30,7 @@ use crate::{
     },
     load_tfr_source_revisions, metar_content_fingerprint,
     notam_store::{NotamPersistentStore, NotamStateReader},
-    pirep_content_fingerprint, sanitize_notam_id, taf_content_fingerprint,
+    pirep_live_content_fingerprint, sanitize_notam_id, taf_content_fingerprint,
     tfr_detail_backfill::{TfrDetailBackfillStore, TfrDetailFetchTarget},
     tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildPirepRequest, BuildTafRequest,
     BuildTfrRequest, StructuredTfrNotamMetadata,
@@ -38,7 +38,6 @@ use crate::{
 
 const METAR_XML_URL: &str = "https://aviationweather.gov/data/cache/metars.cache.xml.gz";
 const TAF_XML_URL: &str = "https://aviationweather.gov/data/cache/tafs.cache.xml.gz";
-const PIREP_XML_URL: &str = "https://aviationweather.gov/data/cache/aircraftreports.cache.xml.gz";
 const TFR_LIST_URL: &str = "https://tfr.faa.gov/tfrapi/exportTfrList";
 const TFR_GRAPHICS_URL: &str = concat!(
     "https://tfr.faa.gov/geoserver/TFR/ows?",
@@ -51,7 +50,7 @@ const NEXRAD_INDEX_URL: &str = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS
 const GFS_CYCLE_HOURS: i64 = 6;
 const GFS_CYCLE_CANDIDATE_COUNT: usize = 5;
 
-fn live_feed_request(url: impl Into<String>) -> PrefetchRequest {
+pub(crate) fn live_feed_request(url: impl Into<String>) -> PrefetchRequest {
     PrefetchRequest::new(url).with_timeouts(NetworkTimeouts {
         connect: std::time::Duration::from_secs(10),
         total: std::time::Duration::from_secs(120),
@@ -618,20 +617,13 @@ impl ProductBuilder for PirepLiveFeedBuilder {
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let provenance_dir = scratch_dir.join("meta").join("provenance").join("pireps");
-        let requests =
-            vec![live_feed_request(PIREP_XML_URL)
-                .with_logical_file_name("aircraftreports.cache.xml.gz")];
-        prefetch_archives_with_provenance(
-            &requests,
+        let pirep_xml_path = crate::pirep_source::fetch_pirep_xml(
+            &self.fetch,
             &input_dir,
-            self.fetch.fetch_jobs,
-            self.fetch.fetch_cache.as_ref(),
             &provenance_dir,
-            "pireps",
+            generated_at_utc,
         )?;
-        run_gzip_decompress(&input_dir.join("aircraftreports.cache.xml.gz"))?;
-        let pirep_xml_path = input_dir.join("aircraftreports.cache.xml");
-        let fingerprint = pirep_content_fingerprint(&pirep_xml_path)?;
+        let fingerprint = pirep_live_content_fingerprint(&pirep_xml_path, generated_at_utc)?;
         let version = content_version_label(&fingerprint);
         let result = build_pirep_dataset(&BuildPirepRequest {
             pirep_xml_path,
@@ -1297,7 +1289,7 @@ fn fresh_dir(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn run_gzip_decompress(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn run_gzip_decompress(path: &Path) -> anyhow::Result<()> {
     let output = Command::new("gzip")
         .arg("-d")
         .arg(path)

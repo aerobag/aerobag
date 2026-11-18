@@ -23,7 +23,8 @@ import service_contract
 
 # Driver/harness code follows the client protocol. Fixture/server compilers and
 # their source remain on the candidate revision throughout qualification.
-HARNESS = ("tools/e2e", "ui/web-app/tests", "tools/ci/verify_release_e2e_apps.py")
+HARNESS = ("tools/e2e", "ui/web-app/scripts", "ui/web-app/package.json",
+           "ui/web-app/package-lock.json", "tools/ci/verify_release_e2e_apps.py")
 
 
 def git(root: Path, *args: str) -> str:
@@ -104,6 +105,10 @@ def consume(root: Path, output: Path) -> None:
                 raise ValueError("unsafe client harness archive member")
         stream.extractall(root, members=members, filter="data")
     subprocess.run([sys.executable, str(root / "tools/ci/verify_release_e2e_apps.py"), str(output)], check=True)
+    if selected["client_commit"] != selected["server_commit"]:
+        # Dependencies are part of the retained browser harness too. Candidate
+        # dependencies may have removed or changed an API used by the old driver.
+        subprocess.run(["npm", "ci", "--prefix", str(root / "ui/web-app")], check=True)
     print(f"Qualifying client {selected['client_commit']} against server {selected['server_commit']}", flush=True)
 
 

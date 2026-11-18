@@ -4,10 +4,28 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
 import release_client_qualification as qualification
+
+
+class ClientHarnessTests(unittest.TestCase):
+    def test_archive_contains_real_browser_driver_and_locked_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "client-harness.tar"
+            with path.open("wb") as stream:
+                subprocess.run(["git", "archive", "HEAD", "--", *qualification.HARNESS],
+                               cwd=qualification.ROOT, stdout=stream, check=True)
+            with tarfile.open(path) as archive:
+                members = archive.getnames()
+                for required in ("tools/e2e/run-release-journey.mjs",
+                                 "ui/web-app/scripts/chrome-cdp.mjs",
+                                 "ui/web-app/scripts/web-workspace-require.mjs",
+                                 "ui/web-app/package.json", "ui/web-app/package-lock.json",
+                                 "tools/ci/verify_release_e2e_apps.py"):
+                    self.assertIn(required, members)
 
 
 class ClientSelectionTests(unittest.TestCase):

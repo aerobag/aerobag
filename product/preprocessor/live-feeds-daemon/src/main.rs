@@ -1093,6 +1093,13 @@ impl DaemonConfig {
 
 fn main() -> anyhow::Result<()> {
     let args = env::args().collect::<Vec<_>>();
+    if args.len() == 2 && args[1] == "--describe-service-contract" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&product_contracts::service_contract())?
+        );
+        return Ok(());
+    }
     if let Some(descriptor) = describe_compatibility(&args)? {
         println!("{descriptor}");
         return Ok(());
@@ -2712,12 +2719,23 @@ impl BulletinObservation {
             (&mut file)
                 .take(MAX_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)?;
-            let document = BulletinDocument::decode(&bytes).map_err(anyhow::Error::msg)?;
+            let hint = if path.file_name().and_then(|s| s.to_str()) == Some("bulletins-v2.json") {
+                let document =
+                    product_contracts::service_bulletins::v2::BulletinDocument::decode(&bytes)
+                        .map_err(anyhow::Error::msg)?;
+                BulletinHint {
+                    publisher: document.publisher,
+                    revision: document.revision,
+                }
+            } else {
+                let document = BulletinDocument::decode(&bytes).map_err(anyhow::Error::msg)?;
+                BulletinHint {
+                    publisher: document.publisher,
+                    revision: document.revision,
+                }
+            };
             self.signature = Some(signature);
-            self.hint = Some(BulletinHint {
-                publisher: document.publisher,
-                revision: document.revision,
-            });
+            self.hint = Some(hint);
             Ok(())
         })();
         let error = result.err().map(|error| error.to_string());

@@ -88,6 +88,10 @@ def parse_args() -> argparse.Namespace:
         "--stage", action="store_true",
         help="run preflight and stage a new release without a confirmation prompt",
     )
+    parser.add_argument(
+        "--server-only", action="store_true",
+        help="with --stage, retain the production client and require the same service contract",
+    )
     operation.add_argument(
         "--promote", action="store_true",
         help=f"promote staging and retain outgoing production in sunset for {DEFAULT_SUNSET_DAYS} days",
@@ -112,6 +116,8 @@ def parse_args() -> argparse.Namespace:
         help="qualification watch budget after deployment (default: 3600 seconds)",
     )
     args = parser.parse_args()
+    if args.server_only and not args.stage:
+        parser.error("--server-only requires --stage")
     if args.force and not args.promote:
         parser.error("--force requires --promote")
     if args.sunset_days is not None:
@@ -203,16 +209,18 @@ def serialize_release_document(document: dict[str, Any]) -> str:
     return json.dumps(releases.migrate_desired_releases(document), indent=2, sort_keys=True) + "\n"
 
 
-def stage_document(document: dict[str, Any], tag: str) -> dict[str, Any]:
+def stage_document(document: dict[str, Any], tag: str, *, server_only: bool = False) -> dict[str, Any]:
     proposed = releases.migrate_desired_releases(document)
     proposed["staging"] = {"tag": tag}
+    if server_only:
+        proposed["staging"]["client_tag"] = releases.parse_desired_releases(document).production.client
     releases.parse_desired_releases(proposed)
     return proposed
 
 
 def promotion_document(
     document: dict[str, Any], *, sunset_days: int = DEFAULT_SUNSET_DAYS,
-    now: datetime | None = None,
+    now: datetime | None = None, same_contract: bool = False,
 ) -> tuple[dict[str, Any], str, str]:
     desired = releases.parse_desired_releases(document)
     if desired.staging is None:
@@ -222,9 +230,9 @@ def promotion_document(
     old_production = desired.production.tag
     candidate = desired.staging.tag
     proposed = releases.migrate_desired_releases(document)
-    proposed["production"] = {"tag": candidate}
+    proposed["production"] = dict(proposed["staging"])
     proposed["staging"] = None
-    if sunset_days:
+    if sunset_days and not same_contract:
         instant = now or datetime.now(timezone.utc)
         if instant.tzinfo is None or instant.utcoffset() is None:
             raise ManagementError("promotion time must include a timezone")
@@ -241,6 +249,21 @@ def promotion_document(
         })
     releases.parse_desired_releases(proposed)
     return proposed, old_production, candidate
+
+
+def same_service_contract(first: str, second: str) -> bool:
+    import service_contract
+    path = str(service_contract.CURRENT)
+    # The initial C1 release intentionally leaves legacy clients on their usual
+    # lifecycle; no legacy URL aliases or inferred contracts.
+    if not git("ls-tree", first, "--", path) or not git("ls-tree", second, "--", path):
+        return False
+    old = service_contract.validate(json.loads(git_file(first, path)))
+    new = service_contract.validate(json.loads(git_file(second, path)))
+    if old["contract"] != new["contract"]:
+        return False
+    service_contract.require_equal(old, new)
+    return True
 
 
 def git_file(ref: str, path: str) -> str:
@@ -1059,6 +1082,7 @@ def staging_failure_message(config: dict[str, Any], tag: str) -> str:
 def stage(
     config_path: Path, releases_path: Path, *, watch: bool = False,
     watch_timeout_seconds: int = DEFAULT_WATCH_TIMEOUT_SECONDS,
+    server_only: bool = False,
 ) -> int:
     assert_clean_checkout("stage")
     git("fetch", "--tags", "origin", capture=False)
@@ -1066,6 +1090,13 @@ def stage(
 
     document = load_release_document(releases_path)
     desired = releases.parse_desired_releases(document)
+    if server_only:
+        import service_contract
+        try:
+            client = json.loads(git_file(desired.production.client, str(service_contract.CURRENT)))
+            service_contract.require_equal(client, service_contract.load(REPO_ROOT))
+        except (ValueError, OSError, ManagementError) as error:
+            raise ManagementError(f"server-only staging requires a matching named client contract: {error}") from error
     head = git("rev-parse", "HEAD")
     if desired.staging is not None:
         staged = releases.resolve_release_tag(REPO_ROOT, desired.staging.tag)
@@ -1082,7 +1113,7 @@ def stage(
         assert_remote_idle(config, wait_for_scheduled_refresh=False)
     run_stage_preflight(full=False)
     tag = next_release_name(existing_release_tags())
-    proposed = stage_document(document, tag)
+    proposed = stage_document(document, tag, server_only=server_only)
     old_text = serialize_release_document(document)
     new_text = serialize_release_document(proposed)
     replacement_note = None
@@ -1165,9 +1196,10 @@ def promote(
             "promotion is complete"
         )
 
-    proposed, old_production, candidate = promotion_document(document, sunset_days=sunset_days)
+    same_contract = same_service_contract(desired.production.tag, desired.staging.tag)
+    proposed, old_production, candidate = promotion_document(document, sunset_days=sunset_days, same_contract=same_contract)
     retained = next((entry for entry in proposed.get("sunset", []) if entry["tag"] == old_production), None)
-    compatibility_warning = None if retained else promotion_compatibility_warning(
+    compatibility_warning = None if retained or same_contract else promotion_compatibility_warning(
         old_production, changed_contracts_after_promotion(desired),
     )
     config = deployment.load_config(config_path)
@@ -1203,7 +1235,8 @@ def promote(
             f"Outgoing production {old_production} will remain served in sunset until "
             f"{retained['until_utc']} ({sunset_days} days). Existing sunset deadlines are unchanged."
             if retained else
-            f"Sunset retention is disabled (--sunset-days 0); {old_production} will be retired immediately."
+            (f"The service contract is unchanged. Clients remain supported; server {old_production} will retire."
+             if same_contract else f"Sunset retention is disabled (--sunset-days 0); {old_production} will be retired immediately.")
         ),
     )
     if force:
@@ -1372,6 +1405,7 @@ def main() -> int:
                     DEFAULT_CONFIG, DEFAULT_RELEASES,
                     watch=getattr(args, "watch", False),
                     watch_timeout_seconds=getattr(args, "watch_timeout", DEFAULT_WATCH_TIMEOUT_SECONDS),
+                    server_only=getattr(args, "server_only", False),
                 )
             elif args.promote:
                 result = promote(

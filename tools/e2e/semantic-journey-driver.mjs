@@ -184,6 +184,10 @@ export async function navigateSemanticPage(
 
   if (current.pageId !== "home") {
     current = await transition("navigate to Home", {
+      // Page selection can finish after readCurrentPage (for example Back
+      // closing a modal). Navigation is idempotent: do not send another tap
+      // once the rendered destination already proves completion.
+      acceptPreexistingCompletion: true,
       readinessSamples: 1,
       ready: () => driver.readNavigationAction("home"),
       act: (readyElement) => driver.activateNavigation("home", readyElement),
@@ -193,6 +197,7 @@ export async function navigateSemanticPage(
   if (pageId === "home") return current;
 
   return transition(`navigate to ${pageId}`, {
+    acceptPreexistingCompletion: true,
     readinessSamples: 1,
     ready: () => driver.readNavigationAction(pageId),
     act: (readyElement) => driver.activateNavigation(pageId, readyElement),

@@ -63,7 +63,7 @@ class DesiredReleaseTests(unittest.TestCase):
             releases.parse_desired_releases(document)
 
     def test_desired_schema_version_requires_known_integer(self) -> None:
-        for version in (None, True, 1.0, "2", 0, 3):
+        for version in (None, True, 1.0, "2", 0, 4):
             with self.subTest(version=version), self.assertRaisesRegex(releases.ReleaseConfigError, "schema_version"):
                 releases.parse_desired_releases(self.policy_document(version))
 
@@ -71,7 +71,7 @@ class DesiredReleaseTests(unittest.TestCase):
         document = self.policy_document(1)
         before = json.dumps(document)
         migrated = releases.migrate_desired_releases(document)
-        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["schema_version"], 3)
         self.assertEqual(migrated["sunset"][0]["live_feeds"], "share_if_compatible")
         self.assertEqual(migrated["sunset"][0]["until_utc"], document["sunset"][0]["until_utc"])
         self.assertEqual(releases.migrate_desired_releases(migrated), migrated)

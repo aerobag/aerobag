@@ -403,7 +403,7 @@ class DevStack:
             "--live-root",
             str(self.config.live_root),
             "--service-bulletin-file",
-            str(self.config.service_root / "bulletins-v1.json"),
+            str(self.config.service_root / "bulletins-v2.json"),
             "--scratch-root",
             str(self.config.scratch_root),
             "--fetch-cache-root",
@@ -651,7 +651,7 @@ def make_handler(stack: DevStack):
             parsed = urlparse(self.path)
             path = parsed.path
             if (path == "/live-feeds" or path.startswith("/live-feeds/")
-                    or path == "/service/bulletins-v1.json"
+                    or path in {"/service/bulletins-v1.json", "/service/bulletins-v2.json"}
                     or path == "/cloud" or path.startswith("/cloud/")):
                 self.send_cors_options()
                 return
@@ -662,9 +662,9 @@ def make_handler(stack: DevStack):
         def handle_request(self, send_body: bool) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path == "/service/bulletins-v1.json":
+            if path in {"/service/bulletins-v1.json", "/service/bulletins-v2.json"}:
                 if self.command in {"GET", "HEAD"}:
-                    self.serve_bulletins(send_body)
+                    self.serve_bulletins(send_body, path.rsplit("/", 1)[1])
                 else:
                     self.send_text(405, "read-only endpoint\n", send_body)
             elif path.startswith("/service/"):
@@ -715,11 +715,11 @@ def make_handler(stack: DevStack):
                     return
             self.send_html(200, index_html(config), send_body)
 
-        def serve_bulletins(self, send_body: bool) -> None:
+        def serve_bulletins(self, send_body: bool, filename: str) -> None:
             import hashlib
             import gzip
             try:
-                with (config.service_root / "bulletins-v1.json").open("rb") as stream:
+                with (config.service_root / filename).open("rb") as stream:
                     data = stream.read(256 * 1024 + 1)
                 if len(data) > 256 * 1024:
                     self.send_text(503, "bulletin exceeds contract limit\n", send_body)

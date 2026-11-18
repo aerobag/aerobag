@@ -722,7 +722,7 @@ test("an ensure transition accepts state that converges before its action", asyn
   assert.deepEqual(result.timing.action_result, { skipped: "already-complete" });
 });
 
-test("only text-focus convergence may accept an already-complete transition", () => {
+test("only idempotent text-focus and page navigation accept already-complete transitions", () => {
   const journeys = readFileSync(
     new URL("./release-journey-implementations.mjs", import.meta.url),
     "utf8",
@@ -736,7 +736,12 @@ test("only text-focus convergence may accept an already-complete transition", ()
     driver.indexOf("export async function inspectSemanticMap"),
   );
   assert.doesNotMatch(journeys, /acceptPreexistingCompletion/);
-  assert.equal((driver.match(/acceptPreexistingCompletion/g) ?? []).length, 1);
+  const navigation = driver.slice(driver.indexOf("export async function navigateSemanticPage"),
+    driver.indexOf("function semanticTextValue"));
+  assert.equal((driver.match(/acceptPreexistingCompletion/g) ?? []).length, 3);
+  assert.equal((navigation.match(/acceptPreexistingCompletion: true/g) ?? []).length, 2);
+  assert.match(navigation, /complete: \(\) => driver\.readPage\("home"\)/);
+  assert.match(navigation, /complete: \(\) => driver\.readPage\(pageId\)/);
   assert.match(editText, /acceptPreexistingCompletion: true/);
 });
 

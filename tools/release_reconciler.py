@@ -28,12 +28,13 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 import live_feed_compatibility as compatibility
+import service_contract
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "product/preprocessor/scripts"))
 import release_lifecycle
 
 
-DESIRED_SCHEMA_VERSION = 2
+DESIRED_SCHEMA_VERSION = 3
 OBSERVED_SCHEMA_VERSION = 3
 CHANNEL_GENERATION_SCHEMA_VERSION = 1
 RELEASE_LIVE_FEEDS_STATE_ENV = "AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT"
@@ -83,6 +84,11 @@ def _parse_utc(value: Any, context: str) -> str:
 @dataclass(frozen=True)
 class ReleaseBinding:
     tag: str
+    client_tag: str | None = None
+
+    @property
+    def client(self) -> str:
+        return self.client_tag or self.tag
 
 
 class LiveFeedsPolicy(str, Enum):
@@ -136,11 +142,14 @@ def effective_desired_releases(
     )
 
 
-def _parse_binding(value: Any, context: str) -> ReleaseBinding:
-    document = _object(value, context, {"tag"})
+def _parse_binding(value: Any, context: str, version: int) -> ReleaseBinding:
+    document = _object(value, context, {"tag", "client_tag"} if version >= 3 else {"tag"})
     if "tag" not in document:
         raise ReleaseConfigError(f"{context}.tag is required")
-    return ReleaseBinding(tag=_release_tag(document["tag"], f"{context}.tag"))
+    client = document.get("client_tag")
+    if "client_tag" in document:
+        client = _release_tag(client, f"{context}.client_tag")
+    return ReleaseBinding(tag=_release_tag(document["tag"], f"{context}.tag"), client_tag=client)
 
 
 def parse_desired_releases(value: Any) -> DesiredReleases:
@@ -150,16 +159,16 @@ def parse_desired_releases(value: Any) -> DesiredReleases:
         {"schema_version", "production", "staging", "sunset"},
     )
     version = document.get("schema_version")
-    if type(version) is not int or version not in (1, DESIRED_SCHEMA_VERSION):
+    if type(version) is not int or version not in (1, 2, DESIRED_SCHEMA_VERSION):
         raise ReleaseConfigError(
-            f"release desired state requires schema_version 1 or {DESIRED_SCHEMA_VERSION}"
+            f"release desired state requires schema_version 1, 2 or {DESIRED_SCHEMA_VERSION}"
         )
     if "production" not in document:
         raise ReleaseConfigError("release desired state production is required")
-    production = _parse_binding(document["production"], "production")
+    production = _parse_binding(document["production"], "production", version)
     staging_value = document.get("staging")
     staging = (
-        None if staging_value is None else _parse_binding(staging_value, "staging")
+        None if staging_value is None else _parse_binding(staging_value, "staging", version)
     )
     sunset_value = document.get("sunset", [])
     if not isinstance(sunset_value, list):
@@ -169,7 +178,7 @@ def parse_desired_releases(value: Any) -> DesiredReleases:
     for index, item in enumerate(sunset_value):
         context = f"sunset[{index}]"
         fields = {"tag", "until_utc"}
-        if version == DESIRED_SCHEMA_VERSION:
+        if version >= 2:
             fields.add("live_feeds")
         entry = _object(item, context, fields)
         if "tag" not in entry or "until_utc" not in entry:
@@ -211,7 +220,7 @@ def parse_desired_releases(value: Any) -> DesiredReleases:
 
 
 def migrate_desired_releases(value: Any) -> dict[str, Any]:
-    """Write explicit v2 policies without changing deadlines or caller input."""
+    """Upgrade deployment intent without changing client choices or deadlines."""
     desired = parse_desired_releases(value)
     document = json.loads(json.dumps(value))
     document["schema_version"] = DESIRED_SCHEMA_VERSION
@@ -266,6 +275,16 @@ def resolve_release_tag(repo_root: Path, tag: str) -> ResolvedTag:
 
 def resolve_desired_tags(repo_root: Path, desired: DesiredReleases) -> dict[str, ResolvedTag]:
     return {tag: resolve_release_tag(repo_root, tag) for tag in desired.tags()}
+
+
+def release_client_tag(repo_root: Path, tag: str) -> str:
+    """The immutable staging commit pins client selection for cold rebuilds too."""
+    document = json.loads(_git(repo_root, "show", f"{tag}:deploy/releases.json"))
+    desired = parse_desired_releases(document)
+    for binding in (desired.staging, desired.production):
+        if binding is not None and binding.tag == tag:
+            return binding.client
+    return tag
 
 
 @dataclass
@@ -899,6 +918,30 @@ def load_channel_manifest(release_tag: str, source_path: Path) -> ChannelManifes
 class ReleaseAssets:
     release_root: Path
     live_feed_endpoint: str
+    service_contract: dict | None = None
+    client_tag: str | None = None
+
+
+def contract_providers(manifests: list[ChannelManifest], assets: dict[str, ReleaseAssets]) -> dict[str, str]:
+    """One qualified publication/provider per contract, with production first."""
+    providers: dict[str, str] = {}
+    definitions: dict[str, dict] = {}
+    for manifest in manifests:
+        asset = assets.get(manifest.release_tag)
+        if asset is None or asset.service_contract is None:
+            continue
+        descriptor = service_contract.validate(asset.service_contract)
+        name = descriptor["contract"]
+        if name in definitions:
+            service_contract.require_equal(definitions[name], descriptor)
+        definitions[name] = descriptor
+        published = manifest.document.get("contracts")
+        supported = descriptor["client_data"]["package_contracts"]
+        if (not isinstance(published, dict) or not published
+                or any(supported.get(family) != version for family, version in published.items())):
+            raise ReleaseConfigError(f"publication does not implement service contract {name}")
+        providers.setdefault(name, manifest.release_tag)
+    return providers
 
 
 def _link_directory(link: Path, target: Path) -> None:
@@ -967,6 +1010,7 @@ def materialize_channel_generation(
     production_manifests: list[ChannelManifest],
     staging_manifests: list[ChannelManifest],
     release_assets: dict[str, ReleaseAssets] | None = None,
+    client_assets: dict[str, Path] | None = None,
 ) -> None:
     if output_root.exists():
         raise ReleaseConfigError(f"channel generation already exists: {output_root}")
@@ -975,6 +1019,11 @@ def materialize_channel_generation(
     output_root.mkdir(parents=True)
     try:
         release_assets = release_assets or {}
+        providers = contract_providers(production_manifests, release_assets)
+        staging_providers = contract_providers(staging_manifests, release_assets)
+        for name in providers.keys() & staging_providers.keys():
+            service_contract.require_equal(release_assets[providers[name]].service_contract,
+                                           release_assets[staging_providers[name]].service_contract)
         channels = {
             "production": production_manifests,
             "staging": staging_manifests,
@@ -1005,6 +1054,19 @@ def materialize_channel_generation(
         for manifest in [*production_manifests, *staging_manifests]:
             release_manifests[manifest.release_tag] = manifest
         for tag, manifest in sorted(release_manifests.items()):
+            assets = release_assets.get(tag)
+            if assets is not None and assets.service_contract is not None:
+                client_tag = _release_tag(assets.client_tag or tag, "client tag")
+                for kind in ("web", "downloads"):
+                    link = output_root / "releases" / client_tag / kind
+                    if not link.exists():
+                        _link_directory(link, assets.release_root / kind)
+                    elif link.resolve() != (assets.release_root / kind).resolve():
+                        # Reused clients can appear on both production and staging.
+                        # Their artifact identities were verified before activation.
+                        import build_release
+                        if build_release.directory_sha256(link) != build_release.directory_sha256(assets.release_root / kind):
+                            raise ReleaseConfigError("same client identity has different artifacts")
             packages_root = output_root / "releases" / tag / "packages"
             current_path = packages_root / "current_artifacts.json"
             _write_json(current_path, [manifest.document])
@@ -1014,15 +1076,34 @@ def materialize_channel_generation(
             )
             assets = release_assets.get(tag)
             if assets is not None:
-                _link_directory(
-                    output_root / "releases" / tag / "web",
-                    assets.release_root / "web",
-                )
-                _link_directory(
-                    output_root / "releases" / tag / "downloads",
-                    assets.release_root / "downloads",
-                )
+                for kind in ("web", "downloads"):
+                    link = output_root / "releases" / tag / kind
+                    if not link.exists():
+                        _link_directory(link, assets.release_root / kind)
 
+        for tag, root in (client_assets or {}).items():
+            _release_tag(tag, "retained client")
+            for kind in ("web", "downloads"):
+                link = output_root / "releases" / tag / kind
+                if not link.exists():
+                    _link_directory(link, root / kind)
+
+        for prefix, selected in ((Path("contracts"), providers),
+                                 (Path("staging/contracts"), staging_providers)):
+            for name, tag in selected.items():
+                root = output_root / prefix / name
+                packages = root / "packages"
+                manifest = release_manifests[tag]
+                _write_json(packages / "current_artifacts.json", [manifest.document])
+                _link_publication_roots(packages, published_root, [manifest])
+                _write_json(root / "contract.json", release_assets[tag].service_contract)
+                current_artifacts_paths.append((packages / "current_artifacts.json").relative_to(output_root).as_posix())
+
+        _write_json(output_root / "service-bindings.json", {
+            "schema_version": 1, "production": providers, "staging": staging_providers,
+            "definitions": {name: release_assets[tag].service_contract
+                            for name, tag in {**staging_providers, **providers}.items()},
+        })
         _write_json(
             output_root / "live-feed-routes.json",
             {
@@ -1322,6 +1403,9 @@ def render_live_feed_nginx_routes(
     production_endpoint: str,
     staging_endpoint: str | None,
     release_endpoints: dict[str, str],
+    contract_endpoints: dict[str, str] | None = None,
+    staging_contract_endpoints: dict[str, str] | None = None,
+    contract_generation: Path | None = None,
 ) -> str:
     lines = [
         "# Generated by the Aerobag release reconciler; do not edit.",
@@ -1355,4 +1439,30 @@ def render_live_feed_nginx_routes(
                 "}",
             ]
         )
+    for prefix, endpoints in (("/contracts", contract_endpoints or {}),
+                              ("/staging/contracts", staging_contract_endpoints or {})):
+        for name, endpoint in sorted(endpoints.items()):
+            if not service_contract.NAME.fullmatch(name):
+                raise ReleaseConfigError("invalid contract route")
+            if contract_generation is not None:
+                root = contract_generation / prefix.lstrip("/") / name
+                if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)):
+                    raise ReleaseConfigError("unsafe contract generation path for nginx")
+                # Pin static discovery and the live provider in the same nginx
+                # configuration. Old workers keep the old pair during reload.
+                lines.extend([
+                    f"location {prefix}/{name}/packages/ {{",
+                    f"    alias {root}/packages/;",
+                    '    add_header Cache-Control "no-cache";',
+                    '    add_header Access-Control-Allow-Origin "*" always;', "}",
+                    f"location = {prefix}/{name}/contract.json {{",
+                    f"    alias {root}/contract.json;",
+                    '    add_header Cache-Control "no-cache";', "}",
+                ])
+            lines.extend([
+                f"location {prefix}/{name}/live-feeds/ {{",
+                f"    proxy_pass {_nginx_upstream(endpoint)}/live-feeds/;",
+                "    proxy_http_version 1.1;", "    proxy_buffering off;",
+                "    proxy_read_timeout 1h;", "}",
+            ])
     return "\n".join(lines) + "\n"

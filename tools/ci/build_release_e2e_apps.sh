@@ -8,6 +8,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUTPUT="${1:?usage: build_release_e2e_apps.sh OUTPUT_DIR}"
+if [[ "${AEROBAG_E2E_CLIENT_SELECTED:-}" != 1 ]]; then
+  exec python3 "$ROOT/tools/ci/release_client_qualification.py" build "$OUTPUT"
+fi
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 DEFAULT_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
@@ -29,6 +32,16 @@ ANDROID_PACKAGE_SOURCE_DEVICE_PORT="${AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT
 ANDROID_CLOUD_DEVICE_PORT="${AEROBAG_ANDROID_CLOUD_DEVICE_PORT:-18094}"
 PACKAGE_ORIGIN="http://127.0.0.1:${ANDROID_PACKAGE_SOURCE_DEVICE_PORT}"
 CLOUD_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_DEVICE_PORT}/cloud/"
+PACKAGE_SOURCE_URL="$PACKAGE_ORIGIN/packages/"
+LIVE_FEED_SOURCE_URL="$PACKAGE_ORIGIN"
+if [[ "${AEROBAG_E2E_CONTRACT_ROUTES:-0}" == 1 ]]; then
+  CONTRACT_NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["contract"])' "$ROOT/crates/product-contracts/contracts/service-contract.json")"
+  PACKAGE_SOURCE_URL="$PACKAGE_ORIGIN/contracts/$CONTRACT_NAME/packages/"
+  LIVE_FEED_SOURCE_URL=""
+  export AEROBAG_PACKAGE_SOURCE_BASE_URL="$PACKAGE_SOURCE_URL"
+  export AEROBAG_LIVE_FEEDS_ORIGIN="$PACKAGE_ORIGIN/contracts/$CONTRACT_NAME"
+fi
+
 
 if [[ -n "$(git -C "$ROOT" status --porcelain)" && -n "${CI:-}" ]]; then
   echo "release E2E apps must be built from a clean CI checkout" >&2
@@ -64,9 +77,9 @@ env \
   AEROBAG_BUILD_DIRTY=0 \
   AEROBAG_E2E_ENABLED=1 \
   ANDROID_DEV_SERVER_BASE_URL="$PACKAGE_ORIGIN" \
-  ANDROID_PACKAGE_SOURCE_BASE_URL="$PACKAGE_ORIGIN/packages/" \
-  ANDROID_LIVE_FEED_SOURCE_BASE_URL="$PACKAGE_ORIGIN" \
-  AEROBAG_SERVICE_BULLETIN_URLS="$PACKAGE_ORIGIN/service/bulletins-v1.json" \
+  ANDROID_PACKAGE_SOURCE_BASE_URL="$PACKAGE_SOURCE_URL" \
+  ANDROID_LIVE_FEED_SOURCE_BASE_URL="$LIVE_FEED_SOURCE_URL" \
+  AEROBAG_SERVICE_BULLETIN_URLS="$PACKAGE_ORIGIN/service/bulletins-v2.json" \
   ANDROID_CLOUD_SERVER_BASE_URL="$CLOUD_BASE_URL" \
   ANDROID_TARGET_ABIS="${ANDROID_TARGET_ABIS:-x86_64}" \
   ANDROID_BUILD_RUST_RELEASE=1 \

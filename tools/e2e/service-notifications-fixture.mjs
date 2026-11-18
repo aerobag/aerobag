@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Aerobag contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-export const SERVICE_BULLETIN_PATH = "/service/bulletins-v1.json";
+export const SERVICE_BULLETIN_PATH = "/service/bulletins-v2.json";
 export const SERVICE_BULLETIN_CONTROL_PATH = "/__service-notifications";
 
 export const SERVICE_NOTICE_FIXTURES = Object.freeze([
@@ -27,8 +27,8 @@ export function createServiceBulletinFixture() {
     },
     document(host) {
       return {
-        schema_version: 1, publisher: publisherFor(host), revision,
-        published_at_utc: "2026-01-01T00:00:00Z", releases: [],
+        schema_version: 2, publisher: publisherFor(host), revision,
+        published_at_utc: "2026-01-01T00:00:00Z", contracts: [],
         notices: publication === "empty" ? [] : SERVICE_NOTICE_FIXTURES.map((notice) => ({
           attention_revision: 1, published_at_utc: "2026-01-01T00:00:00Z",
           effective_at_utc: null, expires_at_utc: null, resolved: false,

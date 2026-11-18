@@ -17,11 +17,11 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
 
-def check(root: Path) -> list[str]:
+def check(root: Path, directory: str = CONTRACTS) -> list[str]:
     if git(root, "rev-parse", "--is-shallow-repository") == "true":
         return ["Cloud contract history requires a full checkout (fetch-depth: 0)"]
     history = git(root, "log", "--reverse", "--diff-filter=A", "--format=commit:%H",
-                  "--name-only", "HEAD", "--", f"{CONTRACTS}/*.json")
+                  "--name-only", "HEAD", "--", f"{directory}/*.json")
     first_commit: dict[str, str] = {}
     commit = ""
     for line in history.splitlines():
@@ -34,7 +34,7 @@ def check(root: Path) -> list[str]:
         expected = subprocess.check_output(["git", "show", f"{revision}:{name}"], cwd=root)
         path = root / name
         if not path.is_file() or path.read_bytes() != expected:
-            errors.append(f"Published cloud contract changed: {name}; add a new account version instead")
+            errors.append(f"Published contract changed: {name}; add a new contract version instead")
     return errors
 
 

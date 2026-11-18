@@ -370,7 +370,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         document["schema_version"] = 1
         del document["sunset"][0]["live_feeds"]
         proposed = prod_manage.stage_document(document, "candidate")
-        self.assertEqual(proposed["schema_version"], 2)
+        self.assertEqual(proposed["schema_version"], 3)
         self.assertEqual(proposed["sunset"][0]["live_feeds"], "share_if_compatible")
         self.assertNotIn("live_feeds", document["sunset"][0])
 
@@ -386,7 +386,7 @@ class DesiredStateBehaviorTests(unittest.TestCase):
         document["schema_version"] = 1
         del document["sunset"][0]["live_feeds"]
         proposed, _, _ = prod_manage.promotion_document(document)
-        self.assertEqual(proposed["schema_version"], 2)
+        self.assertEqual(proposed["schema_version"], 3)
         self.assertEqual([entry["live_feeds"] for entry in proposed["sunset"]], ["share_if_compatible"] * 2)
 
     def test_next_release_name_increments_only_the_current_utc_day(self) -> None:

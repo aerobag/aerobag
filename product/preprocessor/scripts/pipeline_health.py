@@ -735,6 +735,12 @@ def collect_service_bulletins(root: Path, release_state: Any) -> dict[str, Any]:
             receipt = status.get("receipt")
             if not failure and (not isinstance(receipt, dict) or receipt.get("sha256") != hashlib.sha256(raw).hexdigest()):
                 raise ValueError("public bulletin does not match the contract-validated publication receipt")
+            contract_receipt = receipt.get("contract_support") if isinstance(receipt, dict) else None
+            if contract_receipt is not None and not failure:
+                with (root / "bulletins-v2.json").open("rb") as stream:
+                    contract_raw = stream.read(256 * 1024 + 1)
+                if len(contract_raw) > 256 * 1024 or contract_receipt.get("sha256") != hashlib.sha256(contract_raw).hexdigest():
+                    raise ValueError("contract support bulletin does not match its validated publication receipt")
             result.update(revision=document["revision"], publisher=document["publisher"])
             if isinstance(release_state, dict) and release_state.get("production"):
                 expected = {release_state["production"]: "production"}

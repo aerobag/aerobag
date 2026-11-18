@@ -1,5 +1,11 @@
 # Desired-State Staged Releases
 
+For named service contracts, independent server updates, retained client
+artifacts and their qualification, see [Service contract deployments](service-contract-deployments.md).
+The release machinery below now treats a tag as a server deployment; its
+client can be pinned to an earlier tag. Restoring a server-only deployment
+also requires its retained client artifacts.
+
 ## Goal
 
 Aerobag releases must be built and exercised without disturbing the currently

@@ -1330,7 +1330,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               },
               live_feeds: { acquisition_policy: "jit_public_resources" },
               client_build: __AEROBAG_CLIENT_BUILD_INFO__,
-              service_bulletin_urls: __AEROBAG_SERVICE_BULLETIN_URLS__ ?? [new URL("/service/bulletins-v1.json", globalThis.location.href).toString()],
+              service_bulletin_urls: __AEROBAG_SERVICE_BULLETIN_URLS__ ?? [new URL("/service/bulletins-v2.json", globalThis.location.href).toString()],
               local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             }),
           ), "startup.session.configure_platform"),

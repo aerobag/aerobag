@@ -289,7 +289,7 @@ class BulletinPublicationTests(unittest.TestCase):
     def test_activated_assignments_not_intent_choose_current_release(self):
         desired = SimpleNamespace(production="new", sunset=[SimpleNamespace(tag="old", until_utc="2026-09-20T00:00:00Z")])
         observed = SimpleNamespace(production="old", staging="new", sunset=[],
-                                   releases={"old": SimpleNamespace(commit="a" * 40), "new": SimpleNamespace(commit="b" * 40)})
+                                   releases={"old": SimpleNamespace(release_root=None, commit="a" * 40), "new": SimpleNamespace(release_root=None, commit="b" * 40)})
         self.publish(notices=[self.notice()])
         def reconcile():
             publisher.publish_releases(self.root, self.url, self.validator, desired, observed)

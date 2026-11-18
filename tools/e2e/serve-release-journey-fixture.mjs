@@ -304,7 +304,10 @@ export function createReleaseJourneyFixtureServer(args, { liveFeedHandler } = {}
       return;
     }
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
-    const pathname = decodeURIComponent(url.pathname);
+    // Contract-scoped builds exercise the same deterministic service through
+    // their shipping URL shape. Controls remain outside the service contract.
+    const pathname = decodeURIComponent(url.pathname).replace(/^\/contracts\/C[1-9][0-9]*(?=\/(?:packages|live-feeds)\/)/, "");
+    if (pathname !== decodeURIComponent(url.pathname)) request.url = pathname + url.search;
     if (pathname === "/__connectivity") {
       response.statusCode = 204;
       response.end();

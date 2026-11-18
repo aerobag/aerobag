@@ -8,6 +8,8 @@ use std::collections::BTreeSet;
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
+pub mod v2;
+
 pub const PATH: &str = "/service/bulletins-v1.json";
 pub const EVENT: &str = "service-bulletins";
 pub const MAX_BYTES: usize = 256 * 1024;

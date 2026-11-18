@@ -60,6 +60,7 @@ class WatchCliTests(unittest.TestCase):
                 execute.assert_called_once_with(
                     manage.DEFAULT_CONFIG, manage.DEFAULT_RELEASES,
                     watch=True, watch_timeout_seconds=90,
+                    **({"server_only": False} if name == "stage" else {}),
                 )
 
 

@@ -73,7 +73,7 @@ for (const jobId of emulatorConsumers) {
     }
     assert.ok(job.steps.some((step) => step.uses?.startsWith("actions/download-artifact@")
       && step.with?.name === "release-e2e-apps-${{ github.sha }}"));
-    const verifyIndex = job.steps.findIndex((step) => step.run?.includes("python3 tools/ci/verify_release_e2e_apps.py"));
+    const verifyIndex = job.steps.findIndex((step) => step.run?.includes("python3 tools/ci/release_client_qualification.py consume"));
     const bootIndex = job.steps.findIndex((step) => /run_e2e_ci\.sh|android-boot-install|run_android_chrome_livefeed_e2e\.sh/.test(step.run ?? ""));
     assert.ok(verifyIndex >= 0 && bootIndex > verifyIndex,
       "verify immutable app inputs before the emulator is booted");
@@ -141,4 +141,16 @@ test("native Android smoke lane supplies both immutable APKs and keeps the host 
   assert.equal(run.env.AEROBAG_E2E_DRIVER_APK, "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk");
   assert.ok(job.steps.some((step) => step.run?.includes('rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal')),
     "the package-only server still compiles service-bulletin-contract for the host");
+});
+
+// The selector must retain the artifact verification gate before any test boot.
+test("client harness selection invokes the retained immutable-bundle verifier", () => {
+  const helper = readFileSync(new URL("../ci/release_client_qualification.py", import.meta.url), "utf8");
+  const consume = helper.slice(helper.indexOf("def consume("), helper.indexOf('if __name__ == "__main__"'));
+  assert.match(consume, /server_commit.*git\(root, "rev-parse", "HEAD"\)/);
+  assert.match(consume, /manifest\["git_commit"\].*selected\["client_commit"\]/);
+  assert.match(consume, /harness_sha256/);
+  assert.match(consume, /subprocess.run\(\[sys.executable, str\(root \/ "tools\/ci\/verify_release_e2e_apps.py"\)/);
+  assert.match(consume, /check=True/);
+  assert.doesNotMatch(consume, /gradlew|cargo.*build|build_release_e2e_apps/);
 });

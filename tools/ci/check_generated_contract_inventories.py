@@ -17,7 +17,7 @@ import check_cloud_contract_history
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = Path("crates/product-contracts/contracts")
-OUTPUTS = ("client-data-contracts.json", "live-feed-compatibility.json")
+OUTPUTS = ("client-data-contracts.json", "live-feed-compatibility.json", "service-contract.json")
 
 
 def compare(generated: Path, checked_in: Path) -> list[str]:
@@ -55,11 +55,12 @@ def check(repo_root: Path) -> list[str]:
 
 
 def main() -> int:
-    errors = check_cloud_contract_history.check(ROOT) + check(ROOT)
+    errors = (check_cloud_contract_history.check(ROOT)
+              + check_cloud_contract_history.check(ROOT, str(CONTRACTS / "service")) + check(ROOT))
     if errors:
         print("Generated contract inventories do not match:\n" + "\n".join(errors))
         return 1
-    print("Both Rust-generated client and live-feed contract inventories match")
+    print("Rust-generated client, live-feed and service contract inventories match")
     return 0
 
 

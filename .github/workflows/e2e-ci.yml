@@ -53,6 +53,8 @@ jobs:
       AEROBAG_ANDROID_KEY_PASSWORD: android
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -191,6 +193,8 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
+      - name: Select qualified client harness
+        run: python3 tools/ci/release_client_qualification.py consume .ci/release-e2e-apps
       - name: Restore executable build artifact mode
         run: chmod +x .ci/release-e2e-apps/aerobag-cloud-serverd
       - name: Download release-journey fixture
@@ -263,8 +267,8 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
-      - name: Verify immutable apps
-        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Select qualified client harness
+        run: python3 tools/ci/release_client_qualification.py consume .ci/release-e2e-apps
       - name: Download release-journey fixture
         uses: actions/download-artifact@v5
         with:
@@ -371,8 +375,8 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
-      - name: Verify immutable apps
-        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Select qualified client harness
+        run: python3 tools/ci/release_client_qualification.py consume .ci/release-e2e-apps
       - name: Install Android failure screenshot analyzer
         uses: ./.github/actions/setup-e2e-python
       - name: Download qualified Android baseline
@@ -461,8 +465,8 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
-      - name: Verify immutable apps
-        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Select qualified client harness
+        run: python3 tools/ci/release_client_qualification.py consume .ci/release-e2e-apps
       - name: Fetch and verify compact package publication
         run: |
           fixtures=(--fixture android-smoke-publication)
@@ -546,8 +550,8 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
-      - name: Verify immutable apps
-        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Select qualified client harness
+        run: python3 tools/ci/release_client_qualification.py consume .ci/release-e2e-apps
       - name: Download release-journey fixture
         uses: actions/download-artifact@v5
         with:

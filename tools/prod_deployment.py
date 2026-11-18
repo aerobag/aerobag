@@ -64,10 +64,13 @@ RUNTIME_SOURCE_PATHS = (
     "tools/release_reconciler.py",
     "tools/release_retirement.py",
     "tools/build_release.py",
+    "tools/service_contract.py",
+    "tools/client_artifacts.py",
     "tools/admin_index.py",
     "tools/publish_notices.py",
     "tools/preprocessor_tool_cache.py",
     "crates/product-contracts/src/service_bulletins.rs",
+    "crates/product-contracts/src/service_bulletins/v2.rs",
     "crates/product-contracts/src/bin/service-bulletin-contract.rs",
     "tools/live_feed_contract.py",
     "tools/live_feed_compatibility.py",
@@ -75,6 +78,9 @@ RUNTIME_SOURCE_PATHS = (
     "tools/live_feed_retirement.py",
     "crates/product-contracts/contracts/live-feed-compatibility.json",
     "crates/product-contracts/contracts/client-data-contracts.json",
+    "crates/product-contracts/contracts/service-contract.json",
+    "crates/product-contracts/src/service_contract.rs",
+    *(str(path.relative_to(REPO_ROOT)) for path in sorted((REPO_ROOT / "crates/product-contracts/contracts/service").glob("*.json"))),
     "product/preprocessor/scripts/pipeline_health.py",
     "product/preprocessor/scripts/release_lifecycle.py",
     "product/preprocessor/scripts/telemetry_contracts.py",
@@ -1671,6 +1677,13 @@ def nginx_config(config: dict[str, Any]) -> str:
         etag on;
     }}
 
+    location = /service/bulletins-v2.json {{
+        alias {config['data_root']}/service/bulletins-v2.json;
+        add_header Cache-Control "no-cache";
+        add_header Access-Control-Allow-Origin "*" always;
+        etag on;
+    }}
+
     location /service/ {{ return 404; }}
 
     location /build-watch/ {{
@@ -1772,6 +1785,18 @@ def nginx_config(config: dict[str, Any]) -> str:
     location /staging/ {{
         alias {channel_root}/staging/web/;
         add_header Cache-Control "public, max-age=300";
+    }}
+
+    location /contracts/ {{
+        alias {channel_root}/contracts/;
+        add_header Cache-Control "no-cache";
+        add_header Access-Control-Allow-Origin "*" always;
+    }}
+
+    location /staging/contracts/ {{
+        alias {channel_root}/staging/contracts/;
+        add_header Cache-Control "no-cache";
+        add_header Access-Control-Allow-Origin "*" always;
     }}
 
     location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/$" {{
@@ -1892,7 +1917,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/aerobag/env
 EnvironmentFile=/etc/aerobag/live-feeds/%i.env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; export AEROBAG_SERVICE_BULLETIN_FILE="$DATA_ROOT/service/bulletins-v1.json"; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{state_args}{nms_args}'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; if test -f "$AEROBAG_RELEASE_ROOT/service-contract.json"; then export AEROBAG_SERVICE_BULLETIN_FILE="$DATA_ROOT/service/bulletins-v2.json"; else export AEROBAG_SERVICE_BULLETIN_FILE="$DATA_ROOT/service/bulletins-v1.json"; fi; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{state_args}{nms_args}'
 Restart=always
 RestartSec=10
 

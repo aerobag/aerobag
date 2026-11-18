@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 
 REPO = Path(__file__).resolve().parents[1]
 BULLETIN_PATH = "/service/bulletins-v1.json"
+CONTRACT_BULLETIN_PATH = "/service/bulletins-v2.json"
 MAX_BYTES = 256 * 1024
 
 
@@ -34,8 +35,8 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def read_document(root: Path) -> dict | None:
-    path = root / "bulletins-v1.json"
+def read_document(root: Path, version: int = 1) -> dict | None:
+    path = root / f"bulletins-v{version}.json"
     if not path.exists():
         return None
     with path.open("rb") as stream:
@@ -49,7 +50,8 @@ def validate(document: dict, validator: Path) -> bytes:
     raw = json.dumps(document, separators=(",", ":")).encode()
     if len(raw) > MAX_BYTES:
         raise ValueError("bulletin exceeds 256 KiB; resolve/archive policy needs operator attention")
-    result = subprocess.run([str(validator)], input=raw, capture_output=True, timeout=10)
+    command = [str(validator)] + (["--contract-support"] if document["schema_version"] == 2 else [])
+    result = subprocess.run(command, input=raw, capture_output=True, timeout=10)
     if result.returncode:
         raise ValueError(result.stderr.decode().strip())
     return result.stdout
@@ -89,7 +91,7 @@ def atomic_write(path: Path, data: bytes, *, http_validator: bool = False) -> No
 
 
 def publish(root: Path, publisher: str, validator: Path, *, notices: list | None = None,
-            releases: list | None = None, expected_revision: int | None = None,
+            releases: list | None = None, contracts: list | None = None, expected_revision: int | None = None,
             source: str = "operator") -> dict:
     root.mkdir(parents=True, exist_ok=True)
     with (root / "publication.lock").open("a") as lock:
@@ -97,6 +99,10 @@ def publish(root: Path, publisher: str, validator: Path, *, notices: list | None
         try:
             receipt = _publish_locked(root, publisher, validator, notices=notices,
                                       releases=releases, expected_revision=expected_revision, source=source)
+            contract_receipt = _publish_locked(
+                root, publisher.removesuffix(BULLETIN_PATH) + CONTRACT_BULLETIN_PATH, validator,
+                notices=notices, releases=contracts, expected_revision=None, source=source, version=2)
+            receipt["contract_support"] = contract_receipt
         except Exception as error:
             write_publication_status(root, None, str(error))
             raise
@@ -119,8 +125,10 @@ def write_publication_status(root: Path, receipt: dict | None, error: str | None
 
 
 def _publish_locked(root: Path, publisher: str, validator: Path, *, notices: list | None,
-                    releases: list | None, expected_revision: int | None, source: str) -> dict:
-    previous = read_document(root)
+                    releases: list | None, expected_revision: int | None, source: str, version: int = 1) -> dict:
+    filename = f"bulletins-v{version}.json"
+    support_key = "contracts" if version == 2 else "releases"
+    previous = read_document(root, version)
     revision = previous["revision"] if previous else 0
     if expected_revision is not None and revision != expected_revision:
         raise ValueError(f"publication changed since preview ({expected_revision} -> {revision}); preview again")
@@ -129,8 +137,8 @@ def _publish_locked(root: Path, publisher: str, validator: Path, *, notices: lis
         if previous["publisher"] != publisher:
             raise ValueError("refusing to replace this store's publisher identity")
     document = previous or {
-        "schema_version": 1, "publisher": publisher, "revision": 0,
-        "published_at_utc": utc_now(), "releases": [], "notices": [],
+        "schema_version": version, "publisher": publisher, "revision": 0,
+        "published_at_utc": utc_now(), support_key: [], "notices": [],
     }
     document = json.loads(json.dumps(document))
     if notices is not None:
@@ -147,10 +155,10 @@ def _publish_locked(root: Path, publisher: str, validator: Path, *, notices: lis
             existing[ident] = notice
         document["notices"] = sorted(existing.values(), key=lambda notice: notice["id"])
     if releases is not None:
-        document["releases"] = releases
+        document[support_key] = releases
     if previous and document == previous:
         return {"revision": revision, "publisher": publisher, "changed": False,
-                "sha256": hashlib.sha256((root / "bulletins-v1.json").read_bytes()).hexdigest()}
+                "sha256": hashlib.sha256((root / filename).read_bytes()).hexdigest()}
     document["revision"] = revision + 1
     document["published_at_utc"] = utc_now()
     encoded = validate(document, validator)
@@ -158,9 +166,9 @@ def _publish_locked(root: Path, publisher: str, validator: Path, *, notices: lis
     audit = {"source": source, "sha256": digest, "document": document}
     # An interrupted publication can leave an uncommitted audit candidate.
     # Only bulletins-v1.json identifies the committed revision.
-    atomic_write(root / "history" / f"{revision + 1}-{digest}.json",
+    atomic_write(root / "history" / f"v{version}-{revision + 1}-{digest}.json",
                  json.dumps(audit, indent=2).encode())
-    atomic_write(root / "bulletins-v1.json", encoded, http_validator=True)
+    atomic_write(root / filename, encoded, http_validator=True)
     return {"revision": revision + 1, "publisher": publisher, "sha256": digest, "changed": True}
 
 
@@ -196,8 +204,50 @@ def publish_releases(root: Path, publisher: str, validator: Path, desired, obser
                 del retained[tag]
             else:
                 item["role"] = "retired"
-    return publish(root, publisher, validator, releases=sorted(retained.values(), key=lambda item: item["release"]),
+    contracts = contract_support(root, base, desired, observed)
+    return publish(root, publisher, validator, contracts=contracts, releases=sorted(retained.values(), key=lambda item: item["release"]),
                    source="activated-release-assignments")
+
+
+def contract_support(root: Path, base: str, desired, observed) -> list[dict]:
+    """Project only activated contracts; server revisions carry no support deadline."""
+    previous = read_document(root, 2)
+    retained = {item["contract"]: item for item in (previous or {}).get("contracts", [])}
+    deadlines = {item.tag: item.until_utc for item in desired.sunset}
+    active = {}
+    # Production wins when staging and production implement the same contract.
+    assignments = [(tag, "sunset") for tag in observed.sunset]
+    assignments += [(observed.staging, "staging"), (observed.production, "production")]
+    for tag, role in assignments:
+        if not tag:
+            continue
+        release_root = observed.releases[tag].release_root
+        if not release_root:
+            continue
+        path = Path(release_root) / "service-contract.json"
+        if not path.exists():
+            continue  # A legacy release has its v1 release-based support record.
+        import service_contract
+        descriptor = service_contract.validate(json.loads(path.read_text()))
+        name = descriptor["contract"]
+        deadline = deadlines.get(tag) if role == "sunset" else None
+        if role == "sunset" and not deadline:
+            raise ValueError(f"activated contract {name} has no sunset deadline")
+        old = retained.get(name)
+        attention = old["attention_revision"] if old else 1
+        if old and (old["role"], old["support_until_utc"]) != (role, deadline):
+            attention += 1
+        active[name] = dict(contract=name, role=role, support_until_utc=deadline,
+                            attention_revision=attention, web_update_url=base + "/",
+                            android_update_url=base + "/about")
+    for name, old in list(retained.items()):
+        if name not in active:
+            if old["role"] == "staging" and old["support_until_utc"] is None:
+                del retained[name]
+            else:
+                retained[name] = dict(old, role="retired", support_until_utc=old["support_until_utc"] or utc_now())
+    retained.update(active)
+    return sorted(retained.values(), key=lambda item: item["contract"])
 
 
 def main() -> int:

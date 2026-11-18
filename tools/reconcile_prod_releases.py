@@ -27,7 +27,8 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
-import build_release as release_builder  # noqa: E402
+import build_release as release_builder
+import client_artifacts  # noqa: E402
 import release_reconciler as releases  # noqa: E402
 import release_retirement as retirement  # noqa: E402
 import live_feed_launch  # noqa: E402
@@ -204,6 +205,18 @@ def public_channel_checks(
     about = release_root / "web/about.html"
     if role == "staging" or about.is_file():
         checks["about"] = (f"{web_base}/about", about, "text/html")
+    descriptor = release_root / "service-contract.json"
+    if descriptor.is_file():
+        name = json.loads(descriptor.read_text())["contract"]
+        generation = channel_root.parent if role != "sunset" else channel_root.parent.parent
+        prefix = ("staging/" if role == "staging" else "") + f"contracts/{name}"
+        contract_root = generation / prefix
+        contract_base = origin.rstrip("/") + "/" + prefix
+        checks.update({
+            "service_contract": (contract_base + "/contract.json", contract_root / "contract.json", "application/json"),
+            "contract_packages": (contract_base + "/packages/current_artifacts.json", contract_root / "packages/current_artifacts.json", "application/json"),
+            "contract_live_feeds": (contract_base + "/live-feeds/status.json", None, "application/json"),
+        })
     return checks
 
 
@@ -499,6 +512,12 @@ class Controller:
         if releases.current_generation(self.artifact_root) is None:
             return
         self.retire_live_feed_instances(now=now, env_root=env_root)
+        service_bindings = releases.current_generation(self.artifact_root) / "service-bindings.json"
+        if service_bindings.is_file():
+            document = json.loads(service_bindings.read_text())
+            client_artifacts.collect(self.artifact_root / "client-builds",
+                                     set(document["production"]) | set(document["staging"]),
+                                     now=now.timestamp())
 
         def retention_plan():
             drains = {
@@ -712,52 +731,68 @@ class Controller:
             raise RuntimeError(f"publication build returned missing manifest {manifest}")
         return manifest
 
+    def build_artifacts(self, tag: str, commit: str, client_root: Path | None = None) -> Path:
+        self.progress(f"Building immutable artifacts for {tag}")
+        worktree = self.artifact_root / "worktrees/releases" / f"{tag}-{commit[:12]}"
+        if worktree.exists():
+            _run(
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                cwd=self.source_root,
+            )
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            ["git", "worktree", "add", "--detach", str(worktree), commit],
+            cwd=self.source_root,
+        )
+        try:
+            command = [
+                str(self.source_root / "tools/build_release.py"),
+                "--tag",
+                tag,
+                "--commit",
+                commit,
+                "--repo-root",
+                str(worktree),
+                "--artifact-root",
+                str(self.artifact_root),
+                "--cargo-target-dir",
+                str(self.args.cargo_target_dir),
+                "--ui-target-root",
+                str(self.args.ui_target_root),
+                "--public-origin",
+                self.args.public_origin,
+            ]
+            if client_root is not None:
+                command.extend(["--client-release-root", str(client_root)])
+            _run(command, cwd=worktree, env=os.environ.copy())
+        finally:
+            _run(
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                cwd=self.source_root,
+            )
+
+        return release_builder.release_directory(self.artifact_root, tag, commit)
+
     def build(self, tag: str) -> None:
         record = self.observed.releases[tag]
         try:
             self.progress(f"Preparing cycle products for {tag}")
             manifest_path = self.build_product_manifest(tag, force=False)
 
-            self.progress(f"Building client and server artifacts for {tag}")
-            worktree = self.artifact_root / "worktrees/releases" / f"{tag}-{record.commit[:12]}"
-            if worktree.exists():
-                _run(
-                    ["git", "worktree", "remove", "--force", str(worktree)],
-                    cwd=self.source_root,
-                )
-            worktree.parent.mkdir(parents=True, exist_ok=True)
-            _run(
-                ["git", "worktree", "add", "--detach", str(worktree), record.commit],
-                cwd=self.source_root,
-            )
-            try:
-                command = [
-                    str(self.source_root / "tools/build_release.py"),
-                    "--tag",
-                    tag,
-                    "--commit",
-                    record.commit,
-                    "--repo-root",
-                    str(worktree),
-                    "--artifact-root",
-                    str(self.artifact_root),
-                    "--cargo-target-dir",
-                    str(self.args.cargo_target_dir),
-                    "--ui-target-root",
-                    str(self.args.ui_target_root),
-                    "--public-origin",
-                    self.args.public_origin,
-                ]
-                _run(command, cwd=worktree, env=os.environ.copy())
-            finally:
-                _run(
-                    ["git", "worktree", "remove", "--force", str(worktree)],
-                    cwd=self.source_root,
-                )
-
-            release_root = release_builder.release_directory(
-                self.artifact_root, tag, record.commit
-            )
+            client_tag = releases.release_client_tag(self.source_root, tag)
+            for binding in (self.desired.production, self.desired.staging):
+                if binding is not None and binding.tag == tag and binding.client != client_tag:
+                    raise RuntimeError("client selection differs from the immutable release tag")
+            client_root = None
+            if client_tag != tag:
+                client = releases.resolve_release_tag(self.source_root, client_tag)
+                client_root = self.artifact_root / "client-builds" / f"{client_tag}-{client.commit[:12]}"
+                if not client_root.exists():
+                    original = release_builder.release_directory(self.artifact_root, client_tag, client.commit)
+                    if not original.exists():
+                        raise RuntimeError(f"retained client {client_tag} is missing; restore its immutable artifacts before server-only staging")
+                    client_root = client_artifacts.retain(self.artifact_root / "client-builds", original)
+            release_root = self.build_artifacts(tag, record.commit, client_root)
             record.product_manifest = str(manifest_path)
             record.release_root = str(release_root)
             record.build_status = "passed"
@@ -925,11 +960,22 @@ class Controller:
                 raise RuntimeError(f"release {tag} is not ready for activation")
             release_root = Path(record.release_root)
             release_builder.normalize_release_permissions(release_root)
-            release_builder.validate_release_directory(
+            metadata = release_builder.validate_release_directory(
                 release_root, record.tag, record.commit
             )
+            descriptor = None
+            if metadata.get("service_contract") is not None:
+                descriptor = json.loads((release_root / "service-contract.json").read_text())
+                expected_client = releases.release_client_tag(self.source_root, tag)
+                for desired_binding in (self.desired.production, self.desired.staging):
+                    if desired_binding is not None and desired_binding.tag == tag and desired_binding.client != expected_client:
+                        raise RuntimeError("client selection differs from the immutable release tag")
+                if metadata["client"]["tag"] != expected_client:
+                    raise RuntimeError("artifact client differs from the immutable staging selection")
+                client_artifacts.retain(self.artifact_root / "client-builds", release_root)
             assets[tag] = releases.ReleaseAssets(
-                release_root, bindings[tag].endpoint
+                release_root, bindings[tag].endpoint, descriptor,
+                metadata.get("client", {}).get("tag"),
             )
 
         generation_number = self.observed.generation + 1
@@ -947,6 +993,10 @@ class Controller:
             production_manifests=production,
             staging_manifests=staging,
             release_assets=assets,
+            client_assets=client_artifacts.supported(self.artifact_root / "client-builds", {
+                asset.service_contract["contract"]: asset.service_contract
+                for asset in assets.values() if asset.service_contract is not None
+            }),
         )
         controller_preprocessor = self.controller_preprocessor()
 
@@ -1012,6 +1062,11 @@ class Controller:
                 release_endpoints={
                     tag: asset.live_feed_endpoint for tag, asset in assets.items()
                 },
+                contract_endpoints={name: assets[tag].live_feed_endpoint for name, tag in
+                                    releases.contract_providers(production, assets).items()},
+                staging_contract_endpoints={name: assets[tag].live_feed_endpoint for name, tag in
+                                            releases.contract_providers(staging, assets).items()},
+                contract_generation=generation,
             ),
             encoding="utf-8",
         )

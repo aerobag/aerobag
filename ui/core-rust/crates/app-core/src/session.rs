@@ -19763,7 +19763,7 @@ mod tests {
     fn service_inbox_reads_persist_without_acknowledging_operational_faults() {
         let storage: LocalDocumentBackendHandle = Arc::new(MemoryLocalDocumentBackend::default());
         let init = create_ui_session(FlightPlan::default(), &[], None, None).unwrap();
-        let url = "https://notices.test/service/bulletins-v1.json";
+        let url = "https://notices.test/service/bulletins-v2.json";
         let capabilities = PlatformCapabilities {
             service_bulletin_urls: vec![url.into()],
             ..Default::default()
@@ -19784,8 +19784,8 @@ mod tests {
             })
             .unwrap();
         let document = serde_json::json!({
-            "schema_version":1, "publisher":url, "revision":1,
-            "published_at_utc":"2026-09-13T00:00:00Z", "releases":[],
+            "schema_version":2, "publisher":url, "revision":1,
+            "published_at_utc":"2026-09-13T00:00:00Z", "contracts":[],
             "notices":[{"id":"notam-quality", "attention_revision":1, "title":"NOTAM distribution",
                 "body":"Quality is suspect; use caution.", "severity":"caution",
                 "published_at_utc":"2026-09-13T00:00:00Z", "effective_at_utc":null,

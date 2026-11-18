@@ -13,6 +13,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "product/preprocessor/scripts"))
 import telemetry_contracts  # noqa: E402
+import service_contract
 ABOUT_DOWNLOAD_PANEL_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_BEGIN -->"
 ABOUT_DOWNLOAD_PANEL_END = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_END -->"
 ABOUT_DOWNLOAD_SCRIPT_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_BEGIN -->"
@@ -50,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cargo-target-dir", type=Path, required=True)
     parser.add_argument("--ui-target-root", type=Path, required=True)
     parser.add_argument("--public-origin", default="https://aerobag.org")
+    parser.add_argument("--client-release-root", type=Path)
     return parser.parse_args()
 
 
@@ -63,21 +66,25 @@ def release_environment(
     public_origin: str,
     web_dist: Path,
     ui_target_root: Path,
+    contract: str | None = None,
 ) -> dict[str, str]:
     origin = public_origin.rstrip("/")
     release_url = f"{origin}/releases/{tag}"
+    data_url = service_contract.root_url(origin, contract) if contract else release_url
     return {
         "AEROBAG_VERSION_NAME": tag,
         "ANDROID_VERSION_NAME": tag,
         "AEROBAG_WEB_DIST": str(web_dist),
         "AEROBAG_WEB_PUBLIC_BASE_URL": f"/releases/{tag}/web/",
-        "AEROBAG_PACKAGE_SOURCE_BASE_URL": f"{release_url}/packages/",
-        "AEROBAG_LIVE_FEEDS_ORIGIN": release_url,
-        "AEROBAG_SERVICE_BULLETIN_URLS": f"{origin}/service/bulletins-v1.json",
+        "AEROBAG_PACKAGE_SOURCE_BASE_URL": f"{data_url}/packages/",
+        "AEROBAG_LIVE_FEEDS_ORIGIN": data_url,
+        "AEROBAG_SERVICE_BULLETIN_URLS": f"{origin}/service/bulletins-v{2 if contract else 1}.json",
         "AEROBAG_DOWNLOADS_BASE_URL": f"{release_url}/downloads",
         "AEROBAG_UI_TARGET_ROOT": str(ui_target_root),
-        "ANDROID_PACKAGE_SOURCE_BASE_URL": f"{release_url}/packages/",
-        "ANDROID_LIVE_FEED_SOURCE_BASE_URL": release_url,
+        "ANDROID_PACKAGE_SOURCE_BASE_URL": f"{data_url}/packages/",
+        # Contract clients derive live feeds from their selected package service,
+        # allowing the same APK to exercise an isolated staging origin.
+        "ANDROID_LIVE_FEED_SOURCE_BASE_URL": "" if contract else release_url,
         "ANDROID_CLOUD_SERVER_BASE_URL": f"{origin}/cloud/",
         "ANDROID_APK_PUBLIC_BASE_URL": f"/releases/{tag}/downloads",
     }
@@ -184,7 +191,48 @@ def validate_release_directory(path: Path, tag: str, commit: str) -> dict:
             or artifact.get("sha256") != _sha256(path / "live-feed-compatibility.json")
         ):
             raise RuntimeError(f"immutable release live-feed compatibility mismatch: {path}")
+    if document.get("schema_version") == 2 and "service_contract" not in artifacts:
+        raise RuntimeError("named service release is missing its contract artifact")
+    if "service_contract" in artifacts:
+        artifact = artifacts["service_contract"]
+        if (not isinstance(artifact, dict) or artifact.get("filename") != "service-contract.json"
+                or artifact.get("sha256") != _sha256(path / "service-contract.json")):
+            raise RuntimeError(f"immutable release service contract mismatch: {path}")
+        contract = service_contract.validate(json.loads((path / "service-contract.json").read_text()))
+        if document.get("schema_version") != 2 or document.get("service_contract") != contract["contract"]:
+            raise RuntimeError(f"release service identity mismatch: {path}")
+        if contract["live_feeds"] != json.loads((path / "live-feed-compatibility.json").read_text()):
+            raise RuntimeError("service contract differs from the compiled live-feed inventory")
+        client = document.get("client")
+        if (not isinstance(client, dict) or set(client) != {"tag", "commit", "artifacts"}
+                or not isinstance(client["tag"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", client["tag"])
+                or not isinstance(client["commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", client["commit"])
+                or client["artifacts"] != {key: artifacts[key] for key in ("web", "downloads", "apk")}):
+            raise RuntimeError(f"release client artifact identity mismatch: {path}")
     return document
+
+
+def retained_client(root: Path, expected: dict) -> dict:
+    if (root / "client.json").is_file():
+        import client_artifacts
+        identity = client_artifacts.validate(root)
+        service_contract.require_equal(identity["service_contract"], expected)
+        return identity["client"]
+    metadata = json.loads((root / "release.json").read_text())
+    validate_release_directory(root, metadata["tag"], metadata["commit"])
+    service_contract.require_equal(
+        json.loads((root / "service-contract.json").read_text()), expected,
+    )
+    return metadata["client"]
+
+
+def copy_client_artifacts(source: Path, destination: Path, contract: dict) -> dict:
+    client = retained_client(source, contract)
+    for name in ("web", "downloads"):
+        shutil.copytree(source / name, destination / name)
+        if directory_sha256(destination / name) != client["artifacts"][name]["sha256"]:
+            raise RuntimeError("retained client bytes changed while copying")
+    return client
 
 
 def collect_web_build_output(web_dist: Path, build_ui_root: Path) -> None:
@@ -289,10 +337,23 @@ def build_release(args: argparse.Namespace) -> Path:
         )
 
     telemetry_pins = telemetry_contracts.build_pins(repo_root, args.tag, args.commit)
+    contract = service_contract.load(repo_root, required=False)
+    client_root = getattr(args, "client_release_root", None)
+    if client_root is not None:
+        if contract is None:
+            raise RuntimeError("server-only builds require a named service contract")
+        retained_client(client_root, contract)
 
     final_root = release_directory(args.artifact_root.resolve(), args.tag, args.commit)
     if final_root.exists():
         if _load_existing_release(final_root, args.tag, args.commit):
+            cached = json.loads((final_root / "release.json").read_text())
+            if contract is not None:
+                service_contract.require_equal(contract, json.loads((final_root / "service-contract.json").read_text()))
+                expected_client = retained_client(client_root, contract) if client_root else None
+                if ((expected_client is not None and cached["client"] != expected_client)
+                        or (expected_client is None and cached["client"]["tag"] != args.tag)):
+                    raise RuntimeError("cached build has a different immutable client selection")
             print(final_root)
             return final_root
         raise RuntimeError(f"incomplete immutable release directory already exists: {final_root}")
@@ -315,6 +376,7 @@ def build_release(args: argparse.Namespace) -> Path:
                 public_origin=args.public_origin,
                 web_dist=web_dist,
                 ui_target_root=build_ui_root,
+                contract=contract["contract"] if contract else None,
             )
         )
         env["CARGO_TARGET_DIR"] = str(args.cargo_target_dir.resolve())
@@ -355,24 +417,35 @@ def build_release(args: argparse.Namespace) -> Path:
             preprocessor_tool_cache.install_resources(binary_dir / preprocessor_binary.name, repo_root, resource_env)
         live_feed_inventory = copy_live_feed_inventory(repo_root, temporary_root)
 
-        _run(["npm", "run", "install:wasm-opt"], cwd=repo_root / "ui/web-app", env=env)
-        _run(["npm", "run", "build:release"], cwd=repo_root / "ui/web-app", env=env)
-        collect_web_build_output(web_dist, build_ui_root)
-        _run(
-            ["./scripts/build_prod_apk.sh"],
-            cwd=repo_root / "ui/android-app",
-            env=env,
-        )
-        built_downloads = web_dist / "downloads"
-        if not built_downloads.is_dir():
-            raise RuntimeError("Android build did not produce release downloads")
-        built_downloads.rename(downloads)
-        shutil.rmtree(build_ui_root)
+        if contract is not None:
+            for binary in (live_binary, preprocessor_binary):
+                actual = json.loads(subprocess.check_output([str(binary), "--describe-service-contract"], text=True))
+                service_contract.require_equal(contract, actual)
+            shutil.copyfile(repo_root / service_contract.CURRENT, temporary_root / "service-contract.json")
 
-        apk_metadata = json.loads(
-            (downloads / "android-apk.json").read_text(encoding="utf-8")
-        )
-        finalize_static_about_page(web_dist / "about.html", apk_metadata)
+        client = None
+        if client_root is not None:
+            client = copy_client_artifacts(client_root, temporary_root, contract)
+            apk_metadata = json.loads((downloads / "android-apk.json").read_text())
+        else:
+            _run(["npm", "run", "install:wasm-opt"], cwd=repo_root / "ui/web-app", env=env)
+            _run(["npm", "run", "build:release"], cwd=repo_root / "ui/web-app", env=env)
+            collect_web_build_output(web_dist, build_ui_root)
+            _run(
+                ["./scripts/build_prod_apk.sh"],
+                cwd=repo_root / "ui/android-app",
+                env=env,
+            )
+            built_downloads = web_dist / "downloads"
+            if not built_downloads.is_dir():
+                raise RuntimeError("Android build did not produce release downloads")
+            built_downloads.rename(downloads)
+            shutil.rmtree(build_ui_root)
+
+            apk_metadata = json.loads(
+                (downloads / "android-apk.json").read_text(encoding="utf-8")
+            )
+            finalize_static_about_page(web_dist / "about.html", apk_metadata)
         apk_path = downloads / apk_metadata["filename"]
         metadata = {
             "schema_version": 1,
@@ -406,6 +479,18 @@ def build_release(args: argparse.Namespace) -> Path:
                 },
             },
         }
+        if contract is not None:
+            metadata["schema_version"] = 2
+            metadata["service_contract"] = contract["contract"]
+            metadata["artifacts"]["service_contract"] = {
+                "filename": "service-contract.json",
+                "sha256": _sha256(temporary_root / "service-contract.json"),
+            }
+            metadata["client"] = client or {
+                "tag": args.tag, "commit": args.commit,
+                "artifacts": {key: metadata["artifacts"][key] for key in ("web", "downloads", "apk")},
+            }
+            metadata["endpoints"]["web"] = f"{args.public_origin.rstrip('/')}/releases/{metadata['client']['tag']}/web/"
         if live_feed_inventory is not None:
             metadata["artifacts"]["live_feed_compatibility"] = live_feed_inventory
         (temporary_root / "release.json").write_text(

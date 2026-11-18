@@ -41,7 +41,7 @@ class GeneratedContractInventoriesTests(unittest.TestCase):
             (self.checked_in / name).unlink()
         self.generated.rmdir()
         errors = inventories.compare(self.generated, self.checked_in)
-        self.assertEqual(len(errors), 4)
+        self.assertEqual(len(errors), 2 * len(inventories.OUTPUTS))
         for name in inventories.OUTPUTS:
             self.assertIn(f"generator omitted required inventory: {name}", errors)
             self.assertIn(f"checked-in inventory is missing: {self.checked_in / name}", errors)
@@ -99,7 +99,7 @@ class GeneratedContractInventoriesTests(unittest.TestCase):
             redirect_stdout(io.StringIO()) as output,
         ):
             self.assertEqual(inventories.main(), 1)
-        history.assert_called_once_with(self.root)
+        history.assert_has_calls([mock.call(self.root), mock.call(self.root, str(inventories.CONTRACTS / "service"))])
         self.assertIn("omitted required inventory: live-feed-compatibility.json", output.getvalue())
 
     def test_changed_cloud_history_fails_even_when_generated_outputs_match(self):
@@ -110,7 +110,7 @@ class GeneratedContractInventoriesTests(unittest.TestCase):
             redirect_stdout(io.StringIO()) as output,
         ):
             self.assertEqual(inventories.main(), 1)
-        history.assert_called_once_with(inventories.ROOT)
+        history.assert_has_calls([mock.call(inventories.ROOT), mock.call(inventories.ROOT, str(inventories.CONTRACTS / "service"))])
         generated.assert_called_once_with(inventories.ROOT)
         self.assertIn("Published cloud contract changed", output.getvalue())
 

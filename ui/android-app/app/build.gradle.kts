@@ -112,14 +112,14 @@ val androidDevServerBaseUrl = System.getenv("ANDROID_DEV_SERVER_BASE_URL")
 val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: readInstanceConfigValue("ANDROID_PACKAGE_SOURCE_BASE_URL")
     ?: "$androidDevServerBaseUrl/packages/"
-val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_URL")?.takeIf { it.isNotBlank() }
+val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_URL")
     ?: readInstanceConfigValue("ANDROID_LIVE_FEED_SOURCE_BASE_URL")
     ?: ""
 val androidCloudServerBaseUrl = System.getenv("ANDROID_CLOUD_SERVER_BASE_URL")?.takeIf { it.isNotBlank() }
     ?: readInstanceConfigValue("ANDROID_CLOUD_SERVER_BASE_URL")
     ?: ""
 val serviceBulletinUrls = readStringListBuildConfig("AEROBAG_SERVICE_BULLETIN_URLS")
-    ?: listOf("http://aerobag-dev.iac.jonh.net:18080/service/bulletins-v1.json")
+    ?: listOf("http://aerobag-dev.iac.jonh.net:18080/service/bulletins-v2.json")
 fun readIntegerBuildConfig(key: String, defaultValue: Int): Int {
     val rawValue = System.getenv(key)
         ?: readInstanceConfigValue(key)

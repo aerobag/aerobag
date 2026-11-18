@@ -16,6 +16,7 @@ pub mod live_feeds;
 mod notam_catalog_identity;
 mod notam_subject;
 pub mod publication;
+mod service_contract;
 pub mod versioned_json;
 mod weather_station_catalog;
 pub use weather_station_catalog::*;
@@ -28,6 +29,7 @@ pub use live_feed_compatibility::*;
 pub use live_feed_policy::*;
 pub use notam_catalog_identity::*;
 pub use notam_subject::*;
+pub use service_contract::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductContract {

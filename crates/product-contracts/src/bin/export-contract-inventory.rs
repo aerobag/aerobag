@@ -8,9 +8,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || serde_json::to_string_pretty(&product_contracts::client_data_contract_inventory());
     let compatibility =
         || serde_json::to_string_pretty(&product_contracts::live_feed_compatibility_descriptor());
+    let service = || serde_json::to_string_pretty(&product_contracts::service_contract());
     match args.as_slice() {
         [] => println!("{}", legacy()?),
         [flag] if flag == "--live-feed-compatibility" => println!("{}", compatibility()?),
+        [flag] if flag == "--service-contract" => println!("{}", service()?),
         [flag, directory] if flag == "--output-dir" => {
             let directory = std::path::Path::new(directory);
             std::fs::create_dir_all(directory)?;
@@ -22,10 +24,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 directory.join("live-feed-compatibility.json"),
                 format!("{}\n", compatibility()?),
             )?;
+            std::fs::write(directory.join("service-contract.json"), format!("{}\n", service()?))?;
         }
         _ => {
             return Err(
-                "usage: export-contract-inventory [--live-feed-compatibility | --output-dir DIR]"
+                "usage: export-contract-inventory [--live-feed-compatibility | --service-contract | --output-dir DIR]"
                     .into(),
             )
         }

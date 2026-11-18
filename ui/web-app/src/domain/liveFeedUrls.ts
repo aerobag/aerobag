@@ -3,11 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+import { serviceEnvironmentUrl, type ServiceRuntime } from "./serviceEnvironment";
 
-export type LiveFeedSourceRuntime = {
-  window?: { location?: { origin?: string | null } } | null;
-  location?: { origin?: string | null } | null;
-};
+export type LiveFeedSourceRuntime = ServiceRuntime;
 
 export function resolveLiveFeedSourceUrl(
   configuredOrigin: string | null | undefined,
@@ -15,7 +13,7 @@ export function resolveLiveFeedSourceUrl(
 ): string {
   const configured = configuredOrigin?.trim();
   if (configured) {
-    return configured.replace(/\/+$/, "");
+    return serviceEnvironmentUrl(configured, runtime);
   }
   const origin = runtime.window?.location?.origin ?? runtime.location?.origin ?? "";
   if (origin) {

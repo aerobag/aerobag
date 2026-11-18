@@ -1724,6 +1724,13 @@ fn print_rust_build_cache_gc_report(mode: BuildCacheGcMode, report: RustBuildCac
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
+    if args.len() == 2 && args[1] == "--describe-service-contract" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&product_contracts::service_contract())?
+        );
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some(TOOL_RUNNER_ARG) {
         return run_tool_runner(&args[2..]);
     }

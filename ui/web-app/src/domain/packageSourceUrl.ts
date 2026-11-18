@@ -3,10 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 declare const __AEROBAG_PACKAGE_SOURCE_BASE_URL__: string | null;
+import { serviceEnvironmentUrl, type ServiceRuntime } from "./serviceEnvironment";
 
-export type PackageSourceRuntime = {
-  location?: { origin?: string | null } | null;
-};
+export type PackageSourceRuntime = ServiceRuntime;
 
 export function resolvePackageSourceBaseUrl(
   configuredBaseUrl: string | null | undefined,
@@ -14,7 +13,7 @@ export function resolvePackageSourceBaseUrl(
 ): string {
   const configured = configuredBaseUrl?.trim();
   if (configured) {
-    return configured.replace(/\/+$/, "");
+    return serviceEnvironmentUrl(configured, runtime);
   }
   const origin = runtime.location?.origin?.replace(/\/+$/, "") ?? "";
   return origin ? `${origin}/packages` : "/packages";

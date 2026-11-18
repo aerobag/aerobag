@@ -82,7 +82,7 @@ def main() -> None:
         with (
             mock.patch.object(controller, "_run", side_effect=run),
             mock.patch.object(controller.release_builder, "normalize_release_permissions"),
-            mock.patch.object(controller.release_builder, "validate_release_directory"),
+            mock.patch.object(controller.release_builder, "validate_release_directory", return_value={}),
             mock.patch.object(instance, "validate_public_production"),
         ):
             instance.activate()

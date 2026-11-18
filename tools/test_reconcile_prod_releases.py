@@ -210,7 +210,7 @@ class ForcedPromotionActivationTests(unittest.TestCase):
             )}),
             (self.instance, "validate_public_production", {}),
             (controller.release_builder, "normalize_release_permissions", {}),
-            (controller.release_builder, "validate_release_directory", {}),
+            (controller.release_builder, "validate_release_directory", {"return_value": {}}),
             (controller, "_run", {}),
         ]:
             patcher = mock.patch.object(target, name, **options)

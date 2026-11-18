@@ -9,7 +9,7 @@ use app_ui_contracts::session::{
     ClientBuildInfo, UiServiceNotice, UiServiceNoticeAction, UiServiceNoticeLink,
     UiServiceNoticeTone, UiServiceNotificationsState, UiStatusSeverity,
 };
-use product_contracts::service_bulletins::{
+use product_contracts::service_bulletins::v2::{
     self as contract, BulletinDocument, BulletinHint, NoticeSeverity, ReleaseRole,
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,7 @@ const RESOURCE_PREFIX: &str = "service-bulletin/";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServicePersistentState {
+    #[serde(default, rename = "contract_documents")]
     pub documents: BTreeMap<String, BulletinDocument>,
     pub checked_at: BTreeMap<String, i64>,
 }
@@ -308,7 +309,7 @@ impl ServiceNotifications {
                     })
                     .chain(
                         document
-                            .releases
+                            .contracts
                             .iter()
                             .map(|r| r.support_until_utc.as_deref()),
                     )
@@ -360,11 +361,11 @@ impl ServiceNotifications {
             let Some(document) = self.persistent.documents.get(publisher) else {
                 continue;
             };
-            let own_release = build.filter(|b| !b.dirty).and_then(|b| {
-                document.releases.iter().find(|release| {
-                    b.version == release.release
-                        && b.commit.as_deref() == Some(release.commit.as_str())
-                })
+            let own_release = build.filter(|b| !b.dirty).and_then(|_| {
+                document
+                    .contracts
+                    .iter()
+                    .find(|entry| entry.contract == product_contracts::SERVICE_CONTRACT_ID)
             });
             for notice in &document.notices {
                 if !notice.audience.platforms.is_empty()
@@ -379,8 +380,9 @@ impl ServiceNotifications {
                     continue;
                 }
                 if !notice.audience.releases.is_empty()
-                    && !own_release
-                        .is_some_and(|release| notice.audience.releases.contains(&release.release))
+                    && !build
+                        .filter(|b| !b.dirty)
+                        .is_some_and(|b| notice.audience.releases.contains(&b.version))
                 {
                     continue;
                 }
@@ -447,19 +449,13 @@ impl ServiceNotifications {
                 };
                 let id = key(
                     publisher,
-                    &format!("release/{}/{milestone}", release.release),
+                    &format!("contract/{}/{milestone}", release.contract),
                     release.attention_revision,
                 );
                 published_times.insert(
                     id.clone(),
                     contract::epoch_ms(&document.published_at_utc).expect("validated timestamp"),
                 );
-                let current = document
-                    .releases
-                    .iter()
-                    .find(|r| r.role == ReleaseRole::Production)
-                    .map(|r| format!("Version {} is now current. ", r.release))
-                    .unwrap_or_default();
                 let (label, url) = if platform == "android" {
                     ("Update your app", &release.android_update_url)
                 } else {
@@ -467,9 +463,9 @@ impl ServiceNotifications {
                 };
                 items.push(UiServiceNotice {
                     unread: !receipts.contains(&id), expanded: self.expanded.as_ref() == Some(&id), archived: false,
-                    open_action: UiServiceNoticeAction { action_id: format!("service:read:{id}"), label: format!("Version {} support", release.release) },
+                    open_action: UiServiceNoticeAction { action_id: format!("service:read:{id}"), label: "Application support".into() },
                     id, title: if ended { "This application version is no longer supported" } else { "Update available; support for this version is ending" }.into(),
-                    body: format!("{current}You are using version {}. Its cycle products and live feeds {} supported until {until}. Update when you are not navigating.", release.release, if ended { "were" } else { "will only be" }),
+                    body: format!("This application’s cycle products and live feeds {} supported until {until}. Update when you are not navigating.", if ended { "were" } else { "will only be" }),
                     timing: if ended { format!("Support ended {} ago", age(now - deadline)) } else { format!("Support ends in {}", age(deadline - now)) },
                     state_label: "Active".into(), severity: if ended { UiStatusSeverity::Warning } else { UiStatusSeverity::Caution }, tone: UiServiceNoticeTone::History,
                     link: Some(UiServiceNoticeLink { label: label.into(), url: url.clone() }),
@@ -601,15 +597,15 @@ pub fn status_record(page: &UiServiceNotificationsState) -> Option<DataStatusRec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use contract::{Notice, NoticeAudience, ReleaseSupport};
+    use contract::{ContractSupport, Notice, NoticeAudience};
 
     fn document() -> BulletinDocument {
         BulletinDocument {
-            schema_version: 1,
+            schema_version: 2,
             publisher: format!("https://service.test{}", contract::PATH),
             revision: 1,
             published_at_utc: "2026-09-13T00:00:00Z".into(),
-            releases: vec![],
+            contracts: vec![],
             notices: vec![Notice {
                 id: "notam-quality".into(),
                 attention_revision: 1,
@@ -795,9 +791,8 @@ mod tests {
         let mut state = ServiceNotifications::default();
         let mut doc = document();
         doc.notices.clear();
-        doc.releases.push(ReleaseSupport {
-            release: "2026-09-12.1".into(),
-            commit: "a".repeat(40),
+        doc.contracts.push(ContractSupport {
+            contract: "C1".into(),
             role: ReleaseRole::Sunset,
             support_until_utc: Some("2026-09-13T00:00:15Z".into()),
             attention_revision: 1,
@@ -917,23 +912,22 @@ mod tests {
     }
 
     #[test]
-    fn release_identity_uses_both_tag_and_commit_and_cache_damage_is_isolated() {
+    fn support_follows_contract_across_client_builds_and_cache_damage_is_isolated() {
         let mut state = ServiceNotifications::default();
         let mut doc = document();
         doc.notices.clear();
-        let release = ReleaseSupport {
-            release: "old-tag".into(),
-            commit: "a".repeat(40),
+        let release = ContractSupport {
+            contract: "C2".into(),
             role: ReleaseRole::Sunset,
             support_until_utc: Some("2026-09-14T00:00:00Z".into()),
             attention_revision: 1,
             web_update_url: "https://service.test/".into(),
             android_update_url: "https://service.test/about".into(),
         };
-        doc.releases = vec![
+        doc.contracts = vec![
             release.clone(),
-            ReleaseSupport {
-                release: "new-tag".into(),
+            ContractSupport {
+                contract: "C1".into(),
                 role: ReleaseRole::Production,
                 support_until_utc: None,
                 ..release
@@ -953,8 +947,17 @@ mod tests {
             .is_empty());
         let old = ClientBuildInfo {
             version: "old-tag".into(),
+            commit: Some("b".repeat(40)),
             ..build
         };
+        assert!(state
+            .project(now(), Some(&old), &BTreeSet::new())
+            .items
+            .is_empty());
+        doc.contracts[0].contract = "C1".into();
+        doc.contracts[1].contract = "C2".into();
+        doc.revision += 1;
+        install(&mut state, &doc, now());
         assert_eq!(
             state
                 .project(now(), Some(&old), &BTreeSet::new())

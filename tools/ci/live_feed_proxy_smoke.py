@@ -227,7 +227,9 @@ class LiveFeedProxySmokeTests(unittest.TestCase):
             (controller, "_run", {"side_effect": self.run_command}),
             (controller.live_feed_retirement.subprocess, "run", {"side_effect": self.retirement_command}),
             (controller.release_builder, "normalize_release_permissions", {}),
-            (controller.release_builder, "validate_release_directory", {}),
+            (controller.release_builder, "validate_release_directory", {
+                "side_effect": lambda root, tag, commit: json.loads((root / "release.json").read_text()),
+            }),
         ):
             patcher = mock.patch.object(target, name, **options)
             patcher.start()

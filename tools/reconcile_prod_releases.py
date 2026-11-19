@@ -403,7 +403,7 @@ class Controller:
             if record is None or record.build_status != "passed":
                 continue
             requirements = runtime.publication_requirements(record)
-            if requirements is None and record.live_feed_instance is not None:
+            if requirements is None and (record.live_feed_instance is not None or not runtime.is_legacy_release(record)):
                 raise releases.ReleaseConfigError(
                     f"cannot prepare live feeds for release {tag}: current publication "
                     f"compatibility metadata unavailable ({record.product_manifest})"
@@ -490,6 +490,24 @@ class Controller:
                       if tag in serving_tags and record.live_feed_provider is not None}
         candidate_ids = {record.live_feed_instance for tag, record in self.observed.releases.items()
                          if tag in self.desired.tags() and record.live_feed_instance is not None}
+
+        # A release may already be serving through the legacy tag-named daemon
+        # when its metadata reader is upgraded. Stop that producer only after
+        # routing has committed to a managed instance; retain its files for the
+        # archive's final capture and ordinary release retirement.
+        for tag in sorted(serving_tags):
+            record = self.observed.releases[tag]
+            if (record.live_feed_status != "running" or record.live_feed_endpoint is None
+                    or record.live_feed_provider is None):
+                continue
+            generation = releases.current_generation(self.artifact_root)
+            bindings = json.loads((generation / "live-feed-bindings.json").read_text())["releases"]
+            if bindings[tag]["provider"] != record.live_feed_provider:
+                raise releases.ReleaseConfigError("legacy daemon retirement requires committed provider routing")
+            _run(["systemctl", "disable", "--now", f"aerobag-live-feeds-release@{tag}.service"])
+            record.live_feed_status = "stopped"
+            record.draining_until_utc = None
+            self.save()
 
         def release_instance_gc_roots(instance_ids: set[str]) -> None:
             registry = self.artifact_root / releases.RELEASE_GC_ROOTS

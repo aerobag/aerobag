@@ -10,7 +10,8 @@ from unittest import mock
 
 import archive_service
 import prod_deployment
-from product_archive import atomic_json, durable_tree, locked
+from product_archive import DailyCapture, atomic_json, durable_tree, locked, read_events
+from test_live_feed_archive import PublishedFixture
 
 
 class ArchiveServiceTests(unittest.TestCase):
@@ -48,6 +49,51 @@ class ArchiveServiceTests(unittest.TestCase):
         generation, providers = archive_service.production_sources(self.artifacts)
         self.assertEqual(generation, self.generation)
         self.assertEqual(providers, ["prod-instance"])
+
+    def legacy_binding(self):
+        path = self.generation / "live-feed-bindings.json"
+        bindings = json.loads(path.read_text())
+        bindings["releases"]["prod"] = {
+            "provider": None, "provider_tag": "prod", "release_tag": "prod",
+            "endpoint": "http://127.0.0.1:8101",
+        }
+        atomic_json(path, bindings)
+        return path, bindings
+
+    def test_legacy_provider_capture_and_final_capture_after_instance_migration(self):
+        path, bindings = self.legacy_binding()
+        legacy = PublishedFixture(self.artifacts / "live-feeds/releases/prod/v3")
+        managed = PublishedFixture(self.artifacts / "live-feeds/instances/prod-instance/v3")
+        legacy.publish("legacy-1")
+        managed.publish("managed-1")
+        archive_service.capture_once(self.config, self.archive)
+        capture = DailyCapture(self.archive / "live-buffer", max_bytes=1_000_000)
+        old = capture.active("releases/prod/v3")
+        new = capture.active("prod-instance/v3")
+        self.assertIsNotNone(old)
+        self.assertIsNotNone(new)
+        self.assertEqual(read_events(old)[0]["head"]["version"], "legacy-1")
+        self.assertEqual(read_events(new)[0]["head"]["version"], "managed-1")
+        legacy.publish("legacy-2", parent="legacy-1")
+        bindings["releases"]["prod"] = {"provider": "prod-instance"}
+        atomic_json(path, bindings)
+        archive_service.capture_once(self.config, self.archive)
+        self.assertEqual([e["head"]["version"] for e in read_events(old)], ["legacy-1", "legacy-2"])
+        self.assertTrue((old / "sealed.json").exists())
+        self.assertIsNone(capture.active("releases/prod/v3"))
+        self.assertEqual(capture.active("prod-instance/v3"), new)
+
+    def test_invalid_bindings_fail_explicitly_without_blocking_cycle_pin(self):
+        path, bindings = self.legacy_binding()
+        for binding in ({"provider": None}, {"provider": 17}, {"provider": "../outside"},
+                        {"provider": None, "provider_tag": "old", "release_tag": "prod"}):
+            with self.subTest(binding=binding):
+                bindings["releases"]["prod"] = binding
+                atomic_json(path, bindings)
+                with self.assertRaisesRegex(ValueError, "provider"):
+                    archive_service.production_sources(self.artifacts)
+        pending = archive_service.pin_cycle(self.config)
+        self.assertEqual((pending / "published/cycle/123/unpacked/nav-db/page").read_bytes(), self.file.read_bytes())
 
     def test_cycle_pin_survives_publication_gc_and_skips_unchanged_cycle(self):
         pending = archive_service.pin_cycle(self.config)

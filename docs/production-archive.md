@@ -63,6 +63,21 @@ from the controller's current generation and live-feed bindings. A shared
 provider is captured once; staging-only providers are excluded. Before retiring
 a provider, it attempts a final catch-up and seals its partial day.
 
+Managed providers use `live-feeds/instances/<id>/v3` and retain the archive source
+identity `<id>/v3`. An explicit legacy binding (`provider: null`, with matching
+release and provider tags) uses `live-feeds/releases/<tag>/v3`, recorded as
+`releases/<tag>/v3`. Null does not mean there is no feed. When routing moves to a
+managed provider, the collector drains the legacy source and seals its batch.
+Malformed bindings still fail collection; cycle capture does not depend on them.
+
+The first C1 deployment exposed two reader bugs: the launcher rejected release
+metadata v2 and selected its legacy path, then the archive rejected that path's
+null instance ID. The correction accepts validated v1/v2 release evidence and
+allows legacy launch only for a validated v1 release without an inventory.
+Install these controller/archive corrections with `--reconcile`; they do not
+require a new release tag or APK. Archive recovery cannot restore producer history
+that expired during the interruption, and existing gap records remain intact.
+
 Capture reads the same immutable compressed publications as clients, locally.
 It deliberately does not rely on SSE: SSE can coalesce successive publications.
 Delta products are followed through their version-manifest chains. Full-frame

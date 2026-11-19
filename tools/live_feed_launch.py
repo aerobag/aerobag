@@ -91,12 +91,13 @@ class LiveFeedRuntime:
         root = Path(record.release_root)
         metadata = json.loads((root / "release.json").read_text(encoding="utf-8"))
         if (not isinstance(metadata, dict) or type(metadata.get("schema_version")) is not int
-                or metadata["schema_version"] != 1 or metadata.get("tag") != record.tag
+                or metadata["schema_version"] not in (1, 2) or metadata.get("tag") != record.tag
                 or metadata.get("commit") != record.commit):
             raise ValueError("release metadata does not identify the expected build")
         artifacts = metadata.get("artifacts")
         if not isinstance(artifacts, dict):
             raise ValueError("release has no artifact identities")
+        build_release.validate_service_metadata(root, metadata)
         binary = artifacts.get("live_feeds_binary")
         if not isinstance(binary, dict) or binary.get("filename") != "aerobag-live-feedsd":
             raise ValueError("invalid live-feed executable artifact")
@@ -115,6 +116,14 @@ class LiveFeedRuntime:
         inventory = json.loads(path.read_text(encoding="utf-8"))
         compatibility.validate_wire_inventory(inventory)
         return metadata, inventory
+
+    def is_legacy_release(self, record: releases.ObservedRelease) -> bool:
+        """Missing/bad modern evidence must never select the legacy launcher."""
+        try:
+            metadata, inventory = self._release_evidence(record)
+            return metadata["schema_version"] == 1 and inventory is None
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return False
 
     def _validate_requirements(self, value: object) -> dict:
         document = compatibility._object(value, {
@@ -155,7 +164,7 @@ class LiveFeedRuntime:
                     raise ValueError("live-feed descriptor describes a different publication")
                 if build_release._sha256(manifest) != manifest_sha or build_release._sha256(binary) != binary_sha:
                     raise ValueError("live-feed inputs changed during description")
-        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError):
             return None
         sidecar = releases.owned_path(
             self.artifact_root, Path("state/live-feed-requirements") / record.tag / f"{manifest_sha}.json",
@@ -245,7 +254,7 @@ class LiveFeedRuntime:
             # Warming or disabled products affect sharing eligibility, not process health.
             instance.evidence = evidence
             instance.status = "running"
-        except (OSError, ValueError, TypeError, AttributeError, KeyError, subprocess.SubprocessError):
+        except (OSError, ValueError, TypeError, RuntimeError, AttributeError, KeyError, subprocess.SubprocessError):
             # Missing or invalid modern evidence cannot verify a runtime instance.
             return
 

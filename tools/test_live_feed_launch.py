@@ -105,6 +105,20 @@ class RuntimeTests(unittest.TestCase):
     def write_metadata(self):
         (self.release_root / "release.json").write_text(json.dumps(self.metadata))
 
+    def named_service_metadata(self):
+        contract = launch.build_release.service_contract.load(Path(__file__).resolve().parents[1])
+        path = self.release_root / "service-contract.json"
+        path.write_text(json.dumps(contract))
+        self.metadata.update(schema_version=2, service_contract=contract["contract"])
+        self.metadata["artifacts"]["service_contract"] = {
+            "filename": path.name, "sha256": launch.build_release._sha256(path),
+        }
+        for key in ("web", "downloads", "apk"):
+            self.metadata["artifacts"][key] = {"sha256": "a" * 64}
+        self.metadata["client"] = {"tag": self.record.tag, "commit": self.record.commit,
+            "artifacts": {key: self.metadata["artifacts"][key] for key in ("web", "downloads", "apk")}}
+        self.write_metadata()
+
     def describe(self, value=None):
         return mock.patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess(
             [str(self.binary)], 0, stdout=json.dumps(self.requirements if value is None else value)))
@@ -145,6 +159,69 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(describe.call_args.args[0], [str(self.binary), "--describe-compatibility", str(self.manifest)])
         sidecar = self.root / "state/live-feed-requirements/test" / f"{self.requirements['startup_publication']['sha256']}.json"
         self.assertEqual(json.loads(sidecar.read_text())["requirements"], self.requirements)
+
+    def test_named_service_release_prepares_and_observes_managed_instance(self):
+        self.named_service_metadata()
+        current = self.serving_controller()
+        # Reproduce the already-serving legacy daemon produced by the old reader.
+        self.record.live_feed_status = "running"
+        self.record.live_feed_endpoint = "http://127.0.0.1:19220"
+        with self.describe():
+            current.refresh_live_feed_observations()
+        self.assertEqual(self.record.live_feed_requirements, self.requirements)
+        instance = self.observed.live_feed_instances[self.record.live_feed_instance]
+        self.assertNotEqual(instance.endpoint, self.record.live_feed_endpoint)
+        with self.http(instance, self.evidence(instance)):
+            self.runtime.start(instance)
+        self.assertEqual(instance.status, "running")
+        binding = launch.releases.resolve_live_feed_bindings(current.desired, self.observed)[self.record.tag]
+        self.assertEqual(binding.provider, instance.instance_id)
+
+    def test_invalid_or_undescribable_modern_release_cannot_fall_back_to_legacy(self):
+        current = self.serving_controller()
+        for version in (1, 2, 3, True):
+            with self.subTest(version=version):
+                self.metadata["schema_version"] = version
+                self.write_metadata()
+                with mock.patch.object(launch.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "describe")):
+                    with self.assertRaisesRegex(launch.releases.ReleaseConfigError, "compatibility metadata unavailable"):
+                        current.refresh_live_feed_observations()
+                self.assertIsNone(self.record.live_feed_instance)
+
+    def test_named_service_identity_is_checked_before_launch(self):
+        self.named_service_metadata()
+        self.metadata["service_contract"] = "C999"
+        self.write_metadata()
+        with self.describe() as describe:
+            self.assertIsNone(self.runtime.publication_requirements(self.record))
+        describe.assert_not_called()
+        instance = self.instance()
+        self.runtime.observe(instance)
+        self.assertEqual(instance.status, "unavailable")
+
+    def test_legacy_daemon_retires_only_after_managed_routing_commits(self):
+        current = self.serving_controller()
+        instance = self.instance()
+        self.record.live_feed_status = "running"
+        self.record.live_feed_endpoint = "http://127.0.0.1:19219"
+        self.record.live_feed_instance = instance.instance_id
+        generation = (self.root / "channel-current").resolve()
+        bindings = generation / "live-feed-bindings.json"
+        bindings.write_text(json.dumps({"releases": {self.record.tag: {"provider": None}}}))
+        with mock.patch.object(controller, "_run") as run, \
+                mock.patch.object(controller.live_feed_retirement, "retire_instances"):
+            current.retire_live_feed_instances()
+            run.assert_not_called()
+            self.record.live_feed_provider = instance.instance_id
+            with self.assertRaisesRegex(launch.releases.ReleaseConfigError, "committed provider routing"):
+                current.retire_live_feed_instances()
+            run.assert_not_called()
+            bindings.write_text(json.dumps({"releases": {self.record.tag: {"provider": instance.instance_id}}}))
+            current.retire_live_feed_instances()
+            run.assert_called_once_with(["systemctl", "disable", "--now", "aerobag-live-feeds-release@test.service"])
+            self.assertEqual(self.record.live_feed_status, "stopped")
+            current.retire_live_feed_instances()
+            self.assertEqual(run.call_count, 1)
 
     def test_missing_or_malformed_release_files_are_unknown_not_exceptions(self):
         metadata_path = self.release_root / "release.json"
@@ -662,7 +739,7 @@ class RuntimeTests(unittest.TestCase):
         self.binary.unlink()
         self.binary.symlink_to(daemon)
         self.metadata["artifacts"]["live_feeds_binary"]["sha256"] = launch.build_release._sha256(self.binary)
-        self.write_metadata()
+        self.named_service_metadata()
         result = subprocess.run([str(self.binary), "--describe-compatibility", str(self.manifest)],
             capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)

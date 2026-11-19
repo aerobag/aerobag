@@ -191,6 +191,13 @@ def validate_release_directory(path: Path, tag: str, commit: str) -> dict:
             or artifact.get("sha256") != _sha256(path / "live-feed-compatibility.json")
         ):
             raise RuntimeError(f"immutable release live-feed compatibility mismatch: {path}")
+    validate_service_metadata(path, document)
+    return document
+
+
+def validate_service_metadata(path: Path, document: dict) -> None:
+    """Validate named-service evidence without rehashing unrelated client payloads."""
+    artifacts = document["artifacts"]
     if document.get("schema_version") == 2 and "service_contract" not in artifacts:
         raise RuntimeError("named service release is missing its contract artifact")
     if "service_contract" in artifacts:
@@ -201,15 +208,17 @@ def validate_release_directory(path: Path, tag: str, commit: str) -> dict:
         contract = service_contract.validate(json.loads((path / "service-contract.json").read_text()))
         if document.get("schema_version") != 2 or document.get("service_contract") != contract["contract"]:
             raise RuntimeError(f"release service identity mismatch: {path}")
+        if "live_feed_compatibility" not in artifacts:
+            raise RuntimeError("named service release is missing its live-feed inventory artifact")
         if contract["live_feeds"] != json.loads((path / "live-feed-compatibility.json").read_text()):
             raise RuntimeError("service contract differs from the compiled live-feed inventory")
         client = document.get("client")
         if (not isinstance(client, dict) or set(client) != {"tag", "commit", "artifacts"}
                 or not isinstance(client["tag"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", client["tag"])
                 or not isinstance(client["commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", client["commit"])
+                or not all(key in artifacts for key in ("web", "downloads", "apk"))
                 or client["artifacts"] != {key: artifacts[key] for key in ("web", "downloads", "apk")}):
             raise RuntimeError(f"release client artifact identity mismatch: {path}")
-    return document
 
 
 def retained_client(root: Path, expected: dict) -> dict:

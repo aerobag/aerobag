@@ -50,18 +50,43 @@ def require_mount(config, *, writing=True):
     return root
 
 
-def production_sources(artifact_root):
+def production_generation(artifact_root):
     generation = (artifact_root / "channel-current").resolve(strict=True)
     if generation.parent != artifact_root / "channel-generations":
         raise ValueError("invalid production channel generation")
+    return generation
+
+
+def provider_path(provider):
+    """Keep existing instance identities stable; namespace legacy release roots."""
+    if not isinstance(provider, str):
+        raise ValueError(f"unsafe live-feed provider identity: {provider!r}")
+    legacy = provider.startswith("releases/")
+    name = provider.removeprefix("releases/") if legacy else provider
+    pattern = r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}" if legacy else r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}"
+    if not re.fullmatch(pattern, name):
+        raise ValueError(f"unsafe live-feed provider identity: {provider!r}")
+    return Path("live-feeds") / ("releases" if legacy else "instances") / name
+
+
+def production_sources(artifact_root):
+    generation = production_generation(artifact_root)
     descriptor = read_json(generation / "generation.json")
     bindings = read_json(generation / "live-feed-bindings.json")["releases"]
     tags = [descriptor["production"], *descriptor.get("sunset", [])]
     providers = set()
     for tag in tags:
-        provider = bindings[tag]["provider"]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", provider):
-            raise ValueError("unsafe live-feed provider identity")
+        binding = bindings[tag]
+        provider = binding["provider"]
+        if provider is None:
+            # The controller explicitly represents a legacy, dedicated daemon
+            # with a null instance ID. Its bytes live under releases/, not instances/.
+            if binding.get("provider_tag") != tag or binding.get("release_tag") != tag:
+                raise ValueError(f"invalid legacy live-feed provider for {tag!r}")
+            provider = f"releases/{tag}"
+        elif not isinstance(provider, str) or "/" in provider:
+            raise ValueError(f"unsafe live-feed provider identity: {provider!r}")
+        provider_path(provider)
         providers.add(provider)
     return generation, sorted(providers)
 
@@ -89,10 +114,10 @@ def capture_once(config, root):
         if identity not in identities:
             retired[identity] = batch
     for identity in sorted(identities | retired.keys()):
-        provider, contract = identity.split("/")
+        provider, contract = identity.rsplit("/", 1)
         if contract != LIVE_FEEDS_CONTRACT_PATH:
             raise ValueError(f"cannot retire unsupported live-feed archive contract: {contract}")
-        source = LiveSource(artifacts / "live-feeds/instances" / provider / LIVE_FEEDS_CONTRACT_PATH,
+        source = LiveSource(artifacts / provider_path(provider) / LIVE_FEEDS_CONTRACT_PATH,
                             identity, config["archive_notam_helper"])
         try:
             capture.collect(source, at)
@@ -120,7 +145,7 @@ def pin_cycle(config, *, progress=None):
     # Reuse the controller lock only while obtaining a stable, hard-linked tree.
     # Durability and Borg's potentially slow scan/copy run after releasing it.
     with locked(artifacts / "locks/release-reconciler.lock", blocking=False):
-        generation, _ = production_sources(artifacts)
+        generation = production_generation(artifacts)
         source = generation / "production/packages/current_artifacts.json"
         raw = source.read_bytes()
         identity = hashlib.sha256(raw).hexdigest()

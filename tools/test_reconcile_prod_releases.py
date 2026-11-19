@@ -655,7 +655,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
             ]:
                 artifacts[key] = {"filename": Path(name).name, "sha256": controller._sha256(release_root / name)}
             (release_root / "release.json").write_text(json.dumps({
-                "tag": tag, "commit": "b" * 40, "artifacts": artifacts,
+                "schema_version": 1, "tag": tag, "commit": "b" * 40, "artifacts": artifacts,
             }), encoding="utf-8")
             product = self.root / f"{tag}-product.json"
             product.write_text(f'{{"tag":"{tag}"}}', encoding="utf-8")

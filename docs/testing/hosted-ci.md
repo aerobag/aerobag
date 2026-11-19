@@ -33,6 +33,41 @@ when a newer push canceled its predecessor. Do not call a repeated application
 timeout an infrastructure flake without examining its retained action/rendering
 evidence. This does not add a second full qualification wait before staging.
 
+## Dependency Cache Boundaries
+
+The November 18 run `44403792714` on `411a0cf3` failed during Gradle
+configuration: dozens of established Maven dependencies appeared missing. The
+same commit passed on a second cold-cache runner. This is evidence of a
+transient dependency-access failure, not a journey failure; the original log
+does not identify the underlying HTTP response. A build-setting edit had
+invalidated the combined Rust/Gradle/web cache, forcing fresh downloads.
+
+All compiler lanes now separate repository downloads from compiled outputs:
+
+- `cache-cargo-downloads` keeps registry indexes, crate archives and Git object
+  databases, not duplicate extracted sources, credentials or build outputs.
+- `cache-gradle-downloads` keeps module artifacts/metadata and wrapper
+  distributions, excluding module locks and GC state. APK and JVM builds use
+  this same action; transformed jars and compiled Gradle scripts are rebuilt.
+- Exact download keys identify each job's dependency inputs. Restore prefixes
+  prefer that job's previous set, then another job's compatible downloads.
+  Separate exact keys prevent the first, smaller job from permanently owning
+  a larger job's immutable cache entry. Compatibility includes OS/architecture
+  and Cargo toolchain or Gradle wrapper identity. Gradle keys never depend on
+  Rust/npm changes. Compiled-output caches remain lane-specific and exact-key.
+- Cache restoration never skips dependency resolution, builds or tests. Failed
+  jobs do not publish caches. Missing downloads still fail normally; caches
+  reduce network exposure but are not a retained, offline dependency snapshot.
+  GitHub can evict caches, and the new cache namespaces initially need seeding.
+
+`dependency-cache-workflow.test.mjs` checks the actual workflow/action YAML,
+including independent manifest changes, compatible reuse, incompatible toolchain
+and runner changes, job key separation and runtime-only consumer isolation.
+No build retries, journey deadlines or application behavior changed.
+See [Cargo's cache layout](https://doc.rust-lang.org/cargo/guide/cargo-home.html),
+[Gradle cache reuse](https://docs.gradle.org/current/userguide/dependency_caching.html),
+and [GitHub cache matching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+
 ## Emulator Resource Policy
 
 - Build application artifacts once in `build-release-apps`; native and

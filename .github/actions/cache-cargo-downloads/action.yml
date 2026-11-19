@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Cache Cargo downloads
+description: Reuse repository downloads independently of compiled outputs and changed lockfiles.
+runs:
+  using: composite
+  steps:
+    - name: Cache Cargo repository downloads
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        # Each job can save its own dependency set; a smaller job cannot win
+        # the immutable exact key for a larger build. Prefer its own prior set.
+        key: cargo-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ github.job }}-${{ hashFiles('crates/Cargo.lock', 'ui/core-rust/Cargo.lock', 'services/Cargo.lock', 'product/preprocessor/Cargo.lock') }}
+        restore-keys: |
+          cargo-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ github.job }}-
+          cargo-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-

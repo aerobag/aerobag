@@ -91,16 +91,16 @@ jobs:
             -keypass "$AEROBAG_ANDROID_KEY_PASSWORD" \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Aerobag CI,OU=CI,O=Aerobag,C=US"
-      - name: Cache release app builds
+      - uses: ./.github/actions/cache-cargo-downloads
+      - uses: ./.github/actions/cache-gradle-downloads
+        with:
+          gradle-user-home: ${{ env.AEROBAG_UI_TARGET_ROOT }}/android/gradle-user-home
+      - name: Cache release app build tools and outputs
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/wasm-bindgen
-            ~/.cargo/registry
-            ~/.cargo/git
             .ci/ui-target/tools
-            .ci/ui-target/android/gradle-user-home/caches
-            .ci/ui-target/android/gradle-user-home/wrapper
             .ci/ui-target/services
             .ci/ui-target/shared/rust-target
           key: release-e2e-apps-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/android-app/**/*.gradle*', 'ui/android-app/gradle/wrapper/gradle-wrapper.properties', 'ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json') }}
@@ -609,13 +609,12 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup target add wasm32-unknown-unknown --toolchain "$RUST_TOOLCHAIN"
-      - name: Cache WebAssembly build
+      - uses: ./.github/actions/cache-cargo-downloads
+      - name: Cache WebAssembly build tools and outputs
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/wasm-bindgen
-            ~/.cargo/registry
-            ~/.cargo/git
             .ci/ui-target/shared/rust-target
           key: nav-db-rollover-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json', 'product/preprocessor/Cargo.lock') }}
       - name: Install matching wasm-bindgen CLI

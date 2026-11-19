@@ -55,13 +55,11 @@ jobs:
         uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
-      - name: Cache Cargo
+      - uses: ./.github/actions/cache-cargo-downloads
+      - name: Cache NOTAM fixture build outputs
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .ci/cargo-target/fixture-nms-notams
+          path: .ci/cargo-target/fixture-nms-notams
           key: fixture-nms-notams-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
       - name: Fetch pinned NMS NOTAM fixture
         run: >-
@@ -116,13 +114,11 @@ jobs:
         uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
-      - name: Cache Cargo
+      - uses: ./.github/actions/cache-cargo-downloads
+      - name: Cache NEXRAD fixture build outputs
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .ci/cargo-target/fixture-nexrad
+          path: .ci/cargo-target/fixture-nexrad
           key: fixture-nexrad-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
       - name: Fetch pinned NEXRAD fixture
         run: >-

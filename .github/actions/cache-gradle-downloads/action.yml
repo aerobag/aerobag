@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Cache Gradle downloads
+description: Reuse module downloads without coupling them to Rust, npm or transformed build outputs.
+inputs:
+  gradle-user-home:
+    description: The Gradle user home used by the build scripts.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Cache Gradle repository downloads
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ inputs.gradle-user-home }}/caches/modules-2
+          !${{ inputs.gradle-user-home }}/caches/modules-2/modules-2.lock
+          !${{ inputs.gradle-user-home }}/caches/modules-2/gc.properties
+          ${{ inputs.gradle-user-home }}/wrapper/dists
+        # Metadata compatibility follows Gradle, not the app's Rust toolchain.
+        # Separate exact keys let APK and JVM builds save their own full sets.
+        key: gradle-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/android-app/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.job }}-${{ hashFiles('ui/android-app/**/*.gradle*', 'ui/android-app/gradle/libs.versions.toml') }}
+        restore-keys: |
+          gradle-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/android-app/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.job }}-
+          gradle-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/android-app/gradle/wrapper/gradle-wrapper.properties') }}-

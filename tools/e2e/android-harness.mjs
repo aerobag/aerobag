@@ -1176,6 +1176,36 @@ export function androidFixtureNetworkState(dump) {
   return { defaultNetwork, networks };
 }
 
+export async function runWithAndroidCleanup(operation, cleanup) {
+  let failure = null;
+  try {
+    return await operation();
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      await cleanup();
+    } catch (error) {
+      if (!failure) throw error;
+      // A dead device can fail both the journey and restoration. Keep the
+      // initiating error (and its result/observation evidence) authoritative.
+      failure.cleanup_errors ??= [];
+      failure.cleanup_errors.push(error.message);
+    }
+  }
+}
+
+export function androidFailureResult(error, fallback) {
+  const failed = error.journeyResult ?? error.nativeResult ?? fallback;
+  failed.status = "fail";
+  failed.finished_at = error.journeyResult?.finished_at ?? new Date().toISOString();
+  failed.error = error.message;
+  if (error.diagnostics) failed.diagnostics.failure_observation = error.diagnostics;
+  if (error.cleanup_errors) failed.diagnostics.cleanup_errors = [...error.cleanup_errors];
+  return failed;
+}
+
 export async function useAndroidFixtureNetwork(serial, origin, {
   adbCommand = adb, observe = observeUntil,
 } = {}) {
@@ -1221,8 +1251,7 @@ export async function useAndroidFixtureNetwork(serial, origin, {
     await reconnect(true);
     return restore;
   } catch (error) {
-    try { await restore(); } catch (cleanup) { throw new AggregateError([error, cleanup], "fixture network setup and restoration failed"); }
-    throw error;
+    return runWithAndroidCleanup(() => { throw error; }, restore);
   }
 }
 

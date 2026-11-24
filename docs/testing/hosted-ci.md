@@ -33,6 +33,33 @@ when a newer push canceled its predecessor. Do not call a repeated application
 timeout an infrastructure flake without examining its retained action/rendering
 evidence. This does not add a second full qualification wait before staging.
 
+## Android Device Stall and Cleanup Errors (November 24)
+
+Scheduled run [45478449344](https://github.com/aerobag/aerobag/actions/runs/45478449344/attempts/1)
+on `8f13d490` failed only Android shard `s2` and its aggregate. Eleven journeys
+passed before `shared.nexrad-frames` failed during `app.reset`, before its
+NEXRAD actions. One observation confirmed the old app was removed; the next
+`adb shell dumpsys activity activities` timed out. Subsequent PID, logcat,
+screenshot, activity and window captures also timed out. The retained evidence
+establishes device/ADB unresponsiveness, but not its underlying cause.
+
+The runner still had about 93 GB free. The previous passing scheduled run
+`45270406779` used the same emulator version (`37.3.10.0`, build `16970787`) and
+had the same graphics warnings. Neither disk exhaustion nor those warnings
+explain this incident; a passing fresh-runner rerun cannot establish a fix.
+
+Clock/network restoration then failed with another ADB timeout and replaced
+the initiating error in the suite's headline result. Cleanup now retains the
+original error, journey result, observation evidence and artifacts, adding
+restoration errors separately. Cleanup failure after successful work still
+fails the test. Shared journey results are persisted again after cleanup so
+both the per-journey and suite artifacts retain that evidence. Controlled
+regressions exercise the real journey runner and result persistence, including
+nested restoration failures. This repairs error reporting; it does not change
+application behavior, deadlines, retries, or claim to repair the device stall.
+The focused NEXRAD and offline-cold-start Android journeys pass with the patched
+harness and the original run's verified APK, fixture and app-data baseline.
+
 ## Dependency Cache Boundaries
 
 The November 18 run `44403792714` on `411a0cf3` failed during Gradle

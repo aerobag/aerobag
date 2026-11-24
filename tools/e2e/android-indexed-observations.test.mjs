@@ -20,6 +20,7 @@ import { createJourneyRuntime } from "./release-journey-runtime.mjs";
 import { seekReceiverReplay, selectAndroidSettingsSliderStop, selectTrayOptionMatching } from "./release-journey-implementations.mjs";
 import { androidTag, queryAndroidExactProjection, queryAndroidSemanticNodes, rectOfBounds,
   clickAndroidSemanticNode, androidSemanticTargetStateMatches, androidSemanticReadinessStateMatches,
+  androidFailureResult,
 } from "./android-harness.mjs";
 import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 import { ObservationTimeoutError, performTransition, TransientObservationError } from "./transition-contract.mjs";
@@ -565,7 +566,15 @@ test("native gesture readiness takes one device snapshot, retaining follow and o
   await assert.rejects(read(), TransientObservationError);
   assert.match(drag, /error\.nativeResult = result;\s*throw error/);
   assert.match(native, /const result = createTestResult\(test\.id\);[\s\S]*test\.run\(\{ \.\.\.args, result \}\)/);
-  assert.match(native, /const failed = error\.nativeResult \?\? result/);
+  assert.match(native, /const failed = androidFailureResult\(error, result\)/);
+  const failure = new Error("gesture invariant failed");
+  failure.nativeResult = { diagnostics: {}, steps: ["drag completed"], artifacts: ["gesture.png"] };
+  const failed = androidFailureResult(failure, { diagnostics: {}, steps: [], artifacts: [] });
+  assert.equal(failed, failure.nativeResult, "preserve the native journey's result owner");
+  assert.equal(failed.error, failure.message);
+  assert.equal(failed.status, "fail");
+  assert.deepEqual(failed.steps, ["drag completed"]);
+  assert.deepEqual(failed.artifacts, ["gesture.png"]);
   assert.match(native, /const result = args\.result \?\? createTestResult\("android\.map-follow-ctr-gesture-smoke"\)/);
   assert.match(native, /writeFileSync\(join\(E2E_ARTIFACT_DIR, "result\.json"\)/);
 });

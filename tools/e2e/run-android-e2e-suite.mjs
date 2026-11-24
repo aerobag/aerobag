@@ -19,6 +19,7 @@ import {
   androidImeShown,
   androidNodeLabel,
   androidJourneyEpochMs,
+  androidFailureResult,
   androidOfflinePackagesVisible,
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
@@ -43,6 +44,7 @@ import {
   rectOfBounds,
   renderedFlightPlanSignature,
   restoreAndroidRotationState,
+  runWithAndroidCleanup,
   saveAndroidRotationState,
   scanAerobagLogcat,
   screencapPng,
@@ -1553,7 +1555,9 @@ async function useAndroidFixtureClock(args, epochMs) {
     adb(serial, ["shell", "settings", "put", "global", "auto_time", "0"]);
     await setAndroidWallClockAndWait(serial, epochMs);
     return restore;
-  } catch (error) { await restore(); throw error; }
+  } catch (error) {
+    return runWithAndroidCleanup(() => { throw error; }, restore);
+  }
 }
 
 async function runSharedReleaseJourney(args, journey) {
@@ -1565,7 +1569,7 @@ async function runSharedReleaseJourney(args, journey) {
     args,
     androidJourneyEpochMs(journey.id, fixture.capabilities.reference_epoch_ms),
   );
-  try {
+  return runWithAndroidCleanup(async () => {
     const bootstrap = createTestResult(`${journey.id}.bootstrap`);
     await launchReleaseJourneyAndroidApp(
       args,
@@ -1624,9 +1628,7 @@ async function runSharedReleaseJourney(args, journey) {
       }
       throw error;
     }
-  } finally {
-    await restoreClock();
-  }
+  }, restoreClock);
 }
 
 async function runOfflineColdStart(args) {
@@ -1634,7 +1636,7 @@ async function runOfflineColdStart(args) {
   const fixture = loadReleaseJourneyFixture(args.releaseFixture);
   const restoreClock = await useAndroidFixtureClock(args, fixture.capabilities.reference_epoch_ms);
   const result = args.result ?? createTestResult("android.offline-cold-start");
-  try {
+  return runWithAndroidCleanup(async () => {
     await launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: true });
     await ensureOfflinePackagesReady(args.serial, result, args);
     await waitForRuntime(args.serial, result);
@@ -1751,9 +1753,7 @@ async function runOfflineColdStart(args) {
     result.status = "pass";
     result.finished_at = new Date().toISOString();
     return result;
-  } finally {
-    await restoreClock();
-  }
+  }, restoreClock);
 }
 
 async function runRawMapInspectorTerrainSmoke(args) {
@@ -1843,12 +1843,9 @@ async function main() {
     try {
       suite.results.push(await test.run({ ...args, result }));
     } catch (error) {
-      const failed = error.nativeResult ?? result;
-      failed.status = "fail";
-      failed.finished_at = new Date().toISOString();
-      failed.error = error.message;
-      if (error.diagnostics) failed.diagnostics.failure_observation = error.diagnostics;
-      failed.artifacts = captureAndroidFailureDiagnostics(args.serial, E2E_ARTIFACT_DIR, test.id);
+      const failed = androidFailureResult(error, result);
+      failed.artifacts.push(...captureAndroidFailureDiagnostics(args.serial, E2E_ARTIFACT_DIR, test.id));
+      if (error.journeyResult) persistJourneyResult(failed, join(E2E_ARTIFACT_DIR, test.id));
       writeFileSync(join(E2E_ARTIFACT_DIR, "result.json"), `${JSON.stringify(failed, null, 2)}\n`);
       suite.results.push(failed);
       if (args.json) {

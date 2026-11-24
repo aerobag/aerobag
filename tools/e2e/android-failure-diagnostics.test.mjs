@@ -5,7 +5,67 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { captureAndroidThreadStacks, captureAndroidFailureDiagnostics } from "./android-harness.mjs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { androidFailureResult, captureAndroidThreadStacks, captureAndroidFailureDiagnostics, runWithAndroidCleanup } from "./android-harness.mjs";
+import { executeReleaseJourney, persistJourneyResult } from "./release-journey-runtime.mjs";
+
+test("failed device cleanup retains the initiating journey error, result and observation evidence", async (t) => {
+  const artifactDir = mkdtempSync(join(tmpdir(), "android-cleanup-failure-"));
+  t.after(() => rmSync(artifactDir, { recursive: true, force: true }));
+  const original = new Error("previous Aerobag process removed: adb dumpsys activity ETIMEDOUT");
+  original.diagnostics = { last_value: true, attempts: 2, successful_samples: 1 };
+  const cleanup = new Error("adb settings delete captive_portal_http_url ETIMEDOUT");
+  let cleanups = 0;
+  await assert.rejects(runWithAndroidCleanup(() => executeReleaseJourney({
+    journey: { id: "shared.nexrad-frames", assertions: [] }, platform: "android",
+    artifactDir, driver: { captureFrame: async () => { throw new Error("device unavailable"); } },
+  }, async () => { throw original; }), async () => { cleanups++; throw cleanup; }), error => {
+    assert.equal(error, original);
+    const result = androidFailureResult(error, { diagnostics: {}, steps: [], artifacts: [] });
+    assert.equal(result, original.journeyResult);
+    assert.equal(result.id, "shared.nexrad-frames");
+    assert.equal(result.error, original.message);
+    assert.deepEqual(result.diagnostics.failure_observation, original.diagnostics);
+    assert.equal(result.diagnostics.capture_error, "device unavailable");
+    assert.deepEqual(result.diagnostics.cleanup_errors, [cleanup.message]);
+    persistJourneyResult(result, artifactDir);
+    assert.deepEqual(JSON.parse(readFileSync(join(artifactDir, "result.json"))).diagnostics, result.diagnostics);
+    return true;
+  });
+  assert.equal(cleanups, 1);
+});
+
+test("cleanup failures fail successful work and successful cleanup preserves its return value", async () => {
+  const cleanup = new Error("restoration failed");
+  await assert.rejects(runWithAndroidCleanup(async () => "passed", async () => { throw cleanup; }), error => error === cleanup);
+  assert.equal(await runWithAndroidCleanup(async () => "passed", async () => {}), "passed");
+});
+
+test("setup and nested restoration failures keep the original error and all cleanup errors", async () => {
+  const original = new Error("clock setup failed");
+  await assert.rejects(runWithAndroidCleanup(() => runWithAndroidCleanup(
+    () => { throw original; }, async () => { throw new Error("network restoration failed"); },
+  ), async () => { throw new Error("outer restoration failed"); }), error => {
+    assert.equal(error, original);
+    const result = androidFailureResult(error, { diagnostics: {}, steps: [], artifacts: [] });
+    assert.deepEqual(result.diagnostics.cleanup_errors, ["network restoration failed", "outer restoration failed"]);
+    return true;
+  });
+});
+
+test("native shared and offline journeys use cleanup ownership and retain shared result artifacts", () => {
+  const source = readFileSync(new URL("run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  for (const name of ["runSharedReleaseJourney", "runOfflineColdStart"]) {
+    const body = source.split(`async function ${name}(`)[1].split("\nasync function ")[0];
+    assert.match(body, /return runWithAndroidCleanup\(async \(\) =>/);
+    assert.match(body, /\}, restoreClock\)/);
+  }
+  assert.match(source, /androidFailureResult\(error, result\)/);
+  assert.match(source, /failed\.artifacts\.push\(\.\.\.captureAndroidFailureDiagnostics/);
+  assert.match(source, /if \(error\.journeyResult\) persistJourneyResult\(failed,/);
+});
 
 test("thread capture targets only the app on the selected emulator and bounds both commands", () => {
   const calls = [];

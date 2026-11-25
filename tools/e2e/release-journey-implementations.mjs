@@ -827,8 +827,9 @@ export async function dismissPlanRowTray(runtime) {
   });
 }
 
-async function planAction(runtime, label, actionId, { observeResult = null } = {}) {
-  await openPlanRow(runtime, label);
+export async function planAction(runtime, label, actionId, { observeResult = null } = {}) {
+  const row = await openPlanRow(runtime, label);
+  const activatedRowUid = actionId === "activate_leg" ? planRowUid(row) : null;
   let completion = null;
   const trayStaysOpen = ["move_up", "move_down"].includes(actionId);
   const trayCloses = [
@@ -841,10 +842,16 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
     completion = await runtime.action(`${actionId} ${label}`, `plan-row-action:${actionId}`, {
       complete: async () => {
         const open = (await runtime.driver.readProjection("parity:plan-row-action:")).length > 0;
+        // The menu can disappear before the updated guidance is rendered.
+        // Its closure alone must not release the next navigation action.
+        if (activatedRowUid) return { open, guidance: await planGuidance(runtime) };
         if (open !== trayStaysOpen) return null;
         if (!trayStaysOpen) return { open };
         return observeResult();
       },
+      ...(activatedRowUid ? {
+        completionSatisfied: state => !state.open && state.guidance?.toUid === activatedRowUid,
+      } : {}),
     });
   } else {
     const completionByAction = {
@@ -870,6 +877,20 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
 
 async function planState(runtime) {
   return projectionId((await runtime.driver.readProjection("parity:plan-state:"))[0]);
+}
+
+async function planGuidance(runtime) {
+  const match = /:from:(.+):to:(.+)$/.exec(await planState(runtime) ?? "");
+  return match ? { fromUid: match[1], toUid: match[2] } : null;
+}
+
+export async function activateNextPlanLeg(runtime, fromLabel, toLabel) {
+  const fromUid = planRowUid(await findPlanRow(runtime, fromLabel));
+  const toUid = planRowUid(await findPlanRow(runtime, toLabel));
+  return runtime.action("activate next leg", "activate_next_leg", {
+    complete: () => planGuidance(runtime),
+    completionSatisfied: state => state?.fromUid === fromUid && state.toUid === toUid,
+  });
 }
 
 function planStateRowCount(state) {
@@ -1083,13 +1104,7 @@ async function flightPlanEditAndNavigate(runtime) {
   // START follows the current simulated position, which can be on a later leg.
   // NEXT has its own fixture: activate the earlier leg with successors again.
   await planAction(runtime, "KPAE", "activate_leg");
-  const beforeNext = await planState(runtime);
-  await runtime.action("activate next leg", "activate_next_leg", {
-    complete: async () => {
-      const state = await planState(runtime);
-      return state && state !== beforeNext ? state : null;
-    },
-  });
+  await activateNextPlanLeg(runtime, "KPAE", "S88");
   const activeAfterNext = await enabledPlanControl(runtime, "stop_navigation");
   runtime.check("plan.activate-next-leg", Boolean(activeAfterNext));
 

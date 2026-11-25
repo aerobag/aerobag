@@ -33,6 +33,31 @@ when a newer push canceled its predecessor. Do not call a repeated application
 timeout an infrastructure flake without examining its retained action/rendering
 evidence. This does not add a second full qualification wait before staging.
 
+## Flight-Plan Navigation Readiness (November 25)
+
+Scheduled run [45684776998](https://github.com/aerobag/aerobag/actions/runs/45684776998/attempts/1)
+on `a0018582` failed Android shard `s2` in
+`shared.flight-plan-edit-and-navigate`. ADB, thread capture, screenshots and
+logcat remained available. The previous `activate_leg KPAE` action completed
+when its menu disappeared, with observed session revision still `241`. NEXT's
+pre-action check then saw revision `245` and guidance `KRNT -> KPAE`, the
+requested earlier leg. No NEXT input was sent. The journey accepted any changed
+plan-state string as NEXT completion, even though `KPAE -> S88` had not been
+activated. The earlier comparison string was not retained, so the precise
+field that changed in that interval is unknown.
+
+Row activation now requires both menu closure and rendered guidance targeting
+the selected row UID. NEXT requires the exact expected from/to row UIDs instead
+of accepting any changed plan-state string. Failed observations retain the
+actual menu/guidance state. The controlled regression runs the real transition
+runner, closes the menu before publishing guidance, and reproduces the hosted
+precondition error with the old implementation. It also checks reversed update
+ordering, already-selected legs, unrelated highlight changes, wrong/missing
+guidance and lost clicks on both platform driver boundaries. The complete
+17-assertion journey also passes on real Android and desktop Chrome using the
+failed run's verified applications and fixture. Deadlines and single-action
+delivery are unchanged.
+
 ## Android Device Stall and Cleanup Errors (November 24)
 
 Scheduled run [45478449344](https://github.com/aerobag/aerobag/actions/runs/45478449344/attempts/1)
